@@ -19,7 +19,6 @@ if "temp_scores" not in st.session_state:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
 
 if "all_matches" not in st.session_state:
-    from match_info import load_data_from_gsheet
     st.session_state["all_matches"] = load_data_from_gsheet()
 
 all_matches = st.session_state.get("all_matches", {})
