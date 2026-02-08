@@ -38,9 +38,6 @@ team_side = st.radio(
     horizontal=True
 )
 
-judge_name = st.text_input("評判姓名")
-team_side = st.radio("選擇評分隊伍", ["正方", "反方"], horizontal=True)
-
 #sync data from match_info
 if team_side == "正方":
     names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""), 
@@ -93,12 +90,15 @@ else:
 
 st.divider()
 st.subheader("（乙）自由辯論")
-initial_data_b = [
-    {"內容 (20)": 0, "辭鋒 (15)": 0, "組織 (10)": 0, "合作 (5)": 0, "風度 (5)": 0}
-]
-df_b = pd.DataFrame(initial_data_b)
+
+if st.session_state["temp_scores"][team_side] is not None and "raw_df_b" in st.session_state["temp_scores"][team_side]:
+    df_b_source = st.session_state["temp_scores"][team_side]["raw_df_b"]
+else:
+    initial_data_b = [{"內容 (20)": 0, "辭鋒 (15)": 0, "組織 (10)": 0, "合作 (5)": 0, "風度 (5)": 0}]
+    df_b_source = pd.DataFrame(initial_data_b)
+
 edited_df_b = st.data_editor(
-    df_b,
+    df_b_source,
     column_config={
         "內容 (20)": st.column_config.NumberColumn(min_value=0, max_value=20, step=1, required=True),
         "辭鋒 (15)": st.column_config.NumberColumn(min_value=0, max_value=15, step=1, required=True),
@@ -108,6 +108,7 @@ edited_df_b = st.data_editor(
     },
     hide_index=True,
     use_container_width=True
+    key=f"editor_b_{selected_match_id}_{team_side}"
 )
 total_score_b = edited_df_b.sum().sum()
 st.markdown(f"總分：{total_score_b}/55")
@@ -143,7 +144,10 @@ if st.button(f"暫存{team_side}評分"):
             "coherence": int(coherence),
             "final_total": int(final_total),
             "ind_scores": [int(s) for s in individual_scores],
-            "raw_df": edited_df_a
+            "raw_df": edited_df_a,
+            "raw_df_b": edited_df_b,
+            "deduction_val": deduction,
+            "coherence_val": coherence
         }
         st.session_state["temp_scores"][team_side] = side_data
         st.success(f"已暫存 {team_side} ({team_name}) 分數。")
