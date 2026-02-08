@@ -16,6 +16,9 @@ if "judge_authenticated" not in st.session_state:
 if "temp_scores" not in st.session_state:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
 
+if "active_match_id" not in st.session_state:
+    st.session_state["active_match_id"] = None
+
 if "all_matches" not in st.session_state:
     st.session_state["all_matches"] = load_data_from_gsheet()
 
@@ -26,6 +29,10 @@ if not all_matches:
 
 selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_matches.keys()))
 current_match = all_matches[selected_match_id]
+
+if st.session_state["active_match_id"] != selected_match_id:
+    st.session_state["temp_scores"] = {"正方": None, "反方": None}
+    st.session_state["active_match_id"] = selected_match_id
 
 if st.session_state["auth_match_id"] != selected_match_id:
     st.session_state["judge_authenticated"] = False
@@ -176,6 +183,10 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
     st.warning("⚠️ 兩隊評分已完成。")
     if st.button("正式提交評分", type="primary"):
         try:
+            if not judge_name:
+                st.error("請輸入評判姓名！")
+                st.stop()
+
             ss = get_connection()
             score_sheet = ss.worksheet("Score") 
             
