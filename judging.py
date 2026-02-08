@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-from match_info import get_connection
+from functions import get_connection
 
 st.header("電子評分系統")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
