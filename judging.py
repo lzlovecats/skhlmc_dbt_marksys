@@ -107,7 +107,7 @@ edited_df_b = st.data_editor(
         "風度 (5)": st.column_config.NumberColumn(min_value=0, max_value=5, step=1, required=True),
     },
     hide_index=True,
-    use_container_width=True
+    use_container_width=True,
     key=f"editor_b_{selected_match_id}_{team_side}"
 )
 total_score_b = edited_df_b.sum().sum()
