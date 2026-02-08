@@ -36,8 +36,11 @@ if not st.session_state["judge_authenticated"]:
         if input_otp == correct_otp and correct_otp != "":
             st.session_state["judge_authenticated"] = True
             st.rerun()
+        elif correct_otp == "":
+            st.error("該場次未開放評分，請向賽會人員查詢。")
+            st.stop()
         else:
-            st.error("密碼錯誤或該場次未開放評分，請向賽會人員查詢。")
+            st.error("密碼錯誤!")
             st.stop()
     else:
         st.stop()
