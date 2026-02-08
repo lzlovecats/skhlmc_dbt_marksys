@@ -24,7 +24,4 @@ def check_admin():
 
 pg = st.navigation([page_judging, page_match_mgmt, page_mgmt])
 st.set_page_config(page_title="電子分紙系統（Beta）", layout="wide")
-if "賽會人員用" in st.active_navigation_details["title"]:
-    if not check_admin():
-        st.stop()
 pg.run()
