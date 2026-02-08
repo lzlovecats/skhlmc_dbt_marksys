@@ -50,4 +50,35 @@ elif con_votes > pro_votes:
     winner_text = f"🏆勝方：反方 ({match_results['con_name'].iloc[0]})"
     st.error(winner_text)
 else:
-    st.warning("票數相同，主席將依賽規重新運作自由辯論環節。")
+    st.warning("票數相同，依賽規需要重新運作自由辯論環節。")
+
+all_ranks = []
+rank_cols = ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]
+for index, row in match_results.iterrows():
+    scores = row[debater_cols].astype(int)
+    ranks = scores.rank(ascending=False, method='min')
+    all_ranks.append(ranks)
+df_ranks = pd.DataFrame(all_ranks)
+total_rank_sum = df_ranks.sum()
+
+best_debater_results = []
+for col_id in rank_cols:
+    best_debater_results.append({
+        "辯位": col_id,
+        "名次總和": int(total_rank_sum[col_id]),
+        "平均得分": round(match_results[col_id].mean(), 2)
+    })
+
+df_final_best = pd.DataFrame(best_debater_results).sort_values(
+    by=["名次總和", "平均得分"], 
+    ascending=[True, False]
+)
+
+st.dataframe(df_final_best, use_container_width=True, hide_index=True)
+
+best_one = df_final_best.iloc[0]
+st.info(f"本場最佳辯論員：**{best_one['辯位']}** (名次總和：{best_one['名次總和']} | 平均分：{best_one['平均得分']})")
+
+
+
+
