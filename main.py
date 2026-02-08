@@ -6,7 +6,7 @@ page_match_mgmt = st.Page("match_info.py", title="賽事資料管理系統（賽
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
 page_mgmt = st.Page("management.py", title="分數管理（賽會人員用）")
 
-def check_admin()
+def check_admin():
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
 	if not st.session_state["admin_logged_in"]:
