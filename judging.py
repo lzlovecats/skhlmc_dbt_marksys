@@ -18,12 +18,12 @@ if not st.session_state["judge_authenticated"]:
     
     correct_otp = str(current_match.get("access_code", ""))
     if st.button("驗證入場"):
-    if input_otp == correct_otp and correct_otp != "":
-        st.session_state["judge_authenticated"] = True
-        st.rerun()
-    else:
-        st.error("密錯誤或該場次未開放評分，請向賽會人員查詢。")
-        st.stop()
+        if input_otp == correct_otp and correct_otp != "":
+            st.session_state["judge_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("密錯誤或該場次未開放評分，請向賽會人員查詢。")
+            st.stop()
 
 if "temp_scores" not in st.session_state:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
