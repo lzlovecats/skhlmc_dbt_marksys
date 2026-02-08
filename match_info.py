@@ -23,12 +23,13 @@ def get_connection():
         scopes=SCOPES
     )
     client = gspread.authorize(creds)
-    sheet = client.open_by_key("1y8FFMVfp1to5iIVAhNUPvICr__REwslUJsr_TkK3QF8").sheet1 
-    return sheet
+    spreadsheet = client.open_by_key("1y8FFMVfp1to5iIVAhNUPvICr__REwslUJsr_TkK3QF8")
+    return spreadsheet
 
 def load_data_from_gsheet():
     try:
-        sheet = get_connection()
+        spreadsheet = get_connection()
+        sheet = spreadsheet.sheet1
         records = sheet.get_all_records()
         
         data_dict = {}
@@ -42,9 +43,10 @@ def load_data_from_gsheet():
         return {}
 
 def save_match_to_gsheet(match_data):
-    sheet = get_connection()
+    spreadsheet = get_connection()
+    sheet = spreadsheet.sheet1
     try:
-        match_ids = sheet.col_values(1) 
+        match_ids = sheet.col_values(1)
         
         row_values = [
             match_data["match_id"],
