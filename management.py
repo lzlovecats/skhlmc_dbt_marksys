@@ -1,18 +1,12 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from google.oauth2.service_account import Credentials
 from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet
 st.header("賽事結果統計")
 
 def get_score_data():
     try:
-        ss_client = get_connection()
-        spreadsheet = gspread.authorize(Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], 
-            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        )).open_by_key("1y8FFMVfp1to5iIVAhNUPvICr__REwslUJsr_TkK3QF8")
-        
+        spreadsheet = get_connection()
         score_sheet = spreadsheet.worksheet("Score")
         data = score_sheet.get_all_records()
         return pd.DataFrame(data)
