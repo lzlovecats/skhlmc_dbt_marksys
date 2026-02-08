@@ -115,11 +115,20 @@ st.markdown(f"總分：{total_score_b}/55")
 
 st.divider()
 st.subheader("（丙）扣分及內容連貫")
+
+def_deduction = 0
+def_coherence = 0
+
+if st.session_state["temp_scores"][team_side] is not None:
+    saved = st.session_state["temp_scores"][team_side]
+    def_deduction = saved.get("deduction_val", 0)
+    def_coherence = saved.get("coherence_val", 0)
+
 col1, col2 = st.columns(2)
 with col1:
-    deduction = st.number_input("扣分總和", min_value=0, step=1)
+    deduction = st.number_input("扣分總和", min_value=0, step=1, value=def_deduction, key=f"deduct_{team_side}")
 with col2:
-    coherence = st.number_input("內容連貫 (5)", min_value=0, max_value=5, step=1)
+    coherence = st.number_input("內容連貫 (5)", min_value=0, max_value=5, step=1, value=def_coherence, key=f"cohere_{team_side}")
 
 final_total = total_score_a + total_score_b - deduction + coherence
 
