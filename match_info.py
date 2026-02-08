@@ -140,6 +140,8 @@ if st.session_state["all_matches"]:
             con_3 = st.text_input("反方二副", value=current_data.get("con_3", ""))
             con_4 = st.text_input("反方結辯", value=current_data.get("con_4", ""))
 
+        access_code = st.text_input("評判入場密碼", value=current_data.get("access_code", ""))
+
         if st.form_submit_button("儲存場次資料"):
             match_data_prepare = {
                 "match_id": selected_match,
@@ -148,7 +150,7 @@ if st.session_state["all_matches"]:
                 "que": que, 
                 "pro": pro_team, "con": con_team, 
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
-                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4}
+                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": access_code}
             st.session_state["all_matches"][selected_match] = match_data_prepare
             save_match_to_gsheet(match_data_prepare)
             st.success(f"資料已儲存至Google Cloud！")
