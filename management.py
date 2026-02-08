@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+from main import check_admin
 st.header("賽事結果統計")
 
 def get_score_data():
@@ -20,6 +21,9 @@ def get_score_data():
         st.error(f"讀取評分失敗: {e}")
         return None
     
+if not check_admin():
+        st.stop()
+
 df_scores = get_score_data()
 
 if df_scores is None or df_scores.empty:
