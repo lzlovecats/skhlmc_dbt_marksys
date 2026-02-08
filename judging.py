@@ -9,6 +9,9 @@ st.header("電子評分系統")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
           "https://www.googleapis.com/auth/drive"]
 
+if "auth_match_id" not in st.session_state:
+    st.session_state["auth_match_id"] = None
+
 if "judge_authenticated" not in st.session_state:
     st.session_state["judge_authenticated"] = False
 
@@ -27,6 +30,9 @@ if not all_matches:
 selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_matches.keys()))
 current_match = all_matches[selected_match_id]
 
+if st.session_state["auth_match_id"] != selected_match_id:
+    st.session_state["judge_authenticated"] = False
+
 if not st.session_state["judge_authenticated"]:
     st.subheader("評判身分驗證")
     input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
@@ -35,6 +41,7 @@ if not st.session_state["judge_authenticated"]:
     if st.button("驗證入場"):
         if input_otp == correct_otp and correct_otp != "":
             st.session_state["judge_authenticated"] = True
+            st.session_state["auth_match_id"] = selected_match_id
             st.rerun()
         elif correct_otp == "":
             st.error("該場次未開放評分，請向賽會人員查詢。")
