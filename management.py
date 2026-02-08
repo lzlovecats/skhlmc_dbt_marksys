@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from functions import check_admin
+from functions import get_connection
 st.header("賽事結果統計")
 
 def get_score_data():
-    from match_info import get_connection
     try:
         ss_client = get_connection()
         spreadsheet = gspread.authorize(Credentials.from_service_account_info(
