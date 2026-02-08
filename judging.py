@@ -11,19 +11,6 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
 
 if "judge_authenticated" not in st.session_state:
     st.session_state["judge_authenticated"] = False
-    
-if not st.session_state["judge_authenticated"]:
-    st.subheader("評判身分驗證")
-    input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
-    
-    correct_otp = str(current_match.get("access_code", ""))
-    if st.button("驗證入場"):
-        if input_otp == correct_otp and correct_otp != "":
-            st.session_state["judge_authenticated"] = True
-            st.rerun()
-        else:
-            st.error("密錯誤或該場次未開放評分，請向賽會人員查詢。")
-            st.stop()
 
 if "temp_scores" not in st.session_state:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
@@ -40,6 +27,20 @@ if not all_matches:
 selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_matches.keys()))
 current_match = all_matches[selected_match_id]
 
+if not st.session_state["judge_authenticated"]:
+    st.subheader("評判身分驗證")
+    input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
+    
+    correct_otp = str(current_match.get("access_code", ""))
+    if st.button("驗證入場"):
+        if input_otp == correct_otp and correct_otp != "":
+            st.session_state["judge_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("密碼錯誤或該場次未開放評分，請向賽會人員查詢。")
+            st.stop()
+
+st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
 judge_name = st.text_input("評判姓名")
