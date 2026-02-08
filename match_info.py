@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import datetime, time, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
-from main import check_admin
+from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet
 st.header("賽事資料輸入")
 
 time_slots = []
