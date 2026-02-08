@@ -18,59 +18,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-def get_connection():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES
-    )
-    client = gspread.authorize(creds)
-    spreadsheet = client.open_by_key("1y8FFMVfp1to5iIVAhNUPvICr__REwslUJsr_TkK3QF8")
-    return spreadsheet
-
-def load_data_from_gsheet():
-    try:
-        spreadsheet = get_connection()
-        sheet = spreadsheet.sheet1
-        records = sheet.get_all_records()
-        
-        data_dict = {}
-        for row in records:
-            m_id = str(row["match_id"])
-            if m_id:
-                data_dict[m_id] = row
-        return data_dict
-    except Exception as e:
-        st.error(f"連線錯誤: {e}")
-        return {}
-
-def save_match_to_gsheet(match_data):
-    spreadsheet = get_connection()
-    sheet = spreadsheet.sheet1
-    try:
-        match_ids = sheet.col_values(1)
-        
-        row_values = [
-            match_data["match_id"],
-            str(match_data["date"]),
-            str(match_data["time"]),
-            match_data["que"],
-            match_data["pro"],
-            match_data["con"],
-            match_data["pro_1"], match_data["pro_2"], match_data["pro_3"], match_data["pro_4"],
-            match_data["con_1"], match_data["con_2"], match_data["con_3"], match_data["con_4"], match_data.get("access_code", "")
-        ]
-
-        if match_data["match_id"] in match_ids:
-            row_index = match_ids.index(match_data["match_id"]) + 1
-            st.info("更新舊有紀錄中，請稍等。")
-            sheet.delete_rows(row_index)
-            sheet.append_row(row_values)
-        else:
-            sheet.append_row(row_values)
-        
-    except Exception as e:
-        st.error(f"寫入失敗: {e}")
-
 if not check_admin():
         st.stop()
 
