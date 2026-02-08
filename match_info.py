@@ -110,7 +110,7 @@ if st.session_state["all_matches"]:
         default_time = datetime.now().time()
         saved_time_str = str(current_data.get("time", "16:00"))     
         if saved_time_str not in time_slots:
-            index = 5
+            index = 4
         else:
             index = time_slots.index(saved_time_str)
         
