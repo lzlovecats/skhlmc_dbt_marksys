@@ -55,9 +55,6 @@ team_side = st.radio(
     horizontal=True
 )
 
-judge_name = st.text_input("評判姓名")
-team_side = st.radio("選擇評分隊伍", ["正方", "反方"], horizontal=True)
-
 #sync data from match_info
 if team_side == "正方":
     names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""), 
