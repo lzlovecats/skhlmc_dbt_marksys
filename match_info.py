@@ -2,6 +2,7 @@ import streamlit as st
 from datetime import datetime, time, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+from main import check_admin
 st.header("賽事資料輸入")
 
 time_slots = []
@@ -69,6 +70,9 @@ def save_match_to_gsheet(match_data):
         
     except Exception as e:
         st.error(f"寫入失敗: {e}")
+
+if not check_admin():
+        st.stop()
 
 if "all_matches" not in st.session_state:
     st.session_state["all_matches"] = load_data_from_gsheet()
