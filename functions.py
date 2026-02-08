@@ -1,10 +1,8 @@
 import streamlit as st
 import gspread
-import google.oauth2.service_account
-import Credentials
+from google.oauth2.service_account import Credentials
 
-SCOPES = ["[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)", 
-"[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)"]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets",  "https://www.googleapis.com/auth/drive"]
 
 def check_admin():
     if "admin_logged_in" not in st.session_state:
