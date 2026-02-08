@@ -9,6 +9,22 @@ st.header("電子評分系統")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
           "https://www.googleapis.com/auth/drive"]
 
+if "judge_authenticated" not in st.session_state:
+    st.session_state["judge_authenticated"] = False
+    
+if not st.session_state["judge_authenticated"]:
+    st.subheader("評判身分驗證")
+    input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
+    
+    correct_otp = str(current_match.get("access_code", ""))
+    if st.button("驗證入場"):
+    if input_otp == correct_otp and correct_otp != "":
+        st.session_state["judge_authenticated"] = True
+        st.rerun()
+    else:
+        st.error("密錯誤或該場次未開放評分，請向賽會人員查詢。")
+        st.stop()
+
 if "temp_scores" not in st.session_state:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
 
@@ -37,6 +53,9 @@ team_side = st.radio(
     format_func=lambda x: f"{x} ({pro_team_name})" if x == "正方" else f"{x} ({con_team_name})",
     horizontal=True
 )
+
+judge_name = st.text_input("評判姓名")
+team_side = st.radio("選擇評分隊伍", ["正方", "反方"], horizontal=True)
 
 #sync data from match_info
 if team_side == "正方":
@@ -90,15 +109,12 @@ else:
 
 st.divider()
 st.subheader("（乙）自由辯論")
-
-if st.session_state["temp_scores"][team_side] is not None and "raw_df_b" in st.session_state["temp_scores"][team_side]:
-    df_b_source = st.session_state["temp_scores"][team_side]["raw_df_b"]
-else:
-    initial_data_b = [{"內容 (20)": 0, "辭鋒 (15)": 0, "組織 (10)": 0, "合作 (5)": 0, "風度 (5)": 0}]
-    df_b_source = pd.DataFrame(initial_data_b)
-
+initial_data_b = [
+    {"內容 (20)": 0, "辭鋒 (15)": 0, "組織 (10)": 0, "合作 (5)": 0, "風度 (5)": 0}
+]
+df_b = pd.DataFrame(initial_data_b)
 edited_df_b = st.data_editor(
-    df_b_source,
+    df_b,
     column_config={
         "內容 (20)": st.column_config.NumberColumn(min_value=0, max_value=20, step=1, required=True),
         "辭鋒 (15)": st.column_config.NumberColumn(min_value=0, max_value=15, step=1, required=True),
@@ -107,28 +123,18 @@ edited_df_b = st.data_editor(
         "風度 (5)": st.column_config.NumberColumn(min_value=0, max_value=5, step=1, required=True),
     },
     hide_index=True,
-    use_container_width=True,
-    key=f"editor_b_{selected_match_id}_{team_side}"
+    use_container_width=True
 )
 total_score_b = edited_df_b.sum().sum()
 st.markdown(f"總分：{total_score_b}/55")
 
 st.divider()
 st.subheader("（丙）扣分及內容連貫")
-
-def_deduction = 0
-def_coherence = 0
-
-if st.session_state["temp_scores"][team_side] is not None:
-    saved = st.session_state["temp_scores"][team_side]
-    def_deduction = saved.get("deduction_val", 0)
-    def_coherence = saved.get("coherence_val", 0)
-
 col1, col2 = st.columns(2)
 with col1:
-    deduction = st.number_input("扣分總和", min_value=0, step=1, value=def_deduction, key=f"deduct_{team_side}")
+    deduction = st.number_input("扣分總和", min_value=0, step=1)
 with col2:
-    coherence = st.number_input("內容連貫 (5)", min_value=0, max_value=5, step=1, value=def_coherence, key=f"cohere_{team_side}")
+    coherence = st.number_input("內容連貫 (5)", min_value=0, max_value=5, step=1)
 
 final_total = total_score_a + total_score_b - deduction + coherence
 
@@ -153,10 +159,7 @@ if st.button(f"暫存{team_side}評分"):
             "coherence": int(coherence),
             "final_total": int(final_total),
             "ind_scores": [int(s) for s in individual_scores],
-            "raw_df": edited_df_a,
-            "raw_df_b": edited_df_b,
-            "deduction_val": deduction,
-            "coherence_val": coherence
+            "raw_df": edited_df_a
         }
         st.session_state["temp_scores"][team_side] = side_data
         st.success(f"已暫存 {team_side} ({team_name}) 分數。")
