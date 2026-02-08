@@ -41,7 +41,7 @@ st.subheader("勝負判定")
 col1, col2, col3 = st.columns(3)
 col1.metric("正方得票", f"{pro_votes} 票")
 col2.metric("反方得票", f"{con_votes} 票")
-col3.metric("打和票數", f"{draws} 票")
+col3.metric("平票", f"{draws} 票")
 
 if pro_votes > con_votes:
     winner_text = f"🏆勝方：正方 ({match_results['pro_name'].iloc[0]})"
@@ -51,6 +51,17 @@ elif con_votes > pro_votes:
     st.error(winner_text)
 else:
     st.warning("票數相同，依賽規需要重新運作自由辯論環節。")
+
+role_map = {
+    "pro1_m": "正方主辯",
+    "pro2_m": "正方一副",
+    "pro3_m": "正方二副",
+    "pro4_m": "正方結辯",
+    "con1_m": "反方主辯",
+    "con2_m": "反方一副",
+    "con3_m": "反方二副",
+    "con4_m": "反方結辯",
+}
 
 all_ranks = []
 rank_cols = ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]
@@ -64,7 +75,7 @@ total_rank_sum = df_ranks.sum()
 best_debater_results = []
 for col_id in rank_cols:
     best_debater_results.append({
-        "辯位": col_id,
+        "辯位": role_map.get(col_id, col_id),,
         "名次總和": int(total_rank_sum[col_id]),
         "平均得分": round(match_results[col_id].mean(), 2)
     })
