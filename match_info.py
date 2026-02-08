@@ -56,7 +56,7 @@ def save_match_to_gsheet(match_data):
             match_data["pro"],
             match_data["con"],
             match_data["pro_1"], match_data["pro_2"], match_data["pro_3"], match_data["pro_4"],
-            match_data["con_1"], match_data["con_2"], match_data["con_3"], match_data["con_4"]
+            match_data["con_1"], match_data["con_2"], match_data["con_3"], match_data["con_4"], match_data.get("access_code", "")
         ]
 
         if match_data["match_id"] in match_ids:
@@ -84,7 +84,7 @@ if st.button("新增比賽場次"):
                 "que": "",
                 "pro": "", "con": "",
                 "pro_1": "", "pro_2": "", "pro_3": "", "pro_4": "",
-                "con_1": "", "con_2": "", "con_3": "", "con_4": ""
+                "con_1": "", "con_2": "", "con_3": "", "con_4": "", "access_code": ""
             }
             st.session_state["all_matches"][new_match_id] = new_match_data
             save_match_to_gsheet(new_match_data)
