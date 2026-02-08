@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from main import check_admin
+from functions import check_admin
 st.header("賽事結果統計")
 
 def get_score_data():
