@@ -24,6 +24,20 @@ if not all_matches:
 selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_matches.keys()))
 current_match = all_matches[selected_match_id]
 
+motion = current_match.get("que", "（未輸入辯題）")
+st.markdown(f"辯題：{motion}")
+judge_name = st.text_input("評判姓名")
+
+pro_team_name = current_match.get("pro", "未填寫")
+con_team_name = current_match.get("con", "未填寫")
+
+team_side = st.radio(
+    "選擇評分隊伍", 
+    ["正方", "反方"], 
+    format_func=lambda x: f"{x} ({pro_team_name})" if x == "正方" else f"{x} ({con_team_name})",
+    horizontal=True
+)
+
 judge_name = st.text_input("評判姓名")
 team_side = st.radio("選擇評分隊伍", ["正方", "反方"], horizontal=True)
 
