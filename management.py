@@ -75,7 +75,7 @@ total_rank_sum = df_ranks.sum()
 best_debater_results = []
 for col_id in rank_cols:
     best_debater_results.append({
-        "辯位": role_map.get(col_id, col_id),,
+        "辯位": role_map.get(col_id, col_id),
         "名次總和": int(total_rank_sum[col_id]),
         "平均得分": round(match_results[col_id].mean(), 2)
     })
