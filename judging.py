@@ -39,6 +39,8 @@ if not st.session_state["judge_authenticated"]:
         else:
             st.error("密碼錯誤或該場次未開放評分，請向賽會人員查詢。")
             st.stop()
+    else:
+        st.stop()
 
 st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
