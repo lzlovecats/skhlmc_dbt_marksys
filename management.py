@@ -19,9 +19,6 @@ def get_score_data():
     except Exception as e:
         st.error(f"讀取評分失敗: {e}")
         return None
-    
-if not check_admin():
-        st.stop()
 
 df_scores = get_score_data()
 
