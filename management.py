@@ -55,7 +55,7 @@ else:
 all_ranks = []
 rank_cols = ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]
 for index, row in match_results.iterrows():
-    scores = row[debater_cols].astype(int)
+    scores = row[rank_cols].astype(int)
     ranks = scores.rank(ascending=False, method='min')
     all_ranks.append(ranks)
 df_ranks = pd.DataFrame(all_ranks)
