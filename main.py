@@ -12,7 +12,6 @@ pg = st.navigation([page_judging, page_match_mgmt, page_mgmt])
 
 if st.session_state.get("admin_logged_in"):
     with st.sidebar:
-        st.divider()
         if st.button("結束賽會人員登入", use_container_width=True):
             st.session_state["admin_logged_in"] = False
             st.rerun()
