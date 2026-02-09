@@ -22,3 +22,7 @@ if df_scores is None or df_scores.empty:
 
 all_matches = df_scores['match_id'].unique()
 selected_match = st.selectbox("請選擇要查看的場次", options=all_matches)
+match_results = df_scores[df_scores['match_id'] == selected_match]
+all_judge = match_results['judge_name'].unique()
+selected_judge = st.selectbox("請選擇評判", options=all_judge)
+
