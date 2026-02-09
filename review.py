@@ -36,7 +36,7 @@ with col_info1:
 with col_info2:
     st.write(f"**反方：** {judge_record['con_name']}")
 with col_info3:
-    st.write(f"**提交時間：** {judge_record['timestamp']}")
+    st.write(f"**提交時間：** {judge_record['mark_time']}")
     st.write("### 評分詳情")
 
 col_pro, col_con = st.columns(2)
