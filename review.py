@@ -37,24 +37,26 @@ with col_info2:
     st.write(f"**反方：** {judge_record['con_name']}")
 with col_info3:
     st.write(f"**提交時間：** {judge_record['mark_time']}")
-    st.write("### 評分詳情")
+
+st.divider()
+st.write("### 評分詳情")
 
 col_pro, col_con = st.columns(2)
 
 with col_pro:
     st.subheader(f"正方：{judge_record['pro_name']}")
-    st.write(f"1. 主辯：{judge_record['pro1_m']} ")
-    st.write(f"2. 一副：{judge_record['pro2_m']} ")
-    st.write(f"3. 二副：{judge_record['pro3_m']} ")
-    st.write(f"4. 結辯：{judge_record['pro4_m']} ")
+    st.write(f"主辯分數：{judge_record['pro1_m']} ")
+    st.write(f"一副分數：{judge_record['pro2_m']} ")
+    st.write(f"二副分數：{judge_record['pro3_m']} ")
+    st.write(f"結辯分數：{judge_record['pro4_m']} ")
     st.divider()
     st.metric("正方總分", f"{judge_record['pro_total']} ")
 
 with col_con:
     st.subheader(f"反方：{judge_record['con_name']}")
-    st.write(f"1. 主辯：{judge_record['con1_m']} ")
-    st.write(f"2. 一副：{judge_record['con2_m']} ")
-    st.write(f"3. 二副：{judge_record['con3_m']} ")
-    st.write(f"4. 結辯：{judge_record['con4_m']} ")
+    st.write(f"主辯分數：{judge_record['con1_m']} ")
+    st.write(f"一副分數：{judge_record['con2_m']} ")
+    st.write(f"二副分數：{judge_record['con3_m']} ")
+    st.write(f"結辯分數：{judge_record['con4_m']} ")
     st.divider()
     st.metric("反方總分", f"{judge_record['con_total']} ")
