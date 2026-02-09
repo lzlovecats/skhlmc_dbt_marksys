@@ -22,6 +22,9 @@ if "active_match_id" not in st.session_state:
 if "all_matches" not in st.session_state:
     st.session_state["all_matches"] = load_data_from_gsheet()
 
+if "submission_message" not in st.session_state:
+    st.session_state["submission_message"] = None
+
 all_matches = st.session_state.get("all_matches", {})
 if not all_matches:
     st.warning("目前沒有場次資料，請先由賽會人員輸入。")
@@ -175,6 +178,15 @@ st.write(f"**評分進度：**")
 st.write(f"正方：{s_pro}")
 st.write(f"反方：{s_con}")
 
+if st.session_state["submission_message"]:
+    msg = st.session_state["submission_message"]
+    if msg["type"] == "warning":
+        st.warning(msg["content"])
+        st.toast(msg["noti"], icon="⚠️")
+    elif msg["type"] == "success":
+        st.success(msg["content"])
+    st.session_state["submission_message"] = None
+
 if st.button(f"暫存{team_side}評分"):
     if not judge_name:
         st.error("請輸入評判姓名！")
@@ -197,13 +209,17 @@ if st.button(f"暫存{team_side}評分"):
         has_zeros = (edited_df_a[cols_a] == 0).any().any() or (edited_df_b[cols_b] == 0).any().any()
 
         if has_zeros:
-            st.toast(f"注意：{team_side}有評分細項為 0 分！", icon="⚠️")
-            st.warning(f"已暫存 {team_side} ({team_name}) 分數。注意：有評分細項為 0 分！")
-            if st.button("知道"):
-                st.rerun()
+            st.session_state["submission_message"] = {
+                "type": "warning",
+                "content": f"已暫存 {team_side} ({team_name}) 分數。注意：有評分細項為 0 分！",
+                "noti": f"注意：{team_side}有評分細項為 0 分！"
+            }
         else:
-            st.success(f"已暫存 {team_side} ({team_name}) 分數。")
-            st.rerun()
+            st.session_state["submission_message"] = {
+                "type": "success",
+                "content": f"已暫存 {team_side} ({team_name}) 分數。"
+            }
+        st.rerun()
 
 if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"]:
     st.success("🎉 兩隊評分已完成！（尚未上傳評分）")

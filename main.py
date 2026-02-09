@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 
-st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide")
+st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
 
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
 page_match_mgmt = st.Page("match_info.py", title="賽事資料管理（賽會人員用）")
@@ -18,7 +18,7 @@ if st.session_state.get("admin_logged_in"):
             st.rerun()
 
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.7.2 (Direct)")
+    st.caption("🛠️ 系統版本：1.7.3 (Direct)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
