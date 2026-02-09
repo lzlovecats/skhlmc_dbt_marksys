@@ -26,3 +26,32 @@ match_results = df_scores[df_scores['match_id'] == selected_match]
 all_judge = match_results['judge_name'].unique()
 selected_judge = st.selectbox("請選擇評判", options=all_judge)
 
+judge_record = match_results[match_results['judge_name'] == selected_judge].iloc[0]
+col_info1, col_info2, col_info3 = st.columns(3)
+with col_info1:
+st.write(f"**正方：** {judge_record['pro_name']}")
+with col_info2:
+st.write(f"**反方：** {judge_record['con_name']}")
+with col_info3:
+st.write(f"**提交時間：** {judge_record['timestamp']}")
+st.write("### 評分詳情")
+
+col_pro, col_con = st.columns(2)
+
+with col_pro:
+st.subheader(f"正方：{judge_record['pro_name']}")
+st.write(f"1. 主辯：{judge_record['pro1_m']} ")
+st.write(f"2. 一副：{judge_record['pro2_m']} ")
+st.write(f"3. 二副：{judge_record['pro3_m']} ")
+st.write(f"4. 結辯：{judge_record['pro4_m']} ")
+st.divider()
+st.metric("正方總分", f"{judge_record['pro_total']} ")
+
+with col_con:
+st.subheader(f"反方：{judge_record['con_name']}")
+st.write(f"1. 主辯：{judge_record['con1_m']} ")
+st.write(f"2. 一副：{judge_record['con2_m']} ")
+st.write(f"3. 二副：{judge_record['con3_m']} ")
+st.write(f"4. 結辯：{judge_record['con4_m']} ")
+st.divider()
+st.metric("反方總分", f"{judge_record['con_total']} ")
