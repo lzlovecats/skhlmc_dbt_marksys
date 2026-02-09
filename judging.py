@@ -44,9 +44,11 @@ if not st.session_state["judge_authenticated"]:
     st.subheader("評判身分驗證")
     input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
     
-    correct_otp = str(current_match.get("access_code", ""))
+    correct_otp_from_sheet = str(current_match.get("access_code", ""))
+    correct_otp = correct_otp_from_sheet[1:] if correct_otp_from_sheet.startswith("'") else correct_otp_from_sheet
+
     if st.button("驗證入場"):
-        if input_otp == correct_otp and correct_otp != "":
+        if input_otp == correct_otp and correct_otp_from_sheet != "":
             st.session_state["judge_authenticated"] = True
             st.session_state["auth_match_id"] = selected_match_id
             st.rerun()
@@ -118,10 +120,6 @@ ind_poise = edited_df_a["風度 (x1)"] * 1
 individual_scores = ind_content + ind_delivery + ind_org + ind_poise
 total_score_a = individual_scores.sum()
 st.markdown(f"總分：{total_score_a}/400")
-if team_side == "正方":
-    pro1_m, pro2_m, pro3_m, pro4_m = [int(s) for s in individual_scores]
-else:
-    con1_m, con2_m, con3_m, con4_m = [int(s) for s in individual_scores]
 
 # B
 st.divider()
@@ -172,8 +170,8 @@ final_total = total_score_a + total_score_b - deduction + coherence
 st.markdown("---")
 st.title(f"總分：{final_total} / 460")
 
-s_pro = "已暫存✅" if st.session_state["temp_scores"]["正方"] else "未評分❌"
-s_con = "已暫存✅" if st.session_state["temp_scores"]["反方"] else "未評分❌"
+s_pro = "已暫存☑️" if st.session_state["temp_scores"]["正方"] else "未評分✖️"
+s_con = "已暫存☑️" if st.session_state["temp_scores"]["反方"] else "未評分✖️"
 st.write(f"**評分進度：**")
 st.write(f"正方：{s_pro}")
 st.write(f"反方：{s_con}")
@@ -182,9 +180,12 @@ if st.session_state["submission_message"]:
     msg = st.session_state["submission_message"]
     if msg["type"] == "warning":
         st.warning(msg["content"])
-        st.toast(msg["noti"], icon="⚠️")
+        if "noti" in msg:
+            st.toast(msg["noti"], icon="⚠️")
     elif msg["type"] == "success":
         st.success(msg["content"])
+        if "noti" in msg:
+            st.toast(msg["noti"], icon="✅")
     st.session_state["submission_message"] = None
 
 if st.button(f"暫存{team_side}評分"):
@@ -212,12 +213,13 @@ if st.button(f"暫存{team_side}評分"):
             st.session_state["submission_message"] = {
                 "type": "warning",
                 "content": f"已暫存 {team_side} ({team_name}) 分數。注意：有評分細項為 0 分！",
-                "noti": f"注意：{team_side}有評分細項為 0 分！"
+                "noti": f"警告：{team_side}有評分細項為 0 分！"
             }
         else:
             st.session_state["submission_message"] = {
                 "type": "success",
-                "content": f"已暫存 {team_side} ({team_name}) 分數。"
+                "content": f"已暫存 {team_side} ({team_name}) 分數。",
+                "noti": f"成功暫存 {team_side} 分數。"
             }
         st.rerun()
 
