@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet
+from functions import check_score, get_connection, load_data_from_gsheet, save_match_to_gsheet
 st.header("查閱評判分紙")
 
 if not check_score():
