@@ -20,6 +20,22 @@ def check_admin():
         return False
     return True
     
+def check_score():
+    if "score_logged_in" not in st.session_state:
+        st.session_state["score_logged_in"] = False
+        
+    if not st.session_state["score_logged_in"]:
+        st.subheader("查閱比賽分紙登入")
+        pwd = st.text_input("請輸入由賽會人員提供的密碼", type="password")
+        if st.button("登入"):
+            if pwd == st.secrets["score_password"]:
+                st.session_state["score_logged_in"] = True
+                st.rerun()
+            else:
+                st.error("密碼錯誤")
+        return False
+    return True
+    
 def get_connection():
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
