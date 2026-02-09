@@ -9,4 +9,12 @@ page_match_mgmt = st.Page("match_info.py", title="賽事資料管理系統（賽
 page_mgmt = st.Page("management.py", title="分數管理（賽會人員用）")
 
 pg = st.navigation([page_judging, page_match_mgmt, page_mgmt])
+
+if st.session_state.get("admin_logged_in"):
+    with st.sidebar:
+        st.divider()
+        if st.button("結束賽會人員登入", use_container_width=True):
+            st.session_state["admin_logged_in"] = False
+            st.rerun()
+
 pg.run()
