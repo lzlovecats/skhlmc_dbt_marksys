@@ -18,10 +18,6 @@ def check_admin():
             else:
                 st.error("密碼錯誤")
         return False
-    else:
-        if st.sidebar.button("登出賽會人員帳號"):
-            st.session_state["admin_logged_in"] = False
-            st.rerun()
     return True
     
 def get_connection():
