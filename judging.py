@@ -207,6 +207,7 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             
             score_sheet.append_row(merged_row)
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
+            st.ballons()
             st.success("已成功提交評分！")
             st.session_state["judge_authenticated"] = False
         except Exception as e:
