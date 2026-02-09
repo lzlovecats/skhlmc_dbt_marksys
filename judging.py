@@ -60,7 +60,6 @@ st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
 judge_name = st.text_input("評判姓名")
-st.toast("感謝評判百忙之中抽空擔任評分工作 :>", icon="🙌")
 
 pro_team_name = current_match.get("pro", "未填寫")
 con_team_name = current_match.get("con", "未填寫")
@@ -210,6 +209,7 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
             st.ballons()
             st.success("已成功提交評分！")
+            st.toast("感謝評判百忙之中抽空擔任評分工作 :>", icon="🙌")
             st.session_state["judge_authenticated"] = False
         except Exception as e:
             st.error(f"儲存失敗: {e}")
