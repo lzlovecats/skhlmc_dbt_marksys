@@ -49,8 +49,10 @@ with col_pro:
     st.write(f"一副分數：{judge_record['pro2_m']} ")
     st.write(f"二副分數：{judge_record['pro3_m']} ")
     st.write(f"結辯分數：{judge_record['pro4_m']} ")
+    st.write(f"正方扣分總和：{judge_record['pro_deduction']}")
+    st.write(f"正方內容連貫：{judge_record['pro_coherence']} ")
     st.divider()
-    st.metric("正方總分", f"{judge_record['pro_total']} ")
+    st.metric("正方總分", f"{judge_record['pro_total']}／460 ")
 
 with col_con:
     st.subheader(f"反方：{judge_record['con_name']}")
@@ -58,5 +60,7 @@ with col_con:
     st.write(f"一副分數：{judge_record['con2_m']} ")
     st.write(f"二副分數：{judge_record['con3_m']} ")
     st.write(f"結辯分數：{judge_record['con4_m']} ")
+    st.write(f"反方扣分總和：{judge_record['con_deduction']}")
+    st.write(f"反方內容連貫：{judge_record['con_coherence']} ")
     st.divider()
-    st.metric("反方總分", f"{judge_record['con_total']} ")
+    st.metric("反方總分", f"{judge_record['con_total']} ／460")

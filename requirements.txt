@@ -3,4 +3,4 @@ gspread
 google-auth
 pandas
 numpy
-streamlit>=1.34.0
+streamlit>=1.36.0

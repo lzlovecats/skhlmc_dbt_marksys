@@ -91,13 +91,13 @@ if st.session_state["all_matches"]:
             con_3 = st.text_input("反方二副", value=current_data.get("con_3", ""))
             con_4 = st.text_input("反方結辯", value=current_data.get("con_4", ""))
 
-        access_code = st.text_input("評判入場密碼", value=current_data.get("access_code", ""))
+        access_code = str(st.text_input("評判入場密碼", value=current_data.get("access_code", "")))
 
         if st.form_submit_button("儲存場次資料"):
             match_data_prepare = {
                 "match_id": selected_match,
-                "date": match_date,
-                "time": match_time,
+                "date": match_date.strftime("%Y-%m-%d"),
+                "time": match_time.strftime("%H:%M"),
                 "que": que, 
                 "pro": pro_team, "con": con_team, 
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
@@ -105,3 +105,24 @@ if st.session_state["all_matches"]:
             st.session_state["all_matches"][selected_match] = match_data_prepare
             save_match_to_gsheet(match_data_prepare)
             st.success(f"資料已儲存至Google Cloud！")
+
+    st.divider()
+    st.subheader("刪除場次")
+    if st.button(f"刪除場次：{selected_match}", type="primary", key="delete_match_btn"):
+        try:
+            ss = get_connection()
+            ws = ss.worksheet("Match")
+            col_values = ws.col_values(1)
+            if selected_match in col_values:
+                row_index = col_values.index(selected_match) + 1
+                ws.delete_rows(row_index)
+                del st.session_state["all_matches"][selected_match]
+                st.success(f"已刪除場次：{selected_match}")
+                st.rerun()
+            else:
+                st.warning("Google Cloud中找不到此場次(可能已被刪除)。")
+                if selected_match in st.session_state["all_matches"]:
+                    del st.session_state["all_matches"][selected_match]
+                st.rerun()
+        except Exception as e:
+            st.error(f"刪除失敗: {e}")

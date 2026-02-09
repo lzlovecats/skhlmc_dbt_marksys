@@ -48,7 +48,7 @@ def get_connection():
 def load_data_from_gsheet():
     try:
         spreadsheet = get_connection()
-        sheet = spreadsheet.sheet1
+        sheet = spreadsheet.worksheet("Match")
         records = sheet.get_all_records()
         
         data_dict = {}
@@ -63,7 +63,7 @@ def load_data_from_gsheet():
 
 def save_match_to_gsheet(match_data):
     spreadsheet = get_connection()
-    sheet = spreadsheet.sheet1
+    sheet = spreadsheet.worksheet("Match")
     try:
         match_ids = sheet.col_values(1)
         
@@ -89,3 +89,7 @@ def save_match_to_gsheet(match_data):
     except Exception as e:
         st.error(f"寫入失敗: {e}")
         
+def delete_match_from_gsheet(match_id):
+    spreadsheet = get_connection()
+    sheet = spreadsheet.worksheet("Match")
+

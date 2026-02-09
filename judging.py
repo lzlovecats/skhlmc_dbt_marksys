@@ -71,7 +71,6 @@ team_side = st.radio(
     horizontal=True
 )
 
-#sync data from match_info
 if team_side == "正方":
     names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""), 
              current_match.get("pro_3", ""), current_match.get("pro_4", "")]
@@ -84,7 +83,7 @@ else:
 # A
 st.subheader(f"（甲）台上發言 - {team_side}")
 if st.session_state["temp_scores"][team_side] is not None:
-    df_a_source = st.session_state["temp_scores"][team_side]["raw_df"]
+    df_a_source = st.session_state["temp_scores"][team_side]["raw_df_a"]
 else:
     df_a_source = pd.DataFrame([
         {"辯位": "主辯", "姓名": names[0], "內容 (x4)": 0, "辭鋒 (x3)": 0, "組織 (x2)": 0, "風度 (x1)": 0},
@@ -121,12 +120,17 @@ if team_side == "正方":
 else:
     con1_m, con2_m, con3_m, con4_m = [int(s) for s in individual_scores]
 
+# B
 st.divider()
 st.subheader("（乙）自由辯論")
-initial_data_b = [
-    {"內容 (20)": 0, "辭鋒 (15)": 0, "組織 (10)": 0, "合作 (5)": 0, "風度 (5)": 0}
-]
-df_b = pd.DataFrame(initial_data_b)
+
+if st.session_state["temp_scores"][team_side] is not None and "raw_df_b" in st.session_state["temp_scores"][team_side]:
+    df_b = st.session_state["temp_scores"][team_side]["raw_df_b"]
+else:
+    initial_data_b = [
+        {"內容 (20)": 0, "辭鋒 (15)": 0, "組織 (10)": 0, "合作 (5)": 0, "風度 (5)": 0}
+    ]
+    df_b = pd.DataFrame(initial_data_b)
 edited_df_b = st.data_editor(
     df_b,
     column_config={
@@ -137,18 +141,28 @@ edited_df_b = st.data_editor(
         "風度 (5)": st.column_config.NumberColumn(min_value=0, max_value=5, step=1, required=True),
     },
     hide_index=True,
-    use_container_width=True
+    use_container_width=True,
+    key=f"editor_b_{selected_match_id}_{team_side}"
 )
 total_score_b = edited_df_b.sum().sum()
 st.markdown(f"總分：{total_score_b}/55")
 
+# C
 st.divider()
 st.subheader("（丙）扣分及內容連貫")
+
+existing_deduct = 0
+existing_cohere = 0
+
+if st.session_state["temp_scores"][team_side] is not None:
+    existing_deduct = st.session_state["temp_scores"][team_side].get("deduction", 0)
+    existing_cohere = st.session_state["temp_scores"][team_side].get("coherence", 0)
+
 col1, col2 = st.columns(2)
 with col1:
-    deduction = st.number_input("扣分總和", min_value=0, step=1)
+    deduction = st.number_input("扣分總和", min_value=0, step=1, value=existing_deduct, key=f"deduct_{selected_match_id}_{team_side}")
 with col2:
-    coherence = st.number_input("內容連貫 (5)", min_value=0, max_value=5, step=1)
+    coherence = st.number_input("內容連貫 (5)", min_value=0, max_value=5, step=1, value=existing_cohere, key=f"cohere_{selected_match_id}_{team_side}")
 
 final_total = total_score_a + total_score_b - deduction + coherence
 
@@ -173,14 +187,27 @@ if st.button(f"暫存{team_side}評分"):
             "coherence": int(coherence),
             "final_total": int(final_total),
             "ind_scores": [int(s) for s in individual_scores],
-            "raw_df": edited_df_a
+            "raw_df_a": edited_df_a,
+            "raw_df_b": edited_df_b
         }
         st.session_state["temp_scores"][team_side] = side_data
-        st.success(f"已暫存 {team_side} ({team_name}) 分數。")
-        st.rerun()
+        
+        cols_a = ["內容 (x4)", "辭鋒 (x3)", "組織 (x2)", "風度 (x1)"]
+        cols_b = ["內容 (20)", "辭鋒 (15)", "組織 (10)", "合作 (5)", "風度 (5)"]
+        has_zeros = (edited_df_a[cols_a] == 0).any().any() or (edited_df_b[cols_b] == 0).any().any()
+
+        if has_zeros:
+            st.toast(f"注意：{team_side}有評分細項為 0 分！", icon="⚠️")
+            st.warning(f"已暫存 {team_side} ({team_name}) 分數。注意：有評分細項為 0 分！")
+            if st.button("知道"):
+                st.rerun()
+        else:
+            st.success(f"已暫存 {team_side} ({team_name}) 分數。")
+            st.rerun()
 
 if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"]:
-    st.warning("⚠️ 兩隊評分已完成。")
+    st.success("🎉 兩隊評分已完成！（尚未上傳評分）")
+    st.warning("⚠️ 請注意！正式提交分紙後將無法修改分數！請確認所有資料輸入正確！")
     if st.button("正式提交評分", type="primary"):
         try:
             if not judge_name:
@@ -203,6 +230,9 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 pro["ind_scores"][0], pro["ind_scores"][1], pro["ind_scores"][2], pro["ind_scores"][3],
                 con["ind_scores"][0], con["ind_scores"][1], con["ind_scores"][2], con["ind_scores"][3],
+                pro["total_b"], con["total_b"],
+                pro["deduction"], con["deduction"],
+                pro["coherence"], con["coherence"]
             ]
             
             score_sheet.append_row(merged_row)

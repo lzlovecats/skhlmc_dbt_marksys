@@ -23,6 +23,7 @@ if df_scores is None or df_scores.empty:
     st.info("Google Cloud上未有任何評分紀錄。")
     st.stop()
 
+df_scores['match_id'] = df_scores['match_id'].astype(str)
 all_matches = df_scores['match_id'].unique()
 selected_match = st.selectbox("請選擇要查看的場次", options=all_matches)
 
