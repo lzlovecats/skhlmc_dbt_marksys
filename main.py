@@ -16,9 +16,8 @@ if st.session_state.get("admin_logged_in"):
             st.session_state["admin_logged_in"] = False
             st.rerun()
 
-pg.run()
-
 with st.sidebar:
     st.caption("🛠️ 系統版本：1.3.1 (Direct)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
-    
+
+pg.run()
