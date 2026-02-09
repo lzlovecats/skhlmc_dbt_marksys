@@ -18,7 +18,7 @@ if st.session_state.get("admin_logged_in"):
             st.rerun()
 
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.7.3 (Direct)")
+    st.caption("🛠️ 系統版本：1.7.4 (Direct)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()

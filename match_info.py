@@ -18,8 +18,22 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+if "delete_confirm_id" not in st.session_state:
+    st.session_state["delete_confirm_id"] = None
+
+if "match_action_message" not in st.session_state:
+    st.session_state["match_action_message"] = None
+
+if st.session_state["match_action_message"]:
+    msg = st.session_state["match_action_message"]
+    if msg["type"] == "success":
+        st.success(msg["content"])
+    elif msg["type"] == "warning":
+        st.warning(msg["content"])
+    st.session_state["match_action_message"] = None
+
 if not check_admin():
-        st.stop()
+    st.stop()
 
 if "all_matches" not in st.session_state:
     st.session_state["all_matches"] = load_data_from_gsheet()
@@ -108,21 +122,35 @@ if st.session_state["all_matches"]:
 
     st.divider()
     st.subheader("刪除場次")
-    if st.button(f"刪除場次：{selected_match}", type="primary", key="delete_match_btn"):
-        try:
-            ss = get_connection()
-            ws = ss.worksheet("Match")
-            col_values = ws.col_values(1)
-            if selected_match in col_values:
-                row_index = col_values.index(selected_match) + 1
-                ws.delete_rows(row_index)
-                del st.session_state["all_matches"][selected_match]
-                st.success(f"已刪除場次：{selected_match}")
+    
+    if st.session_state["delete_confirm_id"] != selected_match:
+        if st.button(f"刪除場次：{selected_match}", type="primary", key="delete_match_btn"):
+            st.session_state["delete_confirm_id"] = selected_match
+            st.rerun()
+    else:
+        st.warning(f"刪除場次 「{selected_match} 」後將無法復原！確定繼續刪除？")
+        col_del_1, col_del_2 = st.columns(2)
+        with col_del_1:
+            if st.button("確定刪除", type="primary", key="confirm_delete_btn"):
+                try:
+                    ss = get_connection()
+                    ws = ss.worksheet("Match")
+                    col_values = ws.col_values(1)
+                    if selected_match in col_values:
+                        row_index = col_values.index(selected_match) + 1
+                        ws.delete_rows(row_index)
+                        del st.session_state["all_matches"][selected_match]
+                        st.session_state["match_action_message"] = {"type": "success", "content": f"已刪除場次：{selected_match}"}
+                    else:
+                        st.session_state["match_action_message"] = {"type": "warning", "content": "Google Cloud中找不到此場次(可能已被刪除)。"}
+                        if selected_match in st.session_state["all_matches"]:
+                            del st.session_state["all_matches"][selected_match]
+                    
+                    st.session_state["delete_confirm_id"] = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"刪除失敗: {e}")
+        with col_del_2:
+            if st.button("取消", type="secondary", key="cancel_delete_btn"):
+                st.session_state["delete_confirm_id"] = None
                 st.rerun()
-            else:
-                st.warning("Google Cloud中找不到此場次(可能已被刪除)。")
-                if selected_match in st.session_state["all_matches"]:
-                    del st.session_state["all_matches"][selected_match]
-                st.rerun()
-        except Exception as e:
-            st.error(f"刪除失敗: {e}")
