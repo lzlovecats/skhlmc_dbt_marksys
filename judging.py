@@ -60,6 +60,7 @@ st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
 judge_name = st.text_input("評判姓名")
+st.toast("感謝評判百忙之中抽空擔任評分工作 :>", icon="🤩")
 
 pro_team_name = current_match.get("pro", "未填寫")
 con_team_name = current_match.get("con", "未填寫")
