@@ -19,7 +19,6 @@ if st.session_state.get("admin_logged_in"):
 pg.run()
 
 with st.sidebar:
-    st.markdown("---")
     st.caption("🛠️ 系統版本：1.3.1 (Direct)")
-    st.caption("🎨 Developed by lzlovecats @ 2026")
+    st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
     
