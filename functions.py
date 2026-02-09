@@ -88,3 +88,4 @@ def save_match_to_gsheet(match_data):
         
     except Exception as e:
         st.error(f"寫入失敗: {e}")
+        
