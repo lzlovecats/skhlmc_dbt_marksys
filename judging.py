@@ -85,11 +85,11 @@ if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
         if drafts["正方"] or drafts["反方"]:
             if st.session_state["temp_scores"]["正方"] is None and drafts["正方"]:
                  st.session_state["temp_scores"]["正方"] = drafts["正方"]
-                 st.toast("已恢復雲端暫存分數。", icon="☁️")
+                 st.toast("已恢復正方雲端暫存分數。", icon="☁️")
                  
             if st.session_state["temp_scores"]["反方"] is None and drafts["反方"]:
                  st.session_state["temp_scores"]["反方"] = drafts["反方"]
-                 st.toast("已恢復雲端暫存分數。", icon="☁️")
+                 st.toast("已恢復反方雲端暫存分數。", icon="☁️")
     
     st.session_state["draft_loaded"] = True
 
@@ -213,6 +213,10 @@ if st.session_state["submission_message"]:
         st.success(msg["content"])
         if "noti" in msg:
             st.toast(msg["noti"], icon="✅")
+    elif msg["type"] == "error":
+        st.error(msg["content"])
+        if "noti" in msg:
+            st.toast(msg["noti"], icon="❌")
     st.session_state["submission_message"] = None
 
 if st.button(f"暫存{team_side}評分"):
@@ -294,6 +298,16 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
                 pro["coherence"], con["coherence"]
             ]
             
+            existing_submit = get_connection().worksheet("Score").get_all_values()
+            for i, row in enumerate(existing_submit):
+                if i == 0: continue  # Skip header
+                if row[0] == selected_match_id and row[1] == judge_name:
+                    st.session_state["submission_message"] = {
+                        "type": "error",
+                        "content": "你已提交過評分！無法再次提交！",
+                        "noti": "提交評分失敗（重覆提交）"}
+                    st.rerun()
+
             score_sheet.append_row(merged_row)
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
             st.balloons()

@@ -22,7 +22,7 @@ if st.session_state.get("admin_logged_in"):
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.8.3 (Indirect)")
+    st.caption("🛠️ 系統版本：1.8.4 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
