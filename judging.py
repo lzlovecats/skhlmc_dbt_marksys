@@ -3,15 +3,6 @@ import pandas as pd
 from datetime import datetime
 from functions import load_data_from_gsheet, get_connection
 
-st.markdown("""
-    <style>
-    [data-testid="stDataFrame"] th {
-        pointer-events: none; # 禁止點擊
-        cursor: default;      # 滑鼠游標變回預設箭頭
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 st.header("電子評分系統")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
           "https://www.googleapis.com/auth/drive"]
