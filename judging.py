@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from functions import load_data_from_gsheet, get_connection
+from functions import load_data_from_gsheet, get_connection, load_draft_from_gsheet, save_draft_to_gsheet
 
 st.header("電子評分系統")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
@@ -11,19 +11,22 @@ if "auth_match_id" not in st.session_state:
     st.session_state["auth_match_id"] = None
 
 if "judge_authenticated" not in st.session_state:
-    st.session_state["judge_authenticated"] = False
+    st.session_state["judge_authenticated"] = False  # Authentication Success?
 
 if "temp_scores" not in st.session_state:
-    st.session_state["temp_scores"] = {"正方": None, "反方": None}
+    st.session_state["temp_scores"] = {"正方": None, "反方": None}  # Temp stores for Pro/Con (Local)
 
 if "active_match_id" not in st.session_state:
     st.session_state["active_match_id"] = None
 
 if "all_matches" not in st.session_state:
-    st.session_state["all_matches"] = load_data_from_gsheet()
+    st.session_state["all_matches"] = load_data_from_gsheet()  # All matchs in gsheet (Local)
 
 if "submission_message" not in st.session_state:
     st.session_state["submission_message"] = None
+
+if "last_judge_name" not in st.session_state:
+    st.session_state["last_judge_name"] = ""
 
 all_matches = st.session_state.get("all_matches", {})
 if not all_matches:
@@ -36,6 +39,7 @@ current_match = all_matches[selected_match_id]
 if st.session_state["active_match_id"] != selected_match_id:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["active_match_id"] = selected_match_id
+    st.session_state["draft_loaded"] = False
 
 if st.session_state["auth_match_id"] != selected_match_id:
     st.session_state["judge_authenticated"] = False
@@ -65,6 +69,29 @@ st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
 judge_name = st.text_input("評判姓名")
+
+if judge_name != st.session_state["last_judge_name"]:
+    st.session_state["draft_loaded"] = False
+    st.session_state["temp_scores"] = {"正方": None, "反方": None}
+    st.session_state["last_judge_name"] = judge_name
+
+if "draft_loaded" not in st.session_state:
+    st.session_state["draft_loaded"] = False
+
+if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
+    with st.spinner("正在檢查雲端暫存紀錄..."):
+        drafts = load_draft_from_gsheet(selected_match_id, judge_name)
+        
+        if drafts["正方"] or drafts["反方"]:
+            if st.session_state["temp_scores"]["正方"] is None and drafts["正方"]:
+                 st.session_state["temp_scores"]["正方"] = drafts["正方"]
+                 st.toast("已恢復雲端暫存分數。", icon="☁️")
+                 
+            if st.session_state["temp_scores"]["反方"] is None and drafts["反方"]:
+                 st.session_state["temp_scores"]["反方"] = drafts["反方"]
+                 st.toast("已恢復雲端暫存分數。", icon="☁️")
+    
+    st.session_state["draft_loaded"] = True
 
 pro_team_name = current_match.get("pro", "未填寫")
 con_team_name = current_match.get("con", "未填寫")
@@ -204,23 +231,37 @@ if st.button(f"暫存{team_side}評分"):
             "raw_df_b": edited_df_b
         }
         st.session_state["temp_scores"][team_side] = side_data
+
+        with st.spinner("正在上傳暫存資料至雲端..."):
+            success = save_draft_to_gsheet(selected_match_id, judge_name, team_side, side_data)
         
         cols_a = ["內容 (x4)", "辭鋒 (x3)", "組織 (x2)", "風度 (x1)"]
         cols_b = ["內容 (20)", "辭鋒 (15)", "組織 (10)", "合作 (5)", "風度 (5)"]
         has_zeros = (edited_df_a[cols_a] == 0).any().any() or (edited_df_b[cols_b] == 0).any().any()
 
-        if has_zeros:
-            st.session_state["submission_message"] = {
+        if success:
+            if has_zeros:
+                st.session_state["submission_message"] = {
                 "type": "warning",
-                "content": f"已暫存 {team_side} ({team_name}) 分數。注意：有評分細項為 0 分！",
-                "noti": f"警告：{team_side}有評分細項為 0 分！"
-            }
-        else:
-            st.session_state["submission_message"] = {
+                "content": f"已暫存 {team_side} ({team_name}) 分數至雲端 。注意：有評分細項為 0 分！",
+                "noti": f"警告：{team_side}有評分細項為 0 分！"}
+            else:
+                st.session_state["submission_message"] = {
                 "type": "success",
-                "content": f"已暫存 {team_side} ({team_name}) 分數。",
-                "noti": f"成功暫存 {team_side} 分數。"
-            }
+                "content": f"已暫存 {team_side} ({team_name}) 分數至雲端。",
+                "noti": f"雲端備份成功：{team_side}"}
+        else:
+            if has_zeros:
+                st.session_state["submission_message"] = {
+                    "type": "warning",
+                    "content": f"已暫存 {team_side} ({team_name}) 分數至本機。注意：有評分細項為 0 分！",
+                    "noti": f"警告：{team_side}有評分細項為 0 分！"
+                    }
+            else:
+                st.session_state["submission_message"] = {
+                    "type": "success",
+                    "content": f"已暫存 {team_side} ({team_name}) 分數至本機。",
+                    "noti": f"成功暫存 {team_side} 分數。"}
         st.rerun()
 
 if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"]:

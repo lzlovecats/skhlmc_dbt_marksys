@@ -139,7 +139,7 @@ if st.session_state["all_matches"]:
             st.session_state["delete_confirm_id"] = selected_match
             st.rerun()
     else:
-        st.warning(f"刪除場次 「{selected_match} 」後將無法復原！確定繼續刪除？")
+        st.warning(f"確定刪除「{selected_match} 」？此動作無法復原！")
         col_del_1, col_del_2 = st.columns(2)
         with col_del_1:
             if st.button("確定刪除", type="primary", key="confirm_delete_btn"):
@@ -147,6 +147,8 @@ if st.session_state["all_matches"]:
                     ss = get_connection()  # The whole sheet
                     ws_match = ss.worksheet("Match")
                     ws_score = ss.worksheet("Score")
+                    ws_temp = ss.worksheet("Temp")
+
 
                     # Delete from "Match" sheet
                     match_col_values = ws_match.col_values(1)
@@ -156,11 +158,16 @@ if st.session_state["all_matches"]:
 
                     # Delete all corresponding entries from "Score" sheet
                     score_col_values = ws_score.col_values(1)
-                    # Find all row numbers that match the selected_match ID
                     rows_to_delete = [i + 1 for i, v in enumerate(score_col_values) if v == selected_match]
                     for row_num in sorted(rows_to_delete, reverse=True):
                         ws_score.delete_rows(row_num)
                     
+                    # Delete all corresponding entries from "Temp" sheet
+                    temp_col_values = ws_temp.col_values(1)
+                    rows_to_delete = [i + 1 for i, v in enumerate(temp_col_values) if v == selected_match]
+                    for row_num in sorted(rows_to_delete, reverse=True):
+                        ws_temp.delete_rows(row_num)
+
                     # Clean up session state and set final message
                     if selected_match in st.session_state["all_matches"]:
                         del st.session_state["all_matches"][selected_match]

@@ -1,5 +1,7 @@
 import streamlit as st
 import gspread
+import json
+import pandas as pd
 from google.oauth2.service_account import Credentials
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",  "https://www.googleapis.com/auth/drive"]
@@ -93,3 +95,71 @@ def delete_match_from_gsheet(match_id):
     spreadsheet = get_connection()
     sheet = spreadsheet.worksheet("Match")
 
+def save_draft_to_gsheet(match_id, judge_name, team_side, score_data):
+    try:
+        spreadsheet = get_connection()
+        worksheet = spreadsheet.worksheet("Temp")
+
+        data_to_save = score_data.copy()
+        
+        if "raw_df_a" in data_to_save:
+            data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_json()
+        if "raw_df_b" in data_to_save:
+            data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_json()
+            
+        json_str = json.dumps(data_to_save, ensure_ascii=False)
+
+        # Find and delete all existing drafts for this specific judge/match/side
+        all_values = worksheet.get_all_values()
+        rows_to_delete = []
+        for i, row in enumerate(all_values):
+            if i == 0: continue  # Skip header
+            if (len(row) >= 3 and
+                str(row[0]) == str(match_id) and
+                str(row[1]) == str(judge_name) and
+                str(row[2]) == str(team_side)):
+                rows_to_delete.append(i + 1)
+
+        if rows_to_delete:
+            for row_num in sorted(rows_to_delete, reverse=True):
+                worksheet.delete_rows(row_num)
+
+        # Append the new, updated draft
+        worksheet.append_row([str(match_id), str(judge_name), str(team_side), json_str])
+            
+        return True
+    except Exception as e:
+        st.error(f"無法上傳暫存資料至Google Cloud: {e}")
+        return False
+    
+def load_draft_from_gsheet(match_id, judge_name):
+    try:
+        spreadsheet = get_connection()
+        worksheet = spreadsheet.worksheet("Temp")
+            
+        all_values = worksheet.get_all_values()
+        result = {"正方": None, "反方": None}
+        
+        for i, row in enumerate(all_values):
+            if i == 0: continue  # Skip header
+            if len(row) < 4: continue # Ensure row has enough columns
+            
+            if (str(row[0]) == str(match_id) and 
+                str(row[1]) == str(judge_name)):
+                
+                side = row[2]
+                json_str = row[3]
+                
+                if json_str:
+                    try:
+                        data = json.loads(json_str)
+                        if "raw_df_a" in data:
+                            data["raw_df_a"] = pd.read_json(data["raw_df_a"])
+                        if "raw_df_b" in data:
+                            data["raw_df_b"] = pd.read_json(data["raw_df_b"])
+                        result[side] = data
+                    except:
+                        pass
+        return result
+    except Exception as e:
+        return {"正方": None, "反方": None}
