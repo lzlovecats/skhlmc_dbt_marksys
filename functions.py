@@ -2,6 +2,7 @@ import streamlit as st
 import gspread
 import json
 import pandas as pd
+import random
 from google.oauth2.service_account import Credentials
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",  "https://www.googleapis.com/auth/drive"]
@@ -163,3 +164,36 @@ def load_draft_from_gsheet(match_id, judge_name):
         return result
     except Exception as e:
         return {"正方": None, "反方": None}
+
+def load_topic_from_gsheet():
+    try:
+        spreadsheet = get_connection()
+        sheet = spreadsheet.worksheet("Topic")
+        all_records = sheet.get_all_records()
+        
+        # Extract the topic from each record, filtering out any empty rows/values.
+        # get_all_records() does not include the header row.
+        topics = [row["topic"] for row in all_records if row.get("topic")]
+        return topics
+    except Exception as e:
+        st.error(f"連線錯誤: {e}")
+        return []
+    
+def draw_a_topic():
+    all_topic = load_topic_from_gsheet()
+    if all_topic:
+        return random.choice(all_topic)
+    else:
+        st.error("抽取辯題失敗：辯題庫為空或出現錯誤。")
+        return ""
+
+def draw_pro_con(team1, team2):
+    t_list = []
+    draw_num = random.randint(0, 1)
+    if draw_num == 0:
+        t_list.append(team1)
+        t_list.append(team2)
+    elif draw_num == 1:
+        t_list.append(team2)
+        t_list.append(team1)
+    return t_list

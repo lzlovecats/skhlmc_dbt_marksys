@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet
+from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet, draw_a_topic, draw_pro_con
 st.header("賽事資料輸入")
 
 # Create time slots
@@ -24,6 +24,11 @@ if "delete_confirm_id" not in st.session_state:
 if "match_action_message" not in st.session_state:
     st.session_state["match_action_message"] = None
 
+if "show_draw_side_ui" not in st.session_state:
+    st.session_state.show_draw_side_ui = False
+
+if "draw_result" not in st.session_state:
+    st.session_state.draw_result = {"pro_team": None, "con_team": None, "show": False}
 # Show msg
 if st.session_state["match_action_message"]:
     msg = st.session_state["match_action_message"]
@@ -63,11 +68,53 @@ if st.button("新增比賽場次"):
     else:
         st.error("未輸入任何文字！")
 
+if st.session_state.draw_result["show"]:
+    st.success(f"正方：{st.session_state.draw_result['pro_team']}")
+    st.success(f"反方：{st.session_state.draw_result['con_team']}")
+    st.session_state.draw_result["show"] = False
+
 # Select a match and edit info
 if st.session_state["all_matches"]:
     match_options = list(st.session_state["all_matches"].keys())
     selected_match = st.selectbox("選擇比賽場次", options=match_options)
     current_data = st.session_state["all_matches"][selected_match]
+
+    # "Draw a topic" button must be outside the form to prevent StreamlitAPIException.
+    if st.button("抽辯題", key=f"draw_topic_{selected_match}"):
+        drawed_topic = draw_a_topic()
+        if drawed_topic != "":
+            st.success(f"已抽取辯題：{drawed_topic}")
+    else:
+        st.info("按「抽辯題」以從辯題庫中抽取一條辯題。")
+
+    if not st.session_state.show_draw_side_ui:
+        if st.button("抽站方"):
+            st.session_state.show_draw_side_ui = True
+            st.rerun()
+        st.info("按「抽站方」可以輸入兩隊名稱抽出站方。")
+
+    if st.session_state.show_draw_side_ui:
+        with st.container(border=True):
+            st.subheader("抽站方")
+            team1 = st.text_input("隊伍名稱1", key="team1_draw")
+            team2 = st.text_input("隊伍名稱2", key="team2_draw")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("確定抽籤"):
+                    if team1 and team2:
+                        pro_team, con_team = draw_pro_con(team1, team2)
+                        st.session_state["all_matches"][selected_match]["pro"] = pro_team
+                        st.session_state["all_matches"][selected_match]["con"] = con_team
+                        st.session_state.draw_result = {"pro_team": pro_team, "con_team": con_team, "show": True}
+                        st.session_state.show_draw_side_ui = False
+                        st.rerun()
+                    else:
+                        st.error("請輸入兩隊隊伍名稱。")
+            with col2:
+                if st.button("取消"):
+                    st.session_state.show_draw_side_ui = False
+                    st.rerun()
 
     with st.form(key=f"form_{selected_match}"):
 
@@ -84,15 +131,13 @@ if st.session_state["all_matches"]:
         try:
             index = time_slots.index(saved_time_str)
         except ValueError:
-            # If saved time isn't in the list, default to a known value or the first item.
             index = time_slots.index("16:00") if "16:00" in time_slots else 0
 
         match_date = st.date_input("比賽日期", value=default_date)
         match_time_str = st.selectbox("比賽時間", options=time_slots, index=index)
         match_time = datetime.strptime(match_time_str, "%H:%M").time()
 
-
-        que = st.text_input("辯題", value=current_data.get("que", ""))
+        que = st.text_input("辯題", value=current_data.get("que", ""), key=f"que_{selected_match}")
 
         pro, con = st.columns(2)
         with pro:
