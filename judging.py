@@ -280,6 +280,19 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             ss = get_connection()
             score_sheet = ss.worksheet("Score") 
             
+            side_data = {
+            "team_name": team_name,
+            "total_a": int(total_score_a),
+            "total_b": int(total_score_b),
+            "deduction": int(deduction),
+            "coherence": int(coherence),
+            "final_total": int(final_total),
+            "ind_scores": [int(s) for s in individual_scores],
+            "raw_df_a": edited_df_a,
+            "raw_df_b": edited_df_b
+            }
+            st.session_state["temp_scores"][team_side] = side_data
+
             pro = st.session_state["temp_scores"]["正方"]
             con = st.session_state["temp_scores"]["反方"]
             
@@ -307,8 +320,9 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
                         "content": "你已提交過評分！無法再次提交！",
                         "noti": "提交評分失敗（重覆提交）"}
                     st.rerun()
-
-            score_sheet.append_row(merged_row)
+            with st.spinner("正在上傳評分至雲端..."):
+                save_final_draft = save_draft_to_gsheet(selected_match_id, judge_name, team_side, side_data)
+                score_sheet.append_row(merged_row)
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
             st.balloons()
             st.success("已成功提交評分！")
