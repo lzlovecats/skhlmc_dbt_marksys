@@ -36,9 +36,10 @@ con_votes = (match_results['con_total'] > match_results['pro_total']).sum()
 draws = (match_results['pro_total'] == match_results['con_total']).sum()
 
 st.subheader("勝負判定")
+st.write(f"辯題：")
 col1, col2, col3 = st.columns(3)
-col1.metric("正方得票", f"{pro_votes} 票")
-col2.metric("反方得票", f"{con_votes} 票")
+col1.metric(f"正方({match_results['pro_name'].iloc[0]})得票", f"{pro_votes} 票")
+col2.metric(f"反方 ({match_results['con_name'].iloc[0]})得票", f"{con_votes} 票")
 col3.metric("平票", f"{draws} 票")
 
 if pro_votes > con_votes:

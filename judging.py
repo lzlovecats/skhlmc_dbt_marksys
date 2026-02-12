@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from functions import load_data_from_gsheet, get_connection, load_draft_from_gsheet, save_draft_to_gsheet
 
 st.header("電子評分系統")
@@ -303,7 +303,7 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
                 con["team_name"],
                 pro["final_total"],
                 con["final_total"],
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
                 pro["ind_scores"][0], pro["ind_scores"][1], pro["ind_scores"][2], pro["ind_scores"][3],
                 con["ind_scores"][0], con["ind_scores"][1], con["ind_scores"][2], con["ind_scores"][3],
                 pro["total_b"], con["total_b"],
