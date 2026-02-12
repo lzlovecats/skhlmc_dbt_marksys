@@ -68,7 +68,7 @@ if not st.session_state["judge_authenticated"]:
 st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
-judge_name = st.text_input("評判姓名")
+judge_name = st.text_input("評判姓名").strip()
 
 if judge_name != st.session_state["last_judge_name"]:
     st.session_state["draft_loaded"] = False
@@ -223,6 +223,13 @@ if st.button(f"暫存{team_side}評分"):
     if not judge_name:
         st.error("請輸入評判姓名！")
     else:
+        existing_submit = get_connection().worksheet("Score").get_all_values()
+        for i, row in enumerate(existing_submit):
+            if i == 0: continue  # Skip header
+            if row[0] == selected_match_id and row[1] == judge_name:
+                st.error("你已提交過評分！無法修改評分！")
+                st.stop()
+
         side_data = {
             "team_name": team_name,
             "total_a": int(total_score_a),
