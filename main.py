@@ -22,9 +22,14 @@ if st.session_state.get("admin_logged_in"):
             st.session_state["admin_logged_in"] = False
             st.rerun()
 
+# Show manual
+with st.sidebar:
+    manual_url = "https://docs.google.com/document/d/16PZYsoYlc0DoI_vRuNh2Q2XTG_bkJSmMQbnmXqmrAFI/edit?usp=sharing"
+    st.link_button("📖 閱讀使用手冊", manual_url, use_container_width=True)
+
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.9.6 (Indirect)")
+    st.caption("🛠️ 系統版本：1.9.7 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
