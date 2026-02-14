@@ -13,7 +13,7 @@ st.info(f"已登入帳戶：**{user_id}**")
 conn = get_connection()
 try:
     ws_vote = conn.worksheet("Vote")
-    ws_topic = comm.worksheet("Topic")
+    ws_topic = conn.worksheet("Topic")
 except Exception as e:
     st.error(f"無法連接Google Cloud: {e}")
     st.stop()
