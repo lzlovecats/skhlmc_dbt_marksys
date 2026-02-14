@@ -101,26 +101,35 @@ with tab2:
 
 with tab3:
     st.subheader("帳戶管理")
-    if st.button("更改密碼"):
-        with st.form("change_user_password"):
-            new_pw = st.text_input("輸入新密碼")
-            submit_new_pw = st.form_submit_button("更改密碼")
+    
+    with st.expander("更改密碼", expanded=False):
+        st.form("change_user_password"):
+            new_pw = st.text_input("輸入新密碼", type="password")
+            submit_new_pw = st.form_submit_button("確認更改")
         
         if submit_new_pw:
-            conn = get_connection()
-            try:
-                ws = conn.worksheet("Account")
-                records = ws.get_all_records()
-                
-                for i, row in enumerate(records):
-                    if i == 0: continue #Skip header
-                    if str(row.get("userid")) == user_id:
-                        ws.update_cell(i+2, 2, new_pw.strip())
-                        break
-                st.success("帳戶密碼已更改！下次登入請使用新密碼！")
-            except Exception as e:
-                st.error(f"無法連接至數據庫: {e}")
-            
-    if st.button("登出"):
+            if not new_pw.strip():
+                st.warning("你未輸入密碼！")
+            else:
+                conn = get_connection()
+                try:
+                    ws = conn.worksheet("Account")
+                    records = ws.get_all_records()
+                    
+                    Found = False
+                    for i, row in enumerate(records):
+                        if str(row.get("userid")) == str(user_id):
+                            ws.update_cell(i+2, 2, new_pw.strip())
+                            found = True
+                            break
+                    if Found:
+                        st.success("帳戶密碼已更改！下次登入請使用新密碼！")
+                    else:
+                        st.error("找不到你的帳戶紀錄，請聯絡管理員")
+                except Exception as e:
+                    st.error(f"無法連接至數據庫: {e}")
+    
+    st.divider()
+    if st.button("登出", type="primary"):
         st.session_state["committee_user"] = None
         st.rerun()
