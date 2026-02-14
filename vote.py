@@ -69,7 +69,7 @@ with tab2:
                     elif user_id in against_list:
                         st.button("已反對", key=f"f_blocked_{i}", disabled=True)
                     else:
-                        if st.button("👍 同意", key=f"vote_f_{i}"):
+                        if st.button("✅ 同意", key=f"vote_f_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯")
                                 flavor_list.append(user_id)
                                 new_flavor_str = ",".join(flavor_list)
@@ -78,30 +78,23 @@ with tab2:
                                 st.rerun()
 
                 with c3:
-                    # 不同意按鈕
                     if user_id in against_list:
                         st.button("已反對", key=f"a_done_{i}", disabled=True)
                     elif user_id in flavor_list:
                         st.button("已同意", key=f"a_blocked_{i}", disabled=True)
                     else:
-                        if st.button("👎 不同意", key=f"vote_a_{i}"):
-                            against_list.append(user_id)
-                            new_against_str = ",".join(against_list)
-                            
-                            # 假設 against 係第 3 欄 (Column C)
-                            ws_vote.update_cell(i + 2, 3, new_against_str)
-                            st.toast("已投下不同意票。")
-                            st.rerun()
+                        if st.button("❌ 不同意", key=f"vote_a_{i}"):
+                            with st.spinner("處理你的投票中，請稍等⋯")
+                                against_list.append(user_id)
+                                new_against_str = ",".join(against_list)
+                                ws_vote.update_cell(i + 2, 3, new_against_str)
+                                st.toast("已投下不同意票！")
+                                st.rerun()
 
-            # --- 自動入庫檢查邏輯 (每次 loop 都檢查一次該題) ---
-            # 條件：同意 >= 5 AND 同意 > 不同意
             if f_count >= 5 and f_count > a_count:
-                st.success(f"辯題「{topic}」獲得足夠票數，正在寫入題庫...")
+                st.success(f"辯題「{topic}」獲得足夠票數，正在寫入辯題庫...")
                 
-                # 1. 寫入 Topic Sheet
                 ws_topic.append_row([topic])
-                
                 ws_vote.delete_rows(i + 2)
-                
                 st.balloons()
                 st.rerun()
