@@ -18,7 +18,7 @@ except Exception as e:
     st.error(f"無法連接Google Cloud: {e}")
     st.stop()
 
-tab1, tab2 = st.tabs(["📝 提出新辯題", "📊 辯題投票"])
+tab1, tab2 ,tab3= st.tabs(["📝 提出新辯題", "📊 辯題投票", "🔐 管理帳戶"])
 
 with tab1:
     st.subheader("提出新辯題")
@@ -98,3 +98,29 @@ with tab2:
                 ws_vote.delete_rows(i + 2)
                 st.balloons()
                 st.rerun()
+
+with tab3:
+    st.subheader("帳戶管理")
+    if st.button("更改密碼"):
+        with st.form("change_user_password"):
+        new_pw = st.text_input("輸入新密碼")
+        submit_new_pw = st.form_submit_button("更改密碼")
+        
+        if submit_new_pw:
+            conn = get_connection()
+            try:
+                ws = conn.worksheet("Account")
+                records = ws.get_all_records()
+                
+                for i, row in enumerate(records):
+                    if i == 0: continue #Skip header
+                    if str(row.get("userid")) == user_id:
+                        ws.update_cell(i+2, 2, new_pw.strip())
+                        break
+                st.success("帳戶密碼已更改！下次登入請使用新密碼！")
+            except Exception as e:
+                st.error(f"無法連接至數據庫: {e}")
+            
+    if st.button("登出"):
+        st.session_state["committee_user"] = None
+        st.rerun()
