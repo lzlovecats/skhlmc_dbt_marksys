@@ -1,5 +1,5 @@
 import streamlit as st
-from functions import return_user_manual
+from functions import return_user_manual, return_rules
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
@@ -8,6 +8,12 @@ st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", p
 def show_manual():
     manual_content = return_user_manual()
     st.markdown(manual_content)
+
+@st.dialog("校園隨想辯論比賽：賽規")
+def show_rules():
+    rules_content = return_rules()
+    st.markdown(rules_content)
+
 
 # Define pages
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
@@ -33,9 +39,13 @@ with st.sidebar:
     if st.button("📖 閱讀使用手冊", use_container_width=True):
         show_manual()
 
+with st.sidebar:
+    if st.button("📋 查看賽規", use_container_width=True):
+        show_rules()
+
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.9.8 (Indirect)")
+    st.caption("🛠️ 系統版本：1.9.9 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
