@@ -436,3 +436,41 @@ def return_rules():
         * **評判**：根據四大範疇評分、評估連貫性及合作性、按主席通知執行扣分。
         """
     return rules
+
+def check_committee_login():
+    if "committee_user" not in st.session_state:
+        st.session_state["committee_user"] = None
+
+    # 如果已經登入，直接回傳 True
+    if st.session_state["committee_user"]:
+        return True
+
+    st.subheader("賽會人員個人帳戶登入")
+    
+    with st.form("committee_login"):
+        uid = st.text_input("用戶名稱 (User ID)")
+        upw = st.text_input("密碼 (Password)", type="password")
+        submitted = st.form_submit_button("登入")
+        
+        if submitted:
+            conn = get_connection()
+            try:
+                ws = conn.worksheet("Account")
+                records = ws.get_all_records()
+                
+                login_success = False
+                for row in records:
+                    if str(row.get("userid")) == str(uid) and str(row.get("userpw")) == str(upw):
+                        login_success = True
+                        break
+                
+                if login_success:
+                    st.session_state["committee_user"] = uid
+                    st.success(f"你好，{uid}！")
+                    st.rerun()
+                else:
+                    st.error("User ID或Password錯誤！")
+            except Exception as e:
+                st.error(f"無法連接至數據庫: {e}")
+                
+    return False
