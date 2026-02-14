@@ -70,7 +70,7 @@ with tab2:
                         st.button("已反對", key=f"f_blocked_{i}", disabled=True)
                     else:
                         if st.button("✅ 同意", key=f"vote_f_{i}"):
-                            with st.spinner("處理你的投票中，請稍等⋯")
+                            with st.spinner("處理你的投票中，請稍等⋯"):
                                 flavor_list.append(user_id)
                                 new_flavor_str = ",".join(flavor_list)
                                 ws_vote.update_cell(i + 2, 2, new_flavor_str)
@@ -84,7 +84,7 @@ with tab2:
                         st.button("已同意", key=f"a_blocked_{i}", disabled=True)
                     else:
                         if st.button("❌ 不同意", key=f"vote_a_{i}"):
-                            with st.spinner("處理你的投票中，請稍等⋯")
+                            with st.spinner("處理你的投票中，請稍等⋯"):
                                 against_list.append(user_id)
                                 new_against_str = ",".join(against_list)
                                 ws_vote.update_cell(i + 2, 3, new_against_str)
