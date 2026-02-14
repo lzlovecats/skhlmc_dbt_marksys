@@ -120,7 +120,7 @@ with tab3:
                     for i, row in enumerate(records):
                         if str(row.get("userid")) == str(user_id):
                             ws.update_cell(i+2, 2, new_pw.strip())
-                            found = True
+                            Found = True
                             break
                     if Found:
                         st.success("帳戶密碼已更改！下次登入請使用新密碼！")
