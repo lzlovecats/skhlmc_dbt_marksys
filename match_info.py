@@ -5,12 +5,12 @@ st.header("賽事資料輸入")
 
 # Create time slots
 time_slots = []
-start_t = datetime.strptime("15:00", "%H:%M")
+start_t = datetime.strptime("15:30", "%H:%M")
 end_t = datetime.strptime("18:00", "%H:%M")
 
 while start_t <= end_t:
     time_slots.append(start_t.strftime("%H:%M"))
-    start_t += timedelta(minutes=15)
+    start_t += timedelta(minutes=10)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -42,7 +42,7 @@ if st.session_state["match_action_message"]:
 if not check_admin():
     st.stop()
 
-# Get matchs from gsheet and store them to the state
+# Get matches from gsheet and store them to the state
 if "all_matches" not in st.session_state:
     st.session_state["all_matches"] = load_data_from_gsheet()
 

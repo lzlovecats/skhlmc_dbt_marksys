@@ -1,7 +1,13 @@
 import streamlit as st
+from functions import return_user_manual
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
+
+@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊")
+def show_manual():
+    manual_content = return_user_manual()
+    st.markdown(manual_content)
 
 # Define pages
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
@@ -24,12 +30,12 @@ if st.session_state.get("admin_logged_in"):
 
 # Show manual
 with st.sidebar:
-    manual_url = "https://docs.google.com/document/d/16PZYsoYlc0DoI_vRuNh2Q2XTG_bkJSmMQbnmXqmrAFI/edit?usp=sharing"
-    st.link_button("📖 閱讀使用手冊", manual_url, use_container_width=True)
+    if st.button("📖 閱讀使用手冊", use_container_width=True):
+        show_manual()
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.9.7 (Indirect)")
+    st.caption("🛠️ 系統版本：1.9.8 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
