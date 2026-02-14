@@ -103,7 +103,7 @@ with tab3:
     st.subheader("帳戶管理")
     
     with st.expander("更改密碼", expanded=False):
-        st.form("change_user_password"):
+        with st.form("change_user_password"):
             new_pw = st.text_input("輸入新密碼", type="password")
             submit_new_pw = st.form_submit_button("確認更改")
         
