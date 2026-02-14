@@ -39,7 +39,7 @@ with tab1:
 
 with tab2:
     st.subheader("待表決辯題")
-    st.caption("只同意票數 ≥ 5 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
+    st.caption("只要同意票數 ≥ 5 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
     
     vote_data = ws_vote.get_all_records()
     
@@ -64,22 +64,18 @@ with tab2:
                     st.caption(f"目前票數 - 同意: {f_count} | 不同意: {a_count}")
                     
                 with c2:
-                    # 同意按鈕
                     if user_id in flavor_list:
                         st.button("已同意", key=f"f_done_{i}", disabled=True)
                     elif user_id in against_list:
                         st.button("已反對", key=f"f_blocked_{i}", disabled=True)
                     else:
                         if st.button("👍 同意", key=f"vote_f_{i}"):
-                            # 更新邏輯
-                            flavor_list.append(user_id)
-                            new_flavor_str = ",".join(flavor_list)
-                            
-                            # 更新 Google Sheet (row i+2, 因為有標題且 index 從 0 開始)
-                            # 假設 flavor 係第 2 欄 (Column B)
-                            ws_vote.update_cell(i + 2, 2, new_flavor_str)
-                            st.toast("已投下同意票！")
-                            st.rerun()
+                            with st.spinner("處理你的投票中，請稍等⋯")
+                                flavor_list.append(user_id)
+                                new_flavor_str = ",".join(flavor_list)
+                                ws_vote.update_cell(i + 2, 2, new_flavor_str)
+                                st.toast("已投下同意票！")
+                                st.rerun()
 
                 with c3:
                     # 不同意按鈕
