@@ -46,7 +46,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.10.0 (Direct)")
+    st.caption("🛠️ 系統版本：1.10.1 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()

@@ -51,8 +51,11 @@ with tab2:
             
             # 處理投票名單 (將字串 "user1,user2" 轉為 list)
             # 如果欄位是空的，split 會產生空字串，要 filter 掉
-            flavor_list = [u for u in str(row.get('flavor', '')).split(',') if u.strip()]
-            against_list = [u for u in str(row.get('against', '')).split(',') if u.strip()]
+            flavor_str = str(row.get('flavor', ''))
+            against_str = str(row.get('against', ''))
+            
+            flavor_list = [u.strip() for u in flavor_str.split(',') if u.strip()]
+            against_list = [u.strip() for u in against_str.split(',') if u.strip()]
             
             f_count = len(flavor_list)
             a_count = len(against_list)
@@ -65,9 +68,24 @@ with tab2:
                     
                 with c2:
                     if user_id in flavor_list:
-                        st.button("已同意", key=f"f_done_{i}", disabled=True)
+                        if st.button("已同意 (點擊撤回)", key=f"f_done_{i}"):
+                            with st.spinner("撤回投票中..."):
+                                flavor_list.remove(user_id)
+                                new_flavor_str = ",".join(flavor_list)
+                                ws_vote.update_cell(i + 2, 2, new_flavor_str)
+                                st.toast("已撤回同意票！")
+                                st.rerun()
                     elif user_id in against_list:
-                        st.button("已反對", key=f"f_blocked_{i}", disabled=True)
+                        if st.button("轉投同意", key=f"switch_to_f_{i}"):
+                            with st.spinner("更改投票中..."):
+                                against_list.remove(user_id)
+                                flavor_list.append(user_id)
+                                new_against_str = ",".join(against_list)
+                                new_flavor_str = ",".join(flavor_list)
+                                ws_vote.update_cell(i + 2, 3, new_against_str)
+                                ws_vote.update_cell(i + 2, 2, new_flavor_str)
+                                st.toast("已轉投同意票！")
+                                st.rerun()
                     else:
                         if st.button("✅ 同意", key=f"vote_f_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):
@@ -79,9 +97,24 @@ with tab2:
 
                 with c3:
                     if user_id in against_list:
-                        st.button("已反對", key=f"a_done_{i}", disabled=True)
+                        if st.button("已反對 (點擊撤回)", key=f"a_done_{i}"):
+                            with st.spinner("撤回投票中..."):
+                                against_list.remove(user_id)
+                                new_against_str = ",".join(against_list)
+                                ws_vote.update_cell(i + 2, 3, new_against_str)
+                                st.toast("已撤回不同意票！")
+                                st.rerun()
                     elif user_id in flavor_list:
-                        st.button("已同意", key=f"a_blocked_{i}", disabled=True)
+                        if st.button("轉投反對", key=f"switch_to_a_{i}"):
+                            with st.spinner("更改投票中..."):
+                                flavor_list.remove(user_id)
+                                against_list.append(user_id)
+                                new_flavor_str = ",".join(flavor_list)
+                                new_against_str = ",".join(against_list)
+                                ws_vote.update_cell(i + 2, 2, new_flavor_str)
+                                ws_vote.update_cell(i + 2, 3, new_against_str)
+                                st.toast("已轉投不同意票！")
+                                st.rerun()
                     else:
                         if st.button("❌ 不同意", key=f"vote_a_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):

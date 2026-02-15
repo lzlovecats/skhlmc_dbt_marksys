@@ -20,7 +20,7 @@ if "active_match_id" not in st.session_state:
     st.session_state["active_match_id"] = None
 
 if "all_matches" not in st.session_state:
-    st.session_state["all_matches"] = load_data_from_gsheet()  # All matchs in gsheet (Local)
+    st.session_state["all_matches"] = load_data_from_gsheet()  # All matches in gsheet (Local)
 
 if "submission_message" not in st.session_state:
     st.session_state["submission_message"] = None
@@ -68,7 +68,8 @@ if not st.session_state["judge_authenticated"]:
 st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
-judge_name = st.text_input("評判姓名").strip()
+judge_name_input = st.text_input("評判姓名")
+judge_name = judge_name_input.strip() if judge_name_input else ""
 
 if judge_name != st.session_state["last_judge_name"]:
     st.session_state["draft_loaded"] = False
