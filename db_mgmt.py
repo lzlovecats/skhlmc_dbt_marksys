@@ -82,3 +82,5 @@ with tab3:
                     except Exception as e:
                         st.error(f"刪除失敗: {e}")
                     
+                    if st.button("確定"):
+                            st.run()
