@@ -40,6 +40,7 @@ with tab1:
 with tab2:
     st.subheader("待表決辯題")
     st.caption("只要同意票數 ≥ 5 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
+    st.caption("只要不同意票數 ≥ 5 且 不同意 > 同意，系統會自動刪除辯題。")
     
     vote_data = ws_vote.get_all_records()
     
@@ -125,11 +126,18 @@ with tab2:
                                 st.rerun()
 
             if f_count >= 5 and f_count > a_count:
-                st.success(f"辯題「{topic}」獲得足夠票數，正在寫入辯題庫...")
+                st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
                 
                 ws_topic.append_row([topic])
                 ws_vote.delete_rows(i + 2)
                 st.balloons()
+                st.rerun()
+            
+            if a_count >= 5 and a_count > f_count:
+                st.error(f"辯題「{topic}」已獲得{a_count}票不同意票，正在刪除辯題...")
+                
+                ws_vote.delete_rows(i + 2)
+                st.snow()
                 st.rerun()
 
 with tab3:
