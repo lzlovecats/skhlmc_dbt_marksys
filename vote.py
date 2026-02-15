@@ -46,7 +46,7 @@ with tab2:
     if not vote_data:
         st.info("目前沒有待表決的辯題。")
     else:
-        for i, row in enumerate(vote_data):
+        for i, row in reversed(list(enumerate(vote_data))):
             topic = row['topic']
             
             # 處理投票名單 (將字串 "user1,user2" 轉為 list)
