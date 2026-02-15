@@ -14,6 +14,7 @@ conn = get_connection()
 try:
     ws_vote = conn.worksheet("Vote")
     ws_topic = conn.worksheet("Topic")
+    ws_voted = conn.worksheet("Voted")
 except Exception as e:
     st.error(f"無法連接Google Cloud: {e}")
     st.stop()
@@ -130,6 +131,7 @@ with tab2:
                 
                 ws_topic.append_row([topic])
                 ws_vote.delete_rows(i + 2)
+                ws_voted.append_row([topic, ""])
                 st.balloons()
                 st.rerun()
             
@@ -137,8 +139,43 @@ with tab2:
                 st.error(f"辯題「{topic}」已獲得{a_count}票不同意票，正在刪除辯題...")
                 
                 ws_vote.delete_rows(i + 2)
+                ws_voted.append_row(["", topic])
                 st.snow()
                 st.rerun()
+                
+    st.divider()
+    
+    try:
+        voted_data = ws_voted.get_all_values()
+    except:
+        voted_data = []
+    
+    passed_list = []
+    rejected_list = []
+    
+    if len(voted_data) > 1:
+        for row in voted_data[1:]:
+            # 確保 row 長度足夠，避免 index error
+            # Column A (index 0) 為 Passed
+            if len(row) > 0 and row[0].strip():
+                passed_list.append(row[0].strip())
+            # Column B (index 1) 為 Rejected
+            if len(row) > 1 and row[1].strip():
+                rejected_list.append(row[1].strip())
+
+    with st.expander("📜 已通過辯題記錄 (Passed)", expanded=False):
+        if passed_list:
+            for p in reversed(passed_list):
+                st.write(f"✅ {p}")
+        else:
+            st.caption("暫無記錄")
+            
+    with st.expander("🗑️ 已否決辯題記錄 (Rejected)", expanded=False):
+        if rejected_list:
+            for r in reversed(rejected_list):
+                st.write(f"❌ {r}")
+        else:
+            st.caption("暫無記錄")
 
 with tab3:
     st.subheader("帳戶管理")
