@@ -1,6 +1,5 @@
 import streamlit as st
-import pandas as pd
-from functions import check_committee_login, get_connection
+from functions import check_committee_login, get_connection, fetch_vote_data_cached
 
 st.header("🗳️ 辯題徵集及投票系統")
 
@@ -36,14 +35,19 @@ with tab1:
                 st.error("此辯題已存在！")
             else:
                 ws_vote.append_row([new_topic, "", ""])
+                fetch_vote_data_cached.clear()
                 st.success("辯題已加入投票區！")
 
 with tab2:
     st.subheader("待表決辯題")
     st.caption("只要同意票數 ≥ 5 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
     st.caption("只要不同意票數 ≥ 5 且 不同意 > 同意，系統會自動刪除辯題。")
+
+    if st.button("🔄 點擊刷新最新票數"):
+        fetch_vote_data_cached.clear()
+        st.rerun()
     
-    vote_data = ws_vote.get_all_records()
+    vote_data, voted_data_raw = fetch_vote_data_cached()
     
     if not vote_data:
         st.info("目前沒有待表決的辯題。")
@@ -64,6 +68,12 @@ with tab2:
             
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
+
+
+                def after_vote():
+                    fetch_vote_data_cached.clear()
+                    st.rerun()
+
                 with c1:
                     st.write(f"**{topic}**")
                     st.caption(f"目前票數 - 同意: {f_count} | 不同意: {a_count}")
@@ -75,8 +85,8 @@ with tab2:
                                 flavor_list.remove(user_id)
                                 new_flavor_str = ",".join(flavor_list)
                                 ws_vote.update_cell(i + 2, 2, new_flavor_str)
-                                st.toast("已撤回同意票！")
-                                st.rerun()
+                                st.toast("已撤回同意票！", icon="↩️")
+                                after_vote()
                     elif user_id in against_list:
                         if st.button("轉投同意", key=f"switch_to_f_{i}"):
                             with st.spinner("更改投票中..."):
@@ -86,16 +96,16 @@ with tab2:
                                 new_flavor_str = ",".join(flavor_list)
                                 ws_vote.update_cell(i + 2, 3, new_against_str)
                                 ws_vote.update_cell(i + 2, 2, new_flavor_str)
-                                st.toast("已轉投同意票！")
-                                st.rerun()
+                                st.toast("已轉投同意票！", icon="↪️️")
+                                after_vote()
                     else:
                         if st.button("✅ 同意", key=f"vote_f_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):
                                 flavor_list.append(user_id)
                                 new_flavor_str = ",".join(flavor_list)
                                 ws_vote.update_cell(i + 2, 2, new_flavor_str)
-                                st.toast("已投下同意票！")
-                                st.rerun()
+                                st.toast("已投下同意票！", icon="☑️")
+                                after_vote()
 
                 with c3:
                     if user_id in against_list:
@@ -104,8 +114,8 @@ with tab2:
                                 against_list.remove(user_id)
                                 new_against_str = ",".join(against_list)
                                 ws_vote.update_cell(i + 2, 3, new_against_str)
-                                st.toast("已撤回不同意票！")
-                                st.rerun()
+                                st.toast("已撤回不同意票！", icon="↩️")
+                                after_vote()
                     elif user_id in flavor_list:
                         if st.button("轉投反對", key=f"switch_to_a_{i}"):
                             with st.spinner("更改投票中..."):
@@ -115,16 +125,16 @@ with tab2:
                                 new_against_str = ",".join(against_list)
                                 ws_vote.update_cell(i + 2, 2, new_flavor_str)
                                 ws_vote.update_cell(i + 2, 3, new_against_str)
-                                st.toast("已轉投不同意票！")
-                                st.rerun()
+                                st.toast("已轉投不同意票！", icon="↪️️")
+                                after_vote()
                     else:
                         if st.button("❌ 不同意", key=f"vote_a_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):
                                 against_list.append(user_id)
                                 new_against_str = ",".join(against_list)
                                 ws_vote.update_cell(i + 2, 3, new_against_str)
-                                st.toast("已投下不同意票！")
-                                st.rerun()
+                                st.toast("已投下不同意票！", icon="☑️")
+                                after_vote()
 
             if f_count >= 5 and f_count > a_count:
                 st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
@@ -132,6 +142,7 @@ with tab2:
                 ws_topic.append_row([topic])
                 ws_vote.delete_rows(i + 2)
                 ws_voted.append_row([topic, ""])
+                fetch_vote_data_cached.clear()
                 st.balloons()
                 st.rerun()
             
@@ -140,23 +151,17 @@ with tab2:
                 
                 ws_vote.delete_rows(i + 2)
                 ws_voted.append_row(["", topic])
+                fetch_vote_data_cached.clear()
                 st.snow()
                 st.rerun()
                 
     st.divider()
     
-    try:
-        voted_data = ws_voted.get_all_values()
-    except:
-        voted_data = []
-    
     passed_list = []
     rejected_list = []
     
-    if len(voted_data) > 1:
-        for row in voted_data[1:]:
-            # 確保 row 長度足夠，避免 index error
-            # Column A (index 0) 為 Passed
+    if len(voted_data_raw) > 1:
+        for row in voted_data_raw[1:]:
             if len(row) > 0 and row[0].strip():
                 passed_list.append(row[0].strip())
             # Column B (index 1) 為 Rejected
