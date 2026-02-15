@@ -1,5 +1,5 @@
 import streamlit as st
-from functions import check_committee_login, get_connection, fetch_vote_data_cached
+from functions import check_committee_login, get_connection
 
 st.header("🗳️ 辯題徵集及投票系統")
 
@@ -9,14 +9,29 @@ if not check_committee_login():
 user_id = st.session_state["committee_user"]
 st.info(f"已登入帳戶：**{user_id}**")
 
-conn = get_connection()
+@st.cache_resource
+def get_cached_worksheets():
+    conn = get_connection()
+    return {
+        "Vote": conn.worksheet("Vote"),
+        "Topic": conn.worksheet("Topic"),
+        "Voted": conn.worksheet("Voted"),
+        "Account": conn.worksheet("Account")
+    }
+
 try:
-    ws_vote = conn.worksheet("Vote")
-    ws_topic = conn.worksheet("Topic")
-    ws_voted = conn.worksheet("Voted")
+    sheets = get_cached_worksheets()
+    ws_vote = sheets["Vote"]
+    ws_topic = sheets["Topic"]
+    ws_voted = sheets["Voted"]
 except Exception as e:
     st.error(f"無法連接Google Cloud: {e}")
     st.stop()
+
+# Define a local cached function to read data using the existing worksheets
+@st.cache_data(ttl=10)
+def get_vote_data(_ws_vote, _ws_voted):
+    return _ws_vote.get_all_records(), _ws_voted.get_all_values()
 
 tab1, tab2 ,tab3= st.tabs(["📝 提出新辯題", "📊 辯題投票", "🔐 管理帳戶"])
 
@@ -35,7 +50,7 @@ with tab1:
                 st.error("此辯題已存在！")
             else:
                 ws_vote.append_row([new_topic, "", ""])
-                fetch_vote_data_cached.clear()
+                get_vote_data.clear()
                 st.success("辯題已加入投票區！")
 
 with tab2:
@@ -44,10 +59,10 @@ with tab2:
     st.caption("只要不同意票數 ≥ 5 且 不同意 > 同意，系統會自動刪除辯題。")
 
     if st.button("🔄 點擊刷新最新票數"):
-        fetch_vote_data_cached.clear()
+        get_vote_data.clear()
         st.rerun()
     
-    vote_data, voted_data_raw = fetch_vote_data_cached()
+    vote_data, voted_data_raw = get_vote_data(ws_vote, ws_voted)
     
     if not vote_data:
         st.info("目前沒有待表決的辯題。")
@@ -71,7 +86,7 @@ with tab2:
 
 
                 def after_vote():
-                    fetch_vote_data_cached.clear()
+                    get_vote_data.clear()
                     st.rerun()
 
                 with c1:
@@ -142,7 +157,7 @@ with tab2:
                 ws_topic.append_row([topic])
                 ws_vote.delete_rows(i + 2)
                 ws_voted.append_row([topic, ""])
-                fetch_vote_data_cached.clear()
+                get_vote_data.clear()
                 st.balloons()
                 st.rerun()
             
@@ -151,7 +166,7 @@ with tab2:
                 
                 ws_vote.delete_rows(i + 2)
                 ws_voted.append_row(["", topic])
-                fetch_vote_data_cached.clear()
+                get_vote_data.clear()
                 st.snow()
                 st.rerun()
                 
@@ -194,9 +209,8 @@ with tab3:
             if not new_pw.strip():
                 st.warning("你未輸入密碼！")
             else:
-                conn = get_connection()
                 try:
-                    ws = conn.worksheet("Account")
+                    ws = sheets["Account"]
                     records = ws.get_all_records()
                     
                     Found = False

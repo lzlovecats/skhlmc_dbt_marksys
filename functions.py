@@ -486,21 +486,3 @@ def check_committee_login():
                     st.error("User ID或Password錯誤！")
             except Exception as e:
                 st.error(f"無法連接至數據庫: {e}")
-
-    return False
-
-
-@st.cache_data(ttl=10)
-def fetch_vote_data_cached():
-    try:
-        conn = get_connection()
-        ws_vote = conn.worksheet("Vote")
-        ws_voted = conn.worksheet("Voted")
-
-        vote_records = ws_vote.get_all_records()
-        voted_values = ws_voted.get_all_values()
-
-        return vote_records, voted_values
-    except Exception as e:
-        st.error(f"讀取資料失敗: {e}")
-        return [], []
