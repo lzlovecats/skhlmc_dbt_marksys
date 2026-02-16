@@ -20,7 +20,7 @@ page_judging = st.Page("judging.py", title="電子分紙（評判用）")
 page_match_mgmt = st.Page("match_info.py", title="比賽場次管理（賽會人員用）")
 page_mgmt = st.Page("management.py", title="查閱比賽結果（賽會人員用）")
 page_vote = st.Page("vote.py", title="辯題徵集系統（內部用）")
-page_db_mgmt = st.Page("db_mgmt.py", title="辯題庫管理（賽會人員用）")
+page_db_mgmt = st.Page("db_mgmt.py", title="辯題庫管理（內部用）")
 page_score_sheet = st.Page("review.py", title="查閱比賽分紙（比賽隊伍用）")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫（一般人員用）")
 
@@ -46,7 +46,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.10.4 (Indirect)")
+    st.caption("🛠️ 系統版本：1.11.0 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
