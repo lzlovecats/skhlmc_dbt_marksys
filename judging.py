@@ -104,6 +104,16 @@ team_side = st.radio(
     horizontal=True
 )
 
+if st.session_state["temp_scores"][team_side] and "last_saved" in st.session_state["temp_scores"][team_side]:
+    try:
+        last_saved_str = st.session_state["temp_scores"][team_side]["last_saved"]
+        last_saved_dt = datetime.fromisoformat(last_saved_str)
+        diff = datetime.now() - last_saved_dt
+        minutes = int(diff.total_seconds() / 60)
+        st.info(f"上一次儲存 {team_side} 分數：{minutes} 分鐘前")
+    except:
+        pass
+
 if team_side == "正方":
     names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""), 
              current_match.get("pro_3", ""), current_match.get("pro_4", "")]
@@ -240,7 +250,8 @@ if st.button(f"暫存{team_side}評分"):
             "final_total": int(final_total),
             "ind_scores": [int(s) for s in individual_scores],
             "raw_df_a": edited_df_a,
-            "raw_df_b": edited_df_b
+            "raw_df_b": edited_df_b,
+            "last_saved": datetime.now().isoformat()
         }
         st.session_state["temp_scores"][team_side] = side_data
 
@@ -297,7 +308,8 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             "final_total": int(final_total),
             "ind_scores": [int(s) for s in individual_scores],
             "raw_df_a": edited_df_a,
-            "raw_df_b": edited_df_b
+            "raw_df_b": edited_df_b,
+            "last_saved": datetime.now().isoformat()
             }
             st.session_state["temp_scores"][team_side] = side_data
 
@@ -338,4 +350,3 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             st.session_state["judge_authenticated"] = False
         except Exception as e:
             st.error(f"儲存失敗: {e}")
-    
