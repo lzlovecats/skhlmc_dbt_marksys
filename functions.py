@@ -4,13 +4,24 @@ import json
 import pandas as pd
 import random
 from google.oauth2.service_account import Credentials
+from extra_streamlit_components import CookieManager
+import datetime
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 
 def check_admin():
+    cookie_manager = CookieManager(key="admin_cookies")
+    
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
+
+    # Check cookies for auto-login
+    if not st.session_state["admin_logged_in"]:
+        admin_cookie = cookie_manager.get("admin_auth")
+        if admin_cookie == "true":
+            st.session_state["admin_logged_in"] = True
+            st.rerun()
 
     if not st.session_state["admin_logged_in"]:
         st.subheader("賽會人員登入")
@@ -18,6 +29,9 @@ def check_admin():
         if st.button("登入"):
             if pwd == st.secrets["admin_password"]:
                 st.session_state["admin_logged_in"] = True
+                # Save cookie for 1 day
+                expires_at = datetime.datetime.now() + datetime.timedelta(days=1)
+                cookie_manager.set("admin_auth", "true", expires_at=expires_at)
                 st.rerun()
             else:
                 st.error("密碼錯誤")
@@ -453,8 +467,17 @@ def return_rules():
 
 
 def check_committee_login():
+    cookie_manager = CookieManager(key="committee_cookies")
+    
     if "committee_user" not in st.session_state:
         st.session_state["committee_user"] = None
+
+    # Check cookies for auto-login
+    if st.session_state["committee_user"] is None:
+        committee_cookie = cookie_manager.get("committee_user")
+        if committee_cookie:
+            st.session_state["committee_user"] = committee_cookie
+            st.rerun()
 
     if st.session_state["committee_user"]:
         return True
@@ -480,6 +503,9 @@ def check_committee_login():
 
                 if login_success:
                     st.session_state["committee_user"] = uid
+                    # Save cookie for 1 day
+                    expires_at = datetime.datetime.now() + datetime.timedelta(days=1)
+                    cookie_manager.set("committee_user", uid, expires_at=expires_at)
                     st.success(f"你好，{uid}！")
                     st.rerun()
                 else:
