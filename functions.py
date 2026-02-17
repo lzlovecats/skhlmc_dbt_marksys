@@ -500,6 +500,7 @@ def check_committee_login():
         st.session_state["committee_user"] = None
     
     if st.session_state["vote_just_logout"]:
+        st.session_state["vote_just_logout"] = False
         return False
 
     # Check cookies for auto-login
