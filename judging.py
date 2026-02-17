@@ -1,8 +1,18 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from functions import load_data_from_gsheet, get_connection, load_draft_from_gsheet, save_draft_to_gsheet, return_expire_day
+from functions import (
+    load_data_from_gsheet,
+    get_connection,
+    load_draft_from_gsheet,
+    save_draft_to_gsheet,
+    return_expire_day,
+    get_cookie,
+    set_cookie,
+    del_cookie
+)
 from extra_streamlit_components import CookieManager
+import time
 
 st.header("電子評分系統")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
@@ -46,9 +56,9 @@ if st.session_state["active_match_id"] != selected_match_id:
 
 # Auto-login check using cookies
 if not st.session_state["judge_authenticated"]:
-    saved_match_id = cookie_manager.get("match_id")
-    saved_access_code = cookie_manager.get("access_code")
-    saved_judge_name = cookie_manager.get("judge_name")
+    saved_match_id = get_cookie(cookie_manager, "match_id")
+    saved_access_code = get_cookie(cookie_manager, "access_code")
+    saved_judge_name = get_cookie(cookie_manager, "judge_name")
     
     if saved_match_id == selected_match_id and saved_access_code:
         correct_otp_from_sheet = str(current_match.get("access_code", ""))
@@ -77,9 +87,9 @@ if not st.session_state["judge_authenticated"]:
             st.session_state["auth_match_id"] = selected_match_id
             
             # Save cookies
-            cookie_manager.set("match_id", selected_match_id, expires_at=return_expire_day())
-            cookie_manager.set("access_code", input_otp, expires_at=return_expire_day())
-            
+            set_cookie(cookie_manager, "match_id", selected_match_id, expires_at=return_expire_day())
+            set_cookie(cookie_manager, "access_code", input_otp, expires_at=return_expire_day())
+            time.sleep(1)
             st.rerun()
         elif correct_otp == "":
             st.error("該場次未開放評分，請向賽會人員查詢。")
@@ -99,13 +109,23 @@ default_judge_name = st.session_state.get("last_judge_name", "")
 judge_name_input = st.text_input("評判姓名", value=default_judge_name)
 judge_name = judge_name_input.strip() if judge_name_input else ""
 
+if st.button("登出評判帳戶"):
+    st.session_state["last_judge_name"] = ""
+    st.session_state["judge_authenticated"] = False
+    st.session_state["temp_scores"] = {"正方": None, "反方": None}
+    del_cookie(cookie_manager, "match_id")
+    del_cookie(cookie_manager, "access_code")
+    del_cookie(cookie_manager, "judge_name")
+    time.sleep(1)
+    st.rerun()
+
 if judge_name != st.session_state["last_judge_name"]:
     st.session_state["draft_loaded"] = False
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["last_judge_name"] = judge_name
     # Update judge name in cookie
-    expires_at = datetime.now() + timedelta(days=1)
-    cookie_manager.set("judge_name", judge_name, expires_at=return_expire_day())
+    set_cookie(cookie_manager, "judge_name", judge_name, expires_at=return_expire_day())
+    time.sleep(1)
 
 if "draft_loaded" not in st.session_state:
     st.session_state["draft_loaded"] = False
@@ -377,9 +397,10 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
             
             # Clear cookies after successful submission
-            cookie_manager.delete("match_id")
-            cookie_manager.delete("access_code")
-            cookie_manager.delete("judge_name")
+            del_cookie(cookie_manager, "match_id")
+            del_cookie(cookie_manager, "access_code")
+            del_cookie(cookie_manager, "judge_name")
+            time.sleep(1)
 
             st.balloons()
             st.success("已成功提交評分！")

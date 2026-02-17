@@ -6,8 +6,35 @@ import random
 from google.oauth2.service_account import Credentials
 from extra_streamlit_components import CookieManager
 import datetime
+import time
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+def get_cookie(cookie_manager, key, default=None):
+    try:
+        value = cookie_manager.get(key)
+        return default if value is None else value
+    except Exception:
+        return default
+
+
+def set_cookie(cookie_manager, key, value, expires_at=None):
+    try:
+        if expires_at is None:
+            cookie_manager.set(key, value)
+        else:
+            cookie_manager.set(key, value, expires_at=expires_at)
+        return True
+    except Exception:
+        return False
+
+
+def del_cookie(cookie_manager, key):
+    try:
+        cookie_manager.delete(key)
+        return True
+    except Exception:
+        return False
 
 
 def check_admin():
@@ -18,7 +45,7 @@ def check_admin():
 
     # Check cookies for auto-login
     if not st.session_state["admin_logged_in"]:
-        admin_cookie = cookie_manager.get("admin_auth")
+        admin_cookie = get_cookie(cookie_manager, "admin_auth")
         if admin_cookie == "true":
             st.session_state["admin_logged_in"] = True
             st.rerun()
@@ -29,7 +56,8 @@ def check_admin():
         if st.button("登入"):
             if pwd == st.secrets["admin_password"]:
                 st.session_state["admin_logged_in"] = True
-                cookie_manager.set("admin_auth", "true", expires_at=return_expire_day())
+                set_cookie(cookie_manager, "admin_auth", "true", expires_at=return_expire_day())
+                time.sleep(1)
                 st.rerun()
             else:
                 st.error("密碼錯誤")
@@ -472,7 +500,7 @@ def check_committee_login():
 
     # Check cookies for auto-login
     if st.session_state["committee_user"] is None:
-        committee_cookie = cookie_manager.get("committee_user")
+        committee_cookie = get_cookie(cookie_manager, "committee_user")
         if committee_cookie:
             st.session_state["committee_user"] = committee_cookie
             st.rerun()
@@ -501,8 +529,9 @@ def check_committee_login():
 
                 if login_success:
                     st.session_state["committee_user"] = uid
-                    cookie_manager.set("committee_user", uid, expires_at=return_expire_day())
+                    set_cookie(cookie_manager, "committee_user", uid, expires_at=return_expire_day())
                     st.success(f"你好，{uid}！")
+                    time.sleep(1)
                     st.rerun()
                 else:
                     st.error("User ID或Password錯誤！")

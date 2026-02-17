@@ -1,6 +1,7 @@
 import streamlit as st
-from functions import return_user_manual, return_rules
+from functions import return_user_manual, return_rules, del_cookie
 from extra_streamlit_components import CookieManager
+import time
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
@@ -34,9 +35,9 @@ if st.session_state.get("admin_logged_in"):
         st.write("")
         if st.button("登出賽會人員帳戶", use_container_width=True):
             st.session_state["admin_logged_in"] = False
-            cookie_manager = CookieManager(key="admin_cookies")
-            if cookie_manager.get("admin_auth"):
-                cookie_manager.delete("admin_auth")
+            cookie_manager = CookieManager(key="admin_cookies_logout")
+            del_cookie(cookie_manager, "admin_auth")
+            time.sleep(1)
             st.rerun()
 
 # Show manual
@@ -50,7 +51,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.12.0 (Indirect)")
+    st.caption("🛠️ 系統版本：1.12.2 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
