@@ -1,5 +1,6 @@
 import streamlit as st
 from functions import return_user_manual, return_rules
+from extra_streamlit_components import CookieManager
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
@@ -33,6 +34,9 @@ if st.session_state.get("admin_logged_in"):
         st.write("")
         if st.button("登出賽會人員帳戶", use_container_width=True):
             st.session_state["admin_logged_in"] = False
+            cookie_manager = CookieManager(key="admin_cookies")
+            if cookie_manager.get("admin_auth"):
+                cookie_manager.delete("admin_auth")
             st.rerun()
 
 # Show manual

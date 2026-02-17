@@ -1,4 +1,5 @@
 import streamlit as st
+from extra_streamlit_components import CookieManager
 from functions import check_committee_login, get_connection
 
 st.header("🗳️ 辯題徵集及投票系統")
@@ -232,5 +233,9 @@ with tab3:
     
     st.divider()
     if st.button("登出", type="primary"):
+        cookie_manager = CookieManager(key="committee_user")
+        if cookie_manager.get("committee_user"):
+            cookie_manager.delete("committee_user")
         st.session_state["committee_user"] = None
+
         st.rerun()

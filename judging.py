@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from functions import load_data_from_gsheet, get_connection, load_draft_from_gsheet, save_draft_to_gsheet
+from functions import load_data_from_gsheet, get_connection, load_draft_from_gsheet, save_draft_to_gsheet, return_expire_day
 from extra_streamlit_components import CookieManager
 
 st.header("電子評分系統")
@@ -77,9 +77,8 @@ if not st.session_state["judge_authenticated"]:
             st.session_state["auth_match_id"] = selected_match_id
             
             # Save cookies
-            expires_at = datetime.now() + timedelta(days=1)
-            cookie_manager.set("match_id", selected_match_id, expires_at=expires_at)
-            cookie_manager.set("access_code", input_otp, expires_at=expires_at)
+            cookie_manager.set("match_id", selected_match_id, expires_at=return_expire_day())
+            cookie_manager.set("access_code", input_otp, expires_at=return_expire_day())
             
             st.rerun()
         elif correct_otp == "":
@@ -106,7 +105,7 @@ if judge_name != st.session_state["last_judge_name"]:
     st.session_state["last_judge_name"] = judge_name
     # Update judge name in cookie
     expires_at = datetime.now() + timedelta(days=1)
-    cookie_manager.set("judge_name", judge_name, expires_at=expires_at)
+    cookie_manager.set("judge_name", judge_name, expires_at=return_expire_day())
 
 if "draft_loaded" not in st.session_state:
     st.session_state["draft_loaded"] = False

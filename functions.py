@@ -29,9 +29,7 @@ def check_admin():
         if st.button("登入"):
             if pwd == st.secrets["admin_password"]:
                 st.session_state["admin_logged_in"] = True
-                # Save cookie for 1 day
-                expires_at = datetime.datetime.now() + datetime.timedelta(days=1)
-                cookie_manager.set("admin_auth", "true", expires_at=expires_at)
+                cookie_manager.set("admin_auth", "true", expires_at=return_expire_day())
                 st.rerun()
             else:
                 st.error("密碼錯誤")
@@ -503,12 +501,13 @@ def check_committee_login():
 
                 if login_success:
                     st.session_state["committee_user"] = uid
-                    # Save cookie for 1 day
-                    expires_at = datetime.datetime.now() + datetime.timedelta(days=1)
-                    cookie_manager.set("committee_user", uid, expires_at=expires_at)
+                    cookie_manager.set("committee_user", uid, expires_at=return_expire_day())
                     st.success(f"你好，{uid}！")
                     st.rerun()
                 else:
                     st.error("User ID或Password錯誤！")
             except Exception as e:
                 st.error(f"無法連接至數據庫: {e}")
+
+def return_expire_day():
+    return datetime.datetime.now() + datetime.timedelta(days=1)
