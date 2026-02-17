@@ -494,6 +494,7 @@ def return_rules():
 
 def check_committee_login():
     cookie_manager = CookieManager(key="committee_cookies")
+    st.session_state["committee_cookie_manager"] = cookie_manager
     
     if "committee_user" not in st.session_state:
         st.session_state["committee_user"] = None
