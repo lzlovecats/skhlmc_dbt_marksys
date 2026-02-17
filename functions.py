@@ -14,7 +14,8 @@ def get_cookie(cookie_manager, key, default=None):
     try:
         value = cookie_manager.get(key)
         return default if value is None else value
-    except Exception:
+    except Exception as e:
+        st.write(e)
         return default
 
 
@@ -39,6 +40,9 @@ def del_cookie(cookie_manager, key):
 
 def check_admin():
     cookie_manager = CookieManager(key="admin_cookies")
+    
+    if not cookie_manager.ready():
+        st.stop()
     
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
@@ -494,6 +498,10 @@ def return_rules():
 
 def check_committee_login():
     cookie_manager = CookieManager(key="committee_cookies")
+    
+    if not cookie_manager.ready():
+        st.stop()
+    
     st.session_state["committee_cookie_manager"] = cookie_manager
     
     if "committee_user" not in st.session_state:
