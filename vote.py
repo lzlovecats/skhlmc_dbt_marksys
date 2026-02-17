@@ -235,7 +235,7 @@ with tab3:
     st.divider()
     if st.button("登出", type="primary"):
         st.session_state["committee_user"] = None
-        cookie_manager = CookieManager(key="committee_cookies_logout")
+        cookie_manager = st.session_state.get("committee_cookie_manager")
         del_cookie(cookie_manager, "committee_user")
         time.sleep(1)
         st.rerun()
