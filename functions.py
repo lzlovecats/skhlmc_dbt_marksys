@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import random
 from google.oauth2.service_account import Credentials
-from extra_streamlit_components import CookieManager
+import extra_streamlit_components as stx
 import datetime
 import time
 
@@ -38,17 +38,31 @@ def del_cookie(cookie_manager, key):
         return False
 
 
+def admin_cookie_manager():
+    if "admin_cookie_manager" not in st.session_state:
+        st.session_state["admin_cookie_manager"] = stx.CookieManager(key="admin_cookies")
+    return st.session_state["admin_cookie_manager"]
+
+
+def committee_cookie_manager():
+    if "committee_cookie_manager" not in st.session_state:
+        st.session_state["committee_cookie_manager"] = stx.CookieManager(key="committee_cookies")
+    return st.session_state["committee_cookie_manager"]
+
+
 def check_admin():
-    cookie_manager = CookieManager(key="admin_cookies")
-    
-    if not cookie_manager.ready():
-        st.stop()
-    
+    cookie_manager = admin_cookie_manager()
+
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
 
-    # Check cookies for auto-login
+    # Check cookies for auto-login. CookieManager returns default {} on first run until the
+    # browser component runs; give it one rerun so the component can return real cookies.
     if not st.session_state["admin_logged_in"]:
+        if not st.session_state.get("_admin_cookie_rerun_done"):
+            st.session_state["_admin_cookie_rerun_done"] = True
+            st.rerun()
+        cookie_manager.get_all(key="admin_cookies_get")
         admin_cookie = get_cookie(cookie_manager, "admin_auth")
         if admin_cookie == "true":
             st.session_state["admin_logged_in"] = True
@@ -497,18 +511,18 @@ def return_rules():
 
 
 def check_committee_login():
-    cookie_manager = CookieManager(key="committee_cookies")
-    
-    if not cookie_manager.ready():
-        st.stop()
-    
-    st.session_state["committee_cookie_manager"] = cookie_manager
-    
+    cookie_manager = committee_cookie_manager()
+
     if "committee_user" not in st.session_state:
         st.session_state["committee_user"] = None
 
-    # Check cookies for auto-login
+    # Check cookies for auto-login. CookieManager returns default {} on first run until the
+    # browser component runs; give it one rerun so the component can return real cookies.
     if st.session_state["committee_user"] is None:
+        if not st.session_state.get("_committee_cookie_rerun_done"):
+            st.session_state["_committee_cookie_rerun_done"] = True
+            st.rerun()
+        cookie_manager.get_all(key="committee_cookies_get")
         committee_cookie = get_cookie(cookie_manager, "committee_user")
         if committee_cookie:
             st.session_state["committee_user"] = committee_cookie

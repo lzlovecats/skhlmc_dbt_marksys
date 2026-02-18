@@ -1,6 +1,5 @@
 import streamlit as st
-from functions import return_user_manual, return_rules, del_cookie
-from extra_streamlit_components import CookieManager
+from functions import return_user_manual, return_rules, del_cookie, admin_cookie_manager
 import time
 
 # Set up basic structure of the webpage
@@ -35,7 +34,7 @@ if st.session_state.get("admin_logged_in"):
         st.write("")
         if st.button("登出賽會人員帳戶", use_container_width=True):
             st.session_state["admin_logged_in"] = False
-            cookie_manager = CookieManager(key="admin_cookies_logout")
+            cookie_manager = admin_cookie_manager()
             del_cookie(cookie_manager, "admin_auth")
             time.sleep(1)
             st.rerun()
@@ -51,7 +50,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.12.2 (Indirect)")
+    st.caption("🛠️ 系統版本：1.12.3 (Indirect)")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()
