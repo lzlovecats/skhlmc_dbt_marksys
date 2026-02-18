@@ -1,5 +1,5 @@
 import streamlit as st
-from functions import check_committee_login, get_connection, del_cookie, committee_cookie_manager
+from functions import check_committee_login, get_connection, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder
 import time
 
 st.header("🗳️ 辯題徵集及投票系統")
@@ -23,6 +23,16 @@ def get_cached_worksheets():
         "Account": conn.worksheet("Account")
     }
 
+@st.dialog("嚟自Gemini嘅提醒")
+def show_gemini_reminder():
+    reminder = return_gemini_reminder()
+    st.markdown(reminder)
+
+@st.dialog("嚟自ChatGPT嘅提醒")
+def show_chatgpt_reminder():
+    reminder = return_chatgpt_reminder()
+    st.markdown(reminder)
+
 try:
     sheets = get_cached_worksheets()
     ws_vote = sheets["Vote"]
@@ -42,8 +52,18 @@ tab1, tab2 ,tab3= st.tabs(["📝 提出新辯題", "📊 辯題投票", "🔐 �
 with tab1:
     st.subheader("提出新辯題")
     new_topic = st.text_input("請輸入完整辯題")
+
+    # If there are too many pending topics, block new submissions and remind voting first.
+    pending_vote_data, _ = get_vote_data(ws_vote, ws_voted)
+    pending_count = len(pending_vote_data) if pending_vote_data else 0
+    submit_disabled = pending_count >= 10
+    if submit_disabled:
+        st.warning(
+            f"目前已有 **{pending_count}** 個「待表決辯題」。"
+            "請先到「📊 辯題投票」完成投票，直到待表決辯題數量少於10個後再提交新辯題。"
+        )
     
-    if st.button("提交辯題"):
+    if st.button("提交辯題", disabled=submit_disabled):
         if not new_topic.strip():
             st.warning("你未輸入任何文字！")
         else:
@@ -62,9 +82,20 @@ with tab2:
     st.caption("只要同意票數 ≥ 5 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
     st.caption("只要不同意票數 ≥ 5 且 不同意 > 同意，系統會自動刪除辯題。")
 
-    if st.button("🔄 查看最新投票情況"):
-        get_vote_data.clear()
-        st.rerun()
+    button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
+    with button_col1:
+        if st.button("🔄 查看最新投票情況"):
+            get_vote_data.clear()
+            st.rerun()
+
+    with button_col2:
+        if st.button("💡 Gemini提提你"):
+            show_gemini_reminder()
+
+    with button_col3:
+        if st.button("🔍 ChatGPT提提你"):
+            show_chatgpt_reminder()
+    st.divider()
     
     vote_data, voted_data_raw = get_vote_data(ws_vote, ws_voted)
     
