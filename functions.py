@@ -38,12 +38,6 @@ def del_cookie(cookie_manager, key):
         return False
 
 
-def admin_cookie_manager():
-    if "admin_cookie_manager" not in st.session_state:
-        st.session_state["admin_cookie_manager"] = stx.CookieManager(key="admin_cookies")
-    return st.session_state["admin_cookie_manager"]
-
-
 def committee_cookie_manager():
     if "committee_cookie_manager" not in st.session_state:
         st.session_state["committee_cookie_manager"] = stx.CookieManager(key="committee_cookies")
@@ -51,22 +45,8 @@ def committee_cookie_manager():
 
 
 def check_admin():
-    cookie_manager = admin_cookie_manager()
-
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
-
-    # Check cookies for auto-login. CookieManager returns default {} on first run until the
-    # browser component runs; give it one rerun so the component can return real cookies.
-    if not st.session_state["admin_logged_in"]:
-        if not st.session_state.get("_admin_cookie_rerun_done"):
-            st.session_state["_admin_cookie_rerun_done"] = True
-            st.rerun()
-        cookie_manager.get_all(key="admin_cookies_get")
-        admin_cookie = get_cookie(cookie_manager, "admin_auth")
-        if admin_cookie == "true":
-            st.session_state["admin_logged_in"] = True
-            st.rerun()
 
     if not st.session_state["admin_logged_in"]:
         st.subheader("賽會人員登入")
@@ -74,8 +54,6 @@ def check_admin():
         if st.button("登入"):
             if pwd == st.secrets["admin_password"]:
                 st.session_state["admin_logged_in"] = True
-                set_cookie(cookie_manager, "admin_auth", "true", expires_at=return_expire_day())
-                time.sleep(1)
                 st.rerun()
             else:
                 st.error("密碼錯誤")
