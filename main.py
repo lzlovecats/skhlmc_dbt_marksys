@@ -14,7 +14,6 @@ def show_rules():
     rules_content = return_rules()
     st.markdown(rules_content)
 
-
 # Define pages
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
 page_match_mgmt = st.Page("match_info.py", title="比賽場次管理（賽會人員用）")
@@ -46,7 +45,8 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：1.12.5 (Indirect)")
+    st.caption("🛠️ 系統版本：2.0.0")
+    st.caption("🖥️ 最近更新：22 Feb 2026")
     st.caption("🧑‍💻 Developed by lzlovecats @ 2026")
 
 pg.run()

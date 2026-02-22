@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet, draw_a_topic, draw_pro_con
+from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query
 st.header("賽事資料輸入")
 
 # Create time slots
@@ -11,11 +11,6 @@ end_t = datetime.strptime("18:00", "%H:%M")
 while start_t <= end_t:
     time_slots.append(start_t.strftime("%H:%M"))
     start_t += timedelta(minutes=10)
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
 
 # Create states if they don't exist
 if "delete_confirm_id" not in st.session_state:
@@ -42,9 +37,9 @@ if st.session_state["match_action_message"]:
 if not check_admin():
     st.stop()
 
-# Get matches from gsheet and store them to the state
+# Get matches from db and store them to the state
 if "all_matches" not in st.session_state:
-    st.session_state["all_matches"] = load_data_from_gsheet()
+    st.session_state["all_matches"] = load_matches_from_db()
 
 # Add a new match and store to gsheet
 new_match_id = st.text_input("輸入比賽場次")
@@ -61,7 +56,7 @@ if st.button("新增比賽場次"):
                 "con_1": "", "con_2": "", "con_3": "", "con_4": "", "access_code": ""
             }
             st.session_state["all_matches"][new_match_id] = new_match_data
-            save_match_to_gsheet(new_match_data)
+            save_match_to_db(new_match_data)
             st.success(f"已建立場次：{new_match_id}")
         else:
             st.warning("此場次已存在。")
@@ -160,9 +155,8 @@ if st.session_state["all_matches"]:
         display_access_code = current_access_code_from_sheet[1:] if current_access_code_from_sheet.startswith("'") else current_access_code_from_sheet
         access_code = st.text_input("評判入場密碼", value=display_access_code)
 
-        # Save edited info to gsheet
+        # Save edited info to db
         if st.form_submit_button("儲存場次資料"):
-            prepared_access_code = f"'{access_code}"
             match_data_prepare = {
                 "match_id": selected_match,
                 "date": match_date.strftime("%Y-%m-%d"),
@@ -170,10 +164,10 @@ if st.session_state["all_matches"]:
                 "que": que, 
                 "pro": pro_team, "con": con_team, 
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
-                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": prepared_access_code}
+                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": access_code}
             st.session_state["all_matches"][selected_match] = match_data_prepare
-            save_match_to_gsheet(match_data_prepare)
-            st.success(f"資料已儲存至Google Cloud！")
+            save_match_to_db(match_data_prepare)
+            st.success(f"資料已儲存至數據庫！")
     
     # Delete a match
     st.divider()
@@ -189,29 +183,9 @@ if st.session_state["all_matches"]:
         with col_del_1:
             if st.button("確定刪除", type="primary", key="confirm_delete_btn"):
                 try:
-                    ss = get_connection()  # The whole sheet
-                    ws_match = ss.worksheet("Match")
-                    ws_score = ss.worksheet("Score")
-                    ws_temp = ss.worksheet("Temp")
-
-
-                    # Delete from "Match" sheet
-                    match_col_values = ws_match.col_values(1)
-                    if selected_match in match_col_values:
-                        row_index = match_col_values.index(selected_match) + 1
-                        ws_match.delete_rows(row_index)
-
-                    # Delete all corresponding entries from "Score" sheet
-                    score_col_values = ws_score.col_values(1)
-                    rows_to_delete = [i + 1 for i, v in enumerate(score_col_values) if v == selected_match]
-                    for row_num in sorted(rows_to_delete, reverse=True):
-                        ws_score.delete_rows(row_num)
-                    
-                    # Delete all corresponding entries from "Temp" sheet
-                    temp_col_values = ws_temp.col_values(1)
-                    rows_to_delete = [i + 1 for i, v in enumerate(temp_col_values) if v == selected_match]
-                    for row_num in sorted(rows_to_delete, reverse=True):
-                        ws_temp.delete_rows(row_num)
+                    execute_query("DELETE FROM matches WHERE match_id = :match_id", {"match_id": selected_match})
+                    execute_query("DELETE FROM scores WHERE match_id = :match_id", {"match_id": selected_match})
+                    execute_query("DELETE FROM temp_scores WHERE match_id = :match_id", {"match_id": selected_match})
 
                     # Clean up session state and set final message
                     if selected_match in st.session_state["all_matches"]:

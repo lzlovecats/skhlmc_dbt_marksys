@@ -2,15 +2,14 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from functions import (
-    load_data_from_gsheet,
+    load_matches_from_db,
     get_connection,
-    load_draft_from_gsheet,
-    save_draft_to_gsheet,
+    load_draft_from_db,
+    save_draft_to_db,
+    execute_query
 )
 
 st.header("電子評分系統")
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets", 
-          "https://www.googleapis.com/auth/drive"]
 
 if "auth_match_id" not in st.session_state:
     st.session_state["auth_match_id"] = None
@@ -25,7 +24,7 @@ if "active_match_id" not in st.session_state:
     st.session_state["active_match_id"] = None
 
 if "all_matches" not in st.session_state:
-    st.session_state["all_matches"] = load_data_from_gsheet()  # All matches in gsheet (Local)
+    st.session_state["all_matches"] = load_matches_from_db()  # All matches in db (Local)
 
 if "submission_message" not in st.session_state:
     st.session_state["submission_message"] = None
@@ -95,7 +94,7 @@ if "draft_loaded" not in st.session_state:
 
 if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
     with st.spinner("正在檢查雲端暫存紀錄..."):
-        drafts = load_draft_from_gsheet(selected_match_id, judge_name)
+        drafts = load_draft_from_db(selected_match_id, judge_name)
         
         if drafts["正方"] or drafts["反方"]:
             if st.session_state["temp_scores"]["正方"] is None and drafts["正方"]:
@@ -248,12 +247,11 @@ if st.button(f"暫存{team_side}評分"):
     if not judge_name:
         st.error("請輸入評判姓名！")
     else:
-        existing_submit = get_connection().worksheet("Score").get_all_values()
-        for i, row in enumerate(existing_submit):
-            if i == 0: continue  # Skip header
-            if row[0] == selected_match_id and row[1] == judge_name:
-                st.error("你已提交過評分！無法修改評分！")
-                st.stop()
+        conn = get_connection()
+        existing_submit = conn.query(f"SELECT * FROM scores WHERE match_id='{selected_match_id}' AND judge_name='{judge_name}'", ttl=0)
+        if not existing_submit.empty:
+            st.error("你已提交過評分！無法修改評分！")
+            st.stop()
 
         side_data = {
             "team_name": team_name,
@@ -270,7 +268,7 @@ if st.button(f"暫存{team_side}評分"):
         st.session_state["temp_scores"][team_side] = side_data
 
         with st.spinner("正在上傳暫存資料至雲端..."):
-            success = save_draft_to_gsheet(selected_match_id, judge_name, team_side, side_data)
+            success = save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
         
         cols_a = ["內容 (x4)", "辭鋒 (x3)", "組織 (x2)", "風度 (x1)"]
         cols_b = ["內容 (20)", "辭鋒 (15)", "組織 (10)", "合作 (5)", "風度 (5)"]
@@ -310,8 +308,7 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
                 st.error("請輸入評判姓名！")
                 st.stop()
 
-            ss = get_connection()
-            score_sheet = ss.worksheet("Score") 
+            conn = get_connection()
             
             side_data = {
             "team_name": team_name,
@@ -330,33 +327,40 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             pro = st.session_state["temp_scores"]["正方"]
             con = st.session_state["temp_scores"]["反方"]
             
-            merged_row = [
-                selected_match_id,
-                judge_name,
-                pro["team_name"],
-                con["team_name"],
-                pro["final_total"],
-                con["final_total"],
-                (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
-                pro["ind_scores"][0], pro["ind_scores"][1], pro["ind_scores"][2], pro["ind_scores"][3],
-                con["ind_scores"][0], con["ind_scores"][1], con["ind_scores"][2], con["ind_scores"][3],
-                pro["total_b"], con["total_b"],
-                pro["deduction"], con["deduction"],
-                pro["coherence"], con["coherence"]
-            ]
-            
-            existing_submit = get_connection().worksheet("Score").get_all_values()
-            for i, row in enumerate(existing_submit):
-                if i == 0: continue  # Skip header
-                if row[0] == selected_match_id and row[1] == judge_name:
-                    st.session_state["submission_message"] = {
-                        "type": "error",
-                        "content": "你已提交過評分！無法再次提交！",
-                        "noti": "提交評分失敗（重覆提交）"}
-                    st.rerun()
+            existing_submit = conn.query(f"SELECT * FROM scores WHERE match_id='{selected_match_id}' AND judge_name='{judge_name}'", ttl=0)
+            if not existing_submit.empty:
+                st.session_state["submission_message"] = {
+                    "type": "error",
+                    "content": "你已提交過評分！無法再次提交！",
+                    "noti": "提交評分失敗（重覆提交）"}
+                st.rerun()
+                
             with st.spinner("正在上傳評分至雲端..."):
-                save_final_draft = save_draft_to_gsheet(selected_match_id, judge_name, team_side, side_data)
-                score_sheet.append_row(merged_row)
+                save_final_draft = save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
+                query = """
+                INSERT INTO scores (
+                    match_id, judge_name, pro_name, con_name, pro_total, con_total, mark_time, 
+                    pro1_m, pro2_m, pro3_m, pro4_m, con1_m, con2_m, con3_m, con4_m, 
+                    pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
+                ) VALUES (
+                    :match_id, :judge_name, :pro_name, :con_name, 
+                    :pro_total, :con_total, :mark_time, 
+                    :pro1_m, :pro2_m, :pro3_m, :pro4_m, :con1_m, :con2_m, :con3_m, :con4_m, 
+                    :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
+                )
+                """
+                params = {
+                    "match_id": selected_match_id, "judge_name": judge_name, 
+                    "pro_name": pro["team_name"], "con_name": con["team_name"],
+                    "pro_total": pro["final_total"], "con_total": con["final_total"],
+                    "mark_time": (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "pro1_m": pro["ind_scores"][0], "pro2_m": pro["ind_scores"][1], "pro3_m": pro["ind_scores"][2], "pro4_m": pro["ind_scores"][3],
+                    "con1_m": con["ind_scores"][0], "con2_m": con["ind_scores"][1], "con3_m": con["ind_scores"][2], "con4_m": con["ind_scores"][3],
+                    "pro_free": pro["total_b"], "con_free": con["total_b"], 
+                    "pro_deduction": pro["deduction"], "con_deduction": con["deduction"], 
+                    "pro_coherence": pro["coherence"], "con_coherence": con["coherence"]
+                }
+                execute_query(query, params)
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
 
             st.balloons()

@@ -1,14 +1,12 @@
 import streamlit as st
-import gspread
 import json
 import pandas as pd
 import random
-from google.oauth2.service_account import Credentials
 import extra_streamlit_components as stx
 import datetime
 import time
-
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+import io
+from sqlalchemy import text
 
 def get_cookie(cookie_manager, key, default=None):
     try:
@@ -79,155 +77,139 @@ def check_score():
 
 
 def get_connection():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES
+    try:
+        conn = st.connection("postgresql", type="sql")
+        return conn
+    except Exception as e:
+        st.error(f"連線錯誤: {e}")
+        return None
+
+def execute_query(sql_str, params=None):
+    conn = get_connection()
+    with conn.session as s:
+        s.execute(text(sql_str), params or {})
+        s.commit()
+
+def load_matches_from_db():
+    conn = get_connection()
+    df = conn.query("SELECT * FROM MATCHES", ttl=0)
+
+    data_dict = {}
+    for i, row in df.iterrows():
+        match_id = str(row["match_id"])
+        data_dict[match_id] = row.to_dict()
+
+    return data_dict
+
+
+def save_match_to_db(match_data):
+    conn = get_connection()
+
+    exist_match = conn.query(f"SELECT * FROM MATCHES WHERE match_id = '{match_data['match_id']}'")
+
+    params = {
+        "match_id": match_data['match_id'],
+        "date": match_data['date'] if match_data['date'] else None,
+        "time": match_data['time'] if match_data['time'] else None,
+        "topic": match_data['que'],
+        "pro_team": match_data['pro'],
+        "con_team": match_data['con'],
+        "pro_1": match_data['pro_1'],
+        "pro_2": match_data['pro_2'],
+        "pro_3": match_data['pro_3'],
+        "pro_4": match_data['pro_4'],
+        "con_1": match_data['con_1'],
+        "con_2": match_data['con_2'],
+        "con_3": match_data['con_3'],
+        "con_4": match_data['con_4'],
+        "access_code": match_data['access_code']
+    }
+
+    if not exist_match.empty:
+        query = """
+            UPDATE MATCHES SET 
+                date = :date, time = :time, topic = :topic,
+                pro_team = :pro_team, con_team = :con_team,
+                pro_1 = :pro_1, pro_2 = :pro_2, pro_3 = :pro_3, pro_4 = :pro_4,
+                con_1 = :con_1, con_2 = :con_2, con_3 = :con_3, con_4 = :con_4,
+                access_code = :access_code
+            WHERE match_id = :match_id
+        """
+        execute_query(query, params)
+    else:
+        query = """
+            INSERT INTO MATCHES (
+                match_id, date, time, topic, pro_team, con_team, 
+                pro_1, pro_2, pro_3, pro_4, con_1, con_2, con_3, con_4, access_code
+            ) VALUES (
+                :match_id, :date, :time, :topic, :pro_team, :con_team,
+                :pro_1, :pro_2, :pro_3, :pro_4, :con_1, :con_2, :con_3, :con_4, :access_code
+            )
+        """
+        execute_query(query, params)
+
+
+def save_draft_to_db(match_id, judge_name, team_side, score_data):
+    conn = get_connection()
+
+    data_to_save = score_data.copy()
+    if "raw_df_a" in data_to_save:
+        data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_json()
+    if "raw_df_b" in data_to_save:
+        data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_json()
+
+    json_str = json.dumps(data_to_save, ensure_ascii=False)
+
+    exist_temp_data = conn.query(f"SELECT * FROM temp_scores WHERE match_id = '{match_id}' AND judge_name = '{judge_name}'", ttl=0)
+
+    for i, row in exist_temp_data.iterrows():
+        if str(row["team_side"]).strip() == team_side:
+            execute_query(
+                "UPDATE temp_scores SET data = :data WHERE match_id = :match_id AND judge_name = :judge_name AND team_side = :team_side",
+                {"data": json_str, "match_id": match_id, "judge_name": judge_name, "team_side": team_side}
+            )
+            return True
+        
+    execute_query(
+        "INSERT INTO temp_scores (match_id, judge_name, team_side, data) VALUES (:match_id, :judge_name, :team_side, :data)",
+        {"match_id": match_id, "judge_name": judge_name, "team_side": team_side, "data": json_str}
     )
-    client = gspread.authorize(creds)
-    spreadsheet = client.open_by_key("1y8FFMVfp1to5iIVAhNUPvICr__REwslUJsr_TkK3QF8")
-    return spreadsheet
+    return True
 
 
-def load_data_from_gsheet():
-    try:
-        spreadsheet = get_connection()
-        sheet = spreadsheet.worksheet("Match")
-        records = sheet.get_all_records()
+def load_draft_from_db(match_id, judge_name):
+    conn = get_connection()
 
-        data_dict = {}
-        for row in records:
-            m_id = str(row["match_id"])
-            if m_id:
-                data_dict[m_id] = row
-        return data_dict
-    except Exception as e:
-        st.error(f"連線錯誤: {e}")
-        return {}
-
-
-def save_match_to_gsheet(match_data):
-    spreadsheet = get_connection()
-    sheet = spreadsheet.worksheet("Match")
-    try:
-        match_ids = sheet.col_values(1)
-
-        row_values = [
-            match_data["match_id"],
-            str(match_data["date"]),
-            str(match_data["time"]),
-            match_data["que"],
-            match_data["pro"],
-            match_data["con"],
-            match_data["pro_1"], match_data["pro_2"], match_data["pro_3"], match_data["pro_4"],
-            match_data["con_1"], match_data["con_2"], match_data["con_3"], match_data["con_4"],
-            match_data.get("access_code", "")
-        ]
-
-        if match_data["match_id"] in match_ids:
-            row_index = match_ids.index(match_data["match_id"]) + 1
-            st.info("更新舊有紀錄中，請稍等。")
-            sheet.delete_rows(row_index)
-            sheet.append_row(row_values)
-        else:
-            sheet.append_row(row_values)
-
-    except Exception as e:
-        st.error(f"寫入失敗: {e}")
+    exist_temp_data = conn.query(f"SELECT * FROM temp_scores WHERE match_id = '{match_id}' AND judge_name = '{judge_name}'", ttl=0)
+    
+    drafts = {"正方": None, "反方": None}
+    for i, row in exist_temp_data.iterrows():
+        team_side = str(row["team_side"]).strip()
+        if team_side in drafts:
+            try:
+                data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+                if "raw_df_a" in data and data["raw_df_a"]:
+                    data["raw_df_a"] = pd.read_json(io.StringIO(data["raw_df_a"]))
+                if "raw_df_b" in data and data["raw_df_b"]:
+                    data["raw_df_b"] = pd.read_json(io.StringIO(data["raw_df_b"]))
+                drafts[team_side] = data
+            except Exception as e:
+                st.write(f"Error loading draft data: {e}")
+                
+    return drafts
 
 
-def delete_match_from_gsheet(match_id):
-    spreadsheet = get_connection()
-    sheet = spreadsheet.worksheet("Match")
-
-
-def save_draft_to_gsheet(match_id, judge_name, team_side, score_data):
-    try:
-        spreadsheet = get_connection()
-        worksheet = spreadsheet.worksheet("Temp")
-
-        data_to_save = score_data.copy()
-
-        if "raw_df_a" in data_to_save:
-            data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_json()
-        if "raw_df_b" in data_to_save:
-            data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_json()
-
-        json_str = json.dumps(data_to_save, ensure_ascii=False)
-
-        # Find and delete all existing drafts for this specific judge/match/side
-        all_values = worksheet.get_all_values()
-        rows_to_delete = []
-        for i, row in enumerate(all_values):
-            if i == 0: continue  # Skip header
-            if (len(row) >= 3 and
-                    str(row[0]) == str(match_id) and
-                    str(row[1]) == str(judge_name) and
-                    str(row[2]) == str(team_side)):
-                rows_to_delete.append(i + 1)
-
-        if rows_to_delete:
-            for row_num in sorted(rows_to_delete, reverse=True):
-                worksheet.delete_rows(row_num)
-
-        # Append the new, updated draft
-        worksheet.append_row([str(match_id), str(judge_name), str(team_side), json_str])
-
-        return True
-    except Exception as e:
-        st.error(f"無法上傳暫存資料至Google Cloud: {e}")
-        return False
-
-
-def load_draft_from_gsheet(match_id, judge_name):
-    try:
-        spreadsheet = get_connection()
-        worksheet = spreadsheet.worksheet("Temp")
-
-        all_values = worksheet.get_all_values()
-        result = {"正方": None, "反方": None}
-
-        for i, row in enumerate(all_values):
-            if i == 0: continue  # Skip header
-            if len(row) < 4: continue  # Ensure row has enough columns
-
-            if (str(row[0]) == str(match_id) and
-                    str(row[1]) == str(judge_name)):
-
-                side = row[2]
-                json_str = row[3]
-
-                if json_str:
-                    try:
-                        data = json.loads(json_str)
-                        if "raw_df_a" in data:
-                            data["raw_df_a"] = pd.read_json(data["raw_df_a"])
-                        if "raw_df_b" in data:
-                            data["raw_df_b"] = pd.read_json(data["raw_df_b"])
-                        result[side] = data
-                    except:
-                        pass
-        return result
-    except Exception as e:
-        return {"正方": None, "反方": None}
-
-
-def load_topic_from_gsheet():
-    try:
-        spreadsheet = get_connection()
-        sheet = spreadsheet.worksheet("Topic")
-        all_records = sheet.get_all_records()
-
-        # Extract the topic from each record, filtering out any empty rows/values.
-        # get_all_records() does not include the header row.
-        topics = [row["topic"] for row in all_records if row.get("topic")]
-        return topics
-    except Exception as e:
-        st.error(f"連線錯誤: {e}")
-        return []
+def load_topic_from_db():
+    conn = get_connection()
+    all_records = conn.query("SELECT * FROM topics", ttl=0)
+    topics = []
+    for i, row in all_records.iterrows():
+        topics.append(row["topic"])
+    return topics
 
 
 def draw_a_topic():
-    all_topic = load_topic_from_gsheet()
+    all_topic = load_topic_from_db()
     if all_topic:
         return random.choice(all_topic)
     else:
@@ -518,26 +500,22 @@ def check_committee_login():
 
         if submitted:
             conn = get_connection()
-            try:
-                ws = conn.worksheet("Account")
-                records = ws.get_all_records()
+            all_acc = conn.query("SELECT * FROM accounts", ttl=0)
 
-                login_success = False
-                for row in records:
-                    if str(row.get("userid")) == str(uid) and str(row.get("userpw")) == str(upw):
-                        login_success = True
-                        break
+            login_success = False
+            for i, row in all_acc.iterrows():   
+                if str(row.get("userid")) == str(uid) and str(row.get("userpw")) == str(upw):
+                    login_success = True
+                    break
 
-                if login_success:
-                    st.session_state["committee_user"] = uid
-                    set_cookie(cookie_manager, "committee_user", uid, expires_at=return_expire_day())
-                    st.success(f"你好，{uid}！")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("User ID或Password錯誤！")
-            except Exception as e:
-                st.error(f"無法連接至數據庫: {e}")
+            if login_success:
+                st.session_state["committee_user"] = uid
+                set_cookie(cookie_manager, "committee_user", uid, expires_at=return_expire_day())
+                st.success(f"你好，{uid}！")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("User ID或Password錯誤！")
 
 
 def return_expire_day():

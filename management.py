@@ -1,14 +1,12 @@
 import streamlit as st
 import pandas as pd
-import gspread
-from functions import check_admin, get_connection, load_data_from_gsheet, save_match_to_gsheet
+from functions import check_admin, get_connection
 st.header("賽事結果統計")
 
 def get_score_data():
     try:
-        spreadsheet = get_connection()
-        score_sheet = spreadsheet.worksheet("Score")
-        data = score_sheet.get_all_records()
+        conn = get_connection()
+        data = conn.query("SELECT * FROM scores", ttl=0)
         return pd.DataFrame(data)
     except Exception as e:
         st.error(f"讀取評分失敗: {e}")
@@ -20,7 +18,7 @@ if not check_admin():
 df_scores = get_score_data()
 
 if df_scores is None or df_scores.empty:
-    st.info("Google Cloud上未有任何評分紀錄。")
+    st.info("系統中未有任何評分紀錄。")
     st.stop()
 
 df_scores['match_id'] = df_scores['match_id'].astype(str)

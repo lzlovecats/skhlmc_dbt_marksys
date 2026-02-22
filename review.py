@@ -9,18 +9,17 @@ if not check_score():
 
 def get_score_data():
     try:
-        spreadsheet = get_connection()
-        score_sheet = spreadsheet.worksheet("Score")
-        data = score_sheet.get_all_records()
-        return pd.DataFrame(data)
+        conn = get_connection()
+        df = conn.query("SELECT * FROM scores", ttl=0)
+        return pd.DataFrame(df)
     except Exception as e:
         st.error(f"讀取評分失敗: {e}")
-        return None
+        return pd.DataFrame()
         
 df_scores = get_score_data()
 
 if df_scores is None or df_scores.empty:
-    st.info("Google Cloud上未有任何評分紀錄。")
+    st.info("數據庫上未有任何評分紀錄。")
     st.stop()
 
 all_matches = df_scores['match_id'].unique()
@@ -41,9 +40,8 @@ with col_info3:
 st.divider()
 st.write("### 評分詳情")
 
-spreadsheet = get_connection()
-temp_sheet = spreadsheet.worksheet("Temp")
-detail = temp_sheet.get_all_values()
+conn = get_connection()
+temp_sheet = conn.query("SELECT * FROM temp_scores", ttl=0)
 
 def display_team_scores(side_label, team_name, record, detail_a, detail_b):
     st.subheader(f"{side_label}：{team_name}")
@@ -75,12 +73,12 @@ col_pro, col_con = st.columns(2)
 
 pro_detail_a, pro_detail_b = pd.DataFrame(), pd.DataFrame()
 con_detail_a, con_detail_b = pd.DataFrame(), pd.DataFrame()
-for row in detail:
-    if len(row) >= 4 and row[0] == selected_match and row[1] == selected_judge:
-        side = row[2]
-        detail_json = row[3]
+for i, row in temp_sheet.iterrows():
+    if str(row["match_id"]).strip() == str(selected_match).strip() and str(row["judge_name"]).strip() == str(selected_judge).strip():
+        side = str(row["team_side"]).strip()
+        detail_json = row["data"]
         try:
-            data = json.loads(detail_json)
+            data = detail_json if isinstance(detail_json, dict) else json.loads(detail_json)
             if side == "正方":
                 if "raw_df_a" in data:
                     pro_detail_a = pd.read_json(data["raw_df_a"])
