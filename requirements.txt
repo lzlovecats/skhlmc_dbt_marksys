@@ -5,5 +5,5 @@ pandas
 numpy
 streamlit>=1.36.0
 extra-streamlit-components
-SQLAlchemy==2.0.25
+SQLAlchemy
 psycopg2-binary
