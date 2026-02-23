@@ -176,6 +176,12 @@ with tab2:
                 with c1:
                     st.write(f"**{topic}**")
                     st.caption(f"提出者：{author} | 目前票數 - 同意: {f_count} | 不同意: {a_count}")
+
+                    f_progress = min(f_count / 5.0, 1.0)
+                    a_progress = min(a_count / 5.0, 1.0)
+                    
+                    st.progress(f_progress, text=f"同意票進度: {f_count} / 5")
+                    st.progress(a_progress, text=f"不同意票進度: {a_count} / 5")
                     
                 with c2:
                     if user_id in agree_list:
@@ -282,6 +288,7 @@ with tab2:
         else:
             st.caption("暫無記錄")
 
+
 with tab3:
     st.subheader("罷免投票")
     st.caption("只要同意罷免票數 ≥ 5 且 同意 > 不同意，系統會自動刪除辯題。")
@@ -330,6 +337,12 @@ with tab3:
                 with c1:
                     st.write(f"**{topic}**")
                     st.caption(f"提出者: {mover} | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}")
+
+                    f_progress = min(f_count / 5.0, 1.0)
+                    a_progress = min(a_count / 5.0, 1.0)
+                    
+                    st.progress(f_progress, text=f"同意罷免進度: {f_count} / 5")
+                    st.progress(a_progress, text=f"不同意罷免進度: {a_count} / 5")
                     
                 with c2:
                     if user_id in agree_list:
