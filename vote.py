@@ -1,5 +1,5 @@
 import streamlit as st
-from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder
+from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder
 import time
 from datetime import datetime
 try:
@@ -20,6 +20,16 @@ def show_gemini_reminder():
 @st.dialog("嚟自ChatGPT嘅提醒")
 def show_chatgpt_reminder(): 
     content = return_chatgpt_reminder()
+    st.markdown(content)
+
+@st.dialog("嚟自Gemini嘅提醒")
+def depose_show_gemini_reminder():
+    content = return_gemini_depose_reminder()
+    st.markdown(content)
+
+@st.dialog("嚟自ChatGPT嘅提醒")
+def depose_show_chatgpt_reminder():
+    content = return_chatgpt_depose_reminder()
     st.markdown(content)
 
 if not check_committee_login():
@@ -277,9 +287,17 @@ with tab3:
     st.caption("只要同意罷免票數 ≥ 5 且 同意 > 不同意，系統會自動刪除辯題。")
     st.caption("只要不同意罷免票數 ≥ 5 且 不同意 > 同意，系統會自動刪除罷免動議。")
 
-    if st.button("🔄 查看最新罷免投票情況"):
-        get_vote_data.clear()
-        st.rerun()
+    button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
+    with button_col1:
+        if st.button("🔄 查看最新罷免投票情況"):
+            get_vote_data.clear()
+            st.rerun()
+    with button_col2:
+        if st.button("💡 Gemini提醒你"):
+            depose_show_gemini_reminder()
+    with button_col3:
+        if st.button("🔍 ChatGPT提醒你"):
+            depose_show_chatgpt_reminder()
 
     conn = get_connection()
     df_depose = conn.query("SELECT * FROM topic_depose_votes ORDER BY created_at DESC", ttl=0)
