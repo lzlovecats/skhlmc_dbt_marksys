@@ -11,6 +11,66 @@ from functions import (
 
 st.header("電子評分系統")
 
+@st.dialog("最後確認")
+def confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data):
+    st.write("根據你的評分，兩隊總分為：")
+    st.write(f"正方：{pro['final_total']} ／ 460")
+    st.write(f"反方：{con['final_total']} ／ 460")
+    if pro['final_total'] == con['final_total']:
+        st.error("注意：兩隊總分相同！")
+    elif pro['final_total'] > con['final_total']:
+        st.success("勝方：正方")
+    else:
+        st.success("勝方：反方")
+    st.warning("請仔細檢查分數，最後確定後將無法修改！")
+    if st.button("最後確定", type="primary"):
+        try:
+            conn = get_connection()
+            existing_submit = conn.query(f"SELECT * FROM scores WHERE match_id='{selected_match_id}' AND judge_name='{judge_name}'", ttl=0)
+            if not existing_submit.empty:
+                st.session_state["submission_message"] = {
+                    "type": "error",
+                    "content": "你已提交過評分！無法再次提交！",
+                    "noti": "提交評分失敗（重覆提交）"}
+                st.rerun()
+
+            with st.spinner("正在上傳評分至雲端..."):
+                save_final_draft = save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
+                query = """
+                INSERT INTO scores (
+                    match_id, judge_name, pro_name, con_name, pro_total, con_total, mark_time, 
+                    pro1_m, pro2_m, pro3_m, pro4_m, con1_m, con2_m, con3_m, con4_m, 
+                    pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
+                ) VALUES (
+                    :match_id, :judge_name, :pro_name, :con_name, 
+                    :pro_total, :con_total, :mark_time, 
+                    :pro1_m, :pro2_m, :pro3_m, :pro4_m, :con1_m, :con2_m, :con3_m, :con4_m, 
+                    :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
+                )
+                """
+                params = {
+                    "match_id": selected_match_id, "judge_name": judge_name, 
+                    "pro_name": pro["team_name"], "con_name": con["team_name"],
+                    "pro_total": pro["final_total"], "con_total": con["final_total"],
+                    "mark_time": (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "pro1_m": pro["ind_scores"][0], "pro2_m": pro["ind_scores"][1], "pro3_m": pro["ind_scores"][2], "pro4_m": pro["ind_scores"][3],
+                    "con1_m": con["ind_scores"][0], "con2_m": con["ind_scores"][1], "con3_m": con["ind_scores"][2], "con4_m": con["ind_scores"][3],
+                    "pro_free": pro["total_b"], "con_free": con["total_b"], 
+                    "pro_deduction": pro["deduction"], "con_deduction": con["deduction"], 
+                    "pro_coherence": pro["coherence"], "con_coherence": con["coherence"]
+                }
+                execute_query(query, params)
+            st.session_state["temp_scores"] = {"正方": None, "反方": None}
+            st.session_state["submission_message"] = {
+                "type": "success",
+                "content": "已成功提交評分！感謝評判百忙之中抽空擔任評分工作 :>",
+                "noti": "🙌 已成功提交評分！"
+            }
+            st.session_state["judge_authenticated"] = False
+            st.rerun()
+        except Exception as e:
+            st.error(f"儲存失敗: {e}")
+
 if "auth_match_id" not in st.session_state:
     st.session_state["auth_match_id"] = None
 
@@ -326,46 +386,7 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
 
             pro = st.session_state["temp_scores"]["正方"]
             con = st.session_state["temp_scores"]["反方"]
-            
-            existing_submit = conn.query(f"SELECT * FROM scores WHERE match_id='{selected_match_id}' AND judge_name='{judge_name}'", ttl=0)
-            if not existing_submit.empty:
-                st.session_state["submission_message"] = {
-                    "type": "error",
-                    "content": "你已提交過評分！無法再次提交！",
-                    "noti": "提交評分失敗（重覆提交）"}
-                st.rerun()
-                
-            with st.spinner("正在上傳評分至雲端..."):
-                save_final_draft = save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
-                query = """
-                INSERT INTO scores (
-                    match_id, judge_name, pro_name, con_name, pro_total, con_total, mark_time, 
-                    pro1_m, pro2_m, pro3_m, pro4_m, con1_m, con2_m, con3_m, con4_m, 
-                    pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
-                ) VALUES (
-                    :match_id, :judge_name, :pro_name, :con_name, 
-                    :pro_total, :con_total, :mark_time, 
-                    :pro1_m, :pro2_m, :pro3_m, :pro4_m, :con1_m, :con2_m, :con3_m, :con4_m, 
-                    :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
-                )
-                """
-                params = {
-                    "match_id": selected_match_id, "judge_name": judge_name, 
-                    "pro_name": pro["team_name"], "con_name": con["team_name"],
-                    "pro_total": pro["final_total"], "con_total": con["final_total"],
-                    "mark_time": (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
-                    "pro1_m": pro["ind_scores"][0], "pro2_m": pro["ind_scores"][1], "pro3_m": pro["ind_scores"][2], "pro4_m": pro["ind_scores"][3],
-                    "con1_m": con["ind_scores"][0], "con2_m": con["ind_scores"][1], "con3_m": con["ind_scores"][2], "con4_m": con["ind_scores"][3],
-                    "pro_free": pro["total_b"], "con_free": con["total_b"], 
-                    "pro_deduction": pro["deduction"], "con_deduction": con["deduction"], 
-                    "pro_coherence": pro["coherence"], "con_coherence": con["coherence"]
-                }
-                execute_query(query, params)
-            st.session_state["temp_scores"] = {"正方": None, "反方": None}
 
-            st.balloons()
-            st.success("已成功提交評分！")
-            st.toast("感謝評判百忙之中抽空擔任評分工作 :>", icon="🙌")
-            st.session_state["judge_authenticated"] = False
+            confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data)
         except Exception as e:
             st.error(f"儲存失敗: {e}")

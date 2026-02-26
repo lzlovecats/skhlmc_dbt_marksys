@@ -108,10 +108,10 @@ def load_matches_from_db():
 def save_match_to_db(match_data):
     conn = get_connection()
 
-    exist_match = conn.query(f"SELECT * FROM MATCHES WHERE match_id = '{match_data['match_id']}'")
+    exist_match = conn.query(f"SELECT * FROM MATCHES WHERE match_id = '{match_data['match_id'].strip()}'", ttl=0)
 
     params = {
-        "match_id": match_data['match_id'],
+        "match_id": match_data['match_id'].strip(),
         "date": match_data['date'] if match_data['date'] else None,
         "time": match_data['time'] if match_data['time'] else None,
         "topic": match_data['que'],

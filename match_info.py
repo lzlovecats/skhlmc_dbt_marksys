@@ -79,6 +79,7 @@ if st.session_state["all_matches"]:
         drawed_topic = draw_a_topic()
         if drawed_topic != "":
             st.success(f"已抽取辯題：{drawed_topic}")
+            st.session_state["all_matches"][selected_match]["que"] = drawed_topic
     else:
         st.info("按「抽辯題」以從辯題庫中抽取一條辯題。")
 
@@ -132,7 +133,7 @@ if st.session_state["all_matches"]:
         match_time_str = st.selectbox("比賽時間", options=time_slots, index=index)
         match_time = datetime.strptime(match_time_str, "%H:%M").time()
 
-        que = st.text_input("辯題", value=current_data.get("que", ""), key=f"que_{selected_match}")
+        que = st.text_input("辯題", value=current_data.get("que", ""))
 
         pro, con = st.columns(2)
         with pro:
