@@ -1,13 +1,79 @@
+import json
 import streamlit as st
 from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder
 import time
 from datetime import datetime
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo
 
 st.header("辯題徵集、投票及罷免系統")
+
+TOPIC_REJECTION_REASONS = [
+    "立論方向不清晰",
+    "概念界定含糊",
+    "正反論證責任失衡",
+    "立場失衡或明顯偏題",
+    "與現有辯題重複或過於相似",
+    "討論價值不足",
+    "題目表述可再修訂"
+]
+
+DEPOSE_REASONS = [
+    "題目已過時",
+    "正反論證責任失衡",
+    "題目表述含糊",
+    "程度過於簡單或過於複雜",
+    "題目與現有題庫類似或重複",
+    "題目討論價值不足",
+    "已有更好版本可取代"
+]
+
+
+def parse_reason_map(raw_value):
+    if isinstance(raw_value, dict):
+        return raw_value
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def parse_reason_list(raw_value):
+    if isinstance(raw_value, list):
+        return [str(item).strip() for item in raw_value if str(item).strip()]
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except (TypeError, json.JSONDecodeError):
+        pass
+    return [str(raw_value).strip()] if str(raw_value).strip() else []
+
+
+def dump_json(data):
+    return json.dumps(data, ensure_ascii=False)
+
+
+def collect_reasons(selected_reasons, other_reason):
+    reasons = [reason.strip() for reason in selected_reasons if reason.strip()]
+    other_reason = other_reason.strip()
+    if other_reason:
+        reasons.append(f"其他：{other_reason}")
+    return reasons
+
+
+def render_reason_lines(reason_map, empty_text):
+    if not reason_map:
+        st.caption(empty_text)
+        return
+    for voter, reasons in reason_map.items():
+        formatted = "；".join(parse_reason_list(reasons))
+        if formatted:
+            st.caption(f"{voter}：{formatted}")
 
 # Get committee cookie manager first
 cm = committee_cookie_manager()
@@ -102,10 +168,22 @@ with tab1:
             "請選擇要提出罷免動議的辯題 (可多選)",
             options=df["topic"].to_list()
         )
+    depose_reason_choices = st.multiselect(
+        "請選擇提出罷免動議的原因（可多選）",
+        options=DEPOSE_REASONS,
+        key="depose_reason_choices"
+    )
+    depose_reason_other = st.text_area(
+        "其他補充原因（如有）",
+        key="depose_reason_other",
+        placeholder="例如：題目最近已在其他比賽打過。"
+    )
 
     if st.button("提出罷免動議"):
         if not topics_to_depose:
             st.warning("你未選擇任何辯題！")
+        elif not collect_reasons(depose_reason_choices, depose_reason_other):
+            st.warning("請至少交代一個罷免原因。")
         else:
             conn = get_connection()
             exist_votes = conn.query("SELECT topic FROM topic_depose_votes", ttl=0)
@@ -114,13 +192,27 @@ with tab1:
                 st.warning("目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。")
                 st.stop()
             proposed = True
+            proposal_reasons = collect_reasons(depose_reason_choices, depose_reason_other)
             for t in topics_to_depose:
                 if t in exist_depose_topics:
                     proposed = False
                 else:
                     hk_time = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
-                    query = "INSERT INTO topic_depose_votes (topic, mover, agree_users, against_users, created_at) VALUES (:topic, :user_id, :agree_users, :against_users, :created_at)"
-                    param = {"topic": t, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time}
+                    query = """
+                    INSERT INTO topic_depose_votes (
+                        topic, mover, agree_users, against_users, created_at, proposal_reasons
+                    ) VALUES (
+                        :topic, :user_id, :agree_users, :against_users, :created_at, :proposal_reasons
+                    )
+                    """
+                    param = {
+                        "topic": t,
+                        "user_id": user_id,
+                        "agree_users": "{}",
+                        "against_users": "{}",
+                        "created_at": hk_time,
+                        "proposal_reasons": dump_json(proposal_reasons)
+                    }
                     execute_query(query, param)
             get_vote_data.clear()
             if proposed:
@@ -161,6 +253,11 @@ with tab2:
 
             agree_list = row.get("agree_users", "")
             against_list = row.get("against_users", "")
+            if not isinstance(agree_list, list):
+                agree_list = []
+            if not isinstance(against_list, list):
+                against_list = []
+            against_reason_map = parse_reason_map(row.get("against_reasons", ""))
             
             f_count = len(agree_list)
             a_count = len(against_list)
@@ -182,6 +279,8 @@ with tab2:
                     
                     st.progress(f_progress, text=f"同意票進度: {f_count} / 5")
                     st.progress(a_progress, text=f"不同意票進度: {a_count} / 5")
+                    with st.expander("查看不同意理由", expanded=False):
+                        render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
                     
                 with c2:
                     if user_id in agree_list:
@@ -198,8 +297,14 @@ with tab2:
                             with st.spinner("更改投票中..."):
                                 against_list.remove(user_id)
                                 agree_list.append(user_id)
-                                query = "UPDATE topic_votes SET against_users=:new_against_str, agree_users=:new_agree_str WHERE topic=:topic"
-                                param = {"new_against_str": against_list, "new_agree_str": agree_list, "topic": topic}
+                                against_reason_map.pop(user_id, None)
+                                query = "UPDATE topic_votes SET against_users=:new_against_str, agree_users=:new_agree_str, against_reasons=:against_reasons WHERE topic=:topic"
+                                param = {
+                                    "new_against_str": against_list,
+                                    "new_agree_str": agree_list,
+                                    "against_reasons": dump_json(against_reason_map),
+                                    "topic": topic
+                                }
                                 execute_query(query, param)
                                 st.toast("已轉投同意票！", icon="↪️️")
                                 after_vote()
@@ -214,31 +319,65 @@ with tab2:
                                 after_vote()
 
                 with c3:
+                    selected_reason_choices = st.multiselect(
+                        "不同意原因",
+                        options=TOPIC_REJECTION_REASONS,
+                        key=f"against_reason_choices_{i}"
+                    )
+                    other_reason = st.text_area(
+                        "其他原因",
+                        key=f"against_reason_other_{i}",
+                        placeholder="如需要，可補充具體修訂意見。"
+                    )
                     if user_id in against_list:
                         if st.button("已反對 (點擊撤回)", key=f"a_done_{i}"):
                             with st.spinner("撤回投票中..."):
                                 against_list.remove(user_id)
-                                query = "UPDATE topic_votes SET against_users=:new_against_str WHERE topic=:topic"
-                                param = {"new_against_str": against_list, "topic": topic}
+                                against_reason_map.pop(user_id, None)
+                                query = "UPDATE topic_votes SET against_users=:new_against_str, against_reasons=:against_reasons WHERE topic=:topic"
+                                param = {
+                                    "new_against_str": against_list,
+                                    "against_reasons": dump_json(against_reason_map),
+                                    "topic": topic
+                                }
                                 execute_query(query, param)
                                 st.toast("已撤回不同意票！", icon="↩️")
                                 after_vote()
                     elif user_id in agree_list:
                         if st.button("轉投反對", key=f"switch_to_a_{i}"):
+                            selected_reasons = collect_reasons(selected_reason_choices, other_reason)
+                            if not selected_reasons:
+                                st.warning("請先選擇或輸入不同意原因。")
+                                st.stop()
                             with st.spinner("更改投票中..."):
                                 agree_list.remove(user_id)
                                 against_list.append(user_id)
-                                query = "UPDATE topic_votes SET agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
-                                param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
+                                against_reason_map[user_id] = selected_reasons
+                                query = "UPDATE topic_votes SET agree_users=:new_agree_str, against_users=:new_against_str, against_reasons=:against_reasons WHERE topic=:topic"
+                                param = {
+                                    "new_agree_str": agree_list,
+                                    "new_against_str": against_list,
+                                    "against_reasons": dump_json(against_reason_map),
+                                    "topic": topic
+                                }
                                 execute_query(query, param)
                                 st.toast("已轉投不同意票！", icon="↪️️")
                                 after_vote()
                     else:
                         if st.button("❌ 不同意", key=f"vote_a_{i}"):
+                            selected_reasons = collect_reasons(selected_reason_choices, other_reason)
+                            if not selected_reasons:
+                                st.warning("請先選擇或輸入不同意原因。")
+                                st.stop()
                             with st.spinner("處理你的投票中，請稍等⋯"):
                                 against_list.append(user_id)
-                                query = "UPDATE topic_votes SET against_users=:new_against_str WHERE topic=:topic"
-                                param = {"new_against_str": against_list, "topic": topic}
+                                against_reason_map[user_id] = selected_reasons
+                                query = "UPDATE topic_votes SET against_users=:new_against_str, against_reasons=:against_reasons WHERE topic=:topic"
+                                param = {
+                                    "new_against_str": against_list,
+                                    "against_reasons": dump_json(against_reason_map),
+                                    "topic": topic
+                                }
                                 execute_query(query, param)
                                 st.toast("已投下不同意票！", icon="☑️")
                                 after_vote()
@@ -316,6 +455,7 @@ with tab3:
         for i, row in enumerate(vote_data):
             topic = row["topic"]
             mover = row["mover"]
+            proposal_reasons = parse_reason_list(row.get("proposal_reasons", ""))
 
             agree_list = row.get("agree_users", "")
             if not isinstance(agree_list, list):
@@ -337,6 +477,8 @@ with tab3:
                 with c1:
                     st.write(f"**{topic}**")
                     st.caption(f"提出者: {mover} | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}")
+                    if proposal_reasons:
+                        st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
 
                     f_progress = min(f_count / 5.0, 1.0)
                     a_progress = min(a_count / 5.0, 1.0)
