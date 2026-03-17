@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import pandas as pd
 import random
+import math
 import extra_streamlit_components as stx
 import datetime
 import time
@@ -93,6 +94,24 @@ def execute_query(sql_str, params=None):
         s.commit()
 
 
+def query_params(sql_str, params=None):
+    conn = get_connection()
+    with conn.session as s:
+        result = s.execute(text(sql_str), params or {})
+        rows = result.fetchall()
+        columns = list(result.keys())
+    return pd.DataFrame(rows, columns=columns)
+
+
+def execute_query_count(sql_str, params=None):
+    conn = get_connection()
+    with conn.session as s:
+        result = s.execute(text(sql_str), params or {})
+        count = result.rowcount
+        s.commit()
+    return count
+
+
 def load_matches_from_db():
     conn = get_connection()
     df = conn.query("SELECT * FROM MATCHES", ttl=0)
@@ -108,7 +127,10 @@ def load_matches_from_db():
 def save_match_to_db(match_data):
     conn = get_connection()
 
-    exist_match = conn.query(f"SELECT * FROM MATCHES WHERE match_id = '{match_data['match_id'].strip()}'", ttl=0)
+    exist_match = query_params(
+        "SELECT * FROM MATCHES WHERE match_id = :match_id",
+        {"match_id": match_data['match_id'].strip()}
+    )
 
     params = {
         "match_id": match_data['match_id'].strip(),
@@ -163,27 +185,31 @@ def save_draft_to_db(match_id, judge_name, team_side, score_data):
 
     json_str = json.dumps(data_to_save, ensure_ascii=False)
 
-    exist_temp_data = conn.query(f"SELECT * FROM temp_scores WHERE match_id = '{match_id}' AND judge_name = '{judge_name}'", ttl=0)
-
-    for i, row in exist_temp_data.iterrows():
-        if str(row["team_side"]).strip() == team_side:
-            execute_query(
-                "UPDATE temp_scores SET data = :data WHERE match_id = :match_id AND judge_name = :judge_name AND team_side = :team_side",
-                {"data": json_str, "match_id": match_id, "judge_name": judge_name, "team_side": team_side}
-            )
-            return True
-        
-    execute_query(
-        "INSERT INTO temp_scores (match_id, judge_name, team_side, data) VALUES (:match_id, :judge_name, :team_side, :data)",
-        {"match_id": match_id, "judge_name": judge_name, "team_side": team_side, "data": json_str}
+    exist_record = query_params(
+        "SELECT * FROM temp_scores WHERE match_id = :match_id AND judge_name = :judge_name AND team_side = :team_side",
+        {"match_id": match_id, "judge_name": judge_name, "team_side": team_side}
     )
+
+    if not exist_record.empty:
+        execute_query(
+            "UPDATE temp_scores SET data = :data WHERE match_id = :match_id AND judge_name = :judge_name AND team_side = :team_side",
+            {"data": json_str, "match_id": match_id, "judge_name": judge_name, "team_side": team_side}
+        )
+    else:
+        execute_query(
+            "INSERT INTO temp_scores (match_id, judge_name, team_side, data) VALUES (:match_id, :judge_name, :team_side, :data)",
+            {"match_id": match_id, "judge_name": judge_name, "team_side": team_side, "data": json_str}
+        )
     return True
 
 
 def load_draft_from_db(match_id, judge_name):
     conn = get_connection()
 
-    exist_temp_data = conn.query(f"SELECT * FROM temp_scores WHERE match_id = '{match_id}' AND judge_name = '{judge_name}'", ttl=0)
+    exist_temp_data = query_params(
+        "SELECT * FROM temp_scores WHERE match_id = :match_id AND judge_name = :judge_name",
+        {"match_id": match_id, "judge_name": judge_name}
+    )
     
     drafts = {"正方": None, "反方": None}
     for i, row in exist_temp_data.iterrows():
@@ -221,15 +247,7 @@ def draw_a_topic():
 
 
 def draw_pro_con(team1, team2):
-    t_list = []
-    draw_num = random.randint(0, 1)
-    if draw_num == 0:
-        t_list.append(team1)
-        t_list.append(team2)
-    elif draw_num == 1:
-        t_list.append(team2)
-        t_list.append(team1)
-    return t_list
+    return random.sample([team1, team2], 2)
 
 
 def load_markdown_asset(filename):
@@ -239,6 +257,16 @@ def load_markdown_asset(filename):
             return f.read()
     except FileNotFoundError:
         return f"出現錯誤：{filename}無法存取。"
+
+
+def get_score_data():
+    try:
+        conn = get_connection()
+        data = conn.query("SELECT * FROM scores", ttl=0)
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"讀取評分失敗: {e}")
+        return None
 
 
 def return_user_manual():
@@ -288,6 +316,7 @@ def check_committee_login():
                     break
 
             if login_success:
+                refresh_acc_type(uid)
                 st.session_state["committee_user"] = uid
                 set_cookie(cookie_manager, "committee_user", uid, expires_at=return_expire_day())
                 st.success(f"你好，{uid}！")
@@ -299,6 +328,70 @@ def check_committee_login():
 
 def return_expire_day():
     return datetime.datetime.now() + datetime.timedelta(days=1)
+
+
+_ACTIVITY_SQL = """
+WITH recent_60d AS (
+    SELECT topic FROM topic_votes
+    WHERE created_at >= NOW() - INTERVAL '60 days'
+      AND (:user_id = ANY(agree_users) OR :user_id = ANY(against_users))
+    UNION ALL
+    SELECT topic FROM topic_depose_votes
+    WHERE created_at >= NOW() - INTERVAL '60 days'
+      AND (:user_id = ANY(agree_users) OR :user_id = ANY(against_users))
+),
+past_10 AS (
+    SELECT agree_users, against_users
+    FROM (
+        SELECT created_at, agree_users, against_users FROM topic_votes
+        UNION ALL
+        SELECT created_at, agree_users, against_users FROM topic_depose_votes
+        ORDER BY created_at DESC
+        LIMIT 10
+    ) AS recent_10
+    WHERE :user_id = ANY(agree_users) OR :user_id = ANY(against_users)
+)
+SELECT
+    (SELECT COUNT(*) FROM recent_60d) AS votes_60d,
+    (SELECT COUNT(*) FROM past_10)   AS votes_in_last_10
+"""
+
+
+def refresh_acc_type(user_id: str) -> str | None:
+    acc = query_params(
+        "SELECT acc_type FROM accounts WHERE userid = :user_id",
+        {"user_id": user_id}
+    )
+    if acc.empty or str(acc.iloc[0]["acc_type"]) == "admin":
+        return None
+
+    result = query_params(_ACTIVITY_SQL, {"user_id": user_id})
+    votes_60d        = int(result.iloc[0]["votes_60d"])
+    votes_in_last_10 = int(result.iloc[0]["votes_in_last_10"])
+
+    new_status = "active" if (votes_60d >= 2 or votes_in_last_10 >= 3) else "inactive"
+    execute_query(
+        "UPDATE accounts SET acc_type = :acc_type WHERE userid = :user_id",
+        {"acc_type": new_status, "user_id": user_id}
+    )
+    return new_status
+
+
+def refresh_all_acc_type():
+    conn = get_connection()
+    all_accounts = conn.query("SELECT userid FROM accounts WHERE acc_type != 'admin'", ttl=0)
+
+    for _, row in all_accounts.iterrows():
+        refresh_acc_type(row["userid"])
+
+
+def compute_threshold(base_min: int, pct: float) -> int:
+    """計算動態投票門檻：max(base_min, ceil(pct * active_users))"""
+    result = query_params(
+        "SELECT COUNT(*) AS cnt FROM accounts WHERE acc_type = 'active'"
+    )
+    active_count = int(result.iloc[0]["cnt"])
+    return max(base_min, math.ceil(pct * active_count))
 
 
 def return_gemini_reminder():
