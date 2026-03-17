@@ -165,8 +165,8 @@ with tab1:
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                 hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                 deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline)"
-                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline}
+                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold)"
+                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD}
                 execute_query(query, param)
                 get_vote_data.clear()
                 st.success("辯題已加入投票區！")
@@ -222,9 +222,9 @@ with tab1:
                     deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
                     query = """
                     INSERT INTO topic_depose_votes (
-                        topic, mover, agree_users, against_users, created_at, proposal_reasons, deadline
+                        topic, mover, agree_users, against_users, created_at, proposal_reasons, deadline, threshold
                     ) VALUES (
-                        :topic, :user_id, :agree_users, :against_users, :created_at, :proposal_reasons, :deadline
+                        :topic, :user_id, :agree_users, :against_users, :created_at, :proposal_reasons, :deadline, :threshold
                     )
                     """
                     param = {
@@ -234,7 +234,8 @@ with tab1:
                         "against_users": "{}",
                         "created_at": hk_time,
                         "proposal_reasons": dump_json(proposal_reasons),
-                        "deadline": deadline
+                        "deadline": deadline,
+                        "threshold": DEPOSE_THRESHOLD
                     }
                     execute_query(query, param)
             get_vote_data.clear()
@@ -285,6 +286,7 @@ with tab2:
             
             f_count = len(agree_list)
             a_count = len(against_list)
+            row_threshold = int(row.get("threshold") or ENTRY_THRESHOLD)
 
             deadline_val = row.get("deadline", "")
             deadline_passed = False
@@ -312,13 +314,13 @@ with tab2:
                 with c1:
                     st.write(f"**{topic}**")
                     deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
-                    st.caption(f"提出者：{author} | 目前票數 - 同意: {f_count} | 不同意: {a_count}{deadline_display}")
+                    st.caption(f"提出者：{author} | 入庫門檻：{row_threshold} 票 | 目前票數 - 同意: {f_count} | 不同意: {a_count}{deadline_display}")
 
-                    f_progress = min(f_count / ENTRY_THRESHOLD, 1.0)
-                    a_progress = min(a_count / ENTRY_THRESHOLD, 1.0)
+                    f_progress = min(f_count / row_threshold, 1.0)
+                    a_progress = min(a_count / row_threshold, 1.0)
 
-                    st.progress(f_progress, text=f"同意票進度: {f_count} / {ENTRY_THRESHOLD}")
-                    st.progress(a_progress, text=f"不同意票進度: {a_count} / {ENTRY_THRESHOLD}")
+                    st.progress(f_progress, text=f"同意票進度: {f_count} / {row_threshold}")
+                    st.progress(a_progress, text=f"不同意票進度: {a_count} / {row_threshold}")
                     with st.expander("查看不同意理由", expanded=False):
                         render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
                     
@@ -422,7 +424,7 @@ with tab2:
                                 st.toast("已投下不同意票！", icon="☑️")
                                 after_vote()
 
-            if f_count >= ENTRY_THRESHOLD and f_count > a_count:
+            if f_count >= row_threshold and f_count > a_count:
                 st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
 
                 query = "INSERT INTO topics (topic, author) VALUES (:topic, :author)"
@@ -435,7 +437,7 @@ with tab2:
                 st.balloons()
                 st.rerun()
 
-            if a_count >= ENTRY_THRESHOLD and a_count > f_count:
+            if a_count >= row_threshold and a_count > f_count:
                 st.error(f"辯題「{topic}」已獲得{a_count}票不同意票，正在刪除辯題...")
 
                 query = "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
@@ -515,6 +517,7 @@ with tab3:
             
             f_count = len(agree_list)
             a_count = len(against_list)
+            row_depose_threshold = int(row.get("threshold") or DEPOSE_THRESHOLD)
 
             depose_deadline_val = row.get("deadline", "")
             depose_deadline_passed = False
@@ -541,15 +544,15 @@ with tab3:
                 with c1:
                     st.write(f"**{topic}**")
                     depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
-                    st.caption(f"提出者: {mover} | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
+                    st.caption(f"提出者: {mover} | 罷免門檻：{row_depose_threshold} 票 | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
                     if proposal_reasons:
                         st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
 
-                    f_progress = min(f_count / DEPOSE_THRESHOLD, 1.0)
-                    a_progress = min(a_count / DEPOSE_THRESHOLD, 1.0)
+                    f_progress = min(f_count / row_depose_threshold, 1.0)
+                    a_progress = min(a_count / row_depose_threshold, 1.0)
 
-                    st.progress(f_progress, text=f"同意罷免進度: {f_count} / {DEPOSE_THRESHOLD}")
-                    st.progress(a_progress, text=f"不同意罷免進度: {a_count} / {DEPOSE_THRESHOLD}")
+                    st.progress(f_progress, text=f"同意罷免進度: {f_count} / {row_depose_threshold}")
+                    st.progress(a_progress, text=f"不同意罷免進度: {a_count} / {row_depose_threshold}")
                     
                 with c2:
                     if user_id in agree_list:
@@ -611,7 +614,7 @@ with tab3:
                                 st.toast("已投下不同意罷免票！", icon="☑️")
                                 after_vote_depose()
 
-            if f_count >= DEPOSE_THRESHOLD and f_count > a_count:
+            if f_count >= row_depose_threshold and f_count > a_count:
                 st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
 
                 query1 = "DELETE FROM topic_depose_votes WHERE topic=:topic"
@@ -623,7 +626,7 @@ with tab3:
                 st.snow()
                 st.rerun()
 
-            if a_count >= DEPOSE_THRESHOLD and a_count > f_count:
+            if a_count >= row_depose_threshold and a_count > f_count:
                 st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
 
                 query = "DELETE FROM topic_depose_votes WHERE topic=:topic"
