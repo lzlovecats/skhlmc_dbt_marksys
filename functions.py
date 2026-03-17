@@ -309,6 +309,110 @@ def return_chatgpt_reminder():
     return load_markdown_asset("chatgpt_reminder.md")
 
 
+def _get_combined_vote_records():
+    """
+    Fetches and combines all vote records from topic_votes AND topic_depose_votes,
+    sorted by created_at. Returns (vote_records, all_users) where vote_records is
+    a list of (agree_list, against_list) tuples in chronological order.
+
+    Only rows where at least one of agree_users / against_users is non-empty are
+    counted (i.e. votes that have at least one participation record).
+    Rows where both arrays are empty are excluded at the SQL level via CARDINALITY.
+    """
+    conn = get_connection()
+    accounts_df = conn.query("SELECT userid FROM accounts", ttl=0)
+    all_users = accounts_df["userid"].tolist() if not accounts_df.empty else []
+
+    tv_df = conn.query(
+        "SELECT agree_users, against_users, created_at FROM topic_votes"
+        " WHERE CARDINALITY(agree_users) != 0 OR CARDINALITY(against_users) != 0"
+        " ORDER BY created_at ASC",
+        ttl=0,
+    ).fillna("")
+    tdv_df = conn.query(
+        "SELECT agree_users, against_users, created_at FROM topic_depose_votes"
+        " WHERE CARDINALITY(agree_users) != 0 OR CARDINALITY(against_users) != 0"
+        " ORDER BY created_at ASC",
+        ttl=0,
+    ).fillna("")
+
+    combined_df = pd.concat([tv_df, tdv_df], ignore_index=True)
+    if not combined_df.empty:
+        combined_df = combined_df.sort_values("created_at").reset_index(drop=True)
+
+    vote_records = [
+        (
+            row["agree_users"] if isinstance(row["agree_users"], list) else [],
+            row["against_users"] if isinstance(row["against_users"], list) else [],
+        )
+        for _, row in combined_df.iterrows()
+    ]
+
+    return vote_records, all_users
+
+
+def get_active_user_count():
+    """
+    Active user 定義：整體投票率（辯題投票 + 罷免投票）≥ 40% AND 最近10次投票最少投3次。
+    Returns (active_count, active_user_list)
+    """
+    vote_records, all_users = _get_combined_vote_records()
+    total_votes = len(vote_records)
+    if total_votes == 0 or not all_users:
+        return 0, []
+
+    last_10 = vote_records[-10:]
+
+    active_users = []
+    for user in all_users:
+        total_participated = sum(
+            1 for agree, against in vote_records if user in agree or user in against
+        )
+        overall_rate = total_participated / total_votes
+
+        last10_participated = sum(
+            1 for agree, against in last_10 if user in agree or user in against
+        )
+
+        if overall_rate >= 0.4 and last10_participated >= 3:
+            active_users.append(user)
+
+    return len(active_users), active_users
+
+
+def get_member_participation_stats():
+    """
+    Returns (stats_list, total_votes) with per-member participation details
+    across both topic_votes and topic_depose_votes.
+    """
+    vote_records, all_users = _get_combined_vote_records()
+    total_votes = len(vote_records)
+    last_10 = vote_records[-10:]
+
+    stats = []
+    for user in all_users:
+        total_participated = sum(
+            1 for agree, against in vote_records if user in agree or user in against
+        ) if total_votes > 0 else 0
+        overall_rate = total_participated / total_votes if total_votes > 0 else 0
+
+        last10_participated = sum(
+            1 for agree, against in last_10 if user in agree or user in against
+        )
+
+        is_active = overall_rate >= 0.4 and last10_participated >= 3
+
+        stats.append({
+            "用戶": user,
+            "整體投票次數": f"{total_participated} / {total_votes}",
+            "整體投票率": f"{overall_rate:.1%}",
+            "最近10次參與": last10_participated,
+            "活躍狀態": "✅ 活躍" if is_active else "❌ 非活躍",
+        })
+
+    return stats, total_votes
+
+
 def return_gemini_depose_reminder():
     return load_markdown_asset("gemini_depose_reminder.md")
 
