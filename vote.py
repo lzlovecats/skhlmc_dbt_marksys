@@ -121,10 +121,10 @@ if user_id != "admin":
 def get_vote_data():
     conn = get_connection()
     df = conn.query("SELECT * FROM topic_votes ORDER BY created_at DESC", ttl=0)
-    
-    # Fill NaN values with empty strings to avoid errors when splitting
     df = df.fillna("")
-    
+    for col in ["agree_users", "against_users"]:
+        df[col] = df[col].apply(lambda x: x if isinstance(x, list) else [])
+
     pending = df[df['status'] == 'pending'].to_dict('records')
     passed = df[df['status'] == 'passed']['topic'].tolist()
     rejected = df[df['status'] == 'rejected']['topic'].tolist()
@@ -213,6 +213,9 @@ with tab1:
                 st.stop()
             proposed = True
             proposal_reasons = collect_reasons(depose_reason_choices, depose_reason_other)
+            with st.spinner("正在計算投票門檻..."):
+                refresh_all_acc_type()
+                depose_threshold = compute_threshold(5, 0.50)
             for t in topics_to_depose:
                 if t in exist_depose_topics:
                     proposed = False
@@ -272,18 +275,19 @@ with tab2:
         st.info("目前沒有待表決的辯題。")
     else:
         conn = get_connection()
+
+        def after_vote():
+            get_vote_data.clear()
+            st.rerun()
+
         for i, row in enumerate(vote_data):
             topic = row["topic"]
             author = row["author"]
 
-            agree_list = row.get("agree_users", "")
-            against_list = row.get("against_users", "")
-            if not isinstance(agree_list, list):
-                agree_list = []
-            if not isinstance(against_list, list):
-                against_list = []
+            agree_list = row["agree_users"]
+            against_list = row["against_users"]
             against_reason_map = parse_reason_map(row.get("against_reasons", ""))
-            
+
             f_count = len(agree_list)
             a_count = len(against_list)
             row_threshold = int(row.get("threshold") or ENTRY_THRESHOLD)
@@ -306,11 +310,6 @@ with tab2:
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
 
-
-                def after_vote():
-                    get_vote_data.clear()
-                    st.rerun()
-
                 with c1:
                     st.write(f"**{topic}**")
                     deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
@@ -328,35 +327,29 @@ with tab2:
                     if user_id in agree_list:
                         if st.button("已同意 (點擊撤回)", key=f"f_done_{i}"):
                             with st.spinner("撤回投票中..."):
-                                agree_list.remove(user_id)
-                                query = "UPDATE topic_votes SET agree_users=:new_agree_str WHERE topic=:topic"
-                                param = {"new_agree_str": agree_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_votes SET agree_users = array_remove(agree_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已撤回同意票！", icon="↩️")
                                 after_vote()
                     elif user_id in against_list:
                         if st.button("轉投同意", key=f"switch_to_f_{i}"):
                             with st.spinner("更改投票中..."):
-                                against_list.remove(user_id)
-                                agree_list.append(user_id)
                                 against_reason_map.pop(user_id, None)
-                                query = "UPDATE topic_votes SET against_users=:new_against_str, agree_users=:new_agree_str, against_reasons=:against_reasons WHERE topic=:topic"
-                                param = {
-                                    "new_against_str": against_list,
-                                    "new_agree_str": agree_list,
-                                    "against_reasons": dump_json(against_reason_map),
-                                    "topic": topic
-                                }
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_votes SET against_users = array_remove(against_users, :user_id), agree_users = array_append(agree_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
+                                    {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
+                                )
                                 st.toast("已轉投同意票！", icon="↪️️")
                                 after_vote()
                     else:
                         if st.button("✅ 同意", key=f"vote_f_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):
-                                agree_list.append(user_id)
-                                query = "UPDATE topic_votes SET agree_users=:new_agree_str WHERE topic=:topic"
-                                param = {"new_agree_str": agree_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_votes SET agree_users = array_append(agree_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已投下同意票！", icon="☑️")
                                 after_vote()
 
@@ -374,15 +367,11 @@ with tab2:
                     if user_id in against_list:
                         if st.button("已反對 (點擊撤回)", key=f"a_done_{i}"):
                             with st.spinner("撤回投票中..."):
-                                against_list.remove(user_id)
                                 against_reason_map.pop(user_id, None)
-                                query = "UPDATE topic_votes SET against_users=:new_against_str, against_reasons=:against_reasons WHERE topic=:topic"
-                                param = {
-                                    "new_against_str": against_list,
-                                    "against_reasons": dump_json(against_reason_map),
-                                    "topic": topic
-                                }
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_votes SET against_users = array_remove(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
+                                    {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
+                                )
                                 st.toast("已撤回不同意票！", icon="↩️")
                                 after_vote()
                     elif user_id in agree_list:
@@ -392,17 +381,11 @@ with tab2:
                                 st.warning("請先選擇或輸入不同意原因。")
                                 st.stop()
                             with st.spinner("更改投票中..."):
-                                agree_list.remove(user_id)
-                                against_list.append(user_id)
                                 against_reason_map[user_id] = selected_reasons
-                                query = "UPDATE topic_votes SET agree_users=:new_agree_str, against_users=:new_against_str, against_reasons=:against_reasons WHERE topic=:topic"
-                                param = {
-                                    "new_agree_str": agree_list,
-                                    "new_against_str": against_list,
-                                    "against_reasons": dump_json(against_reason_map),
-                                    "topic": topic
-                                }
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_votes SET agree_users = array_remove(agree_users, :user_id), against_users = array_append(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
+                                    {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
+                                )
                                 st.toast("已轉投不同意票！", icon="↪️️")
                                 after_vote()
                     else:
@@ -412,15 +395,11 @@ with tab2:
                                 st.warning("請先選擇或輸入不同意原因。")
                                 st.stop()
                             with st.spinner("處理你的投票中，請稍等⋯"):
-                                against_list.append(user_id)
                                 against_reason_map[user_id] = selected_reasons
-                                query = "UPDATE topic_votes SET against_users=:new_against_str, against_reasons=:against_reasons WHERE topic=:topic"
-                                param = {
-                                    "new_against_str": against_list,
-                                    "against_reasons": dump_json(against_reason_map),
-                                    "topic": topic
-                                }
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_votes SET against_users = array_append(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
+                                    {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
+                                )
                                 st.toast("已投下不同意票！", icon="☑️")
                                 after_vote()
 
@@ -459,21 +438,15 @@ with tab2:
     
     with st.expander("📜 已通過辯題記錄 (最近十個)", expanded=False):
         if passed_list:
-            for p in range(len(passed_list)):
-                if p < 10: # Display only the last 10 passed topics
-                    st.write(f"✅ {list(reversed(passed_list))[p]}")
-                else:
-                    break
+            for item in list(reversed(passed_list))[:10]:
+                st.write(f"✅ {item}")
         else:
             st.caption("暫無記錄")
-            
+
     with st.expander("🗑️ 已否決辯題記錄 (最近十個)", expanded=False):
         if rejected_list:
-            for k in range(len(rejected_list)):
-                if k < 10: # Display only the last 10 rejected topics
-                    st.write(f"❌ {list(reversed(rejected_list))[k]}")
-                else:
-                    break
+            for item in list(reversed(rejected_list))[:10]:
+                st.write(f"❌ {item}")
         else:
             st.caption("暫無記錄")
 
@@ -498,23 +471,25 @@ with tab3:
 
     conn = get_connection()
     df_depose = conn.query("SELECT * FROM topic_depose_votes ORDER BY created_at DESC", ttl=0)
+    for col in ["agree_users", "against_users"]:
+        df_depose[col] = df_depose[col].apply(lambda x: x if isinstance(x, list) else [])
     vote_data = df_depose.to_dict('records')
 
     if not vote_data:
         st.info("目前沒有待罷免的辯題。")
     else:
+        def after_vote_depose():
+            get_vote_data.clear()
+            st.rerun()
+
         for i, row in enumerate(vote_data):
             topic = row["topic"]
             mover = row["mover"]
             proposal_reasons = parse_reason_list(row.get("proposal_reasons", ""))
 
-            agree_list = row.get("agree_users", "")
-            if not isinstance(agree_list, list):
-                agree_list = []
-            against_list = row.get("against_users", "")
-            if not isinstance(against_list, list):
-                against_list = []
-            
+            agree_list = row["agree_users"]
+            against_list = row["against_users"]
+
             f_count = len(agree_list)
             a_count = len(against_list)
             row_depose_threshold = int(row.get("threshold") or DEPOSE_THRESHOLD)
@@ -537,10 +512,6 @@ with tab3:
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
 
-                def after_vote_depose():
-                    get_vote_data.clear()
-                    st.rerun()
-
                 with c1:
                     st.write(f"**{topic}**")
                     depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
@@ -558,29 +529,28 @@ with tab3:
                     if user_id in agree_list:
                         if st.button("已同意 (點擊撤回)", key=f"depose_f_done_{i}"):
                             with st.spinner("撤回投票中..."):
-                                agree_list.remove(user_id)
-                                query = "UPDATE topic_depose_votes SET agree_users=:new_agree_str WHERE topic=:topic"
-                                param = {"new_agree_str": agree_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_depose_votes SET agree_users = array_remove(agree_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已撤回同意罷免票！", icon="↩️")
                                 after_vote_depose()
                     elif user_id in against_list:
                         if st.button("轉投同意", key=f"depose_switch_to_f_{i}"):
                             with st.spinner("更改投票中..."):
-                                against_list.remove(user_id)
-                                agree_list.append(user_id)
-                                query = "UPDATE topic_depose_votes SET against_users=:new_against_str, agree_users=:new_agree_str WHERE topic=:topic"
-                                param = {"new_against_str": against_list, "new_agree_str": agree_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_depose_votes SET against_users = array_remove(against_users, :user_id), agree_users = array_append(agree_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已轉投同意罷免票！", icon="↪️️")
                                 after_vote_depose()
                     else:
                         if st.button("✅ 同意罷免", key=f"depose_vote_f_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):
-                                agree_list.append(user_id)
-                                query = "UPDATE topic_depose_votes SET agree_users=:new_agree_str WHERE topic=:topic"
-                                param = {"new_agree_str": agree_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_depose_votes SET agree_users = array_append(agree_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已投下同意罷免票！", icon="☑️")
                                 after_vote_depose()
 
@@ -588,29 +558,28 @@ with tab3:
                     if user_id in against_list:
                         if st.button("已反對 (點擊撤回)", key=f"depose_a_done_{i}"):
                             with st.spinner("撤回投票中..."):
-                                against_list.remove(user_id)
-                                query = "UPDATE topic_depose_votes SET against_users=:new_against_str WHERE topic=:topic"
-                                param = {"new_against_str": against_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_depose_votes SET against_users = array_remove(against_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已撤回不同意罷免票！", icon="↩️")
                                 after_vote_depose()
                     elif user_id in agree_list:
                         if st.button("轉投反對", key=f"depose_switch_to_a_{i}"):
                             with st.spinner("更改投票中..."):
-                                agree_list.remove(user_id)
-                                against_list.append(user_id)
-                                query = "UPDATE topic_depose_votes SET agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
-                                param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_depose_votes SET agree_users = array_remove(agree_users, :user_id), against_users = array_append(against_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已轉投不同意罷免票！", icon="↪️️")
                                 after_vote_depose()
                     else:
                         if st.button("❌ 不同意罷免", key=f"depose_vote_a_{i}"):
                             with st.spinner("處理你的投票中，請稍等⋯"):
-                                against_list.append(user_id)
-                                query = "UPDATE topic_depose_votes SET against_users=:new_against_str WHERE topic=:topic"
-                                param = {"new_against_str": against_list, "topic": topic}
-                                execute_query(query, param)
+                                execute_query(
+                                    "UPDATE topic_depose_votes SET against_users = array_append(against_users, :user_id) WHERE topic = :topic",
+                                    {"user_id": user_id, "topic": topic}
+                                )
                                 st.toast("已投下不同意罷免票！", icon="☑️")
                                 after_vote_depose()
 

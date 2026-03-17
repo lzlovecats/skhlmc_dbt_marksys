@@ -66,4 +66,4 @@ with tab3:
                         st.error(f"刪除失敗: {e}")
                     
                     if st.button("確定"):
-                            st.run()
+                            st.rerun()

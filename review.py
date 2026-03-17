@@ -1,20 +1,12 @@
 import streamlit as st
 import pandas as pd
 import json
-from functions import check_score, get_connection
+from functions import check_score, get_connection, get_score_data
+from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 st.header("查閱評判分紙")
 
 if not check_score():
     st.stop()
-
-def get_score_data():
-    try:
-        conn = get_connection()
-        df = conn.query("SELECT * FROM scores", ttl=0)
-        return pd.DataFrame(df)
-    except Exception as e:
-        st.error(f"讀取評分失敗: {e}")
-        return pd.DataFrame()
         
 df_scores = get_score_data()
 
@@ -47,9 +39,9 @@ def display_team_scores(side_label, team_name, record, detail_a, detail_b):
     st.subheader(f"{side_label}：{team_name}")
 
     if not detail_a.empty:
-        detail_a["總分（100）"] = detail_a["內容 (x4)"] * 4 + detail_a["辭鋒 (x3)"] * 3 + detail_a["組織 (x2)"] * 2 + detail_a["風度 (x1)"] * 1
+        detail_a["總分（100）"] = sum(detail_a[speech_col(c)] * c["weight"] for c in SPEECH_CRITERIA)
     if not detail_b.empty:
-        detail_b["總分（55）"] = detail_b.sum(axis=1)
+        detail_b[f"總分（{FREE_DEBATE_MAX}）"] = detail_b.sum(axis=1)
 
     st.write("#### 甲：台上發言")
     st.dataframe(detail_a, use_container_width=True, hide_index=True)
@@ -63,9 +55,9 @@ def display_team_scores(side_label, team_name, record, detail_a, detail_b):
         deduction_key, coherence_key, total = "con_deduction", "con_coherence", "con_total"
 
     st.write(f"扣分總和：{record[deduction_key]}")
-    st.write(f"內容連貫：{record[coherence_key]} / 5 ")
+    st.write(f"內容連貫：{record[coherence_key]} / {COHERENCE_MAX} ")
     st.divider()
-    st.metric(f"{side_label}總分", f"{record[total]}／460 ")
+    st.metric(f"{side_label}總分", f"{record[total]}／{GRAND_TOTAL} ")
 
 
 col_pro, col_con = st.columns(2)
