@@ -71,10 +71,16 @@ def render_reason_lines(reason_map, empty_text):
     if not reason_map:
         st.caption(empty_text)
         return
-    for voter, reasons in reason_map.items():
-        formatted = "；".join(parse_reason_list(reasons))
-        if formatted:
-            st.caption(f"{voter}：{formatted}")
+    from collections import Counter
+    all_reasons = []
+    for reasons in reason_map.values():
+        all_reasons.extend(parse_reason_list(reasons))
+    if not all_reasons:
+        st.caption(empty_text)
+        return
+    for reason, count in Counter(all_reasons).most_common():
+        suffix = f"（{count} 人）" if count > 1 else ""
+        st.caption(f"• {reason}{suffix}")
 
 # Get committee cookie manager first
 cm = committee_cookie_manager()
@@ -439,14 +445,14 @@ with tab2:
     
     with st.expander("📜 已通過辯題記錄 (最近十個)", expanded=False):
         if passed_list:
-            for item in list(reversed(passed_list))[:10]:
+            for item in passed_list[:10]:
                 st.write(f"✅ {item}")
         else:
             st.caption("暫無記錄")
 
     with st.expander("🗑️ 已否決辯題記錄 (最近十個)", expanded=False):
         if rejected_list:
-            for item in list(reversed(rejected_list))[:10]:
+            for item in rejected_list[:10]:
                 st.write(f"❌ {item}")
         else:
             st.caption("暫無記錄")
