@@ -45,8 +45,8 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.3.0")
-    st.caption("🖥️ 最近更新：14 Mar 2026")
+    st.caption("🛠️ 系統版本：2.4.0")
+    st.caption("🖥️ 最近更新：17 Mar 2026")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
 pg.run()
