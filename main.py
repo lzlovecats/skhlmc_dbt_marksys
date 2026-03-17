@@ -45,7 +45,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.4.1")
+    st.caption("🛠️ 系統版本：2.4.2")
     st.caption("🖥️ 最近更新：17 Mar 2026")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
