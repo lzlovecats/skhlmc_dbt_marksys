@@ -1,8 +1,9 @@
 import json
+import math
 import streamlit as st
-from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder
+from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 st.header("辯題徵集、投票及罷免系統")
@@ -102,7 +103,19 @@ if not check_committee_login():
     st.stop()
 
 user_id = st.session_state["committee_user"]
+st.caption("活躍成員標準：整體投票率達40% 及 在最近十次投票中至少參與三次")
 st.info(f"已登入帳戶：**{user_id}**")
+
+_active_count, active_user_list = get_active_user_count()
+is_active = user_id == "admin" or user_id in active_user_list
+ENTRY_THRESHOLD = max(5, math.ceil(_active_count * 0.4))
+DEPOSE_THRESHOLD = max(6, math.ceil(_active_count * 0.5))
+
+if user_id != "admin":
+    if is_active:
+        st.success("帳戶狀態：活躍成員")
+    else:
+        st.warning("帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。")
 
 @st.cache_data(ttl=1)
 def get_vote_data():
@@ -117,7 +130,7 @@ def get_vote_data():
     rejected = df[df['status'] == 'rejected']['topic'].tolist()
     return pending, passed, rejected
 
-tab1, tab2 ,tab3, tab4= st.tabs(["📝 提出新辯題", "📊 辯題投票", "✂️ 罷免投票", "🔐 管理帳戶"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 提出新辯題", "📊 辯題投票", "✂️ 罷免投票", "👥 成員參與率", "🔐 管理帳戶"])
 
 with tab1:
     st.subheader("提出新辯題")
@@ -126,13 +139,15 @@ with tab1:
     # If there are >= 10 pending topics, block new submissions and remind voting first.
     pending_vote_data, _, _ = get_vote_data()
     pending_count = len(pending_vote_data) if pending_vote_data else 0
-    submit_disabled = pending_count >= 10
-    if submit_disabled:
+    submit_disabled = pending_count >= 10 or not is_active
+    if not is_active:
+        st.info("非活躍成員不能提出新辯題。")
+    elif pending_count >= 10:
         st.warning(
             f"目前已有 **{pending_count}** 個待表決辯題。"
             "請先到「📊 辯題投票」完成投票，直到待表決辯題數量少於10個後再提交新辯題。"
         )
-    
+
     if st.button("提交辯題", disabled=submit_disabled):
         if not new_topic.strip():
             st.warning("你未輸入任何文字！")
@@ -140,16 +155,18 @@ with tab1:
             conn = get_connection()
             all_topics_df = conn.query("SELECT topic FROM topics", ttl=0)
             all_votes_df = conn.query("SELECT topic FROM topic_votes WHERE status = 'pending'", ttl=0)
-            
+
             existing_topics = all_topics_df["topic"].tolist() if not all_topics_df.empty else []
             existing_votes = all_votes_df["topic"].tolist() if not all_votes_df.empty else []
-            
+
             if new_topic in existing_votes or new_topic in existing_topics:
                 st.error("此辯題已存在！")
             else:
-                hk_time = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
-                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at)"
-                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time}
+                hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+                hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+                deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
+                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline)"
+                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline}
                 execute_query(query, param)
                 get_vote_data.clear()
                 st.success("辯題已加入投票區！")
@@ -179,7 +196,10 @@ with tab1:
         placeholder="例如：題目最近已在其他比賽打過。"
     )
 
-    if st.button("提出罷免動議"):
+    if not is_active:
+        st.info("非活躍成員不能提出罷免動議。")
+
+    if st.button("提出罷免動議", disabled=not is_active):
         if not topics_to_depose:
             st.warning("你未選擇任何辯題！")
         elif not collect_reasons(depose_reason_choices, depose_reason_other):
@@ -197,12 +217,14 @@ with tab1:
                 if t in exist_depose_topics:
                     proposed = False
                 else:
-                    hk_time = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+                    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+                    hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+                    deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
                     query = """
                     INSERT INTO topic_depose_votes (
-                        topic, mover, agree_users, against_users, created_at, proposal_reasons
+                        topic, mover, agree_users, against_users, created_at, proposal_reasons, deadline
                     ) VALUES (
-                        :topic, :user_id, :agree_users, :against_users, :created_at, :proposal_reasons
+                        :topic, :user_id, :agree_users, :against_users, :created_at, :proposal_reasons, :deadline
                     )
                     """
                     param = {
@@ -211,7 +233,8 @@ with tab1:
                         "agree_users": "{}",
                         "against_users": "{}",
                         "created_at": hk_time,
-                        "proposal_reasons": dump_json(proposal_reasons)
+                        "proposal_reasons": dump_json(proposal_reasons),
+                        "deadline": deadline
                     }
                     execute_query(query, param)
             get_vote_data.clear()
@@ -223,8 +246,9 @@ with tab1:
 
 with tab2:
     st.subheader("待表決辯題")
-    st.caption("只要同意票數 ≥ 5 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
-    st.caption("只要不同意票數 ≥ 5 且 不同意 > 同意，系統會自動刪除辯題。")
+    st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
+    st.caption(f"只要同意票數 ≥ {ENTRY_THRESHOLD} 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
+    st.caption(f"只要不同意票數 ≥ {ENTRY_THRESHOLD} 且 不同意 > 同意，系統會自動刪除辯題。")
 
     button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
@@ -261,7 +285,22 @@ with tab2:
             
             f_count = len(agree_list)
             a_count = len(against_list)
-            
+
+            deadline_val = row.get("deadline", "")
+            deadline_passed = False
+            deadline_str = ""
+            if deadline_val and deadline_val != "":
+                try:
+                    if hasattr(deadline_val, 'date'):
+                        deadline_date = deadline_val.date() if hasattr(deadline_val, 'hour') else deadline_val
+                    else:
+                        deadline_date = datetime.strptime(str(deadline_val)[:10], "%Y-%m-%d").date()
+                    today_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+                    deadline_passed = today_hk > deadline_date
+                    deadline_str = deadline_date.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
 
@@ -272,13 +311,14 @@ with tab2:
 
                 with c1:
                     st.write(f"**{topic}**")
-                    st.caption(f"提出者：{author} | 目前票數 - 同意: {f_count} | 不同意: {a_count}")
+                    deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
+                    st.caption(f"提出者：{author} | 目前票數 - 同意: {f_count} | 不同意: {a_count}{deadline_display}")
 
-                    f_progress = min(f_count / 5.0, 1.0)
-                    a_progress = min(a_count / 5.0, 1.0)
-                    
-                    st.progress(f_progress, text=f"同意票進度: {f_count} / 5")
-                    st.progress(a_progress, text=f"不同意票進度: {a_count} / 5")
+                    f_progress = min(f_count / ENTRY_THRESHOLD, 1.0)
+                    a_progress = min(a_count / ENTRY_THRESHOLD, 1.0)
+
+                    st.progress(f_progress, text=f"同意票進度: {f_count} / {ENTRY_THRESHOLD}")
+                    st.progress(a_progress, text=f"不同意票進度: {a_count} / {ENTRY_THRESHOLD}")
                     with st.expander("查看不同意理由", expanded=False):
                         render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
                     
@@ -382,9 +422,9 @@ with tab2:
                                 st.toast("已投下不同意票！", icon="☑️")
                                 after_vote()
 
-            if f_count >= 5 and f_count > a_count:
+            if f_count >= ENTRY_THRESHOLD and f_count > a_count:
                 st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
-                
+
                 query = "INSERT INTO topics (topic, author) VALUES (:topic, :author)"
                 param = {"topic": topic, "author": author}
                 execute_query(query, param)
@@ -394,17 +434,25 @@ with tab2:
                 get_vote_data.clear()
                 st.balloons()
                 st.rerun()
-            
-            if a_count >= 5 and a_count > f_count:
+
+            if a_count >= ENTRY_THRESHOLD and a_count > f_count:
                 st.error(f"辯題「{topic}」已獲得{a_count}票不同意票，正在刪除辯題...")
-                
+
                 query = "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
                 param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
                 execute_query(query, param)
                 get_vote_data.clear()
                 st.snow()
                 st.rerun()
-                
+
+            if deadline_passed:
+                st.warning(f"辯題「{topic}」投票期限（{deadline_str} 23:59）已過，未達入庫標準，系統自動否決。")
+                query = "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
+                param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
+                execute_query(query, param)
+                get_vote_data.clear()
+                st.rerun()
+
     st.divider()
     
     with st.expander("📜 已通過辯題記錄 (最近十個)", expanded=False):
@@ -430,8 +478,9 @@ with tab2:
 
 with tab3:
     st.subheader("罷免投票")
-    st.caption("只要同意罷免票數 ≥ 5 且 同意 > 不同意，系統會自動刪除辯題。")
-    st.caption("只要不同意罷免票數 ≥ 5 且 不同意 > 同意，系統會自動刪除罷免動議。")
+    st.caption(f"目前活躍成員：{_active_count} 人 ｜ 罷免門檻：{DEPOSE_THRESHOLD} 票")
+    st.caption(f"只要同意罷免票數 ≥ {DEPOSE_THRESHOLD} 且 同意 > 不同意，系統會自動刪除辯題。")
+    st.caption(f"只要不同意罷免票數 ≥ {DEPOSE_THRESHOLD} 且 不同意 > 同意，系統會自動刪除罷免動議。")
 
     button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
@@ -466,7 +515,22 @@ with tab3:
             
             f_count = len(agree_list)
             a_count = len(against_list)
-            
+
+            depose_deadline_val = row.get("deadline", "")
+            depose_deadline_passed = False
+            depose_deadline_str = ""
+            if depose_deadline_val and depose_deadline_val != "":
+                try:
+                    if hasattr(depose_deadline_val, 'date'):
+                        depose_deadline_date = depose_deadline_val.date() if hasattr(depose_deadline_val, 'hour') else depose_deadline_val
+                    else:
+                        depose_deadline_date = datetime.strptime(str(depose_deadline_val)[:10], "%Y-%m-%d").date()
+                    today_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+                    depose_deadline_passed = today_hk > depose_deadline_date
+                    depose_deadline_str = depose_deadline_date.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
 
@@ -476,15 +540,16 @@ with tab3:
 
                 with c1:
                     st.write(f"**{topic}**")
-                    st.caption(f"提出者: {mover} | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}")
+                    depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
+                    st.caption(f"提出者: {mover} | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
                     if proposal_reasons:
                         st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
 
-                    f_progress = min(f_count / 5.0, 1.0)
-                    a_progress = min(a_count / 5.0, 1.0)
-                    
-                    st.progress(f_progress, text=f"同意罷免進度: {f_count} / 5")
-                    st.progress(a_progress, text=f"不同意罷免進度: {a_count} / 5")
+                    f_progress = min(f_count / DEPOSE_THRESHOLD, 1.0)
+                    a_progress = min(a_count / DEPOSE_THRESHOLD, 1.0)
+
+                    st.progress(f_progress, text=f"同意罷免進度: {f_count} / {DEPOSE_THRESHOLD}")
+                    st.progress(a_progress, text=f"不同意罷免進度: {a_count} / {DEPOSE_THRESHOLD}")
                     
                 with c2:
                     if user_id in agree_list:
@@ -546,9 +611,9 @@ with tab3:
                                 st.toast("已投下不同意罷免票！", icon="☑️")
                                 after_vote_depose()
 
-            if f_count >= 5 and f_count > a_count:
+            if f_count >= DEPOSE_THRESHOLD and f_count > a_count:
                 st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
-                
+
                 query1 = "DELETE FROM topic_depose_votes WHERE topic=:topic"
                 query2 = "DELETE FROM topics WHERE topic=:topic"
                 param = {"topic": topic}
@@ -557,10 +622,10 @@ with tab3:
                 get_vote_data.clear()
                 st.snow()
                 st.rerun()
-            
-            if a_count >= 5 and a_count > f_count:
+
+            if a_count >= DEPOSE_THRESHOLD and a_count > f_count:
                 st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
-                
+
                 query = "DELETE FROM topic_depose_votes WHERE topic=:topic"
                 param = {"topic": topic}
                 execute_query(query, param)
@@ -568,8 +633,32 @@ with tab3:
                 st.balloons()
                 st.rerun()
 
+            if depose_deadline_passed:
+                st.warning(f"罷免動議「{topic}」投票期限（{depose_deadline_str} 23:59）已過，未達罷免標準，動議自動取消。")
+                query = "DELETE FROM topic_depose_votes WHERE topic=:topic"
+                param = {"topic": topic}
+                execute_query(query, param)
+                get_vote_data.clear()
+                st.rerun()
+
 
 with tab4:
+    st.subheader("成員參與率")
+    st.caption("計算辯題投票及罷免投票的整體參與情況。活躍成員標準：整體投票率 ≥ 40% 且 最近10次投票至少參與3次。")
+
+    if st.button("🔄 查看最新數據", key="refresh_member_stats"):
+        st.cache_data.clear()
+
+    member_stats, total_topic_votes = get_member_participation_stats()
+    st.caption(f"辯題投票 + 罷免投票總數：{total_topic_votes} 個")
+
+    if member_stats:
+        st.dataframe(member_stats, use_container_width=True, hide_index=True)
+    else:
+        st.info("暫無成員資料。")
+
+
+with tab5:
     st.subheader("帳戶管理")
     
     with st.expander("更改密碼", expanded=False):
