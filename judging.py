@@ -108,6 +108,9 @@ if "last_judge_name" not in st.session_state:
 all_matches = st.session_state.get("all_matches", {})
 if not all_matches:
     st.warning("目前沒有場次資料，請先由賽會人員輸入。")
+    if st.button("🔄 重新載入場次"):
+        st.session_state["all_matches"] = load_matches_from_db()
+        st.rerun()
     st.stop()
 
 selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_matches.keys()))

@@ -62,8 +62,6 @@ with tab3:
                         for t in topics_to_delete:
                             execute_query("DELETE FROM topics WHERE topic = :topic", {"topic": t})
                         st.success("刪除完成！")
+                        st.rerun()
                     except Exception as e:
                         st.error(f"刪除失敗: {e}")
-                    
-                    if st.button("確定"):
-                            st.rerun()

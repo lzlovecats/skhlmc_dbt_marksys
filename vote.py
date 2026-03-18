@@ -1,7 +1,7 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, refresh_all_acc_type, compute_threshold
+from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -256,9 +256,6 @@ with tab1:
                 st.stop()
             proposed = True
             proposal_reasons = collect_reasons(depose_reason_choices, depose_reason_other)
-            with st.spinner("正在計算投票門檻..."):
-                refresh_all_acc_type()
-                depose_threshold = compute_threshold(5, 0.50)
             for t in topics_to_depose:
                 if t in exist_depose_topics:
                     proposed = False
@@ -349,6 +346,15 @@ with tab2:
                 except Exception:
                     pass
 
+            # Auto-reject expired topics before rendering the card (avoids flash)
+            if deadline_passed:
+                st.warning(f"辯題「{topic}」投票期限（{deadline_str} 23:59）已過，未達入庫標準，系統自動否決。")
+                query = "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
+                param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
+                execute_query(query, param)
+                get_vote_data.clear()
+                st.rerun()
+
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
 
@@ -435,14 +441,6 @@ with tab2:
                 get_vote_data.clear()
                 st.rerun()
 
-            if deadline_passed:
-                st.warning(f"辯題「{topic}」投票期限（{deadline_str} 23:59）已過，未達入庫標準，系統自動否決。")
-                query = "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
-                param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
-                execute_query(query, param)
-                get_vote_data.clear()
-                st.rerun()
-
     st.divider()
     
     with st.expander("📜 已通過辯題記錄 (最近十個)", expanded=False):
@@ -516,6 +514,15 @@ with tab3:
                     depose_deadline_str = depose_deadline_date.strftime("%Y-%m-%d")
                 except Exception:
                     pass
+
+            # Auto-dismiss expired motions before rendering the card (avoids flash)
+            if depose_deadline_passed:
+                st.warning(f"罷免動議「{topic}」投票期限（{depose_deadline_str} 23:59）已過，未達罷免標準，動議自動取消。")
+                query = "DELETE FROM topic_depose_votes WHERE topic=:topic"
+                param = {"topic": topic}
+                execute_query(query, param)
+                get_vote_data.clear()
+                st.rerun()
 
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
@@ -612,13 +619,6 @@ with tab3:
                 st.balloons()
                 st.rerun()
 
-            if depose_deadline_passed:
-                st.warning(f"罷免動議「{topic}」投票期限（{depose_deadline_str} 23:59）已過，未達罷免標準，動議自動取消。")
-                query = "DELETE FROM topic_depose_votes WHERE topic=:topic"
-                param = {"topic": topic}
-                execute_query(query, param)
-                get_vote_data.clear()
-                st.rerun()
 
 
 with tab4:

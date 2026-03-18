@@ -1,16 +1,7 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query
 st.header("賽事資料輸入")
-
-# Create time slots
-time_slots = []
-start_t = datetime.strptime("15:30", "%H:%M")
-end_t = datetime.strptime("18:00", "%H:%M")
-
-while start_t <= end_t:
-    time_slots.append(start_t.strftime("%H:%M"))
-    start_t += timedelta(minutes=10)
 
 # Create states if they don't exist
 if "delete_confirm_id" not in st.session_state:
@@ -129,16 +120,14 @@ if st.session_state["all_matches"]:
             except ValueError:
                 pass
         
-        default_time = datetime.now().time()
         saved_time_str = str(current_data.get("time", "16:00"))
         try:
-            index = time_slots.index(saved_time_str)
+            default_time = datetime.strptime(saved_time_str, "%H:%M").time()
         except ValueError:
-            index = time_slots.index("16:00") if "16:00" in time_slots else 0
+            default_time = dt_time(16, 0)
 
         match_date = st.date_input("比賽日期", value=default_date)
-        match_time_str = st.selectbox("比賽時間", options=time_slots, index=index)
-        match_time = datetime.strptime(match_time_str, "%H:%M").time()
+        match_time = st.time_input("比賽時間", value=default_time, step=timedelta(minutes=10))
 
         que = st.text_input("辯題", value=current_data.get("que", ""))
 
@@ -169,13 +158,14 @@ if st.session_state["all_matches"]:
                 "match_id": selected_match,
                 "date": match_date.strftime("%Y-%m-%d"),
                 "time": match_time.strftime("%H:%M"),
-                "que": que, 
-                "pro": pro_team, "con": con_team, 
+                "que": que,
+                "pro": pro_team, "con": con_team,
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
                 "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": access_code}
             st.session_state["all_matches"][selected_match] = match_data_prepare
             save_match_to_db(match_data_prepare)
-            st.success(f"資料已儲存至數據庫！")
+            st.session_state["match_action_message"] = {"type": "success", "content": f"場次「{selected_match}」資料已儲存至數據庫！"}
+            st.rerun()
     
     # Delete a match
     st.divider()
