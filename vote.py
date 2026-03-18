@@ -95,6 +95,41 @@ def show_chatgpt_reminder():
     content = return_chatgpt_reminder()
     st.markdown(content)
 
+@st.dialog("投反對票")
+def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False):
+    st.write(f"**{topic}**")
+    if is_switch:
+        st.info("你目前已投同意票，確認後將轉為反對票。")
+    selected_reasons = st.multiselect(
+        "請選擇不同意原因（至少選一項）",
+        options=TOPIC_REJECTION_REASONS
+    )
+    other_reason = st.text_area(
+        "其他原因（如有）",
+        placeholder="如需要，可補充具體修訂意見。"
+    )
+    if st.button("確認投票", type="primary"):
+        reasons = collect_reasons(selected_reasons, other_reason)
+        if not reasons:
+            st.warning("請至少選擇或輸入一個不同意原因。")
+        else:
+            with st.spinner("處理你的投票中，請稍等⋯"):
+                against_reason_map[user_id] = reasons
+                if is_switch:
+                    execute_query(
+                        "UPDATE topic_votes SET agree_users = array_remove(agree_users, :user_id), against_users = array_append(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
+                        {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
+                    )
+                    st.toast("已轉投不同意票！", icon="↪️️")
+                else:
+                    execute_query(
+                        "UPDATE topic_votes SET against_users = array_append(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
+                        {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
+                    )
+                    st.toast("已投下不同意票！", icon="☑️")
+                get_vote_data.clear()
+                st.rerun()
+
 @st.dialog("嚟自Gemini嘅提醒")
 def depose_show_gemini_reminder():
     content = return_gemini_depose_reminder()
@@ -136,7 +171,7 @@ def get_vote_data():
     rejected = df[df['status'] == 'rejected']['topic'].tolist()
     return pending, passed, rejected
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 提出新辯題", "📊 辯題投票", "✂️ 罷免投票", "👥 成員參與率", "🔐 管理帳戶"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 提出動議", "📊 辯題投票", "✂️ 罷免投票", "👥 成員參與率", "🔐 管理帳戶"])
 
 with tab1:
     st.subheader("提出新辯題")
@@ -263,7 +298,7 @@ with tab2:
 
     button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
-        if st.button("🔄 查看最新投票情況"):
+        if st.button("🔄 重新整理"):
             get_vote_data.clear()
             st.rerun()
 
@@ -361,16 +396,6 @@ with tab2:
                                 after_vote()
 
                 with c3:
-                    selected_reason_choices = st.multiselect(
-                        "不同意原因",
-                        options=TOPIC_REJECTION_REASONS,
-                        key=f"against_reason_choices_{i}"
-                    )
-                    other_reason = st.text_area(
-                        "其他原因",
-                        key=f"against_reason_other_{i}",
-                        placeholder="如需要，可補充具體修訂意見。"
-                    )
                     if user_id in against_list:
                         if st.button("已反對 (點擊撤回)", key=f"a_done_{i}"):
                             with st.spinner("撤回投票中..."):
@@ -383,32 +408,10 @@ with tab2:
                                 after_vote()
                     elif user_id in agree_list:
                         if st.button("轉投反對", key=f"switch_to_a_{i}"):
-                            selected_reasons = collect_reasons(selected_reason_choices, other_reason)
-                            if not selected_reasons:
-                                st.warning("請先選擇或輸入不同意原因。")
-                                st.stop()
-                            with st.spinner("更改投票中..."):
-                                against_reason_map[user_id] = selected_reasons
-                                execute_query(
-                                    "UPDATE topic_votes SET agree_users = array_remove(agree_users, :user_id), against_users = array_append(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
-                                    {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
-                                )
-                                st.toast("已轉投不同意票！", icon="↪️️")
-                                after_vote()
+                            cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=True)
                     else:
                         if st.button("❌ 不同意", key=f"vote_a_{i}"):
-                            selected_reasons = collect_reasons(selected_reason_choices, other_reason)
-                            if not selected_reasons:
-                                st.warning("請先選擇或輸入不同意原因。")
-                                st.stop()
-                            with st.spinner("處理你的投票中，請稍等⋯"):
-                                against_reason_map[user_id] = selected_reasons
-                                execute_query(
-                                    "UPDATE topic_votes SET against_users = array_append(against_users, :user_id), against_reasons = :against_reasons WHERE topic = :topic",
-                                    {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
-                                )
-                                st.toast("已投下不同意票！", icon="☑️")
-                                after_vote()
+                            cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False)
 
             if f_count >= row_threshold and f_count > a_count:
                 st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
@@ -430,7 +433,6 @@ with tab2:
                 param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
                 execute_query(query, param)
                 get_vote_data.clear()
-                st.snow()
                 st.rerun()
 
             if deadline_passed:
@@ -465,7 +467,7 @@ with tab3:
 
     button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
-        if st.button("🔄 查看最新罷免投票情況"):
+        if st.button("🔄 重新整理"):
             get_vote_data.clear()
             st.rerun()
     with button_col2:
@@ -598,7 +600,6 @@ with tab3:
                 execute_query(query1, param)
                 execute_query(query2, param)
                 get_vote_data.clear()
-                st.snow()
                 st.rerun()
 
             if a_count >= row_depose_threshold and a_count > f_count:
@@ -624,11 +625,23 @@ with tab4:
     st.subheader("成員參與率")
     st.caption("計算辯題投票及罷免投票的整體參與情況。活躍成員標準：整體投票率 ≥ 40% 且 最近10次投票至少參與3次。")
 
-    if st.button("🔄 查看最新數據", key="refresh_member_stats"):
+    if st.button("🔄 重新整理", key="refresh_member_stats"):
         st.cache_data.clear()
 
     member_stats, total_topic_votes = get_member_participation_stats()
+    num_of_active, _ = get_active_user_count()
     st.caption(f"辯題投票 + 罷免投票總數：{total_topic_votes} 個")
+    st.caption(f"目前活躍成員：{num_of_active} 人")
+
+    if member_stats and user_id != "admin":
+        current_user_stats = next((s for s in member_stats if s["用戶"] == user_id), None)
+        if current_user_stats:
+            st.subheader("我的參與情況")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("整體投票率", current_user_stats["整體投票率"])
+            m2.metric("最近10次參與", f"{current_user_stats['最近10次參與']} / 10")
+            m3.metric("活躍狀態", current_user_stats["活躍狀態"])
+            st.divider()
 
     if member_stats:
         st.dataframe(member_stats, use_container_width=True, hide_index=True)

@@ -18,7 +18,11 @@ def show_rules():
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
 page_match_mgmt = st.Page("match_info.py", title="比賽場次管理（賽會人員用）")
 page_mgmt = st.Page("management.py", title="查閱比賽結果（賽會人員用）")
-page_db_mgmt = st.Page("db_mgmt.py", title="辯題庫管理（賽會人員用）")  # Hided this page start from V2.1.0
+
+# Hided this page start from V2.1.0, Reason: Not many people need this function, and it may cause security issues if not used properly. 
+# Will consider to reopen this page in the future if there are enough demand.
+page_db_mgmt = st.Page("db_mgmt.py", title="辯題庫管理（賽會人員用）")  
+
 page_score_sheet = st.Page("review.py", title="查閱比賽分紙（比賽隊伍用）")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫（一般人員用）")
 page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免系統（內部用）")
@@ -45,8 +49,8 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.4.2")
-    st.caption("🖥️ 最近更新：17 Mar 2026")
+    st.caption("🛠️ 系統版本：2.5.0")
+    st.caption("🖥️ 最近更新：18 Mar 2026")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
 pg.run()

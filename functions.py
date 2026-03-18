@@ -484,6 +484,7 @@ def get_member_participation_stats():
 
     stats = []
     for user in all_users:
+        if user == "admin": continue  # Skip admin account from stats
         total_participated = sum(
             1 for agree, against in vote_records if user in agree or user in against
         ) if total_votes > 0 else 0

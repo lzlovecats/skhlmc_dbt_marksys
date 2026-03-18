@@ -38,10 +38,10 @@ col3.metric("平票", f"{draws} 票")
 
 if pro_votes > con_votes:
     winner_text = f"🏆勝方：正方 ({match_results['pro_name'].iloc[0]})"
-    st.success(winner_text)
+    st.info(winner_text)
 elif con_votes > pro_votes:
     winner_text = f"🏆勝方：反方 ({match_results['con_name'].iloc[0]})"
-    st.error(winner_text)
+    st.info(winner_text)
 else:
     st.warning("票數相同，依賽規需要重新運作自由辯論環節。")
 

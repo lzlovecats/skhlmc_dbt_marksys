@@ -29,6 +29,19 @@ with col_info2:
 with col_info3:
     st.write(f"**提交時間（HKT）：** {judge_record['mark_time']}")
 
+pro_total = judge_record['pro_total']
+con_total = judge_record['con_total']
+if pro_total > con_total:
+    winner_label = f"正方 ({judge_record['pro_name']})"
+elif con_total > pro_total:
+    winner_label = f"反方 ({judge_record['con_name']})"
+else:
+    winner_label = "平局"
+sum_col1, sum_col2, sum_col3 = st.columns(3)
+sum_col1.metric(f"正方總分（{judge_record['pro_name']}）", f"{pro_total} / {GRAND_TOTAL}")
+sum_col2.metric(f"反方總分（{judge_record['con_name']}）", f"{con_total} / {GRAND_TOTAL}")
+sum_col3.metric("本張分紙勝方", winner_label)
+
 st.divider()
 st.write("### 評分詳情")
 

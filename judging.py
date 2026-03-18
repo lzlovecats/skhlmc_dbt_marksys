@@ -75,6 +75,15 @@ def confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data
         except Exception as e:
             st.error(f"儲存失敗: {e}")
 
+@st.dialog("確認登出")
+def confirm_logout_dialog():
+    st.warning("登出後，本機暫存的評分進度將會清除，請確保已儲存至雲端。")
+    if st.button("確認登出", type="primary"):
+        st.session_state["last_judge_name"] = ""
+        st.session_state["judge_authenticated"] = False
+        st.session_state["temp_scores"] = {"正方": None, "反方": None}
+        st.rerun()
+
 if "auth_match_id" not in st.session_state:
     st.session_state["auth_match_id"] = None
 
@@ -143,10 +152,7 @@ judge_name_input = st.text_input("評判姓名", value=default_judge_name)
 judge_name = judge_name_input.strip() if judge_name_input else ""
 
 if st.button("登出評判帳戶"):
-    st.session_state["last_judge_name"] = ""
-    st.session_state["judge_authenticated"] = False
-    st.session_state["temp_scores"] = {"正方": None, "反方": None}
-    st.rerun()
+    confirm_logout_dialog()
 
 if judge_name != st.session_state["last_judge_name"]:
     st.session_state["draft_loaded"] = False
@@ -272,11 +278,18 @@ final_total = total_score_a + total_score_b - deduction + coherence
 st.markdown("---")
 st.title(f"總分：{final_total} / {GRAND_TOTAL}")
 
-s_pro = "已暫存☑️" if st.session_state["temp_scores"]["正方"] else "未評分✖️"
-s_con = "已暫存☑️" if st.session_state["temp_scores"]["反方"] else "未評分✖️"
-st.write(f"**評分進度：**")
-st.write(f"正方：{s_pro}")
-st.write(f"反方：{s_con}")
+st.write("**評分進度：**")
+prog_col1, prog_col2 = st.columns(2)
+with prog_col1:
+    if st.session_state["temp_scores"]["正方"]:
+        st.success(f"正方 ({pro_team_name})：已暫存 ✅")
+    else:
+        st.warning(f"正方 ({pro_team_name})：未評分 ✖️")
+with prog_col2:
+    if st.session_state["temp_scores"]["反方"]:
+        st.success(f"反方 ({con_team_name})：已暫存 ✅")
+    else:
+        st.warning(f"反方 ({con_team_name})：未評分 ✖️")
 
 if st.session_state["submission_message"]:
     msg = st.session_state["submission_message"]
@@ -334,10 +347,11 @@ if st.button(f"暫存{team_side}評分"):
                 "content": f"已暫存 {team_side} ({team_name}) 分數至雲端 。注意：有評分細項為 0 分！",
                 "noti": f"警告：{team_side}有評分細項為 0 分！"}
             else:
+                other_side = "反方" if team_side == "正方" else "正方"
                 st.session_state["submission_message"] = {
                 "type": "success",
-                "content": f"已暫存 {team_side} ({team_name}) 分數至雲端。",
-                "noti": f"雲端備份成功：{team_side}"}
+                "content": f"已暫存 {team_side} ({team_name}) 分數至雲端。請記得切換至「{other_side}」繼續評分！",
+                "noti": f"雲端備份成功：{team_side}，請切換至{other_side}繼續！"}
         else:
             if has_zeros:
                 st.session_state["submission_message"] = {
@@ -346,10 +360,11 @@ if st.button(f"暫存{team_side}評分"):
                     "noti": f"警告：{team_side}有評分細項為 0 分！"
                     }
             else:
+                other_side = "反方" if team_side == "正方" else "正方"
                 st.session_state["submission_message"] = {
                     "type": "success",
-                    "content": f"已暫存 {team_side} ({team_name}) 分數至本機。",
-                    "noti": f"成功暫存 {team_side} 分數。"}
+                    "content": f"已暫存 {team_side} ({team_name}) 分數至本機。請記得切換至「{other_side}」繼續評分！",
+                    "noti": f"成功暫存 {team_side} 分數，請切換至{other_side}繼續！"}
         st.rerun()
 
 if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"]:

@@ -22,8 +22,14 @@ if "match_action_message" not in st.session_state:
 if "show_draw_side_ui" not in st.session_state:
     st.session_state.show_draw_side_ui = False
 
-if "draw_result" not in st.session_state:
-    st.session_state.draw_result = {"pro_team": None, "con_team": None, "show": False}
+if "draw_result_dialog" not in st.session_state:
+    st.session_state.draw_result_dialog = None
+
+@st.dialog("抽站方結果")
+def show_draw_result_dialog(pro_team, con_team):
+    st.success(f"正方：{pro_team}")
+    st.success(f"反方：{con_team}")
+    st.info("抽籤結果已自動填入場次資料，請記得儲存！")
 # Show msg
 if st.session_state["match_action_message"]:
     msg = st.session_state["match_action_message"]
@@ -63,10 +69,6 @@ if st.button("新增比賽場次"):
     else:
         st.error("未輸入任何文字！")
 
-if st.session_state.draw_result["show"]:
-    st.success(f"正方：{st.session_state.draw_result['pro_team']}")
-    st.success(f"反方：{st.session_state.draw_result['con_team']}")
-    st.session_state.draw_result["show"] = False
 
 # Select a match and edit info
 if st.session_state["all_matches"]:
@@ -102,7 +104,7 @@ if st.session_state["all_matches"]:
                         pro_team, con_team = draw_pro_con(team1, team2)
                         st.session_state["all_matches"][selected_match]["pro"] = pro_team
                         st.session_state["all_matches"][selected_match]["con"] = con_team
-                        st.session_state.draw_result = {"pro_team": pro_team, "con_team": con_team, "show": True}
+                        st.session_state.draw_result_dialog = {"pro_team": pro_team, "con_team": con_team}
                         st.session_state.show_draw_side_ui = False
                         st.rerun()
                     else:
@@ -111,6 +113,11 @@ if st.session_state["all_matches"]:
                 if st.button("取消"):
                     st.session_state.show_draw_side_ui = False
                     st.rerun()
+
+    if st.session_state.draw_result_dialog:
+        d = st.session_state.draw_result_dialog
+        st.session_state.draw_result_dialog = None
+        show_draw_result_dialog(d["pro_team"], d["con_team"])
 
     with st.form(key=f"form_{selected_match}"):
 
