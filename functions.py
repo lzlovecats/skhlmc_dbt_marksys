@@ -14,8 +14,7 @@ def get_cookie(cookie_manager, key, default=None):
     try:
         value = cookie_manager.get(key)
         return default if value is None else value
-    except Exception as e:
-        st.write(e)
+    except Exception:
         return default
 
 
@@ -119,7 +118,16 @@ def load_matches_from_db():
     data_dict = {}
     for i, row in df.iterrows():
         match_id = str(row["match_id"])
-        data_dict[match_id] = row.to_dict()
+        raw = row.to_dict()
+        # Normalise DB column names to the app-internal keys used by judging.py / match_info.py
+        raw["que"] = raw.pop("topic", raw.get("que", ""))
+        raw["pro"] = raw.pop("pro_team", raw.get("pro", ""))
+        raw["con"] = raw.pop("con_team", raw.get("con", ""))
+        # BPCHAR(10) columns come back padded with trailing spaces — strip them
+        for key in ["pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"]:
+            if key in raw and raw[key]:
+                raw[key] = str(raw[key]).strip()
+        data_dict[match_id] = raw
 
     return data_dict
 
@@ -222,8 +230,8 @@ def load_draft_from_db(match_id, judge_name):
                 if "raw_df_b" in data and data["raw_df_b"]:
                     data["raw_df_b"] = pd.read_json(io.StringIO(data["raw_df_b"]))
                 drafts[team_side] = data
-            except Exception as e:
-                st.write(f"Error loading draft data: {e}")
+            except Exception:
+                pass  # Corrupt draft data — silently skip, judge will re-enter scores
                 
     return drafts
 
@@ -331,29 +339,25 @@ def return_expire_day():
 
 
 _ACTIVITY_SQL = """
-WITH recent_60d AS (
-    SELECT topic FROM topic_votes
-    WHERE created_at >= NOW() - INTERVAL '60 days'
-      AND (:user_id = ANY(agree_users) OR :user_id = ANY(against_users))
+WITH all_votes AS (
+    SELECT agree_users, against_users, created_at FROM topic_votes
+    WHERE CARDINALITY(agree_users) > 0 OR CARDINALITY(against_users) > 0
     UNION ALL
-    SELECT topic FROM topic_depose_votes
-    WHERE created_at >= NOW() - INTERVAL '60 days'
-      AND (:user_id = ANY(agree_users) OR :user_id = ANY(against_users))
+    SELECT agree_users, against_users, created_at FROM topic_depose_votes
+    WHERE CARDINALITY(agree_users) > 0 OR CARDINALITY(against_users) > 0
 ),
 past_10 AS (
     SELECT agree_users, against_users
-    FROM (
-        SELECT created_at, agree_users, against_users FROM topic_votes
-        UNION ALL
-        SELECT created_at, agree_users, against_users FROM topic_depose_votes
-        ORDER BY created_at DESC
-        LIMIT 10
-    ) AS recent_10
-    WHERE :user_id = ANY(agree_users) OR :user_id = ANY(against_users)
+    FROM all_votes
+    ORDER BY created_at DESC
+    LIMIT 10
 )
 SELECT
-    (SELECT COUNT(*) FROM recent_60d) AS votes_60d,
-    (SELECT COUNT(*) FROM past_10)   AS votes_in_last_10
+    (SELECT COUNT(*) FROM all_votes) AS total_votes,
+    (SELECT COUNT(*) FROM all_votes
+     WHERE :user_id = ANY(agree_users) OR :user_id = ANY(against_users)) AS total_participated,
+    (SELECT COUNT(*) FROM past_10
+     WHERE :user_id = ANY(agree_users) OR :user_id = ANY(against_users)) AS votes_in_last_10
 """
 
 
@@ -362,14 +366,17 @@ def refresh_acc_type(user_id: str) -> str | None:
         "SELECT acc_type FROM accounts WHERE userid = :user_id",
         {"user_id": user_id}
     )
-    if acc.empty or str(acc.iloc[0]["acc_type"]) == "admin":
+    if acc.empty or str(acc.iloc[0]["acc_type"]).strip() == "admin":
         return None
 
     result = query_params(_ACTIVITY_SQL, {"user_id": user_id})
-    votes_60d        = int(result.iloc[0]["votes_60d"])
+    total_votes      = int(result.iloc[0]["total_votes"])
+    total_participated = int(result.iloc[0]["total_participated"])
     votes_in_last_10 = int(result.iloc[0]["votes_in_last_10"])
 
-    new_status = "active" if (votes_60d >= 2 or votes_in_last_10 >= 3) else "inactive"
+    overall_rate = total_participated / total_votes if total_votes > 0 else 0.0
+    # Active criteria (matches user manual): overall rate ≥ 40% AND last-10 participation ≥ 3
+    new_status = "active" if (overall_rate >= 0.4 and votes_in_last_10 >= 3) else "inactive"
     execute_query(
         "UPDATE accounts SET acc_type = :acc_type WHERE userid = :user_id",
         {"acc_type": new_status, "user_id": user_id}

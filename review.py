@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
+import io
 from functions import check_score, get_connection, get_score_data
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 st.header("查閱評判分紙")
@@ -46,21 +47,28 @@ st.divider()
 st.write("### 評分詳情")
 
 conn = get_connection()
-temp_sheet = conn.query("SELECT * FROM temp_scores", ttl=0)
+temp_sheet = conn.query(
+    "SELECT * FROM temp_scores WHERE match_id = :mid AND judge_name = :jname",
+    params={"mid": str(selected_match), "jname": str(selected_judge)},
+    ttl=0,
+)
 
 def display_team_scores(side_label, team_name, record, detail_a, detail_b):
     st.subheader(f"{side_label}：{team_name}")
 
-    if not detail_a.empty:
-        detail_a["總分（100）"] = sum(detail_a[speech_col(c)] * c["weight"] for c in SPEECH_CRITERIA)
-    if not detail_b.empty:
-        detail_b[f"總分（{FREE_DEBATE_MAX}）"] = detail_b.sum(axis=1)
-
     st.write("#### 甲：台上發言")
-    st.dataframe(detail_a, use_container_width=True, hide_index=True)
+    if detail_a.empty:
+        st.caption("（詳細評分資料不可用）")
+    else:
+        detail_a["總分（100）"] = sum(detail_a[speech_col(c)] * c["weight"] for c in SPEECH_CRITERIA)
+        st.dataframe(detail_a, use_container_width=True, hide_index=True)
 
     st.write("#### 乙：自由辯論")
-    st.dataframe(detail_b, use_container_width=True, hide_index=True)
+    if detail_b.empty:
+        st.caption("（詳細評分資料不可用）")
+    else:
+        detail_b[f"總分（{FREE_DEBATE_MAX}）"] = detail_b.sum(axis=1)
+        st.dataframe(detail_b, use_container_width=True, hide_index=True)
 
     if side_label == "正方":
         deduction_key, coherence_key, total = "pro_deduction", "pro_coherence", "pro_total"
@@ -79,23 +87,22 @@ col_pro, col_con = st.columns(2)
 pro_detail_a, pro_detail_b = pd.DataFrame(), pd.DataFrame()
 con_detail_a, con_detail_b = pd.DataFrame(), pd.DataFrame()
 for i, row in temp_sheet.iterrows():
-    if str(row["match_id"]).strip() == str(selected_match).strip() and str(row["judge_name"]).strip() == str(selected_judge).strip():
-        side = str(row["team_side"]).strip()
-        detail_json = row["data"]
-        try:
-            data = detail_json if isinstance(detail_json, dict) else json.loads(detail_json)
-            if side == "正方":
-                if "raw_df_a" in data:
-                    pro_detail_a = pd.read_json(data["raw_df_a"])
-                if "raw_df_b" in data:
-                    pro_detail_b = pd.read_json(data["raw_df_b"])
-            elif side == "反方":
-                if "raw_df_a" in data:
-                    con_detail_a = pd.read_json(data["raw_df_a"])
-                if "raw_df_b" in data:
-                    con_detail_b = pd.read_json(data["raw_df_b"])
-        except (json.JSONDecodeError, KeyError):
-            continue
+    side = str(row["team_side"]).strip()
+    detail_json = row["data"]
+    try:
+        data = detail_json if isinstance(detail_json, dict) else json.loads(detail_json)
+        if side == "正方":
+            if "raw_df_a" in data:
+                pro_detail_a = pd.read_json(io.StringIO(data["raw_df_a"]))
+            if "raw_df_b" in data:
+                pro_detail_b = pd.read_json(io.StringIO(data["raw_df_b"]))
+        elif side == "反方":
+            if "raw_df_a" in data:
+                con_detail_a = pd.read_json(io.StringIO(data["raw_df_a"]))
+            if "raw_df_b" in data:
+                con_detail_b = pd.read_json(io.StringIO(data["raw_df_b"]))
+    except (json.JSONDecodeError, KeyError):
+        continue
 
 with col_pro:
     display_team_scores(
