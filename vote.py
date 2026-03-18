@@ -295,16 +295,16 @@ with tab2:
 
     button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
-        if st.button("🔄 重新整理"):
+        if st.button("🔄 重新整理", key="refresh_vote_tab2"):
             get_vote_data.clear()
             st.rerun()
 
     with button_col2:
-        if st.button("💡 Gemini提提你"):
+        if st.button("💡 Gemini提提你", key="gemini_tab2"):
             show_gemini_reminder()
 
     with button_col3:
-        if st.button("🔍 ChatGPT提提你"):
+        if st.button("🔍 ChatGPT提提你", key="chatgpt_tab2"):
             show_chatgpt_reminder()
     st.divider()
     
@@ -465,14 +465,14 @@ with tab3:
 
     button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
-        if st.button("🔄 重新整理"):
+        if st.button("🔄 重新整理", key="refresh_vote_tab3"):
             get_vote_data.clear()
             st.rerun()
     with button_col2:
-        if st.button("💡 Gemini提醒你"):
+        if st.button("💡 Gemini提醒你", key="gemini_tab3"):
             depose_show_gemini_reminder()
     with button_col3:
-        if st.button("🔍 ChatGPT提醒你"):
+        if st.button("🔍 ChatGPT提醒你", key="chatgpt_tab3"):
             depose_show_chatgpt_reminder()
 
     conn = get_connection()
