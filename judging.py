@@ -49,7 +49,7 @@ def confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data
                     "match_id": selected_match_id, "judge_name": judge_name,
                     "pro_name": pro["team_name"], "con_name": con["team_name"],
                     "pro_total": pro["final_total"], "con_total": con["final_total"],
-                    "mark_time": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
+                    "mark_time": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%H:%M:%S"),
                     "pro1_m": pro["ind_scores"][0], "pro2_m": pro["ind_scores"][1], "pro3_m": pro["ind_scores"][2], "pro4_m": pro["ind_scores"][3],
                     "con1_m": con["ind_scores"][0], "con2_m": con["ind_scores"][1], "con3_m": con["ind_scores"][2], "con4_m": con["ind_scores"][3],
                     "pro_free": pro["total_b"], "con_free": con["total_b"],

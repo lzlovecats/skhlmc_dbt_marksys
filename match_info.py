@@ -1,7 +1,15 @@
 import streamlit as st
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query
 st.header("賽事資料輸入")
+
+# Create time slots 15:00 – 18:00 in 10-minute steps
+time_slots = []
+_t = datetime.strptime("15:00", "%H:%M")
+_end = datetime.strptime("18:00", "%H:%M")
+while _t <= _end:
+    time_slots.append(_t.strftime("%H:%M"))
+    _t += timedelta(minutes=10)
 
 # Create states if they don't exist
 if "delete_confirm_id" not in st.session_state:
@@ -122,12 +130,13 @@ if st.session_state["all_matches"]:
         
         saved_time_str = str(current_data.get("time", "16:00"))
         try:
-            default_time = datetime.strptime(saved_time_str, "%H:%M").time()
+            index = time_slots.index(saved_time_str)
         except ValueError:
-            default_time = dt_time(16, 0)
+            index = time_slots.index("16:00") if "16:00" in time_slots else 0
 
         match_date = st.date_input("比賽日期", value=default_date)
-        match_time = st.time_input("比賽時間", value=default_time, step=timedelta(minutes=10))
+        match_time_str = st.selectbox("比賽時間", options=time_slots, index=index)
+        match_time = datetime.strptime(match_time_str, "%H:%M").time()
 
         que = st.text_input("辯題", value=current_data.get("que", ""))
 

@@ -123,6 +123,10 @@ def load_matches_from_db():
         raw["que"] = raw.pop("topic", raw.get("que", ""))
         raw["pro"] = raw.pop("pro_team", raw.get("pro", ""))
         raw["con"] = raw.pop("con_team", raw.get("con", ""))
+        # BPCHAR(10) columns come back padded with trailing spaces — strip them
+        for key in ["pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"]:
+            if key in raw and raw[key]:
+                raw[key] = str(raw[key]).strip()
         data_dict[match_id] = raw
 
     return data_dict
