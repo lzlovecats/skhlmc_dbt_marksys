@@ -1,7 +1,7 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats
+from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -193,13 +193,13 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
 
 
 def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, against_list,
-                          mode, author=None):
+                          mode, author=None, category=None, difficulty=None):
     """Check vote counts and auto-resolve if threshold met. mode: 'topic' or 'depose'."""
     if mode == "topic":
         if f_count >= threshold and f_count > a_count:
             st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
-            execute_query("INSERT INTO topics (topic, author) VALUES (:topic, :author)",
-                          {"topic": topic, "author": author})
+            execute_query("INSERT INTO topics (topic, author, category, difficulty) VALUES (:topic, :author, :category, :difficulty)",
+                          {"topic": topic, "author": author, "category": category, "difficulty": difficulty})
             execute_query(
                 "UPDATE topic_votes SET status='passed', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic",
                 {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
@@ -313,6 +313,16 @@ with tab1:
     st.subheader("提出新辯題")
     st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
     new_topic = st.text_input("請輸入完整辯題")
+    new_category = st.selectbox("辯題類別", options=CATEGORIES)
+    st.caption("辯題難度標準：")
+    st.caption("Lv1：概念日常、背景知識少，適合完全無經驗的新手")
+    st.caption("Lv2：需要一定議題認識或邏輯鋪陳，但唔需要專業知識")
+    st.caption("Lv3：涉及專業政策、複雜概念界定、或需要大量資料支撐")
+    new_difficulty = st.selectbox(
+        "辯題難度",
+        options=[1, 2, 3],
+        format_func=lambda x: DIFFICULTY_OPTIONS[x]
+    )
 
     # If there are >= 10 pending topics, block new submissions and remind voting first.
     pending_vote_data, _, _ = get_vote_data()
@@ -343,8 +353,8 @@ with tab1:
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                 hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                 deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold)"
-                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD}
+                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold, :category, :difficulty)"
+                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
                 execute_query(query, param)
                 get_vote_data.clear()
                 st.success("辯題已加入投票區！")
@@ -477,6 +487,10 @@ with tab2:
 
                 with c1:
                     st.write(f"**{topic}**")
+                    cat = row.get("category") or "—"
+                    diff = row.get("difficulty")
+                    diff_label = DIFFICULTY_OPTIONS.get(int(diff), "—") if diff else "—"
+                    st.caption(f"🏷️ {cat}　｜　{diff_label}")
                     deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
                     st.caption(f"提出者：{author} | 入庫門檻：{row_threshold} 票 | 目前票數 - 同意: {f_count} | 不同意: {a_count}{deadline_display}")
 
@@ -496,7 +510,8 @@ with tab2:
                 )
 
             check_vote_resolution(f_count, a_count, row_threshold, topic, agree_list, against_list,
-                                   mode="topic", author=author)
+                                   mode="topic", author=author,
+                                   category=row.get("category"), difficulty=row.get("difficulty"))
 
     st.divider()
     
@@ -536,6 +551,9 @@ with tab3:
         df_depose[col] = df_depose[col].apply(lambda x: x if isinstance(x, list) else [])
     vote_data = df_depose.to_dict('records')
 
+    topics_meta_df = conn.query("SELECT topic, category, difficulty FROM topics", ttl=0)
+    topic_meta = {r["topic"]: (r.get("category"), r.get("difficulty")) for _, r in topics_meta_df.iterrows()}
+
     if not vote_data:
         st.info("目前沒有待罷免的辯題。")
     else:
@@ -569,6 +587,11 @@ with tab3:
 
                 with c1:
                     st.write(f"**{topic}**")
+                    meta = topic_meta.get(topic, (None, None))
+                    depose_cat = meta[0] or "—"
+                    depose_diff = meta[1]
+                    depose_diff_label = DIFFICULTY_OPTIONS.get(int(depose_diff), "—") if depose_diff else "—"
+                    st.caption(f"🏷️ {depose_cat}　｜　{depose_diff_label}")
                     depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
                     st.caption(f"提出者: {mover} | 罷免門檻：{row_depose_threshold} 票 | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
                     if proposal_reasons:

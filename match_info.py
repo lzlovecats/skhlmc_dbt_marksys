@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query
+from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query, DIFFICULTY_OPTIONS
 st.header("賽事資料輸入")
 
 # Create time slots 15:00 – 18:00 in 10-minute steps
@@ -76,8 +76,14 @@ if st.session_state["all_matches"]:
     current_data = st.session_state["all_matches"][selected_match]
 
     # "Draw a topic" button must be outside the form to prevent StreamlitAPIException.
+    diff_filter = st.selectbox(
+        "難度篩選",
+        options=[0, 1, 2, 3],
+        format_func=lambda x: "全部難度" if x == 0 else DIFFICULTY_OPTIONS[x],
+        key=f"diff_filter_{selected_match}"
+    )
     if st.button("抽辯題", key=f"draw_topic_{selected_match}"):
-        drawed_topic = draw_a_topic()
+        drawed_topic = draw_a_topic(difficulty=diff_filter if diff_filter != 0 else None)
         if drawed_topic != "":
             st.success(f"已抽取辯題：{drawed_topic}")
             st.session_state["all_matches"][selected_match]["que"] = drawed_topic

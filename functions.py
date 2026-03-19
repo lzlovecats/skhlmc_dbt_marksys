@@ -10,6 +10,12 @@ import os
 import io
 from sqlalchemy import text
 
+CATEGORIES = [
+    "國際與時事", "科技與未來", "文化與生活",
+    "香港社會政策", "青少年與教育", "哲理／價值觀"
+]
+DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
+
 def get_cookie(cookie_manager, key, default=None):
     try:
         value = cookie_manager.get(key)
@@ -236,17 +242,19 @@ def load_draft_from_db(match_id, judge_name):
     return drafts
 
 
-def load_topic_from_db():
+def load_topic_from_db(difficulty=None):
     conn = get_connection()
-    all_records = conn.query("SELECT * FROM topics", ttl=0)
-    topics = []
-    for i, row in all_records.iterrows():
-        topics.append(row["topic"])
-    return topics
+    if difficulty:
+        all_records = conn.query(
+            "SELECT * FROM topics WHERE difficulty = :d", params={"d": difficulty}, ttl=0
+        )
+    else:
+        all_records = conn.query("SELECT * FROM topics", ttl=0)
+    return all_records["topic"].tolist()
 
 
-def draw_a_topic():
-    all_topic = load_topic_from_db()
+def draw_a_topic(difficulty=None):
+    all_topic = load_topic_from_db(difficulty=difficulty)
     if all_topic:
         return random.choice(all_topic)
     else:

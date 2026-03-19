@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from functions import check_admin, get_connection, execute_query
+from functions import check_admin, get_connection, execute_query, CATEGORIES, DIFFICULTY_OPTIONS
 st.header("辯題庫管理")
 
 if not check_admin():
@@ -29,6 +29,8 @@ with tab2:
     st.subheader("上傳辯題至辯題庫")
 
     new_topic = st.text_input("輸入新辯題")
+    new_category = st.selectbox("辯題類別", options=CATEGORIES)
+    new_difficulty = st.selectbox("辯題難度", options=[1, 2, 3], format_func=lambda x: DIFFICULTY_OPTIONS[x])
     if st.button("確定上傳"):
         if not new_topic.strip():
             st.warning("未輸入內容！")
@@ -40,7 +42,10 @@ with tab2:
             if not duplicated:
                 try:
                     with st.spinner("上傳辯題至數據庫..."):
-                        execute_query("INSERT INTO topics (topic, author) VALUES (:topic, 'admin')", {"topic": new_topic.strip()})
+                        execute_query(
+                            "INSERT INTO topics (topic, author, category, difficulty) VALUES (:topic, 'admin', :category, :difficulty)",
+                            {"topic": new_topic.strip(), "category": new_category, "difficulty": new_difficulty}
+                        )
                         st.session_state["success_upload"] = True
                         st.rerun()
                 except Exception as e:
