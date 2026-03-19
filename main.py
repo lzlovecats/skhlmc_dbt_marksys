@@ -1,8 +1,28 @@
 import streamlit as st
+import re
 from functions import return_user_manual, return_rules
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
+
+
+def extract_markdown_section(content, heading_level, target_heading):
+    heading_prefix = "#" * heading_level
+    section_pattern = re.compile(
+        rf"^{re.escape(heading_prefix)}\s+{re.escape(target_heading)}\s*$",
+        re.MULTILINE,
+    )
+    match = section_pattern.search(content)
+    if not match:
+        return None
+
+    next_section_pattern = re.compile(
+        rf"^{re.escape(heading_prefix)}\s+.+$",
+        re.MULTILINE,
+    )
+    next_match = next_section_pattern.search(content, match.end())
+    section_end = next_match.start() if next_match else len(content)
+    return content[match.start() : section_end].strip()
 
 @st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
 def show_manual():
@@ -23,10 +43,9 @@ def show_manual():
 
     manual_content = return_user_manual()
     target = role_section_map[role]
-    parts = manual_content.split("### ")
-    section_text = next((p for p in parts if p.startswith(target)), None)
+    section_text = extract_markdown_section(manual_content, 3, target)
     if section_text:
-        st.markdown("### " + section_text)
+        st.markdown(section_text)
     else:
         st.markdown(manual_content)
 
@@ -55,10 +74,9 @@ def show_rules():
         body = rules_content
 
     target = role_section_map[role]
-    parts = body.split("## ")
-    section_text = next((p for p in parts if p.startswith(target)), None)
+    section_text = extract_markdown_section(body, 2, target)
     if section_text:
-        st.markdown("## " + section_text)
+        st.markdown(section_text)
     else:
         st.markdown(body)
 
@@ -97,7 +115,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.6.2")
+    st.caption("🛠️ 系統版本：2.6.3")
     st.caption("🖥️ 最近更新：19 Mar 2026")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
