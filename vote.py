@@ -336,12 +336,15 @@ with tab1:
             "請先到「📊 辯題投票」完成投票，直到待表決辯題數量少於10個後再提交新辯題。"
         )
 
+    if "confirm_imbalance" not in st.session_state:
+        st.session_state["confirm_imbalance"] = False
+
     if st.button("提交辯題", disabled=submit_disabled):
         if not new_topic.strip():
             st.warning("你未輸入任何文字！")
         else:
             conn = get_connection()
-            all_topics_df = conn.query("SELECT topic FROM topics", ttl=0)
+            all_topics_df = conn.query("SELECT topic, category FROM topics", ttl=0)
             all_votes_df = conn.query("SELECT topic FROM topic_votes WHERE status = 'pending'", ttl=0)
 
             existing_topics = all_topics_df["topic"].tolist() if not all_topics_df.empty else []
@@ -350,14 +353,56 @@ with tab1:
             if new_topic in existing_votes or new_topic in existing_topics:
                 st.error("此辯題已存在！")
             else:
+                if not all_topics_df.empty:
+                    total_topics = len(all_topics_df)
+                    cat_count = int((all_topics_df["category"] == new_category).sum())
+                    cat_ratio = cat_count / total_topics
+                else:
+                    total_topics = 0
+                    cat_count = 0
+                    cat_ratio = 0
+
+                if cat_ratio > 0.2:
+                    st.session_state["confirm_imbalance"] = True
+                    st.session_state["pending_topic_data"] = {
+                        "new_topic": new_topic, "new_category": new_category, "new_difficulty": new_difficulty
+                    }
+                    st.warning(
+                        f"⚠️ 類別「{new_category}」目前已佔辯題庫 **{cat_ratio*100:.1f}%**"
+                        f"（共 {total_topics} 題中有 {cat_count} 題）。"
+                        "繼續新增同類辯題將令辯題庫失衡。"
+                    )
+                else:
+                    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+                    hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+                    deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
+                    query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold, :category, :difficulty)"
+                    param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
+                    execute_query(query, param)
+                    get_vote_data.clear()
+                    st.success("辯題已加入投票區！")
+
+    if st.session_state.get("confirm_imbalance"):
+        d = st.session_state["pending_topic_data"]
+        st.warning(
+            f"⚠️ 類別「{d['new_category']}」目前佔比已超過 20%，繼續新增同類辯題將令辯題庫失衡。是否確認繼續？"
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ 確認繼續提交"):
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                 hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                 deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
                 query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold, :category, :difficulty)"
-                param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
+                param = {"new_topic": d["new_topic"], "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": d["new_category"], "difficulty": d["new_difficulty"]}
                 execute_query(query, param)
                 get_vote_data.clear()
+                st.session_state["confirm_imbalance"] = False
                 st.success("辯題已加入投票區！")
+        with col2:
+            if st.button("❌ 取消"):
+                st.session_state["confirm_imbalance"] = False
+                st.rerun()
 
     st.divider()
     st.subheader("提出罷免動議")
