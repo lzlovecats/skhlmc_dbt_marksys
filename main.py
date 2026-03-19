@@ -89,12 +89,13 @@ page_mgmt = st.Page("management.py", title="查閱比賽結果（賽會人員用
 # Will consider to reopen this page in the future if there are enough demand.
 page_db_mgmt = st.Page("db_mgmt.py", title="辯題庫管理（賽會人員用）")  
 
+page_draw_schedule = st.Page("draw_match_schedule.py", title="抽取賽程（賽會人員用）")
 page_score_sheet = st.Page("review.py", title="查閱比賽分紙（比賽隊伍用）")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫（一般人員用）")
 page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免系統（內部用）")
 
 # Arrange pages
-pg = st.navigation([page_judging, page_match_mgmt, page_mgmt, page_score_sheet, page_open_db, page_vote])
+pg = st.navigation([page_judging, page_match_mgmt, page_mgmt, page_draw_schedule, page_score_sheet, page_open_db, page_vote])
 
 # Show logout when admin logged in
 if st.session_state.get("admin_logged_in"):
