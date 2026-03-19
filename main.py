@@ -4,15 +4,63 @@ from functions import return_user_manual, return_rules
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
 
-@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊")
+@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
 def show_manual():
-    manual_content = return_user_manual()
-    st.markdown(manual_content)
+    role = st.radio(
+        "請先選擇你的身份：",
+        ["評判", "賽會人員", "比賽隊伍", "一般人員", "內部委員會成員"],
+        horizontal=True,
+    )
+    st.divider()
 
-@st.dialog("校園隨想辯論比賽：賽規")
+    role_section_map = {
+        "評判": "一、評判",
+        "賽會人員": "二、賽會人員",
+        "比賽隊伍": "三、比賽隊伍",
+        "一般人員": "四、一般人員",
+        "內部委員會成員": "五、內部委員會成員",
+    }
+
+    manual_content = return_user_manual()
+    target = role_section_map[role]
+    parts = manual_content.split("### ")
+    section_text = next((p for p in parts if p.startswith(target)), None)
+    if section_text:
+        st.markdown("### " + section_text)
+    else:
+        st.markdown(manual_content)
+
+@st.dialog("校園隨想辯論比賽：賽規", width="large")
 def show_rules():
+    role = st.radio(
+        "請先選擇你的身份：",
+        ["評判", "賽會人員", "參賽隊伍"],
+        horizontal=True,
+    )
+    st.divider()
+
+    role_section_map = {
+        "評判": "一、評判",
+        "賽會人員": "二、賽會人員",
+        "參賽隊伍": "三、參賽隊伍",
+    }
+
     rules_content = return_rules()
-    st.markdown(rules_content)
+    # Always show the disclaimer first
+    disclaimer_end = rules_content.find("---")
+    if disclaimer_end != -1:
+        st.markdown(rules_content[: disclaimer_end + 3])
+        body = rules_content[disclaimer_end + 3 :]
+    else:
+        body = rules_content
+
+    target = role_section_map[role]
+    parts = body.split("## ")
+    section_text = next((p for p in parts if p.startswith(target)), None)
+    if section_text:
+        st.markdown("## " + section_text)
+    else:
+        st.markdown(body)
 
 # Define pages
 page_judging = st.Page("judging.py", title="電子分紙（評判用）")
@@ -49,8 +97,8 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.6.1")
-    st.caption("🖥️ 最近更新：18 Mar 2026")
+    st.caption("🛠️ 系統版本：2.6.2")
+    st.caption("🖥️ 最近更新：19 Mar 2026")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
 pg.run()
