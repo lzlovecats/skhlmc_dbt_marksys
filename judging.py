@@ -84,26 +84,75 @@ def confirm_logout_dialog():
         st.session_state["temp_scores"] = {"正方": None, "反方": None}
         st.rerun()
 
-if "auth_match_id" not in st.session_state:
-    st.session_state["auth_match_id"] = None
+def _init_session_state():
+    if "auth_match_id" not in st.session_state:
+        st.session_state["auth_match_id"] = None
+    if "judge_authenticated" not in st.session_state:
+        st.session_state["judge_authenticated"] = False
+    if "temp_scores" not in st.session_state:
+        st.session_state["temp_scores"] = {"正方": None, "反方": None}
+    if "active_match_id" not in st.session_state:
+        st.session_state["active_match_id"] = None
+    if "all_matches" not in st.session_state:
+        st.session_state["all_matches"] = load_matches_from_db()
+    if "submission_message" not in st.session_state:
+        st.session_state["submission_message"] = None
+    if "last_judge_name" not in st.session_state:
+        st.session_state["last_judge_name"] = ""
+    if "draft_loaded" not in st.session_state:
+        st.session_state["draft_loaded"] = False
 
-if "judge_authenticated" not in st.session_state:
-    st.session_state["judge_authenticated"] = False  # Authentication Success?
 
-if "temp_scores" not in st.session_state:
-    st.session_state["temp_scores"] = {"正方": None, "反方": None}  # Temp stores for Pro/Con (Local)
-
-if "active_match_id" not in st.session_state:
-    st.session_state["active_match_id"] = None
-
-if "all_matches" not in st.session_state:
-    st.session_state["all_matches"] = load_matches_from_db()  # All matches in db (Local)
-
-if "submission_message" not in st.session_state:
+def render_submission_message():
+    msg = st.session_state.get("submission_message")
+    if not msg:
+        return
+    render_fn = {"warning": st.warning, "success": st.success, "error": st.error}
+    icon_map = {"warning": "⚠️", "success": "✅", "error": "❌"}
+    msg_type = msg["type"]
+    if msg_type in render_fn:
+        render_fn[msg_type](msg["content"])
+    if "noti" in msg:
+        st.toast(msg["noti"], icon=icon_map.get(msg_type, "ℹ️"))
     st.session_state["submission_message"] = None
 
-if "last_judge_name" not in st.session_state:
-    st.session_state["last_judge_name"] = ""
+
+def build_side_data(team_name, total_score_a, total_score_b, deduction, coherence,
+                    final_total, individual_scores, edited_df_a, edited_df_b):
+    return {
+        "team_name": team_name,
+        "total_a": int(total_score_a),
+        "total_b": int(total_score_b),
+        "deduction": int(deduction),
+        "coherence": int(coherence),
+        "final_total": int(final_total),
+        "ind_scores": [int(s) for s in individual_scores],
+        "raw_df_a": edited_df_a,
+        "raw_df_b": edited_df_b,
+        "last_saved": datetime.now().isoformat()
+    }
+
+
+def build_save_message(team_side, team_name, has_zeros, cloud_success):
+    other_side = "反方" if team_side == "正方" else "正方"
+    location = "雲端" if cloud_success else "本機"
+    if has_zeros:
+        return {
+            "type": "warning",
+            "content": f"已暫存 {team_side} ({team_name}) 分數至{location}。注意：有評分細項為 0 分！",
+            "noti": f"警告：{team_side}有評分細項為 0 分！"
+        }
+    else:
+        noti = (f"雲端備份成功：{team_side}，請切換至{other_side}繼續！" if cloud_success
+                else f"成功暫存 {team_side} 分數，請切換至{other_side}繼續！")
+        return {
+            "type": "success",
+            "content": f"已暫存 {team_side} ({team_name}) 分數至{location}。請記得切換至「{other_side}」繼續評分！",
+            "noti": noti
+        }
+
+
+_init_session_state()
 
 all_matches = st.session_state.get("all_matches", {})
 if not all_matches:
@@ -161,9 +210,6 @@ if judge_name != st.session_state["last_judge_name"]:
     st.session_state["draft_loaded"] = False
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["last_judge_name"] = judge_name
-
-if "draft_loaded" not in st.session_state:
-    st.session_state["draft_loaded"] = False
 
 if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
     with st.spinner("正在檢查雲端暫存紀錄..."):
@@ -294,21 +340,7 @@ with prog_col2:
     else:
         st.warning(f"反方 ({con_team_name})：未評分 ✖️")
 
-if st.session_state["submission_message"]:
-    msg = st.session_state["submission_message"]
-    if msg["type"] == "warning":
-        st.warning(msg["content"])
-        if "noti" in msg:
-            st.toast(msg["noti"], icon="⚠️")
-    elif msg["type"] == "success":
-        st.success(msg["content"])
-        if "noti" in msg:
-            st.toast(msg["noti"], icon="✅")
-    elif msg["type"] == "error":
-        st.error(msg["content"])
-        if "noti" in msg:
-            st.toast(msg["noti"], icon="❌")
-    st.session_state["submission_message"] = None
+render_submission_message()
 
 if st.button(f"暫存{team_side}評分"):
     if not judge_name:
@@ -322,18 +354,8 @@ if st.button(f"暫存{team_side}評分"):
             st.error("你已提交過評分！無法修改評分！")
             st.stop()
 
-        side_data = {
-            "team_name": team_name,
-            "total_a": int(total_score_a),
-            "total_b": int(total_score_b),
-            "deduction": int(deduction),
-            "coherence": int(coherence),
-            "final_total": int(final_total),
-            "ind_scores": [int(s) for s in individual_scores],
-            "raw_df_a": edited_df_a,
-            "raw_df_b": edited_df_b,
-            "last_saved": datetime.now().isoformat()
-        }
+        side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
+                                    coherence, final_total, individual_scores, edited_df_a, edited_df_b)
         st.session_state["temp_scores"][team_side] = side_data
 
         with st.spinner("正在上傳暫存資料至雲端..."):
@@ -343,31 +365,7 @@ if st.button(f"暫存{team_side}評分"):
         cols_b = [free_debate_col(c) for c in FREE_DEBATE_CRITERIA]
         has_zeros = (edited_df_a[cols_a] == 0).any().any() or (edited_df_b[cols_b] == 0).any().any()
 
-        if success:
-            if has_zeros:
-                st.session_state["submission_message"] = {
-                "type": "warning",
-                "content": f"已暫存 {team_side} ({team_name}) 分數至雲端 。注意：有評分細項為 0 分！",
-                "noti": f"警告：{team_side}有評分細項為 0 分！"}
-            else:
-                other_side = "反方" if team_side == "正方" else "正方"
-                st.session_state["submission_message"] = {
-                "type": "success",
-                "content": f"已暫存 {team_side} ({team_name}) 分數至雲端。請記得切換至「{other_side}」繼續評分！",
-                "noti": f"雲端備份成功：{team_side}，請切換至{other_side}繼續！"}
-        else:
-            if has_zeros:
-                st.session_state["submission_message"] = {
-                    "type": "warning",
-                    "content": f"已暫存 {team_side} ({team_name}) 分數至本機。注意：有評分細項為 0 分！",
-                    "noti": f"警告：{team_side}有評分細項為 0 分！"
-                    }
-            else:
-                other_side = "反方" if team_side == "正方" else "正方"
-                st.session_state["submission_message"] = {
-                    "type": "success",
-                    "content": f"已暫存 {team_side} ({team_name}) 分數至本機。請記得切換至「{other_side}」繼續評分！",
-                    "noti": f"成功暫存 {team_side} 分數，請切換至{other_side}繼續！"}
+        st.session_state["submission_message"] = build_save_message(team_side, team_name, has_zeros, success)
         st.rerun()
 
 if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"]:
@@ -379,18 +377,8 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
                 st.error("請輸入評判姓名！")
                 st.stop()
 
-            side_data = {
-                "team_name": team_name,
-                "total_a": int(total_score_a),
-                "total_b": int(total_score_b),
-                "deduction": int(deduction),
-                "coherence": int(coherence),
-                "final_total": int(final_total),
-                "ind_scores": [int(s) for s in individual_scores],
-                "raw_df_a": edited_df_a,
-                "raw_df_b": edited_df_b,
-                "last_saved": datetime.now().isoformat()
-            }
+            side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
+                                        coherence, final_total, individual_scores, edited_df_a, edited_df_b)
             st.session_state["temp_scores"][team_side] = side_data
 
             pro = st.session_state["temp_scores"]["正方"]
