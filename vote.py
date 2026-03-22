@@ -104,14 +104,22 @@ def parse_deadline_row(row, key="deadline"):
     return deadline_passed, deadline_str
 
 
-def _after_vote():
+def clear_caches():
     get_vote_data.clear()
+    from functions import get_active_user_count, get_member_participation_stats, _get_combined_vote_records
+    get_active_user_count.clear()
+    get_member_participation_stats.clear()
+    _get_combined_vote_records.clear()
+
+
+def _after_vote():
+    clear_caches()
     st.rerun()
 
 
 def render_refresh_button(key):
     if st.button("🔄 重新整理", key=key):
-        get_vote_data.clear()
+        clear_caches()
         st.rerun()
 
 
@@ -204,7 +212,7 @@ def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, agains
                 "UPDATE topic_votes SET status='passed', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic",
                 {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
             )
-            get_vote_data.clear()
+            clear_caches()
             st.balloons()
             st.rerun()
         if a_count >= threshold and a_count > f_count:
@@ -213,19 +221,19 @@ def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, agains
                 "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic",
                 {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
             )
-            get_vote_data.clear()
+            clear_caches()
             st.rerun()
     elif mode == "depose":
         if f_count >= threshold and f_count > a_count:
             st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
             execute_query("DELETE FROM topic_depose_votes WHERE topic=:topic", {"topic": topic})
             execute_query("DELETE FROM topics WHERE topic=:topic", {"topic": topic})
-            get_vote_data.clear()
+            clear_caches()
             st.rerun()
         if a_count >= threshold and a_count > f_count:
             st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
             execute_query("DELETE FROM topic_depose_votes WHERE topic=:topic", {"topic": topic})
-            get_vote_data.clear()
+            clear_caches()
             st.balloons()
             st.rerun()
 
@@ -273,7 +281,7 @@ def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False
                         {"user_id": user_id, "against_reasons": dump_json(against_reason_map), "topic": topic}
                     )
                     st.toast("已投下不同意票！", icon="☑️")
-                get_vote_data.clear()
+                clear_caches()
                 st.rerun()
 
 if not check_committee_login():
@@ -297,7 +305,7 @@ if user_id != "admin":
 @st.cache_data(ttl=1)
 def get_vote_data():
     conn = get_connection()
-    df = conn.query("SELECT * FROM topic_votes ORDER BY created_at DESC", ttl=0)
+    df = conn.query("SELECT * FROM topic_votes ORDER BY created_at DESC", ttl=5)
     df = df.fillna("")
     for col in ["agree_users", "against_users"]:
         df[col] = df[col].apply(lambda x: x if isinstance(x, list) else [])
@@ -344,8 +352,8 @@ with tab1:
             st.warning("你未輸入任何文字！")
         else:
             conn = get_connection()
-            all_topics_df = conn.query("SELECT topic, category FROM topics", ttl=0)
-            all_votes_df = conn.query("SELECT topic FROM topic_votes WHERE status = 'pending'", ttl=0)
+            all_topics_df = conn.query("SELECT topic, category FROM topics", ttl=5)
+            all_votes_df = conn.query("SELECT topic FROM topic_votes WHERE status = 'pending'", ttl=5)
 
             existing_topics = all_topics_df["topic"].tolist() if not all_topics_df.empty else []
             existing_votes = all_votes_df["topic"].tolist() if not all_votes_df.empty else []
@@ -379,7 +387,7 @@ with tab1:
                     query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold, :category, :difficulty)"
                     param = {"new_topic": new_topic, "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
                     execute_query(query, param)
-                    get_vote_data.clear()
+                    clear_caches()
                     st.success("辯題已加入投票區！")
 
     if st.session_state.get("confirm_imbalance"):
@@ -396,7 +404,7 @@ with tab1:
                 query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold, :category, :difficulty)"
                 param = {"new_topic": d["new_topic"], "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": d["new_category"], "difficulty": d["new_difficulty"]}
                 execute_query(query, param)
-                get_vote_data.clear()
+                clear_caches()
                 st.session_state["confirm_imbalance"] = False
                 st.success("辯題已加入投票區！")
         with col2:
@@ -410,7 +418,7 @@ with tab1:
 
     try:
         conn = get_connection()
-        df = conn.query("SELECT * FROM topics", ttl=0)
+        df = conn.query("SELECT * FROM topics", ttl=5)
     except Exception as e:
         st.error(f"連線錯誤: {e}")
         st.stop()
@@ -440,7 +448,7 @@ with tab1:
             st.warning("請至少交代一個罷免原因。")
         else:
             conn = get_connection()
-            exist_votes = conn.query("SELECT topic FROM topic_depose_votes", ttl=0)
+            exist_votes = conn.query("SELECT topic FROM topic_depose_votes", ttl=5)
             exist_depose_topics = exist_votes["topic"].tolist()
             if len(exist_depose_topics) >= 10:
                 st.warning("目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。")
@@ -472,7 +480,7 @@ with tab1:
                         "threshold": DEPOSE_THRESHOLD
                     }
                     execute_query(query, param)
-            get_vote_data.clear()
+            clear_caches()
             if proposed:
                 st.success("罷免動議已提出！")
             else:
@@ -524,7 +532,7 @@ with tab2:
                 query = "UPDATE topic_votes SET status='rejected', agree_users=:new_agree_str, against_users=:new_against_str WHERE topic=:topic"
                 param = {"new_agree_str": agree_list, "new_against_str": against_list, "topic": topic}
                 execute_query(query, param)
-                get_vote_data.clear()
+                clear_caches()
                 st.rerun()
 
             with st.container(border=True):
@@ -591,12 +599,12 @@ with tab3:
             show_chatgpt_reminder(return_chatgpt_depose_reminder)
 
     conn = get_connection()
-    df_depose = conn.query("SELECT * FROM topic_depose_votes ORDER BY created_at DESC", ttl=0)
+    df_depose = conn.query("SELECT * FROM topic_depose_votes ORDER BY created_at DESC", ttl=5)
     for col in ["agree_users", "against_users"]:
         df_depose[col] = df_depose[col].apply(lambda x: x if isinstance(x, list) else [])
     vote_data = df_depose.to_dict('records')
 
-    topics_meta_df = conn.query("SELECT topic, category, difficulty FROM topics", ttl=0)
+    topics_meta_df = conn.query("SELECT topic, category, difficulty FROM topics", ttl=5)
     topic_meta = {r["topic"]: (r.get("category"), r.get("difficulty")) for _, r in topics_meta_df.iterrows()}
 
     if not vote_data:
@@ -624,7 +632,7 @@ with tab3:
                 query = "DELETE FROM topic_depose_votes WHERE topic=:topic"
                 param = {"topic": topic}
                 execute_query(query, param)
-                get_vote_data.clear()
+                clear_caches()
                 st.rerun()
 
             with st.container(border=True):

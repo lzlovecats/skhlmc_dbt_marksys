@@ -417,6 +417,7 @@ def return_chatgpt_reminder():
     return load_markdown_asset("chatgpt_reminder.md")
 
 
+@st.cache_data(ttl=60)
 def _get_combined_vote_records():
     """
     Fetches and combines all vote records from topic_votes AND topic_depose_votes,
@@ -459,6 +460,7 @@ def _get_combined_vote_records():
     return vote_records, all_users
 
 
+@st.cache_data(ttl=60)
 def get_active_user_count():
     """
     Active user 定義：整體投票率（辯題投票 + 罷免投票）≥ 40% AND 最近10次投票最少投3次。
@@ -488,6 +490,7 @@ def get_active_user_count():
     return len(active_users), active_users
 
 
+@st.cache_data(ttl=60)
 def get_member_participation_stats():
     """
     Returns (stats_list, total_votes) with per-member participation details
