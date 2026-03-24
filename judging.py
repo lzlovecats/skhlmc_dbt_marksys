@@ -33,30 +33,37 @@ def confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data
         try:
             with st.spinner("正在上傳評分至雲端..."):
                 save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
-                query = """
-                INSERT INTO scores (
-                    match_id, judge_name, pro_name, con_name, pro_total, con_total, mark_time,
-                    pro1_m, pro2_m, pro3_m, pro4_m, con1_m, con2_m, con3_m, con4_m,
-                    pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
-                ) VALUES (
-                    :match_id, :judge_name, :pro_name, :con_name,
-                    :pro_total, :con_total, :mark_time,
-                    :pro1_m, :pro2_m, :pro3_m, :pro4_m, :con1_m, :con2_m, :con3_m, :con4_m,
-                    :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
-                ) ON CONFLICT (match_id, judge_name) DO NOTHING
-                """
-                params = {
+                rows_inserted = execute_query_count("""
+                    INSERT INTO scores (
+                        match_id, judge_name, pro_total, con_total, mark_time,
+                        pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
+                    ) VALUES (
+                        :match_id, :judge_name, :pro_total, :con_total, :mark_time,
+                        :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
+                    ) ON CONFLICT (match_id, judge_name) DO NOTHING
+                """, {
                     "match_id": selected_match_id, "judge_name": judge_name,
-                    "pro_name": pro["team_name"], "con_name": con["team_name"],
                     "pro_total": pro["final_total"], "con_total": con["final_total"],
                     "mark_time": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%H:%M:%S"),
-                    "pro1_m": pro["ind_scores"][0], "pro2_m": pro["ind_scores"][1], "pro3_m": pro["ind_scores"][2], "pro4_m": pro["ind_scores"][3],
-                    "con1_m": con["ind_scores"][0], "con2_m": con["ind_scores"][1], "con3_m": con["ind_scores"][2], "con4_m": con["ind_scores"][3],
                     "pro_free": pro["total_b"], "con_free": con["total_b"],
                     "pro_deduction": pro["deduction"], "con_deduction": con["deduction"],
                     "pro_coherence": pro["coherence"], "con_coherence": con["coherence"]
-                }
-                rows_inserted = execute_query_count(query, params)
+                })
+                if rows_inserted > 0:
+                    for i, score in enumerate(pro["ind_scores"]):
+                        execute_query("""
+                            INSERT INTO debater_scores (match_id, judge_name, side, position, score)
+                            VALUES (:match_id, :judge_name, :side, :position, :score)
+                            ON CONFLICT (match_id, judge_name, side, position) DO NOTHING
+                        """, {"match_id": selected_match_id, "judge_name": judge_name,
+                              "side": "pro", "position": i + 1, "score": int(score)})
+                    for i, score in enumerate(con["ind_scores"]):
+                        execute_query("""
+                            INSERT INTO debater_scores (match_id, judge_name, side, position, score)
+                            VALUES (:match_id, :judge_name, :side, :position, :score)
+                            ON CONFLICT (match_id, judge_name, side, position) DO NOTHING
+                        """, {"match_id": selected_match_id, "judge_name": judge_name,
+                              "side": "con", "position": i + 1, "score": int(score)})
 
             if rows_inserted == 0:
                 st.session_state["submission_message"] = {

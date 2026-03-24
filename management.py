@@ -45,21 +45,27 @@ elif con_votes > pro_votes:
 else:
     st.warning("票數相同，依賽規需要重新運作自由辯論環節。")
 
-match_row = query_params("SELECT * FROM MATCHES WHERE match_id = :match_id", {"match_id": selected_match})
-if not match_row.empty:
-    mr = match_row.iloc[0]
-    def _label(pos, name_val):
-        name = str(name_val).strip() if name_val else ""
+debaters_row = query_params(
+    "SELECT side, position, name FROM debaters WHERE match_id = :match_id",
+    {"match_id": selected_match}
+)
+if not debaters_row.empty:
+    debater_names = {
+        (str(r["side"]).strip(), int(r["position"])): str(r["name"]).strip()
+        for _, r in debaters_row.iterrows()
+    }
+    def _label(pos, side, position):
+        name = debater_names.get((side, position), "")
         return f"{pos}（{name}）" if name else pos
     role_map = {
-        "pro1_m": _label("正方主辯", mr.get("pro_1")),
-        "pro2_m": _label("正方一副", mr.get("pro_2")),
-        "pro3_m": _label("正方二副", mr.get("pro_3")),
-        "pro4_m": _label("正方結辯", mr.get("pro_4")),
-        "con1_m": _label("反方主辯", mr.get("con_1")),
-        "con2_m": _label("反方一副", mr.get("con_2")),
-        "con3_m": _label("反方二副", mr.get("con_3")),
-        "con4_m": _label("反方結辯", mr.get("con_4")),
+        "pro1_m": _label("正方主辯", "pro", 1),
+        "pro2_m": _label("正方一副", "pro", 2),
+        "pro3_m": _label("正方二副", "pro", 3),
+        "pro4_m": _label("正方結辯", "pro", 4),
+        "con1_m": _label("反方主辯", "con", 1),
+        "con2_m": _label("反方一副", "con", 2),
+        "con3_m": _label("反方二副", "con", 3),
+        "con4_m": _label("反方結辯", "con", 4),
     }
 else:
     role_map = {

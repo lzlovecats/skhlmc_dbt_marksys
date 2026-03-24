@@ -8,6 +8,7 @@ import datetime
 import time
 import os
 import io
+from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 CATEGORIES = [
@@ -49,6 +50,14 @@ def committee_cookie_manager():
     return st.session_state["committee_cookie_manager"]
 
 
+def _log_login(user_id: str, login_type: str):
+    login_time = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    execute_query(
+        "INSERT INTO login_record (user_id, login_type, login_time) VALUES (:user_id, :login_type, :login_time)",
+        {"user_id": user_id, "login_type": login_type, "login_time": login_time}
+    )
+
+
 def check_admin():
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
@@ -59,6 +68,7 @@ def check_admin():
         if st.button("登入"):
             if pwd == st.secrets["admin_password"]:
                 st.session_state["admin_logged_in"] = True
+                _log_login("admin", "admin")
                 st.rerun()
             else:
                 st.error("密碼錯誤")
@@ -76,6 +86,7 @@ def check_score():
         if st.button("登入"):
             if pwd == st.secrets["score_password"]:
                 st.session_state["score_logged_in"] = True
+                _log_login("score_review", "score_review")
                 st.rerun()
             else:
                 st.error("密碼錯誤")
@@ -119,7 +130,8 @@ def execute_query_count(sql_str, params=None):
 
 def load_matches_from_db():
     conn = get_connection()
-    df = conn.query("SELECT * FROM MATCHES", ttl=0)
+    df = conn.query("SELECT * FROM matches", ttl=0)
+    debaters_df = conn.query("SELECT * FROM debaters", ttl=0)
 
     data_dict = {}
     for i, row in df.iterrows():
@@ -129,63 +141,61 @@ def load_matches_from_db():
         raw["que"] = raw.pop("topic", raw.get("que", ""))
         raw["pro"] = raw.pop("pro_team", raw.get("pro", ""))
         raw["con"] = raw.pop("con_team", raw.get("con", ""))
-        # BPCHAR(10) columns come back padded with trailing spaces — strip them
-        for key in ["pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"]:
-            if key in raw and raw[key]:
-                raw[key] = str(raw[key]).strip()
+        # Reconstruct pro_1~con_4 keys from the normalised debaters table
+        match_debaters = debaters_df[debaters_df["match_id"] == match_id]
+        for _, d in match_debaters.iterrows():
+            key = f"{str(d['side']).strip()}_{int(d['position'])}"
+            raw[key] = str(d["name"]).strip() if d["name"] else ""
         data_dict[match_id] = raw
 
     return data_dict
 
 
 def save_match_to_db(match_data):
-    conn = get_connection()
+    match_id = match_data['match_id'].strip()
 
     exist_match = query_params(
-        "SELECT * FROM MATCHES WHERE match_id = :match_id",
-        {"match_id": match_data['match_id'].strip()}
+        "SELECT 1 FROM matches WHERE match_id = :match_id",
+        {"match_id": match_id}
     )
 
-    params = {
-        "match_id": match_data['match_id'].strip(),
+    match_params = {
+        "match_id": match_id,
         "date": match_data['date'] if match_data['date'] else None,
         "time": match_data['time'] if match_data['time'] else None,
         "topic": match_data['que'],
         "pro_team": match_data['pro'],
         "con_team": match_data['con'],
-        "pro_1": match_data['pro_1'],
-        "pro_2": match_data['pro_2'],
-        "pro_3": match_data['pro_3'],
-        "pro_4": match_data['pro_4'],
-        "con_1": match_data['con_1'],
-        "con_2": match_data['con_2'],
-        "con_3": match_data['con_3'],
-        "con_4": match_data['con_4'],
         "access_code": match_data['access_code']
     }
 
     if not exist_match.empty:
-        query = """
-            UPDATE MATCHES SET 
+        execute_query("""
+            UPDATE matches SET
                 date = :date, time = :time, topic = :topic,
                 pro_team = :pro_team, con_team = :con_team,
-                pro_1 = :pro_1, pro_2 = :pro_2, pro_3 = :pro_3, pro_4 = :pro_4,
-                con_1 = :con_1, con_2 = :con_2, con_3 = :con_3, con_4 = :con_4,
                 access_code = :access_code
             WHERE match_id = :match_id
-        """
-        execute_query(query, params)
+        """, match_params)
     else:
-        query = """
-            INSERT INTO MATCHES (
-                match_id, date, time, topic, pro_team, con_team, 
-                pro_1, pro_2, pro_3, pro_4, con_1, con_2, con_3, con_4, access_code
-            ) VALUES (
-                :match_id, :date, :time, :topic, :pro_team, :con_team,
-                :pro_1, :pro_2, :pro_3, :pro_4, :con_1, :con_2, :con_3, :con_4, :access_code
-            )
-        """
-        execute_query(query, params)
+        execute_query("""
+            INSERT INTO matches (match_id, date, time, topic, pro_team, con_team, access_code)
+            VALUES (:match_id, :date, :time, :topic, :pro_team, :con_team, :access_code)
+        """, match_params)
+
+    # Upsert debater names into the normalised debaters table
+    for side, positions in (("pro", [1, 2, 3, 4]), ("con", [1, 2, 3, 4])):
+        for pos in positions:
+            execute_query("""
+                INSERT INTO debaters (match_id, side, position, name)
+                VALUES (:match_id, :side, :position, :name)
+                ON CONFLICT (match_id, side, position) DO UPDATE SET name = EXCLUDED.name
+            """, {
+                "match_id": match_id,
+                "side": side,
+                "position": pos,
+                "name": match_data.get(f"{side}_{pos}", "") or ""
+            })
 
 
 def save_draft_to_db(match_id, judge_name, team_side, score_data):
@@ -277,9 +287,35 @@ def load_markdown_asset(filename):
 
 def get_score_data():
     try:
-        conn = get_connection()
-        data = conn.query("SELECT * FROM scores", ttl=0)
-        return pd.DataFrame(data)
+        # Return a wide-format DataFrame identical to the old scores table schema
+        # so that management.py and review.py need no changes.
+        # pro_name / con_name are derived from matches; individual scores from debater_scores.
+        query = """
+            SELECT
+                s.match_id, s.judge_name, s.pro_total, s.con_total, s.mark_time,
+                s.pro_free, s.con_free, s.pro_deduction, s.con_deduction,
+                s.pro_coherence, s.con_coherence,
+                m.pro_team AS pro_name,
+                m.con_team AS con_name,
+                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 1 THEN ds.score END) AS pro1_m,
+                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 2 THEN ds.score END) AS pro2_m,
+                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 3 THEN ds.score END) AS pro3_m,
+                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 4 THEN ds.score END) AS pro4_m,
+                MAX(CASE WHEN ds.side = 'con' AND ds.position = 1 THEN ds.score END) AS con1_m,
+                MAX(CASE WHEN ds.side = 'con' AND ds.position = 2 THEN ds.score END) AS con2_m,
+                MAX(CASE WHEN ds.side = 'con' AND ds.position = 3 THEN ds.score END) AS con3_m,
+                MAX(CASE WHEN ds.side = 'con' AND ds.position = 4 THEN ds.score END) AS con4_m
+            FROM scores s
+            LEFT JOIN matches m ON s.match_id = m.match_id
+            LEFT JOIN debater_scores ds
+                ON s.match_id = ds.match_id AND s.judge_name = ds.judge_name
+            GROUP BY
+                s.match_id, s.judge_name, s.pro_total, s.con_total, s.mark_time,
+                s.pro_free, s.con_free, s.pro_deduction, s.con_deduction,
+                s.pro_coherence, s.con_coherence,
+                m.pro_team, m.con_team
+        """
+        return query_params(query)
     except Exception as e:
         st.error(f"讀取評分失敗: {e}")
         return None
@@ -333,6 +369,7 @@ def check_committee_login():
 
             if login_success:
                 refresh_acc_type(uid)
+                _log_login(uid, "committee")
                 st.session_state["committee_user"] = uid
                 set_cookie(cookie_manager, "committee_user", uid, expires_at=return_expire_day())
                 st.success(f"你好，{uid}！")
@@ -347,25 +384,34 @@ def return_expire_day():
 
 
 _ACTIVITY_SQL = """
-WITH all_votes AS (
-    SELECT agree_users, against_users, created_at FROM topic_votes
-    WHERE CARDINALITY(agree_users) > 0 OR CARDINALITY(against_users) > 0
+WITH tv_events AS (
+    SELECT DISTINCT tv.topic, tv.created_at
+    FROM topic_votes tv
+    WHERE EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = tv.topic)
+),
+tdv_events AS (
+    SELECT DISTINCT tdv.topic, tdv.created_at
+    FROM topic_depose_votes tdv
+    WHERE EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = tdv.topic)
+),
+all_events AS (
+    SELECT topic, created_at, 'tv'  AS src FROM tv_events
     UNION ALL
-    SELECT agree_users, against_users, created_at FROM topic_depose_votes
-    WHERE CARDINALITY(agree_users) > 0 OR CARDINALITY(against_users) > 0
+    SELECT topic, created_at, 'tdv' AS src FROM tdv_events
 ),
 past_10 AS (
-    SELECT agree_users, against_users
-    FROM all_votes
-    ORDER BY created_at DESC
-    LIMIT 10
+    SELECT topic, src FROM all_events ORDER BY created_at DESC LIMIT 10
 )
 SELECT
-    (SELECT COUNT(*) FROM all_votes) AS total_votes,
-    (SELECT COUNT(*) FROM all_votes
-     WHERE :user_id = ANY(agree_users) OR :user_id = ANY(against_users)) AS total_participated,
-    (SELECT COUNT(*) FROM past_10
-     WHERE :user_id = ANY(agree_users) OR :user_id = ANY(against_users)) AS votes_in_last_10
+    (SELECT COUNT(*) FROM all_events) AS total_votes,
+    (SELECT COUNT(*) FROM all_events ae
+     WHERE (ae.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = ae.topic AND b.user_id = :user_id))
+        OR (ae.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = :user_id))
+    ) AS total_participated,
+    (SELECT COUNT(*) FROM past_10 p
+     WHERE (p.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = p.topic AND b.user_id = :user_id))
+        OR (p.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = p.topic AND b.user_id = :user_id))
+    ) AS votes_in_last_10
 """
 
 
@@ -420,43 +466,42 @@ def return_chatgpt_reminder():
 @st.cache_data(ttl=60)
 def _get_combined_vote_records():
     """
-    Fetches and combines all vote records from topic_votes AND topic_depose_votes,
-    sorted by created_at. Returns (vote_records, all_users) where vote_records is
-    a list of (agree_list, against_list) tuples in chronological order.
-
-    Only rows where at least one of agree_users / against_users is non-empty are
-    counted (i.e. votes that have at least one participation record).
-    Rows where both arrays are empty are excluded at the SQL level via CARDINALITY.
+    Fetches all vote events from topic_votes and topic_depose_votes that have
+    at least one ballot, reconstructs (agree_list, against_list) per event
+    from the ballot tables, sorted chronologically.
+    Returns (vote_records, all_users).
     """
+    from collections import OrderedDict
     conn = get_connection()
     accounts_df = conn.query("SELECT userid FROM accounts", ttl=0)
     all_users = accounts_df["userid"].tolist() if not accounts_df.empty else []
 
-    tv_df = conn.query(
-        "SELECT agree_users, against_users, created_at FROM topic_votes"
-        " WHERE CARDINALITY(agree_users) != 0 OR CARDINALITY(against_users) != 0"
-        " ORDER BY created_at ASC",
-        ttl=0,
-    ).fillna("")
-    tdv_df = conn.query(
-        "SELECT agree_users, against_users, created_at FROM topic_depose_votes"
-        " WHERE CARDINALITY(agree_users) != 0 OR CARDINALITY(against_users) != 0"
-        " ORDER BY created_at ASC",
-        ttl=0,
-    ).fillna("")
+    tv_ballots = query_params("""
+        SELECT tv.topic, tv.created_at, b.user_id, b.vote
+        FROM topic_votes tv
+        JOIN topic_vote_ballots b ON tv.topic = b.topic
+        ORDER BY tv.created_at ASC
+    """)
+    tdv_ballots = query_params("""
+        SELECT tdv.topic, tdv.created_at, b.user_id, b.vote
+        FROM topic_depose_votes tdv
+        JOIN depose_vote_ballots b ON tdv.topic = b.topic
+        ORDER BY tdv.created_at ASC
+    """)
 
-    combined_df = pd.concat([tv_df, tdv_df], ignore_index=True)
-    if not combined_df.empty:
-        combined_df = combined_df.sort_values("created_at").reset_index(drop=True)
+    event_map = OrderedDict()
+    for df, prefix in ((tv_ballots, "tv_"), (tdv_ballots, "tdv_")):
+        for _, row in df.iterrows():
+            key = prefix + str(row["topic"])
+            if key not in event_map:
+                event_map[key] = {"ts": row["created_at"], "agree": [], "against": []}
+            if str(row["vote"]).strip() == "agree":
+                event_map[key]["agree"].append(str(row["user_id"]))
+            else:
+                event_map[key]["against"].append(str(row["user_id"]))
 
-    vote_records = [
-        (
-            row["agree_users"] if isinstance(row["agree_users"], list) else [],
-            row["against_users"] if isinstance(row["against_users"], list) else [],
-        )
-        for _, row in combined_df.iterrows()
-    ]
-
+    sorted_events = sorted(event_map.values(), key=lambda e: e["ts"])
+    vote_records = [(e["agree"], e["against"]) for e in sorted_events]
     return vote_records, all_users
 
 
