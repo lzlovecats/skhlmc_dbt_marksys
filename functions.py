@@ -8,6 +8,7 @@ import datetime
 import time
 import os
 import io
+import bcrypt
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
@@ -329,6 +330,19 @@ def return_rules():
     return load_markdown_asset("rules.md")
 
 
+def hash_password(plain: str) -> str:
+    """Hash a plaintext password with bcrypt."""
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+
+def _verify_password(plain: str, stored: str) -> bool:
+    """Accept bcrypt hashes and legacy plaintext passwords during migration."""
+    try:
+        return bcrypt.checkpw(plain.encode(), stored.encode())
+    except Exception:
+        return plain == stored
+
+
 def check_committee_login():
     cookie_manager = committee_cookie_manager()
 
@@ -359,13 +373,15 @@ def check_committee_login():
 
         if submitted:
             conn = get_connection()
-            all_acc = conn.query("SELECT * FROM accounts", ttl=0)
-
-            login_success = False
-            for i, row in all_acc.iterrows():   
-                if str(row.get("userid")) == str(uid) and str(row.get("userpw")) == str(upw):
-                    login_success = True
-                    break
+            acc_row = conn.query(
+                "SELECT userpw FROM accounts WHERE userid = :uid",
+                params={"uid": uid},
+                ttl=0,
+            )
+            login_success = (
+                not acc_row.empty
+                and _verify_password(upw, str(acc_row.iloc[0]["userpw"]))
+            )
 
             if login_success:
                 refresh_acc_type(uid)
@@ -568,6 +584,66 @@ def get_member_participation_stats():
         })
 
     return stats, total_votes
+
+
+def show_noti_popup(user_id: str) -> None:
+    """
+    Show a one-time notification dialog backed by the DB `noti` table.
+
+    assets/noti.md format:
+        NOTI_ID: 1
+        NOTI_TITLE: Title
+        ---
+        Markdown body
+    """
+    raw = load_markdown_asset("noti.md")
+    lines = raw.splitlines()
+
+    noti_id = None
+    noti_title = None
+    content_start = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("NOTI_ID:"):
+            try:
+                noti_id = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+        elif stripped.startswith("NOTI_TITLE:"):
+            noti_title = stripped.split(":", 1)[1].strip()
+        elif stripped == "---":
+            content_start = i + 1
+            break
+
+    if noti_id is None or noti_title is None:
+        return
+
+    from schema import CREATE_NOTI
+
+    execute_query(CREATE_NOTI)
+    content = "\n".join(lines[content_start:]).strip()
+    seen = query_params(
+        "SELECT 1 FROM noti WHERE notiid = :nid AND userid = :uid",
+        {"nid": noti_id, "uid": user_id},
+    )
+    if not seen.empty:
+        return
+
+    @st.dialog(noti_title)
+    def _render():
+        st.markdown(content)
+        if st.button("我已閱讀 ✓", type="primary", use_container_width=True):
+            seen_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+            execute_query(
+                "INSERT INTO noti (notiid, notititle, userid, seen_at) "
+                "VALUES (:nid, :title, :uid, :seen_at) "
+                "ON CONFLICT (notiid, userid) DO NOTHING",
+                {"nid": noti_id, "title": noti_title, "uid": user_id, "seen_at": seen_at},
+            )
+            st.rerun()
+
+    _render()
 
 
 def return_gemini_depose_reminder():

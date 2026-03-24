@@ -1,7 +1,7 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -293,6 +293,7 @@ if not check_committee_login():
     st.stop()
 
 user_id = st.session_state["committee_user"]
+show_noti_popup(user_id)
 st.caption("活躍成員標準：整體投票率達40% 及 在最近十次投票中至少參與三次")
 st.info(f"已登入帳戶：**{user_id}**")
 
@@ -433,8 +434,8 @@ with tab1:
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                 hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                 deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                query = "INSERT INTO topic_votes (topic, author, status, agree_users, against_users, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :agree_users, :against_users, :created_at, :deadline, :threshold, :category, :difficulty)"
-                param = {"new_topic": d["new_topic"], "user_id": user_id, "agree_users": "{}", "against_users": "{}", "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": d["new_category"], "difficulty": d["new_difficulty"]}
+                query = "INSERT INTO topic_votes (topic, author, status, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
+                param = {"new_topic": d["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": d["new_category"], "difficulty": d["new_difficulty"]}
                 execute_query(query, param)
                 clear_caches()
                 st.session_state["confirm_imbalance"] = False
@@ -750,7 +751,7 @@ with tab5:
                 st.warning("你未輸入密碼！")
             else:
                 try:
-                    execute_query("UPDATE accounts SET userpw = :userpw WHERE userid = :userid", {"userpw": new_pw.strip(), "userid": user_id})
+                    execute_query("UPDATE accounts SET userpw = :userpw WHERE userid = :userid", {"userpw": hash_password(new_pw.strip()), "userid": user_id})
                     st.success("帳戶密碼已更改！下次登入請使用新密碼！")
                 except Exception as e:
                     st.error(f"無法連接至數據庫: {e}")

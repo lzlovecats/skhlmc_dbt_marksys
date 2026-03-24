@@ -10,7 +10,8 @@ from sqlalchemy import text
 # Table: ACCOUNTS
 # Committee member accounts.
 # acc_type: 'admin' | 'active' | 'inactive'
-# Note: passwords are stored in plaintext — consider hashing in a future pass.
+# userpw stores bcrypt hashes. Use hash_password() from functions.py when creating/updating accounts.
+# Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
 CREATE_ACCOUNTS = """
 CREATE TABLE IF NOT EXISTS accounts (
     userid      TEXT    PRIMARY KEY,
@@ -212,6 +213,25 @@ CREATE TABLE IF NOT EXISTS login_record (
 );
 """
 
+# Table: NOTI
+# Tracks which committee members have seen each notification.
+# notiid    — matches the NOTI_ID defined in assets/noti.md; increment to re-trigger all users.
+# notititle — denormalised title stored at read-time for audit convenience.
+# userid    — the member who dismissed the popup.
+# seen_at   — HKT timestamp when the popup was dismissed.
+CREATE_NOTI = """
+CREATE TABLE IF NOT EXISTS noti (
+    notiid      INT,
+    notititle   VARCHAR(255),
+    userid      VARCHAR(50),
+    seen_at     TIMESTAMP,
+    PRIMARY KEY (notiid, userid),
+    CONSTRAINT fk_noti_user
+        FOREIGN KEY (userid) REFERENCES accounts(userid)
+        ON DELETE CASCADE
+);
+"""
+
 
 # Ordered list of all CREATE statements (dependency order).
 # Tables must be created before any table that references them via FK.
@@ -228,6 +248,7 @@ ALL_SCHEMAS = [
     CREATE_TOPIC_DEPOSE_VOTES,  # → topics, accounts
     CREATE_DEPOSE_VOTE_BALLOTS, # → topic_depose_votes, accounts
     CREATE_LOGIN_RECORD,        # → accounts
+    CREATE_NOTI,                # → accounts
 ]
 
 

@@ -7,3 +7,4 @@ streamlit>=1.36.0
 extra-streamlit-components
 SQLAlchemy
 psycopg2-binary
+bcrypt
