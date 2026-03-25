@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Streamlit app files (not needed for the bot image)
+main.py
+functions.py
+management.py
+judging.py
+scoring.py
+review.py
+vote.py
+match_info.py
+draw_match_schedule.py
+schema.py
+db_mgmt.py
+open_db.py
+requirements.txt
+assets/
+.streamlit/
+
+# Dev / tooling
+.git/
+.gitignore
+.devcontainer/
+.idea/
+.cursor/
+.claude/
+*.md
+fly.toml
