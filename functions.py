@@ -375,20 +375,20 @@ def check_committee_login():
             conn = get_connection()
             acc_row = conn.query(
                 "SELECT userpw FROM accounts WHERE userid = :uid",
-                params={"uid": uid},
+                params={"uid": uid.strip()},
                 ttl=0,
             )
             login_success = (
                 not acc_row.empty
-                and _verify_password(upw, str(acc_row.iloc[0]["userpw"]))
+                and _verify_password(upw.strip(), str(acc_row.iloc[0]["userpw"]))
             )
 
             if login_success:
-                refresh_acc_type(uid)
-                _log_login(uid, "committee")
-                st.session_state["committee_user"] = uid
-                set_cookie(cookie_manager, "committee_user", uid, expires_at=return_expire_day())
-                st.success(f"你好，{uid}！")
+                refresh_acc_type(uid.strip())
+                _log_login(uid.strip(), "committee")
+                st.session_state["committee_user"] = uid.strip()
+                set_cookie(cookie_manager, "committee_user", uid.strip(), expires_at=return_expire_day())
+                st.success(f"你好，{uid.strip()}！")
                 time.sleep(1)
                 st.rerun()
             else:
