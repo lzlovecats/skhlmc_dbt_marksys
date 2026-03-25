@@ -104,6 +104,14 @@ def parse_deadline_row(row, key="deadline"):
     return deadline_passed, deadline_str
 
 
+def enqueue_tg_notification(noti_type: str, payload: dict) -> None:
+    """Write a notification event to the queue table for the bot to pick up."""
+    execute_query(
+        "INSERT INTO tg_notification_queue (noti_type, payload) VALUES (:noti_type, :payload)",
+        {"noti_type": noti_type, "payload": json.dumps(payload, ensure_ascii=False)}
+    )
+
+
 def clear_caches():
     get_vote_data.clear()
     from functions import get_active_user_count, get_member_participation_stats, _get_combined_vote_records
@@ -223,6 +231,10 @@ def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, agains
                 "UPDATE topic_votes SET status = 'passed' WHERE topic = :topic",
                 {"topic": topic}
             )
+            enqueue_tg_notification("vote_result", {
+                "topic": topic, "result": "passed", "vote_type": "topic",
+                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+            })
             clear_caches()
             st.balloons()
             st.rerun()
@@ -232,6 +244,10 @@ def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, agains
                 "UPDATE topic_votes SET status = 'rejected' WHERE topic = :topic",
                 {"topic": topic}
             )
+            enqueue_tg_notification("vote_result", {
+                "topic": topic, "result": "rejected", "vote_type": "topic",
+                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+            })
             clear_caches()
             st.rerun()
     elif mode == "depose":
@@ -239,11 +255,19 @@ def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, agains
             st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
             execute_query("UPDATE topic_depose_votes SET status = 'passed' WHERE topic = :topic", {"topic": topic})
             execute_query("DELETE FROM topics WHERE topic = :topic", {"topic": topic})
+            enqueue_tg_notification("vote_result", {
+                "topic": topic, "result": "passed", "vote_type": "depose",
+                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+            })
             clear_caches()
             st.rerun()
         if a_count >= threshold and a_count > f_count:
             st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
             execute_query("UPDATE topic_depose_votes SET status = 'rejected' WHERE topic = :topic", {"topic": topic})
+            enqueue_tg_notification("vote_result", {
+                "topic": topic, "result": "rejected", "vote_type": "depose",
+                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+            })
             clear_caches()
             st.balloons()
             st.rerun()
@@ -420,6 +444,13 @@ with tab1:
                     query = "INSERT INTO topic_votes (topic, author, status, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
                     param = {"new_topic": new_topic, "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
                     execute_query(query, param)
+                    enqueue_tg_notification("new_topic", {
+                        "topic": new_topic, "author": user_id,
+                        "category": new_category,
+                        "difficulty_label": DIFFICULTY_OPTIONS.get(new_difficulty, str(new_difficulty)),
+                        "threshold": ENTRY_THRESHOLD,
+                        "deadline": deadline
+                    })
                     clear_caches()
                     st.success("辯題已加入投票區！")
 
@@ -437,6 +468,13 @@ with tab1:
                 query = "INSERT INTO topic_votes (topic, author, status, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
                 param = {"new_topic": d["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": d["new_category"], "difficulty": d["new_difficulty"]}
                 execute_query(query, param)
+                enqueue_tg_notification("new_topic", {
+                    "topic": d["new_topic"], "author": user_id,
+                    "category": d["new_category"],
+                    "difficulty_label": DIFFICULTY_OPTIONS.get(d["new_difficulty"], str(d["new_difficulty"])),
+                    "threshold": ENTRY_THRESHOLD,
+                    "deadline": deadline
+                })
                 clear_caches()
                 st.session_state["confirm_imbalance"] = False
                 st.success("辯題已加入投票區！")
@@ -511,6 +549,12 @@ with tab1:
                         "threshold": DEPOSE_THRESHOLD
                     }
                     execute_query(query, param)
+                    enqueue_tg_notification("new_depose", {
+                        "topic": t, "mover": user_id,
+                        "reasons": proposal_reasons,
+                        "threshold": DEPOSE_THRESHOLD,
+                        "deadline": deadline
+                    })
             clear_caches()
             if proposed:
                 st.success("罷免動議已提出！")
@@ -740,7 +784,25 @@ with tab4:
 
 with tab5:
     st.subheader("帳戶管理")
-    
+
+    with st.expander("📲 連結 Telegram Bot（接收投票通知）", expanded=True):
+        st.markdown(
+            "連結後你將透過 Telegram 收到新辯題通知、截止提醒及投票結果公告。"
+        )
+        st.markdown(
+            "**使用步驟：**\n"
+            "1. 點擊下方連結，開啟 Bot 對話視窗\n"
+            f"2. 發送 `/link {user_id}` 完成連結\n"
+            "3. 發送 `/status` 確認連結狀態"
+        )
+        st.link_button(
+            "🤖 前往 Telegram Bot（@lmcdbt_marysys_bot）",
+            "https://t.me/lmcdbt_marysys_bot",
+        )
+        st.caption("如需解除連結，在 Bot 發送 /unlink 即可。")
+
+    st.divider()
+
     with st.expander("更改密碼", expanded=False):
         with st.form("change_user_password"):
             new_pw = st.text_input("輸入新密碼", type="password")

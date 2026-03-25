@@ -12,11 +12,14 @@ from sqlalchemy import text
 # acc_type: 'admin' | 'active' | 'inactive'
 # userpw stores bcrypt hashes. Use hash_password() from functions.py when creating/updating accounts.
 # Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
+# tg_userid / tg_chatid: Telegram user ID and chat ID for push notifications (NULL = not linked).
 CREATE_ACCOUNTS = """
 CREATE TABLE IF NOT EXISTS accounts (
     userid      TEXT    PRIMARY KEY,
     userpw      TEXT,
-    acc_type    TEXT    DEFAULT 'inactive'
+    acc_type    TEXT    DEFAULT 'inactive',
+    tg_userid   TEXT    UNIQUE,
+    tg_chatid   TEXT    UNIQUE
 );
 """
 
@@ -233,6 +236,22 @@ CREATE TABLE IF NOT EXISTS noti (
 """
 
 
+# Table: TG_NOTIFICATION_QUEUE
+# Decouples Streamlit from the Telegram bot service.
+# Streamlit writes notification events here; the bot's scheduler drains them every 15 minutes.
+# noti_type: 'new_topic' | 'new_depose' | 'vote_result'
+# payload: JSONB blob with all data needed to render the notification message.
+CREATE_TG_NOTIFICATION_QUEUE = """
+CREATE TABLE IF NOT EXISTS tg_notification_queue (
+    id          SERIAL      PRIMARY KEY,
+    noti_type   TEXT        NOT NULL,
+    payload     JSONB       NOT NULL,
+    created_at  TIMESTAMP   DEFAULT NOW(),
+    processed   BOOLEAN     DEFAULT FALSE
+);
+"""
+
+
 # Ordered list of all CREATE statements (dependency order).
 # Tables must be created before any table that references them via FK.
 ALL_SCHEMAS = [
@@ -249,6 +268,7 @@ ALL_SCHEMAS = [
     CREATE_DEPOSE_VOTE_BALLOTS, # → topic_depose_votes, accounts
     CREATE_LOGIN_RECORD,        # → accounts
     CREATE_NOTI,                # → accounts
+    CREATE_TG_NOTIFICATION_QUEUE,  # no deps
 ]
 
 
