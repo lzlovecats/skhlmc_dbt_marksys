@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "skhlmc-telegram-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": [
+      "*/15 * * * *",
+      "0 1 * * *",
+      "0 9 * * FRI"
+    ]
+  },
+  "vars": {
+    "APP_URL": "https://lmcdbt-marksys.streamlit.app"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "07a08e47bf6d4207b5f6d0e2e26756a3"
+    }
+  ]
+}

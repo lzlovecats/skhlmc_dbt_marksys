@@ -6,3 +6,7 @@ __pycache__/
 .streamlit
 .idea
 .claude
+worker/node_modules/
+worker/.wrangler/
+worker/.dev.vars
+worker/coverage/

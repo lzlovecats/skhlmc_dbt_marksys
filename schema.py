@@ -247,9 +247,31 @@ CREATE TABLE IF NOT EXISTS tg_notification_queue (
     noti_type   TEXT        NOT NULL,
     payload     JSONB       NOT NULL,
     created_at  TIMESTAMP   DEFAULT NOW(),
-    processed   BOOLEAN     DEFAULT FALSE
+    processed   BOOLEAN     DEFAULT FALSE,
+    processing_token        TEXT,
+    processing_started_at   TIMESTAMP,
+    last_error              TEXT
 );
 """
+
+TG_NOTIFICATION_QUEUE_MIGRATIONS = [
+    """
+    ALTER TABLE tg_notification_queue
+    ADD COLUMN IF NOT EXISTS processing_token TEXT
+    """,
+    """
+    ALTER TABLE tg_notification_queue
+    ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMP
+    """,
+    """
+    ALTER TABLE tg_notification_queue
+    ADD COLUMN IF NOT EXISTS last_error TEXT
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tg_notification_queue_claim
+    ON tg_notification_queue (processed, processing_token, created_at)
+    """,
+]
 
 
 # Ordered list of all CREATE statements (dependency order).
@@ -300,8 +322,12 @@ def init_db(conn) -> None:
         with conn.session as s:
             for ddl in ALL_SCHEMAS:
                 s.execute(text(ddl))
+            for ddl in TG_NOTIFICATION_QUEUE_MIGRATIONS:
+                s.execute(text(ddl))
             s.commit()
     else:
         for ddl in ALL_SCHEMAS:
+            conn.execute(text(ddl))
+        for ddl in TG_NOTIFICATION_QUEUE_MIGRATIONS:
             conn.execute(text(ddl))
         conn.commit()
