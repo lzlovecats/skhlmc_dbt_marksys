@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import io
-from functions import get_connection, get_score_data, query_params, _log_login
+from functions import get_connection, get_score_data, query_params, _log_login, normalize_judge_name
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 
 st.header("查閱評判分紙")
@@ -85,8 +85,15 @@ st.write("### 評分詳情")
 
 conn = get_connection()
 temp_sheet = conn.query(
-    "SELECT * FROM temp_scores WHERE match_id = :mid AND judge_name = :jname",
-    params={"mid": str(selected_match), "jname": str(selected_judge)},
+    """
+    SELECT *
+    FROM temp_scores
+    WHERE match_id = :mid
+      AND judge_name = :jname
+      AND COALESCE(is_final, FALSE) = TRUE
+    ORDER BY updated_at DESC
+    """,
+    params={"mid": str(selected_match), "jname": normalize_judge_name(str(selected_judge))},
     ttl=0,
 )
 
@@ -123,6 +130,7 @@ col_pro, col_con = st.columns(2)
 
 pro_detail_a, pro_detail_b = pd.DataFrame(), pd.DataFrame()
 con_detail_a, con_detail_b = pd.DataFrame(), pd.DataFrame()
+loaded_final_sides = set()
 for i, row in temp_sheet.iterrows():
     side = str(row["team_side"]).strip()
     detail_json = row["data"]
@@ -133,13 +141,19 @@ for i, row in temp_sheet.iterrows():
                 pro_detail_a = pd.read_json(io.StringIO(data["raw_df_a"]))
             if "raw_df_b" in data:
                 pro_detail_b = pd.read_json(io.StringIO(data["raw_df_b"]))
+            loaded_final_sides.add("正方")
         elif side == "反方":
             if "raw_df_a" in data:
                 con_detail_a = pd.read_json(io.StringIO(data["raw_df_a"]))
             if "raw_df_b" in data:
                 con_detail_b = pd.read_json(io.StringIO(data["raw_df_b"]))
+            loaded_final_sides.add("反方")
     except (json.JSONDecodeError, KeyError):
         continue
+
+missing_final_sides = [side for side in ["正方", "反方"] if side not in loaded_final_sides]
+if missing_final_sides:
+    st.error(f"此評判的最終分紙細項資料不完整（缺少：{'、'.join(missing_final_sides)}），請聯絡賽會人員。")
 
 with col_pro:
     display_team_scores(
