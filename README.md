@@ -1,6 +1,6 @@
 # SKH LMC 辯電子評分系統 | SKH LMC Debate Marking System
 
-> 聖呂中辯電子分紙系統 v2.4.3
+> 聖呂中辯電子分紙系統
 
 一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、評判電子分紙及成績統計。
 
@@ -18,6 +18,7 @@ A full-featured electronic scoring and management platform for school debate com
 - 每個投票設有 7 日截止期限，逾期自動否決
 - 活躍成員制度：整體投票率 ≥ 40% 且最近10次至少參與3次
 - AI 審題建議（Gemini / ChatGPT 整合）
+- Telegram 推送通知（新辯題、罷免動議、投票結果、24 小時截止提醒、活躍度警告）
 
 **English:**
 - Committee members submit topics for collective vote
@@ -26,6 +27,7 @@ A full-featured electronic scoring and management platform for school debate com
 - 7-day voting deadline per topic, auto-rejected on expiry
 - Active member system: ≥ 40% overall participation rate AND ≥ 3 of last 10 votes
 - AI topic review suggestions (Gemini / ChatGPT integration)
+- Telegram push notifications (new topics, depositions, vote results, 24h deadline reminders, activity warnings)
 
 ---
 
@@ -94,7 +96,8 @@ A full-featured electronic scoring and management platform for school debate com
 | 數據庫 / Database | PostgreSQL (via `st.connection` + SQLAlchemy) |
 | 數據處理 / Data | Pandas, NumPy |
 | 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
-| 部署 / Deployment | Streamlit Community Cloud / 自行部署 |
+| Telegram Bot / 通知 | Cloudflare Worker (TypeScript) + Hyperdrive |
+| 部署 / Deployment | Streamlit Community Cloud + Cloudflare Workers |
 
 ---
 
@@ -133,6 +136,12 @@ score = "your_score_review_password"
 streamlit run main.py
 ```
 
+**4. （可選）部署 Telegram Bot / (Optional) Deploy Telegram Bot**
+
+詳見 `worker/README.md`。需要 Cloudflare 帳戶、Hyperdrive 及 Telegram Bot Token。
+
+See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive, and a Telegram Bot Token.
+
 ---
 
 ## 🗄️ 資料庫結構 | Database Schema
@@ -144,28 +153,39 @@ streamlit run main.py
 | `temp_scores` | 評判評分暫存（JSON 格式）|
 | `topics` | 辯題庫 |
 | `topic_votes` | 待表決辯題投票紀錄 |
+| `topic_vote_ballots` | 辯題投票選票 |
 | `topic_depose_votes` | 辯題罷免投票紀錄 |
-| `accounts` | 委員會成員帳戶 |
+| `depose_vote_ballots` | 罷免投票選票 |
+| `accounts` | 委員會成員帳戶（含 Telegram 連結欄位）|
+| `login_record` | 成員登入紀錄 |
+| `noti` | 站內通知 |
+| `tg_notification_queue` | Telegram 推送通知佇列（由 Cloudflare Worker 處理）|
 
 ---
 
 ## 📁 檔案結構 | File Structure
 
 ```
-├── main.py              # 主入口 / Entry point, navigation
-├── judging.py           # 電子分紙 / Judge scoring interface
-├── match_info.py        # 場次管理 / Match management
-├── management.py        # 賽果統計 / Results dashboard
-├── review.py            # 查閱分紙 / Score review
-├── vote.py              # 辯題投票系統 / Topic voting system
-├── open_db.py           # 公開辯題庫 / Public topic viewer
-├── db_mgmt.py           # 辯題庫管理 / Topic bank management (admin)
-├── functions.py         # 核心工具函數 / Core utilities
-├── scoring.py           # 評分常數及欄位 / Scoring constants
-└── assets/
-    ├── user_manual.md   # 使用手冊 / User manual
-    ├── rules.md         # 賽規 / Competition rules
-    └── *_reminder.md    # AI 審題建議 / AI topic review guides
+├── main.py                   # 主入口 / Entry point, navigation
+├── judging.py                # 電子分紙 / Judge scoring interface
+├── match_info.py             # 場次管理 / Match management
+├── management.py             # 賽果統計 / Results dashboard
+├── review.py                 # 查閱分紙 / Score review
+├── vote.py                   # 辯題投票系統 / Topic voting system
+├── open_db.py                # 公開辯題庫 / Public topic viewer
+├── db_mgmt.py                # 辯題庫管理 / Topic bank management (admin)
+├── draw_match_schedule.py    # 抽籤賽程 / Draw schedule
+├── functions.py              # 核心工具函數 / Core utilities
+├── scoring.py                # 評分常數及欄位 / Scoring constants
+├── schema.py                 # 資料庫建表語句 / DB schema definitions
+├── assets/
+│   ├── user_manual.md        # 使用手冊 / User manual
+│   ├── rules.md              # 賽規 / Competition rules
+│   └── *_reminder.md        # AI 審題建議 / AI topic review guides
+└── worker/                   # Cloudflare Worker — Telegram bot
+    ├── src/index.ts          # Bot logic (commands + scheduled jobs)
+    ├── wrangler.jsonc        # Cloudflare deployment config
+    └── README.md             # Worker setup & deployment guide
 ```
 
 ---

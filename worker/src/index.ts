@@ -57,38 +57,6 @@ const STATUS_LABELS: Record<string, string> = {
   inactive: "非活躍成員",
 };
 
-const CREATE_TG_NOTIFICATION_QUEUE_SQL = `
-CREATE TABLE IF NOT EXISTS tg_notification_queue (
-    id                      SERIAL      PRIMARY KEY,
-    noti_type               TEXT        NOT NULL,
-    payload                 JSONB       NOT NULL,
-    created_at              TIMESTAMP   DEFAULT NOW(),
-    processed               BOOLEAN     DEFAULT FALSE,
-    processing_token        TEXT,
-    processing_started_at   TIMESTAMP,
-    last_error              TEXT
-)
-`;
-
-const TG_NOTIFICATION_QUEUE_MIGRATIONS = [
-  `
-  ALTER TABLE tg_notification_queue
-  ADD COLUMN IF NOT EXISTS processing_token TEXT
-  `,
-  `
-  ALTER TABLE tg_notification_queue
-  ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMP
-  `,
-  `
-  ALTER TABLE tg_notification_queue
-  ADD COLUMN IF NOT EXISTS last_error TEXT
-  `,
-  `
-  CREATE INDEX IF NOT EXISTS idx_tg_notification_queue_claim
-  ON tg_notification_queue (processed, processing_token, created_at)
-  `,
-];
-
 const TOPIC_24H_SQL = `
 SELECT
     tv.topic,
@@ -583,7 +551,6 @@ async function cmdHelp(env: Env, message: TelegramMessage): Promise<void> {
 }
 
 async function drainQueue(client: Client, env: Env): Promise<void> {
-  await ensureQueueSchema(client);
   const processingToken = crypto.randomUUID();
   const rows = await claimQueueRows(client, processingToken);
   if (rows.length === 0) {
@@ -613,13 +580,6 @@ async function drainQueue(client: Client, env: Env): Promise<void> {
       console.error("Failed to process queue row", { id: row.id, notiType: row.noti_type, error: message });
       await releaseQueueRow(client, row.id, row.processing_token, message);
     }
-  }
-}
-
-async function ensureQueueSchema(client: Client): Promise<void> {
-  await client.query(CREATE_TG_NOTIFICATION_QUEUE_SQL);
-  for (const sql of TG_NOTIFICATION_QUEUE_MIGRATIONS) {
-    await client.query(sql);
   }
 }
 
