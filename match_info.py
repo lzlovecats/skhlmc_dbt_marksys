@@ -58,7 +58,7 @@ if st.button("新增比賽場次"):
                 "que": "",
                 "pro": "", "con": "",
                 "pro_1": "", "pro_2": "", "pro_3": "", "pro_4": "",
-                "con_1": "", "con_2": "", "con_3": "", "con_4": "", "access_code": ""
+                "con_1": "", "con_2": "", "con_3": "", "con_4": "", "access_code": "", "review_password": ""
             }
             st.session_state["all_matches"][new_match_id] = new_match_data
             save_match_to_db(new_match_data)
@@ -167,6 +167,9 @@ if st.session_state["all_matches"]:
         display_access_code = current_access_code_from_sheet[1:] if current_access_code_from_sheet.startswith("'") else current_access_code_from_sheet
         access_code = st.text_input("評判入場密碼", value=display_access_code)
 
+        current_review_password = str(current_data.get("review_password", "") or "")
+        review_password = st.text_input("查閱分紙密碼", value=current_review_password)
+
         # Save edited info to db
         if st.form_submit_button("儲存場次資料"):
             match_data_prepare = {
@@ -176,7 +179,7 @@ if st.session_state["all_matches"]:
                 "que": que,
                 "pro": pro_team, "con": con_team,
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
-                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": access_code}
+                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": access_code, "review_password": review_password}
             st.session_state["all_matches"][selected_match] = match_data_prepare
             save_match_to_db(match_data_prepare)
             st.session_state["match_action_message"] = {"type": "success", "content": f"場次「{selected_match}」資料已儲存至數據庫！"}

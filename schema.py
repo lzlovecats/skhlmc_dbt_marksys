@@ -27,13 +27,14 @@ CREATE TABLE IF NOT EXISTS accounts (
 # Stores debate match metadata. Debater names live in DEBATERS.
 CREATE_MATCHES = """
 CREATE TABLE IF NOT EXISTS matches (
-    match_id    TEXT    PRIMARY KEY,
-    date        DATE,
-    time        TIME,
-    topic       TEXT,
-    pro_team    TEXT,
-    con_team    TEXT,
-    access_code TEXT
+    match_id        TEXT    PRIMARY KEY,
+    date            DATE,
+    time            TIME,
+    topic           TEXT,
+    pro_team        TEXT,
+    con_team        TEXT,
+    access_code     TEXT,
+    review_password TEXT
 );
 """
 
