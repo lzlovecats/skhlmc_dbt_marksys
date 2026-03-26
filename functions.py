@@ -77,22 +77,6 @@ def check_admin():
     return True
 
 
-def check_score():
-    if "score_logged_in" not in st.session_state:
-        st.session_state["score_logged_in"] = False
-
-    if not st.session_state["score_logged_in"]:
-        st.subheader("查閱比賽分紙登入")
-        pwd = st.text_input("請輸入由賽會人員提供的密碼", type="password")
-        if st.button("登入"):
-            if pwd == st.secrets["score_password"]:
-                st.session_state["score_logged_in"] = True
-                _log_login("score_review", "score_review")
-                st.rerun()
-            else:
-                st.error("密碼錯誤")
-        return False
-    return True
 
 
 def get_connection():
@@ -167,7 +151,8 @@ def save_match_to_db(match_data):
         "topic": match_data['que'],
         "pro_team": match_data['pro'],
         "con_team": match_data['con'],
-        "access_code": match_data['access_code']
+        "access_code": match_data['access_code'],
+        "review_password": match_data.get('review_password', '') or None
     }
 
     if not exist_match.empty:
@@ -175,13 +160,14 @@ def save_match_to_db(match_data):
             UPDATE matches SET
                 date = :date, time = :time, topic = :topic,
                 pro_team = :pro_team, con_team = :con_team,
-                access_code = :access_code
+                access_code = :access_code,
+                review_password = :review_password
             WHERE match_id = :match_id
         """, match_params)
     else:
         execute_query("""
-            INSERT INTO matches (match_id, date, time, topic, pro_team, con_team, access_code)
-            VALUES (:match_id, :date, :time, :topic, :pro_team, :con_team, :access_code)
+            INSERT INTO matches (match_id, date, time, topic, pro_team, con_team, access_code, review_password)
+            VALUES (:match_id, :date, :time, :topic, :pro_team, :con_team, :access_code, :review_password)
         """, match_params)
 
     # Upsert debater names into the normalised debaters table
