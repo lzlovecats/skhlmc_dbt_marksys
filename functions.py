@@ -18,6 +18,30 @@ CATEGORIES = [
 ]
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 
+
+def normalize_judge_name(name: str) -> str:
+    raw = str(name or "").replace("\u3000", " ").strip()
+    raw = " ".join(raw.split())
+    return "".join(ch.lower() if "A" <= ch <= "Z" else ch for ch in raw)
+
+
+def _serialize_score_data(score_data):
+    data_to_save = score_data.copy()
+    if "raw_df_a" in data_to_save and isinstance(data_to_save["raw_df_a"], pd.DataFrame):
+        data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_json()
+    if "raw_df_b" in data_to_save and isinstance(data_to_save["raw_df_b"], pd.DataFrame):
+        data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_json()
+    return json.dumps(data_to_save, ensure_ascii=False)
+
+
+def _deserialize_score_data(raw_data):
+    data = raw_data if isinstance(raw_data, dict) else json.loads(raw_data)
+    if "raw_df_a" in data and data["raw_df_a"]:
+        data["raw_df_a"] = pd.read_json(io.StringIO(data["raw_df_a"]))
+    if "raw_df_b" in data and data["raw_df_b"]:
+        data["raw_df_b"] = pd.read_json(io.StringIO(data["raw_df_b"]))
+    return data
+
 def get_cookie(cookie_manager, key, default=None):
     try:
         value = cookie_manager.get(key)
@@ -187,39 +211,56 @@ def save_match_to_db(match_data):
 
 def save_draft_to_db(match_id, judge_name, team_side, score_data):
     conn = get_connection()
+    normalized_judge_name = normalize_judge_name(judge_name)
+    json_str = _serialize_score_data(score_data)
+    updated_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
 
-    data_to_save = score_data.copy()
-    if "raw_df_a" in data_to_save:
-        data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_json()
-    if "raw_df_b" in data_to_save:
-        data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_json()
+    with conn.session as s:
+        already_submitted = s.execute(text("""
+            SELECT 1
+            FROM scores
+            WHERE match_id = :match_id AND judge_name = :judge_name
+        """), {
+            "match_id": match_id,
+            "judge_name": normalized_judge_name
+        }).fetchone()
 
-    json_str = json.dumps(data_to_save, ensure_ascii=False)
+        if already_submitted:
+            raise ValueError("你已提交過評分！無法修改評分！")
 
-    exist_record = query_params(
-        "SELECT * FROM temp_scores WHERE match_id = :match_id AND judge_name = :judge_name AND team_side = :team_side",
-        {"match_id": match_id, "judge_name": judge_name, "team_side": team_side}
-    )
-
-    if not exist_record.empty:
-        execute_query(
-            "UPDATE temp_scores SET data = :data WHERE match_id = :match_id AND judge_name = :judge_name AND team_side = :team_side",
-            {"data": json_str, "match_id": match_id, "judge_name": judge_name, "team_side": team_side}
-        )
-    else:
-        execute_query(
-            "INSERT INTO temp_scores (match_id, judge_name, team_side, data) VALUES (:match_id, :judge_name, :team_side, :data)",
-            {"match_id": match_id, "judge_name": judge_name, "team_side": team_side, "data": json_str}
-        )
+        s.execute(text("""
+            INSERT INTO temp_scores (match_id, judge_name, team_side, data, is_final, updated_at)
+            VALUES (:match_id, :judge_name, :team_side, :data, FALSE, :updated_at)
+            ON CONFLICT (match_id, judge_name, team_side)
+            DO UPDATE SET
+                data = EXCLUDED.data,
+                is_final = FALSE,
+                updated_at = EXCLUDED.updated_at
+        """), {
+            "match_id": match_id,
+            "judge_name": normalized_judge_name,
+            "team_side": team_side,
+            "data": json_str,
+            "updated_at": updated_at
+        })
+        s.commit()
     return True
 
 
 def load_draft_from_db(match_id, judge_name):
     conn = get_connection()
+    normalized_judge_name = normalize_judge_name(judge_name)
 
     exist_temp_data = query_params(
-        "SELECT * FROM temp_scores WHERE match_id = :match_id AND judge_name = :judge_name",
-        {"match_id": match_id, "judge_name": judge_name}
+        """
+        SELECT *
+        FROM temp_scores
+        WHERE match_id = :match_id
+          AND judge_name = :judge_name
+          AND COALESCE(is_final, FALSE) = FALSE
+        ORDER BY updated_at DESC
+        """,
+        {"match_id": match_id, "judge_name": normalized_judge_name}
     )
     
     drafts = {"正方": None, "反方": None}
@@ -227,16 +268,119 @@ def load_draft_from_db(match_id, judge_name):
         team_side = str(row["team_side"]).strip()
         if team_side in drafts:
             try:
-                data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
-                if "raw_df_a" in data and data["raw_df_a"]:
-                    data["raw_df_a"] = pd.read_json(io.StringIO(data["raw_df_a"]))
-                if "raw_df_b" in data and data["raw_df_b"]:
-                    data["raw_df_b"] = pd.read_json(io.StringIO(data["raw_df_b"]))
-                drafts[team_side] = data
+                if drafts[team_side] is None:
+                    drafts[team_side] = _deserialize_score_data(row["data"])
             except Exception:
                 pass  # Corrupt draft data — silently skip, judge will re-enter scores
                 
     return drafts
+
+
+def has_final_submission(match_id, judge_name):
+    normalized_judge_name = normalize_judge_name(judge_name)
+    existing_submit = query_params(
+        "SELECT 1 FROM scores WHERE match_id = :match_id AND judge_name = :judge_name",
+        {"match_id": match_id, "judge_name": normalized_judge_name}
+    )
+    return not existing_submit.empty
+
+
+def submit_final_scores(match_id, judge_name, pro_data, con_data):
+    conn = get_connection()
+    normalized_judge_name = normalize_judge_name(judge_name)
+    submitted_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    submitted_at_db = submitted_at.replace(tzinfo=None)
+    mark_time = submitted_at.strftime("%H:%M:%S")
+
+    side_payloads = {
+        "正方": _serialize_score_data(pro_data),
+        "反方": _serialize_score_data(con_data),
+    }
+
+    with conn.session as s:
+        existing_submit = s.execute(text("""
+            SELECT 1
+            FROM scores
+            WHERE match_id = :match_id AND judge_name = :judge_name
+        """), {
+            "match_id": match_id,
+            "judge_name": normalized_judge_name
+        }).fetchone()
+
+        if existing_submit:
+            s.rollback()
+            return False
+
+        for team_side, payload in side_payloads.items():
+            s.execute(text("""
+                INSERT INTO temp_scores (match_id, judge_name, team_side, data, is_final, updated_at)
+                VALUES (:match_id, :judge_name, :team_side, :data, TRUE, :updated_at)
+                ON CONFLICT (match_id, judge_name, team_side)
+                DO UPDATE SET
+                    data = EXCLUDED.data,
+                    is_final = TRUE,
+                    updated_at = EXCLUDED.updated_at
+            """), {
+                "match_id": match_id,
+                "judge_name": normalized_judge_name,
+                "team_side": team_side,
+                "data": payload,
+                "updated_at": submitted_at_db
+            })
+
+        s.execute(text("""
+            INSERT INTO scores (
+                match_id, judge_name, pro_total, con_total, mark_time,
+                pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
+            ) VALUES (
+                :match_id, :judge_name, :pro_total, :con_total, :mark_time,
+                :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
+            )
+        """), {
+            "match_id": match_id,
+            "judge_name": normalized_judge_name,
+            "pro_total": pro_data["final_total"],
+            "con_total": con_data["final_total"],
+            "mark_time": mark_time,
+            "pro_free": pro_data["total_b"],
+            "con_free": con_data["total_b"],
+            "pro_deduction": pro_data["deduction"],
+            "con_deduction": con_data["deduction"],
+            "pro_coherence": pro_data["coherence"],
+            "con_coherence": con_data["coherence"]
+        })
+
+        for i, score in enumerate(pro_data["ind_scores"]):
+            s.execute(text("""
+                INSERT INTO debater_scores (match_id, judge_name, side, position, score)
+                VALUES (:match_id, :judge_name, :side, :position, :score)
+                ON CONFLICT (match_id, judge_name, side, position)
+                DO UPDATE SET score = EXCLUDED.score
+            """), {
+                "match_id": match_id,
+                "judge_name": normalized_judge_name,
+                "side": "pro",
+                "position": i + 1,
+                "score": int(score)
+            })
+
+        for i, score in enumerate(con_data["ind_scores"]):
+            s.execute(text("""
+                INSERT INTO debater_scores (match_id, judge_name, side, position, score)
+                VALUES (:match_id, :judge_name, :side, :position, :score)
+                ON CONFLICT (match_id, judge_name, side, position)
+                DO UPDATE SET score = EXCLUDED.score
+            """), {
+                "match_id": match_id,
+                "judge_name": normalized_judge_name,
+                "side": "con",
+                "position": i + 1,
+                "score": int(score)
+            })
+
+        s.commit()
+
+    return True
 
 
 def load_topic_from_db(difficulty=None):

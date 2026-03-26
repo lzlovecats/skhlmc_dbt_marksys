@@ -6,8 +6,9 @@ from functions import (
     load_matches_from_db,
     load_draft_from_db,
     save_draft_to_db,
-    execute_query_count,
-    query_params
+    has_final_submission,
+    normalize_judge_name,
+    submit_final_scores
 )
 from scoring import (
     SPEECH_CRITERIA, speech_col, SPEECH_TOTAL_MAX,
@@ -18,7 +19,7 @@ from scoring import (
 st.header("電子評分系統")
 
 @st.dialog("最後確認")
-def confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data):
+def confirm_submit(pro, con, selected_match_id, judge_name):
     st.write("根據你的評分，兩隊總分為：")
     st.write(f"正方：{pro['final_total']} ／ {GRAND_TOTAL}")
     st.write(f"反方：{con['final_total']} ／ {GRAND_TOTAL}")
@@ -32,40 +33,9 @@ def confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data
     if st.button("最後確定", type="primary"):
         try:
             with st.spinner("正在上傳評分至雲端..."):
-                save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
-                rows_inserted = execute_query_count("""
-                    INSERT INTO scores (
-                        match_id, judge_name, pro_total, con_total, mark_time,
-                        pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
-                    ) VALUES (
-                        :match_id, :judge_name, :pro_total, :con_total, :mark_time,
-                        :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
-                    ) ON CONFLICT (match_id, judge_name) DO NOTHING
-                """, {
-                    "match_id": selected_match_id, "judge_name": judge_name,
-                    "pro_total": pro["final_total"], "con_total": con["final_total"],
-                    "mark_time": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%H:%M:%S"),
-                    "pro_free": pro["total_b"], "con_free": con["total_b"],
-                    "pro_deduction": pro["deduction"], "con_deduction": con["deduction"],
-                    "pro_coherence": pro["coherence"], "con_coherence": con["coherence"]
-                })
-                if rows_inserted > 0:
-                    for i, score in enumerate(pro["ind_scores"]):
-                        execute_query("""
-                            INSERT INTO debater_scores (match_id, judge_name, side, position, score)
-                            VALUES (:match_id, :judge_name, :side, :position, :score)
-                            ON CONFLICT (match_id, judge_name, side, position) DO NOTHING
-                        """, {"match_id": selected_match_id, "judge_name": judge_name,
-                              "side": "pro", "position": i + 1, "score": int(score)})
-                    for i, score in enumerate(con["ind_scores"]):
-                        execute_query("""
-                            INSERT INTO debater_scores (match_id, judge_name, side, position, score)
-                            VALUES (:match_id, :judge_name, :side, :position, :score)
-                            ON CONFLICT (match_id, judge_name, side, position) DO NOTHING
-                        """, {"match_id": selected_match_id, "judge_name": judge_name,
-                              "side": "con", "position": i + 1, "score": int(score)})
+                submitted = submit_final_scores(selected_match_id, judge_name, pro, con)
 
-            if rows_inserted == 0:
+            if not submitted:
                 st.session_state["submission_message"] = {
                     "type": "error",
                     "content": "你已提交過評分！無法再次提交！",
@@ -87,6 +57,7 @@ def confirm_logout_dialog():
     st.warning("登出後，本機暫存的評分進度將會清除，請確保已儲存至雲端。")
     if st.button("確認登出", type="primary"):
         st.session_state["last_judge_name"] = ""
+        st.session_state["last_judge_identity"] = ""
         st.session_state["judge_authenticated"] = False
         st.session_state["temp_scores"] = {"正方": None, "反方": None}
         st.rerun()
@@ -106,6 +77,8 @@ def _init_session_state():
         st.session_state["submission_message"] = None
     if "last_judge_name" not in st.session_state:
         st.session_state["last_judge_name"] = ""
+    if "last_judge_identity" not in st.session_state:
+        st.session_state["last_judge_identity"] = ""
     if "draft_loaded" not in st.session_state:
         st.session_state["draft_loaded"] = False
 
@@ -208,15 +181,18 @@ st.markdown(f"辯題：{motion}")
 # Pre-fill judge name if available from session state
 default_judge_name = st.session_state.get("last_judge_name", "")
 judge_name_input = st.text_input("評判姓名", value=default_judge_name)
-judge_name = judge_name_input.strip() if judge_name_input else ""
+st.caption("系統會自動統一空格及英文大小寫，以避免重覆身份。")
+judge_name_raw = judge_name_input.strip() if judge_name_input else ""
+judge_name = normalize_judge_name(judge_name_raw)
 
 if st.button("登出評判帳戶"):
     confirm_logout_dialog()
 
-if judge_name != st.session_state["last_judge_name"]:
+if judge_name != st.session_state["last_judge_identity"]:
     st.session_state["draft_loaded"] = False
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
-    st.session_state["last_judge_name"] = judge_name
+    st.session_state["last_judge_name"] = judge_name_raw
+    st.session_state["last_judge_identity"] = judge_name
 
 if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
     with st.spinner("正在檢查雲端暫存紀錄..."):
@@ -350,14 +326,10 @@ with prog_col2:
 render_submission_message()
 
 if st.button(f"暫存{team_side}評分"):
-    if not judge_name:
+    if not judge_name_raw:
         st.error("請輸入評判姓名！")
     else:
-        existing_submit = query_params(
-            "SELECT * FROM scores WHERE match_id = :match_id AND judge_name = :judge_name",
-            {"match_id": selected_match_id, "judge_name": judge_name}
-        )
-        if not existing_submit.empty:
+        if has_final_submission(selected_match_id, judge_name):
             st.error("你已提交過評分！無法修改評分！")
             st.stop()
 
@@ -365,8 +337,12 @@ if st.button(f"暫存{team_side}評分"):
                                     coherence, final_total, individual_scores, edited_df_a, edited_df_b)
         st.session_state["temp_scores"][team_side] = side_data
 
-        with st.spinner("正在上傳暫存資料至雲端..."):
-            success = save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
+        try:
+            with st.spinner("正在上傳暫存資料至雲端..."):
+                success = save_draft_to_db(selected_match_id, judge_name, team_side, side_data)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
 
         cols_a = [speech_col(c) for c in SPEECH_CRITERIA]
         cols_b = [free_debate_col(c) for c in FREE_DEBATE_CRITERIA]
@@ -380,7 +356,7 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
     st.warning("⚠️ 請注意！正式提交分紙後將無法修改分數！請確認所有資料輸入正確！")
     if st.button("正式提交評分", type="primary"):
         try:
-            if not judge_name:
+            if not judge_name_raw:
                 st.error("請輸入評判姓名！")
                 st.stop()
 
@@ -391,6 +367,6 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             pro = st.session_state["temp_scores"]["正方"]
             con = st.session_state["temp_scores"]["反方"]
 
-            confirm_submit(pro, con, selected_match_id, judge_name, team_side, side_data)
+            confirm_submit(pro, con, selected_match_id, judge_name)
         except Exception as e:
             st.error(f"儲存失敗: {e}")
