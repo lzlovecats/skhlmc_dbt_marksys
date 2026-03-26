@@ -38,7 +38,6 @@ if selected_match not in st.session_state["score_unlocked_matches"]:
     if st.button("登入"):
         if pwd == review_password:
             st.session_state["score_unlocked_matches"].add(selected_match)
-            _log_login("score_review", "score_review")
             st.rerun()
         else:
             st.error("密碼錯誤")

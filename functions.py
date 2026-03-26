@@ -422,7 +422,7 @@ def refresh_acc_type(user_id: str) -> str | None:
         "SELECT acc_type FROM accounts WHERE userid = :user_id",
         {"user_id": user_id}
     )
-    if acc.empty or str(acc.iloc[0]["acc_type"]).strip() == "admin":
+    if acc.empty or str(acc.iloc[0]["acc_type"]).strip() == "admin" or str(acc.iloc[0]["acc_type"]).strip() == "developer":
         return None
 
     result = query_params(_ACTIVITY_SQL, {"user_id": user_id})
@@ -549,7 +549,7 @@ def get_member_participation_stats():
 
     stats = []
     for user in all_users:
-        if user == "admin": continue  # Skip admin account from stats
+        if user == "admin" or user == "developer" or user == "": continue  # Skip admin and developer accounts from stats
         total_participated = sum(
             1 for agree, against in vote_records if user in agree or user in against
         ) if total_votes > 0 else 0
