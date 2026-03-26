@@ -452,6 +452,70 @@ def get_score_data():
         return None
 
 
+def get_best_debater_results(match_id, match_results):
+    debaters_row = query_params(
+        "SELECT side, position, name FROM debaters WHERE match_id = :match_id",
+        {"match_id": match_id}
+    )
+    if not debaters_row.empty:
+        debater_names = {
+            (str(r["side"]).strip(), int(r["position"])): str(r["name"]).strip()
+            for _, r in debaters_row.iterrows()
+        }
+
+        def _label(pos, side, position):
+            name = debater_names.get((side, position), "")
+            return f"{pos}（{name}）" if name else pos
+
+        role_map = {
+            "pro1_m": _label("正方主辯", "pro", 1),
+            "pro2_m": _label("正方一副", "pro", 2),
+            "pro3_m": _label("正方二副", "pro", 3),
+            "pro4_m": _label("正方結辯", "pro", 4),
+            "con1_m": _label("反方主辯", "con", 1),
+            "con2_m": _label("反方一副", "con", 2),
+            "con3_m": _label("反方二副", "con", 3),
+            "con4_m": _label("反方結辯", "con", 4),
+        }
+    else:
+        role_map = {
+            "pro1_m": "正方主辯",
+            "pro2_m": "正方一副",
+            "pro3_m": "正方二副",
+            "pro4_m": "正方結辯",
+            "con1_m": "反方主辯",
+            "con2_m": "反方一副",
+            "con3_m": "反方二副",
+            "con4_m": "反方結辯",
+        }
+
+    rank_cols = ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]
+    scores_only = match_results[rank_cols].apply(pd.to_numeric, errors="coerce")
+    if scores_only.isna().any().any():
+        return None, None
+
+    all_ranks = []
+    for _, row in scores_only.iterrows():
+        all_ranks.append(row.rank(ascending=False, method='min'))
+
+    df_ranks = pd.DataFrame(all_ranks)
+    total_rank_sum = df_ranks.sum()
+
+    best_debater_results = []
+    for col_id in rank_cols:
+        best_debater_results.append({
+            "辯位": role_map.get(col_id, col_id),
+            "名次總和": int(total_rank_sum[col_id]),
+            "平均得分": round(scores_only[col_id].mean(), 2)
+        })
+
+    df_final_best = pd.DataFrame(best_debater_results).sort_values(
+        by=["名次總和", "平均得分"],
+        ascending=[True, False]
+    )
+    return df_final_best, df_final_best.iloc[0]
+
+
 def return_user_manual():
     return load_markdown_asset("user_manual.md")
 

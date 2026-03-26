@@ -1,6 +1,5 @@
 import streamlit as st
-import pandas as pd
-from functions import check_admin, get_connection, get_score_data, query_params
+from functions import check_admin, get_score_data, get_best_debater_results, query_params
 st.header("賽事結果統計")
 
 if not check_admin():
@@ -45,67 +44,11 @@ elif con_votes > pro_votes:
 else:
     st.warning("票數相同，依賽規需要重新運作自由辯論環節。")
 
-debaters_row = query_params(
-    "SELECT side, position, name FROM debaters WHERE match_id = :match_id",
-    {"match_id": selected_match}
-)
-if not debaters_row.empty:
-    debater_names = {
-        (str(r["side"]).strip(), int(r["position"])): str(r["name"]).strip()
-        for _, r in debaters_row.iterrows()
-    }
-    def _label(pos, side, position):
-        name = debater_names.get((side, position), "")
-        return f"{pos}（{name}）" if name else pos
-    role_map = {
-        "pro1_m": _label("正方主辯", "pro", 1),
-        "pro2_m": _label("正方一副", "pro", 2),
-        "pro3_m": _label("正方二副", "pro", 3),
-        "pro4_m": _label("正方結辯", "pro", 4),
-        "con1_m": _label("反方主辯", "con", 1),
-        "con2_m": _label("反方一副", "con", 2),
-        "con3_m": _label("反方二副", "con", 3),
-        "con4_m": _label("反方結辯", "con", 4),
-    }
+df_final_best, best_one = get_best_debater_results(selected_match, match_results)
+if df_final_best is not None and best_one is not None:
+    st.dataframe(df_final_best, use_container_width=True, hide_index=True)
+    st.info(f"本場最佳辯論員：**{best_one['辯位']}** (名次總和：{best_one['名次總和']} | 平均分：{best_one['平均得分']})")
 else:
-    role_map = {
-        "pro1_m": "正方主辯",
-        "pro2_m": "正方一副",
-        "pro3_m": "正方二副",
-        "pro4_m": "正方結辯",
-        "con1_m": "反方主辯",
-        "con2_m": "反方一副",
-        "con3_m": "反方二副",
-        "con4_m": "反方結辯",
-    }
-
-all_ranks = []
-rank_cols = ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]
-for index, row in match_results.iterrows():
-    scores = row[rank_cols].astype(int)
-    ranks = scores.rank(ascending=False, method='min')
-    all_ranks.append(ranks)
-df_ranks = pd.DataFrame(all_ranks)
-total_rank_sum = df_ranks.sum()
-
-best_debater_results = []
-for col_id in rank_cols:
-    best_debater_results.append({
-        "辯位": role_map.get(col_id, col_id),
-        "名次總和": int(total_rank_sum[col_id]),
-        "平均得分": round(match_results[col_id].mean(), 2)
-    })
-
-df_final_best = pd.DataFrame(best_debater_results).sort_values(
-    by=["名次總和", "平均得分"], 
-    ascending=[True, False]
-)
-
-st.dataframe(df_final_best, use_container_width=True, hide_index=True)
-
-best_one = df_final_best.iloc[0]
-st.info(f"本場最佳辯論員：**{best_one['辯位']}** (名次總和：{best_one['名次總和']} | 平均分：{best_one['平均得分']})")
-
-
+    st.warning("最佳辯論員資料暫時不可用。")
 
 

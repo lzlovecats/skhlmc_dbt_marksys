@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import io
-from functions import get_connection, get_score_data, query_params, _log_login, normalize_judge_name
+from functions import get_best_debater_results, get_connection, get_score_data, query_params, _log_login, normalize_judge_name
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 
 st.header("查閱評判分紙")
@@ -56,69 +56,6 @@ if match_results.empty:
     st.info("此場次未有評分紀錄。")
     st.stop()
 
-
-def compute_best_debater(match_id, records):
-    debaters_row = query_params(
-        "SELECT side, position, name FROM debaters WHERE match_id = :match_id",
-        {"match_id": match_id}
-    )
-    if not debaters_row.empty:
-        debater_names = {
-            (str(r["side"]).strip(), int(r["position"])): str(r["name"]).strip()
-            for _, r in debaters_row.iterrows()
-        }
-        def _label(pos, side, position):
-            name = debater_names.get((side, position), "")
-            return f"{pos}（{name}）" if name else pos
-        role_map = {
-            "pro1_m": _label("正方主辯", "pro", 1),
-            "pro2_m": _label("正方一副", "pro", 2),
-            "pro3_m": _label("正方二副", "pro", 3),
-            "pro4_m": _label("正方結辯", "pro", 4),
-            "con1_m": _label("反方主辯", "con", 1),
-            "con2_m": _label("反方一副", "con", 2),
-            "con3_m": _label("反方二副", "con", 3),
-            "con4_m": _label("反方結辯", "con", 4),
-        }
-    else:
-        role_map = {
-            "pro1_m": "正方主辯",
-            "pro2_m": "正方一副",
-            "pro3_m": "正方二副",
-            "pro4_m": "正方結辯",
-            "con1_m": "反方主辯",
-            "con2_m": "反方一副",
-            "con3_m": "反方二副",
-            "con4_m": "反方結辯",
-        }
-
-    rank_cols = ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]
-    scores_only = records[rank_cols].apply(pd.to_numeric, errors="coerce")
-    if scores_only.isna().any().any():
-        return None, None
-
-    all_ranks = []
-    for _, row in scores_only.iterrows():
-        all_ranks.append(row.rank(ascending=False, method='min'))
-
-    df_ranks = pd.DataFrame(all_ranks)
-    total_rank_sum = df_ranks.sum()
-
-    best_debater_results = []
-    for col_id in rank_cols:
-        best_debater_results.append({
-            "辯位": role_map.get(col_id, col_id),
-            "名次總和": int(total_rank_sum[col_id]),
-            "平均得分": round(scores_only[col_id].mean(), 2)
-        })
-
-    df_final_best = pd.DataFrame(best_debater_results).sort_values(
-        by=["名次總和", "平均得分"],
-        ascending=[True, False]
-    )
-    return df_final_best, df_final_best.iloc[0]
-
-
 all_judge = match_results['judge_name'].unique()
 selected_judge = st.selectbox("請選擇評判", options=all_judge)
 
@@ -141,7 +78,7 @@ sum_col1.metric(f"正方總分（{judge_record['pro_name']}）", f"{pro_total} /
 sum_col2.metric(f"反方總分（{judge_record['con_name']}）", f"{con_total} / {GRAND_TOTAL}")
 st.metric("本張分紙勝方", winner_label)
 
-best_table, best_one = compute_best_debater(selected_match, match_results)
+best_table, best_one = get_best_debater_results(selected_match, match_results)
 if best_one is not None:
     st.info(f"本場最佳辯論員：**{best_one['辯位']}** (名次總和：{best_one['名次總和']} | 平均分：{best_one['平均得分']})")
     with st.expander("查看最佳辯論員排名"):
@@ -151,7 +88,6 @@ else:
 
 st.divider()
 st.write("### 評分詳情")
-st.caption("手機或 iPad 可於下方分頁切換正反雙方分紙。")
 
 conn = get_connection()
 temp_sheet = conn.query(
