@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from functions import (
     load_matches_from_db,
     load_draft_from_db,
@@ -42,12 +41,18 @@ def confirm_submit(pro, con, selected_match_id, judge_name):
                     "noti": "提交評分失敗（重覆提交）"}
             else:
                 st.session_state["temp_scores"] = {"正方": None, "反方": None}
-                st.session_state["submission_message"] = {
-                    "type": "success",
-                    "content": "已成功提交評分！感謝評判百忙之中抽空擔任評分工作 :>",
-                    "noti": "🙌 已成功提交評分！"
+                _clear_side_input_state(selected_match_id)
+                st.session_state["submission_message"] = None
+                st.session_state["post_submit_receipt"] = {
+                    "match_id": selected_match_id,
+                    "judge_name": judge_name,
+                    "pro_total": pro["final_total"],
+                    "con_total": con["final_total"]
                 }
+                st.session_state["last_judge_name"] = ""
+                st.session_state["last_judge_identity"] = ""
                 st.session_state["judge_authenticated"] = False
+                st.session_state["auth_match_id"] = None
             st.rerun()
         except Exception as e:
             st.error(f"儲存失敗: {e}")
@@ -56,6 +61,7 @@ def confirm_submit(pro, con, selected_match_id, judge_name):
 def confirm_logout_dialog():
     st.warning("登出後，本機暫存的評分進度將會清除，請確保已儲存至雲端。")
     if st.button("確認登出", type="primary"):
+        _clear_side_input_state(st.session_state.get("active_match_id"))
         st.session_state["last_judge_name"] = ""
         st.session_state["last_judge_identity"] = ""
         st.session_state["judge_authenticated"] = False
@@ -81,6 +87,8 @@ def _init_session_state():
         st.session_state["last_judge_identity"] = ""
     if "draft_loaded" not in st.session_state:
         st.session_state["draft_loaded"] = False
+    if "post_submit_receipt" not in st.session_state:
+        st.session_state["post_submit_receipt"] = None
 
 
 def render_submission_message():
@@ -132,6 +140,52 @@ def build_save_message(team_side, team_name, has_zeros, cloud_success):
         }
 
 
+def _widget_key(prefix, match_id, team_side):
+    return f"{prefix}_{match_id}_{team_side}"
+
+
+def _sync_side_input_state(match_id, team_side, force=False):
+    side_data = st.session_state["temp_scores"].get(team_side)
+    deduct_key = _widget_key("deduct", match_id, team_side)
+    cohere_key = _widget_key("cohere", match_id, team_side)
+
+    if side_data is None:
+        st.session_state.pop(deduct_key, None)
+        st.session_state.pop(cohere_key, None)
+        return
+
+    if force or deduct_key not in st.session_state:
+        st.session_state[deduct_key] = side_data.get("deduction", 0)
+    if force or cohere_key not in st.session_state:
+        st.session_state[cohere_key] = side_data.get("coherence", 0)
+
+
+def _clear_side_input_state(match_id):
+    if not match_id:
+        return
+    for side in ["正方", "反方"]:
+        st.session_state.pop(_widget_key("deduct", match_id, side), None)
+        st.session_state.pop(_widget_key("cohere", match_id, side), None)
+
+
+def render_post_submit_receipt():
+    receipt = st.session_state.get("post_submit_receipt")
+    if not receipt:
+        return
+
+    st.success("評分已成功上傳至雲端。")
+    st.write(f"場次：{receipt['match_id']}")
+    st.write(f"評判：{receipt['judge_name']}")
+    col1, col2 = st.columns(2)
+    col1.metric("正方總分", f"{receipt['pro_total']} / {GRAND_TOTAL}")
+    col2.metric("反方總分", f"{receipt['con_total']} / {GRAND_TOTAL}")
+    st.info("如要讓下一位評判使用此裝置，請按下方按鈕返回登入。")
+    if st.button("返回評判登入", type="primary", use_container_width=True):
+        st.session_state["post_submit_receipt"] = None
+        st.rerun()
+    st.stop()
+
+
 _init_session_state()
 
 all_matches = st.session_state.get("all_matches", {})
@@ -146,12 +200,15 @@ selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_match
 current_match = all_matches[selected_match_id]
 
 if st.session_state["active_match_id"] != selected_match_id:
+    _clear_side_input_state(st.session_state["active_match_id"])
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["active_match_id"] = selected_match_id
     st.session_state["draft_loaded"] = False
 
 if st.session_state["auth_match_id"] != selected_match_id:
     st.session_state["judge_authenticated"] = False
+
+render_post_submit_receipt()
 
 if not st.session_state["judge_authenticated"]:
     st.subheader("評判身分驗證")
@@ -177,6 +234,7 @@ if not st.session_state["judge_authenticated"]:
 st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
+st.caption("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
 
 # Pre-fill judge name if available from session state
 default_judge_name = st.session_state.get("last_judge_name", "")
@@ -189,6 +247,7 @@ if st.button("登出評判帳戶"):
     confirm_logout_dialog()
 
 if judge_name != st.session_state["last_judge_identity"]:
+    _clear_side_input_state(selected_match_id)
     st.session_state["draft_loaded"] = False
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["last_judge_name"] = judge_name_raw
@@ -201,10 +260,12 @@ if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
         if drafts["正方"] or drafts["反方"]:
             if st.session_state["temp_scores"]["正方"] is None and drafts["正方"]:
                  st.session_state["temp_scores"]["正方"] = drafts["正方"]
+                 _sync_side_input_state(selected_match_id, "正方", force=True)
                  st.toast("已恢復正方雲端暫存分數。", icon="☁️")
 
             if st.session_state["temp_scores"]["反方"] is None and drafts["反方"]:
                  st.session_state["temp_scores"]["反方"] = drafts["反方"]
+                 _sync_side_input_state(selected_match_id, "反方", force=True)
                  st.toast("已恢復反方雲端暫存分數。", icon="☁️")
 
     st.session_state["draft_loaded"] = True
@@ -299,11 +360,22 @@ if st.session_state["temp_scores"][team_side] is not None:
     existing_deduct = st.session_state["temp_scores"][team_side].get("deduction", 0)
     existing_cohere = st.session_state["temp_scores"][team_side].get("coherence", 0)
 
-col1, col2 = st.columns(2)
-with col1:
-    deduction = st.number_input("扣分總和", min_value=0, step=1, value=existing_deduct, key=f"deduct_{selected_match_id}_{team_side}")
-with col2:
-    coherence = st.number_input(f"內容連貫 ({COHERENCE_MAX})", min_value=0, max_value=COHERENCE_MAX, step=1, value=existing_cohere, key=f"cohere_{selected_match_id}_{team_side}")
+_sync_side_input_state(selected_match_id, team_side)
+deduction = st.number_input(
+    "扣分總和",
+    min_value=0,
+    step=1,
+    value=st.session_state.get(_widget_key("deduct", selected_match_id, team_side), existing_deduct),
+    key=_widget_key("deduct", selected_match_id, team_side)
+)
+coherence = st.number_input(
+    f"內容連貫 ({COHERENCE_MAX})",
+    min_value=0,
+    max_value=COHERENCE_MAX,
+    step=1,
+    value=st.session_state.get(_widget_key("cohere", selected_match_id, team_side), existing_cohere),
+    key=_widget_key("cohere", selected_match_id, team_side)
+)
 
 final_total = total_score_a + total_score_b - deduction + coherence
 
@@ -311,17 +383,15 @@ st.markdown("---")
 st.title(f"總分：{final_total} / {GRAND_TOTAL}")
 
 st.write("**評分進度：**")
-prog_col1, prog_col2 = st.columns(2)
-with prog_col1:
-    if st.session_state["temp_scores"]["正方"]:
-        st.success(f"正方 ({pro_team_name})：已暫存 ✅")
-    else:
-        st.warning(f"正方 ({pro_team_name})：未評分 ✖️")
-with prog_col2:
-    if st.session_state["temp_scores"]["反方"]:
-        st.success(f"反方 ({con_team_name})：已暫存 ✅")
-    else:
-        st.warning(f"反方 ({con_team_name})：未評分 ✖️")
+if st.session_state["temp_scores"]["正方"]:
+    st.success(f"正方 ({pro_team_name})：已暫存 ✅")
+else:
+    st.warning(f"正方 ({pro_team_name})：未評分 ✖️")
+
+if st.session_state["temp_scores"]["反方"]:
+    st.success(f"反方 ({con_team_name})：已暫存 ✅")
+else:
+    st.warning(f"反方 ({con_team_name})：未評分 ✖️")
 
 render_submission_message()
 
@@ -336,6 +406,7 @@ if st.button(f"暫存{team_side}評分"):
         side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
                                     coherence, final_total, individual_scores, edited_df_a, edited_df_b)
         st.session_state["temp_scores"][team_side] = side_data
+        _sync_side_input_state(selected_match_id, team_side, force=True)
 
         try:
             with st.spinner("正在上傳暫存資料至雲端..."):
@@ -367,6 +438,6 @@ if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]
             pro = st.session_state["temp_scores"]["正方"]
             con = st.session_state["temp_scores"]["反方"]
 
-            confirm_submit(pro, con, selected_match_id, judge_name)
+            confirm_submit(pro, con, selected_match_id, judge_name_raw)
         except Exception as e:
             st.error(f"儲存失敗: {e}")
