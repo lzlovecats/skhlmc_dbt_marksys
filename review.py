@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import io
-from functions import get_best_debater_results, get_connection, get_score_data, query_params, _log_login, normalize_judge_name
+from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 
 st.header("查閱評判分紙")
