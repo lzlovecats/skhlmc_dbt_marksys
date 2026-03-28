@@ -133,7 +133,7 @@ score = "your_score_review_password"
 
 **3. 啟動應用 / Run the app**
 ```bash
-streamlit run main.py
+.streamlit run main.py
 ```
 
 **4. （可選）部署 Telegram Bot / (Optional) Deploy Telegram Bot**

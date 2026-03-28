@@ -293,7 +293,7 @@ def init_db(conn) -> None:
     -------
     # With Streamlit connection:
     from schema import init_db
-    import streamlit as st
+    import .streamlit as st
     conn = st.connection("postgresql", type="sql")
     init_db(conn)
 
