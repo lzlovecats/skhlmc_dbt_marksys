@@ -770,10 +770,11 @@ with tab4:
         current_user_stats = next((s for s in member_stats if s["用戶"] == user_id), None)
         if current_user_stats:
             st.subheader("我的參與情況")
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("整體投票率", current_user_stats["整體投票率"])
             m2.metric("最近10次參與", f"{current_user_stats['最近10次參與']} / 10")
-            m3.metric("活躍狀態", current_user_stats["活躍狀態"])
+            m3.metric("投票同意率", current_user_stats["投票同意率"])
+            m4.metric("活躍狀態", current_user_stats["活躍狀態"])
             st.divider()
 
     if member_stats:
