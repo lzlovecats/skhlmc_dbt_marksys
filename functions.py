@@ -754,6 +754,23 @@ def get_member_participation_stats():
     vote_records, all_users = _get_combined_vote_records()
     total_votes = len(vote_records)
     last_10 = vote_records[-10:]
+    vote_summary_df = query_params("""
+        SELECT user_id, COUNT(*) AS total_ballots,
+               SUM(CASE WHEN vote = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
+        FROM (
+            SELECT user_id, vote FROM topic_vote_ballots
+            UNION ALL
+            SELECT user_id, vote FROM depose_vote_ballots
+        ) combined_ballots
+        GROUP BY user_id
+    """)
+    vote_summary_map = {}
+    if not vote_summary_df.empty:
+        for _, row in vote_summary_df.iterrows():
+            vote_summary_map[str(row["user_id"])] = {
+                "total_ballots": int(row["total_ballots"]),
+                "agree_ballots": int(row["agree_ballots"]),
+            }
 
     stats = []
     for user in all_users:
@@ -767,6 +784,11 @@ def get_member_participation_stats():
             1 for agree, against in last_10 if user in agree or user in against
         )
 
+        vote_summary = vote_summary_map.get(user, {"total_ballots": 0, "agree_ballots": 0})
+        total_ballots = vote_summary["total_ballots"]
+        agree_ballots = vote_summary["agree_ballots"]
+        agree_rate = agree_ballots / total_ballots if total_ballots > 0 else None
+
         is_active = overall_rate >= 0.4 and last10_participated >= 3
 
         stats.append({
@@ -774,6 +796,8 @@ def get_member_participation_stats():
             "整體投票次數": f"{total_participated} / {total_votes}",
             "整體投票率": f"{overall_rate:.1%}",
             "最近10次參與": last10_participated,
+            "同意票數": f"{agree_ballots} / {total_ballots}",
+            "投票同意率": f"{agree_rate:.1%}" if agree_rate is not None else "—",
             "活躍狀態": "✅ 活躍" if is_active else "❌ 非活躍",
         })
 
