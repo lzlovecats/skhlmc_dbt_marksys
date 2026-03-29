@@ -114,9 +114,10 @@ def enqueue_tg_notification(noti_type: str, payload: dict) -> None:
 
 def clear_caches():
     get_vote_data.clear()
-    from functions import get_active_user_count, get_member_participation_stats
+    from functions import get_active_user_count, get_member_participation_stats, _get_combined_vote_records
     get_active_user_count.clear()
     get_member_participation_stats.clear()
+    _get_combined_vote_records.clear()
 
 
 def _after_vote():

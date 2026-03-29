@@ -1,28 +1,19 @@
 import streamlit as st
 import re
-from functions import return_user_manual, return_rules, get_connection
+from functions import return_user_manual, return_rules
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
 
 
 def extract_markdown_section(content, heading_level, target_heading):
-    heading_prefix = "#" * heading_level
-    section_pattern = re.compile(
-        rf"^{re.escape(heading_prefix)}\s+{re.escape(target_heading)}\s*$",
-        re.MULTILINE,
+    prefix = "#" * heading_level
+    m = re.search(
+        rf"^{re.escape(prefix)}\s+{re.escape(target_heading)}\s*$.*?(?=^{re.escape(prefix)}\s|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
     )
-    match = section_pattern.search(content)
-    if not match:
-        return None
-
-    next_section_pattern = re.compile(
-        rf"^{re.escape(heading_prefix)}\s+.+$",
-        re.MULTILINE,
-    )
-    next_match = next_section_pattern.search(content, match.end())
-    section_end = next_match.start() if next_match else len(content)
-    return content[match.start() : section_end].strip()
+    return m.group(0).strip() if m else None
 
 @st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
 def show_manual():
@@ -116,7 +107,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.11.6")
+    st.caption("🛠️ 系統版本：2.11.7")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
 pg.run()
