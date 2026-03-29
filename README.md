@@ -31,7 +31,18 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 📋 場次管理 | Match Management (`match_info.py`, `db_mgmt.py`)
+### 🏠 主頁導航 | Home Page (`home.py`)
+**中文：**
+- 以身份分區（評判、賽會人員、比賽隊伍、一般人員、內部委員會成員）展示所有入口
+- 每個區塊提供一鍵跳轉對應頁面的快捷連結
+
+**English:**
+- Identity-based card layout (Judge, Organiser, Teams, Public, Committee) with direct page links
+- One-click navigation to all system functions from a single landing page
+
+---
+
+### 📋 場次管理 | Match Management (`match_info.py`)
 **中文：**
 - 建立及編輯比賽場次（日期、時間、辯題、隊伍、辯員）
 - 從辯題庫隨機抽取辯題
@@ -45,6 +56,19 @@ A full-featured electronic scoring and management platform for school debate com
 - Randomly assign pro/con sides via draw
 - Set judge access codes per match
 - Delete matches (cascades to all related score records)
+
+---
+
+### 🖥️ 數據庫管理控制台 | Database Management Console (`db_mgmt.py`)
+**中文：**
+- 賽會人員專用 SQL 控制台，直接查詢及操作生產數據庫
+- SELECT / INSERT / UPDATE / DELETE 均支援，結果以表格呈現
+- 安全保護：`system_config` 表不可在此修改；無 WHERE 條件的 UPDATE / DELETE 需二次確認
+
+**English:**
+- Admin-only SQL console for direct production database access
+- Supports SELECT, INSERT, UPDATE, DELETE; results displayed as tables
+- Safety guards: `system_config` table is blocked from modification; UPDATE/DELETE without WHERE requires explicit re-confirmation
 
 ---
 
@@ -81,10 +105,11 @@ A full-featured electronic scoring and management platform for school debate com
 | 角色 / Role | 頁面 / Pages | 認證方式 / Auth |
 |---|---|---|
 | 評判 / Judge | 電子分紙 | 賽會提供入場密碼 |
-| 賽會人員 / Organiser | 場次管理、賽果統計、辯題庫管理 | 管理員密碼 |
+| 賽會人員 / Organiser | 場次管理、賽果統計、數據庫控制台、抽取賽程 | 管理員密碼（存於 DB） |
 | 比賽隊伍 / Teams | 查閱分紙 | 查卷密碼 |
 | 一般人員 / Public | 查閱辯題庫 | 無需登入 |
 | 委員會成員 / Committee | 辯題投票系統 | 個人帳戶 (ID + 密碼) |
+| Developer | Developer Settings | 開發者密碼（存於 DB） |
 
 ---
 
@@ -125,18 +150,26 @@ port = "5432"
 database = "your_db"
 username = "your_user"
 password = "your_password"
-
-[passwords]
-admin = "your_admin_password"
-score = "your_score_review_password"
 ```
 
-**3. 啟動應用 / Run the app**
+**3. 初始化系統密碼 / Seed initial passwords**
+
+首次部署時，需直接在資料庫插入初始密碼（可以明文，登入後再改為加密版本）：
+
+On first deploy, seed initial passwords directly in the database (plaintext is accepted initially; change them via Developer Settings after first login):
+
+```sql
+INSERT INTO system_config (key, value, updated_at) VALUES
+  ('admin_password',      '<賽會人員密碼>', NOW()::TEXT),
+  ('developer_password',  '<開發者密碼>',   NOW()::TEXT);
+```
+
+**4. 啟動應用 / Run the app**
 ```bash
-.streamlit run main.py
+streamlit run main.py
 ```
 
-**4. （可選）部署 Telegram Bot / (Optional) Deploy Telegram Bot**
+**5. （可選）部署 Telegram Bot / (Optional) Deploy Telegram Bot**
 
 詳見 `worker/README.md`。需要 Cloudflare 帳戶、Hyperdrive 及 Telegram Bot Token。
 
@@ -160,6 +193,7 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 | `login_record` | 成員登入紀錄 |
 | `noti` | 站內通知 |
 | `tg_notification_queue` | Telegram 推送通知佇列（由 Cloudflare Worker 處理）|
+| `system_config` | 系統設定（賽會人員密碼、開發者密碼等，以 bcrypt 加密存放）|
 
 ---
 
@@ -167,13 +201,15 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 
 ```
 ├── main.py                   # 主入口 / Entry point, navigation
+├── home.py                   # 主頁 / Landing page with role-based navigation
 ├── judging.py                # 電子分紙 / Judge scoring interface
 ├── match_info.py             # 場次管理 / Match management
 ├── management.py             # 賽果統計 / Results dashboard
 ├── review.py                 # 查閱分紙 / Score review
 ├── vote.py                   # 辯題投票系統 / Topic voting system
 ├── open_db.py                # 公開辯題庫 / Public topic viewer
-├── db_mgmt.py                # 辯題庫管理 / Topic bank management (admin)
+├── db_mgmt.py                # 數據庫管理控制台 / SQL console (admin)
+├── dev_settings.py           # 開發者設定 / Developer settings (password management)
 ├── draw_match_schedule.py    # 抽籤賽程 / Draw schedule
 ├── functions.py              # 核心工具函數 / Core utilities
 ├── scoring.py                # 評分常數及欄位 / Scoring constants
@@ -196,6 +232,10 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 - All database operations use parameterized queries to prevent SQL injection
 - 密碼以 session state 及 cookie 管理，不以明文傳輸
 - Passwords managed via session state and cookies, not transmitted in plaintext
+- 賽會人員密碼及開發者密碼以 bcrypt 加密存放於資料庫 `system_config` 表，不寫入設定檔
+- Admin and developer passwords are bcrypt-hashed and stored in the `system_config` DB table, not in config files
+- 數據庫管理控制台設有保護：禁止修改 `system_config` 表，無 WHERE 條件的危險操作須二次確認
+- The SQL console blocks modifications to `system_config` and requires explicit re-confirmation for UPDATE/DELETE without WHERE
 
 ---
 

@@ -270,6 +270,15 @@ CREATE INDEX IF NOT EXISTS idx_tvb_user_id ON topic_vote_ballots(user_id);
 CREATE INDEX IF NOT EXISTS idx_dvb_user_id ON depose_vote_ballots(user_id);
 """
 
+# System-wide configuration (e.g. hashed passwords managed via Developer Settings page)
+CREATE_SYSTEM_CONFIG = """
+CREATE TABLE IF NOT EXISTS system_config (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT
+);
+"""
+
 # Ordered list of all CREATE statements (dependency order).
 # Tables must be created before any table that references them via FK.
 ALL_SCHEMAS = [
@@ -287,7 +296,8 @@ ALL_SCHEMAS = [
     CREATE_LOGIN_RECORD,        # → accounts
     CREATE_NOTI,                # → accounts
     CREATE_TG_NOTIFICATION_QUEUE,  # no deps
-    CREATE_INDICES,             # after all tables
+    CREATE_SYSTEM_CONFIG,          # no deps
+    CREATE_INDICES,                # after all tables
 ]
 
 
