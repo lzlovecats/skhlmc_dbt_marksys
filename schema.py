@@ -260,6 +260,16 @@ CREATE TABLE IF NOT EXISTS tg_notification_queue (
 );
 """
 
+# Indices — created after tables so FK targets exist.
+# idx_tv_status:    speeds up the WHERE status='pending' filter in get_vote_data
+# idx_tvb_user_id:  speeds up participation stats UNION ALL queries filtering by user_id
+# idx_dvb_user_id:  same for depose_vote_ballots
+CREATE_INDICES = """
+CREATE INDEX IF NOT EXISTS idx_tv_status   ON topic_votes(status);
+CREATE INDEX IF NOT EXISTS idx_tvb_user_id ON topic_vote_ballots(user_id);
+CREATE INDEX IF NOT EXISTS idx_dvb_user_id ON depose_vote_ballots(user_id);
+"""
+
 # Ordered list of all CREATE statements (dependency order).
 # Tables must be created before any table that references them via FK.
 ALL_SCHEMAS = [
@@ -277,6 +287,7 @@ ALL_SCHEMAS = [
     CREATE_LOGIN_RECORD,        # → accounts
     CREATE_NOTI,                # → accounts
     CREATE_TG_NOTIFICATION_QUEUE,  # no deps
+    CREATE_INDICES,             # after all tables
 ]
 
 

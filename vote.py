@@ -114,10 +114,9 @@ def enqueue_tg_notification(noti_type: str, payload: dict) -> None:
 
 def clear_caches():
     get_vote_data.clear()
-    from functions import get_active_user_count, get_member_participation_stats, _get_combined_vote_records
+    from functions import get_active_user_count, get_member_participation_stats
     get_active_user_count.clear()
     get_member_participation_stats.clear()
-    _get_combined_vote_records.clear()
 
 
 def _after_vote():
@@ -332,15 +331,19 @@ if user_id != "admin":
     else:
         st.warning("帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。")
 
-@st.cache_data(ttl=1)
+@st.cache_data(ttl=5)
 def get_vote_data():
     conn = get_connection()
     df = conn.query("SELECT * FROM topic_votes ORDER BY created_at DESC", ttl=5)
     df = df.fillna("")
 
-    # Load ballots and build per-topic agree/against lists and reason maps
+    # Load ballots for pending topics only — historical ballots are not needed for the UI
     ballots = conn.query(
-        "SELECT topic, user_id, vote, reasons FROM topic_vote_ballots", ttl=0
+        "SELECT b.topic, b.user_id, b.vote, b.reasons"
+        " FROM topic_vote_ballots b"
+        " JOIN topic_votes tv ON b.topic = tv.topic"
+        " WHERE tv.status = 'pending'",
+        ttl=0
     )
     agree_map, against_map, reasons_map = {}, {}, {}
     if not ballots.empty:

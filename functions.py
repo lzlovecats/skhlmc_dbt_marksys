@@ -701,14 +701,15 @@ def _get_combined_vote_records():
 
     event_map = OrderedDict()
     for df, prefix in ((tv_ballots, "tv_"), (tdv_ballots, "tdv_")):
-        for _, row in df.iterrows():
-            key = prefix + str(row["topic"])
-            if key not in event_map:
-                event_map[key] = {"ts": row["created_at"], "agree": [], "against": []}
-            if str(row["vote"]).strip() == "agree":
-                event_map[key]["agree"].append(str(row["user_id"]))
-            else:
-                event_map[key]["against"].append(str(row["user_id"]))
+        if df.empty:
+            continue
+        for topic, group in df.groupby("topic", sort=False):
+            key = prefix + str(topic)
+            ts = group["created_at"].iloc[0]
+            is_agree = group["vote"].str.strip() == "agree"
+            agree = group.loc[is_agree, "user_id"].astype(str).tolist()
+            against = group.loc[~is_agree, "user_id"].astype(str).tolist()
+            event_map[key] = {"ts": ts, "agree": agree, "against": against}
 
     sorted_events = sorted(event_map.values(), key=lambda e: e["ts"])
     vote_records = [(e["agree"], e["against"]) for e in sorted_events]
