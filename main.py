@@ -72,21 +72,27 @@ def show_rules():
         st.markdown(body)
 
 # Define pages
-page_judging = st.Page("judging.py", title="電子分紙（評判用）")
-page_match_mgmt = st.Page("match_info.py", title="比賽場次管理（賽會人員用）")
-page_mgmt = st.Page("management.py", title="查閱比賽結果（賽會人員用）")
+page_home = st.Page("home.py", title="主頁", icon="🏠", default=True)
+page_judging = st.Page("judging.py", title="電子分紙")
+page_match_mgmt = st.Page("match_info.py", title="比賽場次管理")
+page_mgmt = st.Page("management.py", title="查閱比賽結果")
+page_db_mgmt = st.Page("db_mgmt.py", title="數據庫管理控制台")
+page_draw_schedule = st.Page("draw_match_schedule.py", title="抽取賽程")
+page_score_sheet = st.Page("review.py", title="查閱比賽分紙")
+page_open_db = st.Page("open_db.py", title="查閱辯題庫")
+page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免系統", url_path="vote")
+page_dev_settings = st.Page("dev_settings.py", title="Developer Settings")
 
-# Hided this page start from V2.1.0, Reason: Not many people need this function, and it may cause security issues if not used properly. 
-# Will consider to reopen this page in the future if there are enough demand.
-page_db_mgmt = st.Page("db_mgmt.py", title="辯題庫管理（賽會人員用）")  
-
-page_draw_schedule = st.Page("draw_match_schedule.py", title="抽取賽程（賽會人員用）")
-page_score_sheet = st.Page("review.py", title="查閱比賽分紙（比賽隊伍用）")
-page_open_db = st.Page("open_db.py", title="查閱辯題庫（一般人員用）")
-page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免系統（內部用）", url_path="vote")
-
-# Arrange pages
-pg = st.navigation([page_judging, page_match_mgmt, page_mgmt, page_draw_schedule, page_score_sheet, page_open_db, page_vote])
+# Arrange pages by user role
+pg = st.navigation({
+    "": [page_home],
+    "評判": [page_judging],
+    "賽會人員": [page_match_mgmt, page_mgmt, page_db_mgmt, page_draw_schedule],
+    "比賽隊伍": [page_score_sheet],
+    "一般人員": [page_open_db],
+    "內部委員會成員": [page_vote],
+    "Developer Settings": [page_dev_settings],
+})
 
 # Show logout when admin logged in
 if st.session_state.get("admin_logged_in"):
@@ -107,7 +113,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.11.7")
+    st.caption("🛠️ 系統版本：2.12.0")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
 pg.run()

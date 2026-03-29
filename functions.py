@@ -83,6 +83,32 @@ def _log_login(user_id: str, login_type: str):
     )
 
 
+def get_system_config(key: str):
+    """Read a value from the system_config table. Returns None if not found."""
+    try:
+        conn = get_connection()
+        result = conn.query(
+            "SELECT value FROM system_config WHERE key = :key",
+            params={"key": key},
+            ttl=0,
+        )
+        if result.empty:
+            return None
+        return result.iloc[0]["value"]
+    except Exception:
+        return None
+
+
+def _verify_config_password(plain: str, stored: str) -> bool:
+    """Verify a password against a stored value (bcrypt hash or plaintext)."""
+    if stored.startswith("$2b$") or stored.startswith("$2a$"):
+        try:
+            return bcrypt.checkpw(plain.encode(), stored.encode())
+        except Exception:
+            return False
+    return plain == stored
+
+
 def check_admin():
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
@@ -91,7 +117,10 @@ def check_admin():
         st.subheader("賽會人員登入")
         pwd = st.text_input("請輸入賽會人員密碼", type="password")
         if st.button("登入"):
-            if pwd == st.secrets["admin_password"]:
+            stored = get_system_config("admin_password")
+            if stored is None:
+                st.error("系統錯誤：未能讀取密碼，請聯絡開發人員")
+            elif _verify_config_password(pwd, stored):
                 st.session_state["admin_logged_in"] = True
                 _log_login("admin", "admin")
                 st.rerun()
