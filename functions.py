@@ -1,5 +1,6 @@
 import streamlit as st
 import json
+import logging
 import pandas as pd
 import random
 import math
@@ -11,6 +12,8 @@ import io
 import bcrypt
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -27,19 +30,22 @@ def normalize_judge_name(name: str) -> str:
 
 def _serialize_score_data(score_data):
     data_to_save = score_data.copy()
-    if "raw_df_a" in data_to_save and isinstance(data_to_save["raw_df_a"], pd.DataFrame):
-        data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_json()
-    if "raw_df_b" in data_to_save and isinstance(data_to_save["raw_df_b"], pd.DataFrame):
-        data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_json()
+    if isinstance(data_to_save.get("raw_df_a"), pd.DataFrame):
+        data_to_save["raw_df_a"] = data_to_save["raw_df_a"].to_dict(orient="records")
+    if isinstance(data_to_save.get("raw_df_b"), pd.DataFrame):
+        data_to_save["raw_df_b"] = data_to_save["raw_df_b"].to_dict(orient="records")
     return json.dumps(data_to_save, ensure_ascii=False)
 
 
 def _deserialize_score_data(raw_data):
     data = raw_data if isinstance(raw_data, dict) else json.loads(raw_data)
-    if "raw_df_a" in data and data["raw_df_a"]:
-        data["raw_df_a"] = pd.read_json(io.StringIO(data["raw_df_a"]))
-    if "raw_df_b" in data and data["raw_df_b"]:
-        data["raw_df_b"] = pd.read_json(io.StringIO(data["raw_df_b"]))
+    for key in ("raw_df_a", "raw_df_b"):
+        if key in data and data[key]:
+            if isinstance(data[key], str):
+                # Backward compat: old format used df.to_json() producing a JSON string
+                data[key] = pd.read_json(io.StringIO(data[key]))
+            elif isinstance(data[key], list):
+                data[key] = pd.DataFrame(data[key])
     return data
 
 def get_cookie(cookie_manager, key, default=None):
@@ -95,7 +101,8 @@ def get_system_config(key: str):
         if result.empty:
             return None
         return result.iloc[0]["value"]
-    except Exception:
+    except Exception as e:
+        logger.warning("get_system_config(%s) failed: %s", key, e)
         return None
 
 
@@ -104,7 +111,8 @@ def _verify_config_password(plain: str, stored: str) -> bool:
     if stored.startswith("$2b$") or stored.startswith("$2a$"):
         try:
             return bcrypt.checkpw(plain.encode(), stored.encode())
-        except Exception:
+        except Exception as e:
+            logger.warning("bcrypt verification failed: %s", e)
             return False
     return plain == stored
 
@@ -193,9 +201,41 @@ def save_match_to_db(match_data):
     match_id = match_data['match_id'].strip()
 
     exist_match = query_params(
-        "SELECT 1 FROM matches WHERE match_id = :match_id",
+        "SELECT access_code, review_password FROM matches WHERE match_id = :match_id",
         {"match_id": match_id}
     )
+
+    raw_access_code = match_data.get('access_code', '') or ""
+    raw_review_password = match_data.get('review_password', '') or ""
+    clear_access_code = bool(match_data.get("clear_access_code"))
+    clear_review_password = bool(match_data.get("clear_review_password"))
+    existing_access_code = None
+    existing_review_password = None
+    if not exist_match.empty:
+        existing_access_code = exist_match.iloc[0]["access_code"]
+        existing_review_password = exist_match.iloc[0]["review_password"]
+        if pd.isna(existing_access_code):
+            existing_access_code = None
+        if pd.isna(existing_review_password):
+            existing_review_password = None
+
+    if clear_access_code:
+        resolved_access_code = None
+    elif raw_access_code:
+        resolved_access_code = hash_password(raw_access_code)
+    elif not exist_match.empty:
+        resolved_access_code = existing_access_code
+    else:
+        resolved_access_code = None
+
+    if clear_review_password:
+        resolved_review_password = None
+    elif raw_review_password:
+        resolved_review_password = hash_password(raw_review_password)
+    elif not exist_match.empty:
+        resolved_review_password = existing_review_password
+    else:
+        resolved_review_password = None
 
     match_params = {
         "match_id": match_id,
@@ -204,8 +244,8 @@ def save_match_to_db(match_data):
         "topic": match_data['que'],
         "pro_team": match_data['pro'],
         "con_team": match_data['con'],
-        "access_code": match_data['access_code'],
-        "review_password": match_data.get('review_password', '') or None
+        "access_code": resolved_access_code,
+        "review_password": resolved_review_password
     }
 
     if not exist_match.empty:
@@ -224,18 +264,19 @@ def save_match_to_db(match_data):
         """, match_params)
 
     # Upsert debater names into the normalised debaters table
-    for side, positions in (("pro", [1, 2, 3, 4]), ("con", [1, 2, 3, 4])):
-        for pos in positions:
-            execute_query("""
-                INSERT INTO debaters (match_id, side, position, name)
-                VALUES (:match_id, :side, :position, :name)
-                ON CONFLICT (match_id, side, position) DO UPDATE SET name = EXCLUDED.name
-            """, {
-                "match_id": match_id,
-                "side": side,
-                "position": pos,
-                "name": match_data.get(f"{side}_{pos}", "") or ""
-            })
+    debater_params = [
+        {"match_id": match_id, "side": side, "position": pos,
+         "name": match_data.get(f"{side}_{pos}", "") or ""}
+        for side in ("pro", "con") for pos in (1, 2, 3, 4)
+    ]
+    conn = get_connection()
+    with conn.session as s:
+        s.execute(text("""
+            INSERT INTO debaters (match_id, side, position, name)
+            VALUES (:match_id, :side, :position, :name)
+            ON CONFLICT (match_id, side, position) DO UPDATE SET name = EXCLUDED.name
+        """), debater_params)
+        s.commit()
 
 
 def save_draft_to_db(match_id, judge_name, team_side, score_data):
@@ -379,33 +420,22 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data):
             "con_coherence": con_data["coherence"]
         })
 
-        for i, score in enumerate(pro_data["ind_scores"]):
-            s.execute(text("""
-                INSERT INTO debater_scores (match_id, judge_name, side, position, score)
-                VALUES (:match_id, :judge_name, :side, :position, :score)
-                ON CONFLICT (match_id, judge_name, side, position)
-                DO UPDATE SET score = EXCLUDED.score
-            """), {
-                "match_id": match_id,
-                "judge_name": normalized_judge_name,
-                "side": "pro",
-                "position": i + 1,
-                "score": int(score)
-            })
-
-        for i, score in enumerate(con_data["ind_scores"]):
-            s.execute(text("""
-                INSERT INTO debater_scores (match_id, judge_name, side, position, score)
-                VALUES (:match_id, :judge_name, :side, :position, :score)
-                ON CONFLICT (match_id, judge_name, side, position)
-                DO UPDATE SET score = EXCLUDED.score
-            """), {
-                "match_id": match_id,
-                "judge_name": normalized_judge_name,
-                "side": "con",
-                "position": i + 1,
-                "score": int(score)
-            })
+        debater_params = []
+        for side, data in [("pro", pro_data), ("con", con_data)]:
+            for i, score in enumerate(data["ind_scores"]):
+                debater_params.append({
+                    "match_id": match_id,
+                    "judge_name": normalized_judge_name,
+                    "side": side,
+                    "position": i + 1,
+                    "score": int(score)
+                })
+        s.execute(text("""
+            INSERT INTO debater_scores (match_id, judge_name, side, position, score)
+            VALUES (:match_id, :judge_name, :side, :position, :score)
+            ON CONFLICT (match_id, judge_name, side, position)
+            DO UPDATE SET score = EXCLUDED.score
+        """), debater_params)
 
         s.commit()
 
@@ -447,35 +477,32 @@ def load_markdown_asset(filename):
 
 def get_score_data():
     try:
-        # Return a wide-format DataFrame identical to the old scores table schema
-        # so that management.py and review.py need no changes.
-        # pro_name / con_name are derived from matches; individual scores from debater_scores.
-        query = """
-            SELECT
-                s.match_id, s.judge_name, s.pro_total, s.con_total, s.mark_time,
-                s.pro_free, s.con_free, s.pro_deduction, s.con_deduction,
-                s.pro_coherence, s.con_coherence,
-                m.pro_team AS pro_name,
-                m.con_team AS con_name,
-                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 1 THEN ds.score END) AS pro1_m,
-                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 2 THEN ds.score END) AS pro2_m,
-                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 3 THEN ds.score END) AS pro3_m,
-                MAX(CASE WHEN ds.side = 'pro' AND ds.position = 4 THEN ds.score END) AS pro4_m,
-                MAX(CASE WHEN ds.side = 'con' AND ds.position = 1 THEN ds.score END) AS con1_m,
-                MAX(CASE WHEN ds.side = 'con' AND ds.position = 2 THEN ds.score END) AS con2_m,
-                MAX(CASE WHEN ds.side = 'con' AND ds.position = 3 THEN ds.score END) AS con3_m,
-                MAX(CASE WHEN ds.side = 'con' AND ds.position = 4 THEN ds.score END) AS con4_m
+        scores_df = query_params("""
+            SELECT s.match_id, s.judge_name, s.pro_total, s.con_total, s.mark_time,
+                   s.pro_free, s.con_free, s.pro_deduction, s.con_deduction,
+                   s.pro_coherence, s.con_coherence,
+                   m.pro_team AS pro_name, m.con_team AS con_name
             FROM scores s
             LEFT JOIN matches m ON s.match_id = m.match_id
-            LEFT JOIN debater_scores ds
-                ON s.match_id = ds.match_id AND s.judge_name = ds.judge_name
-            GROUP BY
-                s.match_id, s.judge_name, s.pro_total, s.con_total, s.mark_time,
-                s.pro_free, s.con_free, s.pro_deduction, s.con_deduction,
-                s.pro_coherence, s.con_coherence,
-                m.pro_team, m.con_team
-        """
-        return query_params(query)
+        """)
+        if scores_df.empty:
+            return scores_df
+
+        ds_df = query_params("SELECT match_id, judge_name, side, position, score FROM debater_scores")
+        if ds_df.empty:
+            for col in ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]:
+                scores_df[col] = None
+            return scores_df
+
+        # Pivot debater_scores into wide format
+        ds_df["col_name"] = ds_df["side"] + ds_df["position"].astype(str) + "_m"
+        pivot = ds_df.pivot_table(index=["match_id", "judge_name"], columns="col_name", values="score", aggfunc="first").reset_index()
+        result = scores_df.merge(pivot, on=["match_id", "judge_name"], how="left")
+        # Ensure all expected columns exist
+        for col in ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]:
+            if col not in result.columns:
+                result[col] = None
+        return result
     except Exception as e:
         st.error(f"讀取評分失敗: {e}")
         return None
@@ -678,11 +705,59 @@ def refresh_acc_type(user_id: str) -> str | None:
 
 
 def refresh_all_acc_type():
-    conn = get_connection()
-    all_accounts = conn.query("SELECT userid FROM accounts WHERE acc_type != 'admin'", ttl=0)
-
-    for _, row in all_accounts.iterrows():
-        refresh_acc_type(row["userid"])
+    """Batch-update acc_type for all non-admin/developer accounts in a single query."""
+    execute_query("""
+        WITH tv_events AS (
+            SELECT DISTINCT tv.topic, tv.created_at
+            FROM topic_votes tv
+            WHERE EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = tv.topic)
+        ),
+        tdv_events AS (
+            SELECT DISTINCT tdv.topic, tdv.created_at
+            FROM topic_depose_votes tdv
+            WHERE EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = tdv.topic)
+        ),
+        all_events AS (
+            SELECT topic, created_at, 'tv' AS src FROM tv_events
+            UNION ALL
+            SELECT topic, created_at, 'tdv' AS src FROM tdv_events
+        ),
+        event_count AS (
+            SELECT COUNT(*) AS total FROM all_events
+        ),
+        past_10 AS (
+            SELECT topic, src FROM all_events ORDER BY created_at DESC LIMIT 10
+        ),
+        user_stats AS (
+            SELECT
+                a.userid,
+                COALESCE(SUM(CASE
+                    WHEN ae.src = 'tv' AND EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = a.userid) THEN 1
+                    WHEN ae.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = a.userid) THEN 1
+                    ELSE 0
+                END), 0) AS total_participated,
+                (SELECT total FROM event_count) AS total_votes,
+                COALESCE((
+                    SELECT COUNT(*) FROM past_10 p
+                    WHERE (p.src = 'tv' AND EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = p.topic AND b.user_id = a.userid))
+                       OR (p.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = p.topic AND b.user_id = a.userid))
+                ), 0) AS votes_in_last_10
+            FROM accounts a
+            CROSS JOIN all_events ae
+            WHERE a.acc_type NOT IN ('admin', 'developer')
+            GROUP BY a.userid, (SELECT total FROM event_count)
+        )
+        UPDATE accounts
+        SET acc_type = CASE
+            WHEN us.total_votes > 0
+                 AND us.total_participated::float / us.total_votes >= 0.4
+                 AND us.votes_in_last_10 >= 3
+            THEN 'active'
+            ELSE 'inactive'
+        END
+        FROM user_stats us
+        WHERE accounts.userid = us.userid
+    """)
 
 
 def compute_threshold(base_min: int, pct: float) -> int:
@@ -702,47 +777,61 @@ def return_chatgpt_reminder():
     return load_markdown_asset("chatgpt_reminder.md")
 
 
+_ALL_USER_STATS_SQL = """
+WITH tv_events AS (
+    SELECT DISTINCT tv.topic, tv.created_at
+    FROM topic_votes tv
+    WHERE EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = tv.topic)
+),
+tdv_events AS (
+    SELECT DISTINCT tdv.topic, tdv.created_at
+    FROM topic_depose_votes tdv
+    WHERE EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = tdv.topic)
+),
+all_events AS (
+    SELECT topic, created_at, 'tv' AS src FROM tv_events
+    UNION ALL
+    SELECT topic, created_at, 'tdv' AS src FROM tdv_events
+),
+event_count AS (
+    SELECT COUNT(*) AS total FROM all_events
+),
+past_10 AS (
+    SELECT topic, src FROM all_events ORDER BY created_at DESC LIMIT 10
+),
+ballot_summary AS (
+    SELECT user_id, COUNT(*) AS total_ballots,
+           SUM(CASE WHEN vote = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
+    FROM (
+        SELECT user_id, vote FROM topic_vote_ballots
+        UNION ALL
+        SELECT user_id, vote FROM depose_vote_ballots
+    ) cb
+    GROUP BY user_id
+)
+SELECT
+    a.userid,
+    (SELECT total FROM event_count) AS total_votes,
+    (SELECT COUNT(*) FROM all_events ae
+     WHERE (ae.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = ae.topic AND b.user_id = a.userid))
+        OR (ae.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = a.userid))
+    ) AS total_participated,
+    (SELECT COUNT(*) FROM past_10 p
+     WHERE (p.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = p.topic AND b.user_id = a.userid))
+        OR (p.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = p.topic AND b.user_id = a.userid))
+    ) AS votes_in_last_10,
+    COALESCE(bs.total_ballots, 0) AS total_ballots,
+    COALESCE(bs.agree_ballots, 0) AS agree_ballots
+FROM accounts a
+LEFT JOIN ballot_summary bs ON bs.user_id = a.userid
+WHERE a.userid NOT IN ('admin', 'developer', '')
+"""
+
+
 @st.cache_data(ttl=60)
-def _get_combined_vote_records():
-    """
-    Fetches all vote events from topic_votes and topic_depose_votes that have
-    at least one ballot, reconstructs (agree_list, against_list) per event
-    from the ballot tables, sorted chronologically.
-    Returns (vote_records, all_users).
-    """
-    from collections import OrderedDict
-    conn = get_connection()
-    accounts_df = conn.query("SELECT userid FROM accounts", ttl=0)
-    all_users = accounts_df["userid"].tolist() if not accounts_df.empty else []
-
-    tv_ballots = query_params("""
-        SELECT tv.topic, tv.created_at, b.user_id, b.vote
-        FROM topic_votes tv
-        JOIN topic_vote_ballots b ON tv.topic = b.topic
-        ORDER BY tv.created_at ASC
-    """)
-    tdv_ballots = query_params("""
-        SELECT tdv.topic, tdv.created_at, b.user_id, b.vote
-        FROM topic_depose_votes tdv
-        JOIN depose_vote_ballots b ON tdv.topic = b.topic
-        ORDER BY tdv.created_at ASC
-    """)
-
-    event_map = OrderedDict()
-    for df, prefix in ((tv_ballots, "tv_"), (tdv_ballots, "tdv_")):
-        if df.empty:
-            continue
-        for topic, group in df.groupby("topic", sort=False):
-            key = prefix + str(topic)
-            ts = group["created_at"].iloc[0]
-            is_agree = group["vote"].str.strip() == "agree"
-            agree = group.loc[is_agree, "user_id"].astype(str).tolist()
-            against = group.loc[~is_agree, "user_id"].astype(str).tolist()
-            event_map[key] = {"ts": ts, "agree": agree, "against": against}
-
-    sorted_events = sorted(event_map.values(), key=lambda e: e["ts"])
-    vote_records = [(e["agree"], e["against"]) for e in sorted_events]
-    return vote_records, all_users
+def _compute_all_user_stats():
+    """Compute participation stats for all users in a single SQL query."""
+    return query_params(_ALL_USER_STATS_SQL)
 
 
 @st.cache_data(ttl=60)
@@ -751,28 +840,17 @@ def get_active_user_count():
     Active user 定義：整體投票率（辯題投票 + 罷免投票）≥ 40% AND 最近10次投票最少投3次。
     Returns (active_count, active_user_list)
     """
-    vote_records, all_users = _get_combined_vote_records()
-    total_votes = len(vote_records)
-    if total_votes == 0 or not all_users:
+    df = _compute_all_user_stats()
+    if df.empty:
         return 0, []
-
-    last_10 = vote_records[-10:]
-
-    active_users = []
-    for user in all_users:
-        total_participated = sum(
-            1 for agree, against in vote_records if user in agree or user in against
-        )
-        overall_rate = total_participated / total_votes
-
-        last10_participated = sum(
-            1 for agree, against in last_10 if user in agree or user in against
-        )
-
-        if overall_rate >= 0.4 and last10_participated >= 3:
-            active_users.append(user)
-
-    return len(active_users), active_users
+    total_votes = int(df.iloc[0]["total_votes"])
+    if total_votes == 0:
+        return 0, []
+    active = df[
+        (df["total_participated"].astype(float) / total_votes >= 0.4) &
+        (df["votes_in_last_10"] >= 3)
+    ]
+    return len(active), [str(user_id).strip() for user_id in active["userid"].tolist()]
 
 
 @st.cache_data(ttl=60)
@@ -781,51 +859,26 @@ def get_member_participation_stats():
     Returns (stats_list, total_votes) with per-member participation details
     across both topic_votes and topic_depose_votes.
     """
-    vote_records, all_users = _get_combined_vote_records()
-    total_votes = len(vote_records)
-    last_10 = vote_records[-10:]
-    vote_summary_df = query_params("""
-        SELECT user_id, COUNT(*) AS total_ballots,
-               SUM(CASE WHEN vote = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
-        FROM (
-            SELECT user_id, vote FROM topic_vote_ballots
-            UNION ALL
-            SELECT user_id, vote FROM depose_vote_ballots
-        ) combined_ballots
-        GROUP BY user_id
-    """)
-    vote_summary_map = {}
-    if not vote_summary_df.empty:
-        for _, row in vote_summary_df.iterrows():
-            vote_summary_map[str(row["user_id"])] = {
-                "total_ballots": int(row["total_ballots"]),
-                "agree_ballots": int(row["agree_ballots"]),
-            }
+    df = _compute_all_user_stats()
+    if df.empty:
+        return [], 0
+    total_votes = int(df.iloc[0]["total_votes"])
 
     stats = []
-    for user in all_users:
-        if user == "admin" or user == "developer" or user == "": continue  # Skip admin and developer accounts from stats
-        total_participated = sum(
-            1 for agree, against in vote_records if user in agree or user in against
-        ) if total_votes > 0 else 0
-        overall_rate = total_participated / total_votes if total_votes > 0 else 0
-
-        last10_participated = sum(
-            1 for agree, against in last_10 if user in agree or user in against
-        )
-
-        vote_summary = vote_summary_map.get(user, {"total_ballots": 0, "agree_ballots": 0})
-        total_ballots = vote_summary["total_ballots"]
-        agree_ballots = vote_summary["agree_ballots"]
+    for _, row in df.iterrows():
+        participated = int(row["total_participated"])
+        overall_rate = participated / total_votes if total_votes > 0 else 0
+        last10 = int(row["votes_in_last_10"])
+        total_ballots = int(row["total_ballots"])
+        agree_ballots = int(row["agree_ballots"])
         agree_rate = agree_ballots / total_ballots if total_ballots > 0 else None
-
-        is_active = overall_rate >= 0.4 and last10_participated >= 3
+        is_active = overall_rate >= 0.4 and last10 >= 3
 
         stats.append({
-            "用戶": user,
-            "整體投票次數": f"{total_participated} / {total_votes}",
+            "用戶": str(row["userid"]).strip(),
+            "整體投票次數": f"{participated} / {total_votes}",
             "整體投票率": f"{overall_rate:.1%}",
-            "最近10次參與": last10_participated,
+            "最近10次參與": last10,
             "同意票數": f"{agree_ballots} / {total_ballots}",
             "投票同意率": f"{agree_rate:.1%}" if agree_rate is not None else "—",
             "活躍狀態": "✅ 活躍" if is_active else "❌ 非活躍",

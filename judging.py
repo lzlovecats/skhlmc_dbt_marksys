@@ -7,7 +7,8 @@ from functions import (
     save_draft_to_db,
     has_final_submission,
     normalize_judge_name,
-    submit_final_scores
+    submit_final_scores,
+    _verify_config_password
 )
 from scoring import (
     SPEECH_CRITERIA, speech_col, SPEECH_TOTAL_MAX,
@@ -53,6 +54,7 @@ def confirm_submit(pro, con, selected_match_id, judge_name):
                 st.session_state["last_judge_identity"] = ""
                 st.session_state["judge_authenticated"] = False
                 st.session_state["auth_match_id"] = None
+                st.session_state["last_auto_save"] = None
             st.rerun()
         except Exception as e:
             st.error(f"儲存失敗: {e}")
@@ -66,6 +68,7 @@ def confirm_logout_dialog():
         st.session_state["last_judge_identity"] = ""
         st.session_state["judge_authenticated"] = False
         st.session_state["temp_scores"] = {"正方": None, "反方": None}
+        st.session_state["last_auto_save"] = None
         st.rerun()
 
 def _init_session_state():
@@ -89,6 +92,8 @@ def _init_session_state():
         st.session_state["draft_loaded"] = False
     if "post_submit_receipt" not in st.session_state:
         st.session_state["post_submit_receipt"] = None
+    if "last_auto_save" not in st.session_state:
+        st.session_state["last_auto_save"] = None
 
 
 def render_submission_message():
@@ -204,6 +209,7 @@ if st.session_state["active_match_id"] != selected_match_id:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["active_match_id"] = selected_match_id
     st.session_state["draft_loaded"] = False
+    st.session_state["last_auto_save"] = None
 
 if st.session_state["auth_match_id"] != selected_match_id:
     st.session_state["judge_authenticated"] = False
@@ -214,17 +220,23 @@ if not st.session_state["judge_authenticated"]:
     st.subheader("評判身分驗證")
     input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
 
-    correct_otp_from_sheet = str(current_match.get("access_code", ""))
-    correct_otp = correct_otp_from_sheet[1:] if correct_otp_from_sheet.startswith("'") else correct_otp_from_sheet
+    stored_otp_value = current_match.get("access_code")
+    stored_otp = ""
+    if stored_otp_value is not None:
+        stored_otp = str(stored_otp_value).strip()
+        if stored_otp.lower() == "nan":
+            stored_otp = ""
+        elif stored_otp.startswith("'"):
+            stored_otp = stored_otp[1:]
 
     if st.button("驗證入場"):
-        if input_otp == correct_otp and correct_otp_from_sheet != "":
+        if not stored_otp:
+            st.error("該場次未開放評分，請向賽會人員查詢。")
+            st.stop()
+        elif _verify_config_password(input_otp, stored_otp):
             st.session_state["judge_authenticated"] = True
             st.session_state["auth_match_id"] = selected_match_id
             st.rerun()
-        elif correct_otp == "":
-            st.error("該場次未開放評分，請向賽會人員查詢。")
-            st.stop()
         else:
             st.error("密碼錯誤!")
             st.stop()
@@ -234,7 +246,7 @@ if not st.session_state["judge_authenticated"]:
 st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("que", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
-st.caption("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
+st.info("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
 
 # Pre-fill judge name if available from session state
 default_judge_name = st.session_state.get("last_judge_name", "")
@@ -252,6 +264,7 @@ if judge_name != st.session_state["last_judge_identity"]:
     st.session_state["temp_scores"] = {"正方": None, "反方": None}
     st.session_state["last_judge_name"] = judge_name_raw
     st.session_state["last_judge_identity"] = judge_name
+    st.session_state["last_auto_save"] = None
 
 if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
     with st.spinner("正在檢查雲端暫存紀錄..."):
@@ -287,7 +300,7 @@ if st.session_state["temp_scores"][team_side] and "last_saved" in st.session_sta
         diff = datetime.now() - last_saved_dt
         minutes = int(diff.total_seconds() / 60)
         st.caption(f"上一次儲存 {team_side} 分數：{minutes} 分鐘前")
-    except:
+    except Exception:
         pass
 
 if team_side == "正方":
@@ -395,6 +408,33 @@ else:
 
 render_submission_message()
 
+@st.fragment(run_every=120)
+def auto_save_current_side():
+    if not st.session_state.get("judge_authenticated") or not judge_name_raw:
+        return
+    if has_final_submission(selected_match_id, judge_name):
+        return
+
+    now = datetime.now()
+    last_auto = st.session_state.get("last_auto_save")
+    if last_auto is None:
+        st.session_state["last_auto_save"] = now
+        return
+    if (now - last_auto).total_seconds() < 120:
+        return
+
+    auto_side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
+                                     coherence, final_total, individual_scores, edited_df_a, edited_df_b)
+    try:
+        save_draft_to_db(selected_match_id, judge_name, team_side, auto_side_data)
+        st.session_state["temp_scores"][team_side] = auto_side_data
+        st.session_state["last_auto_save"] = now
+    except ValueError:
+        pass
+
+
+auto_save_current_side()
+
 if st.button(f"暫存{team_side}評分"):
     if not judge_name_raw:
         st.error("請輸入評判姓名！")
@@ -406,7 +446,6 @@ if st.button(f"暫存{team_side}評分"):
         side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
                                     coherence, final_total, individual_scores, edited_df_a, edited_df_b)
         st.session_state["temp_scores"][team_side] = side_data
-        _sync_side_input_state(selected_match_id, team_side, force=True)
 
         try:
             with st.spinner("正在上傳暫存資料至雲端..."):
@@ -419,6 +458,7 @@ if st.button(f"暫存{team_side}評分"):
         cols_b = [free_debate_col(c) for c in FREE_DEBATE_CRITERIA]
         has_zeros = (edited_df_a[cols_a] == 0).any().any() or (edited_df_b[cols_b] == 0).any().any()
 
+        st.session_state["last_auto_save"] = datetime.now()
         st.session_state["submission_message"] = build_save_message(team_side, team_name, has_zeros, success)
         st.rerun()
 

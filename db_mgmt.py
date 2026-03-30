@@ -194,6 +194,15 @@ def _run_query(sql: str):
             return "dml", result.rowcount
 
 
+with st.expander("📋 登入記錄", expanded=False):
+    from functions import query_params as _qp_db
+    logs = _qp_db("SELECT * FROM login_record ORDER BY login_time DESC LIMIT 50")
+    if not logs.empty:
+        st.dataframe(logs, use_container_width=True, hide_index=True)
+    else:
+        st.caption("暫無登入記錄。")
+
+st.divider()
 sql_input = st.text_area("SQL Query", height=160, placeholder="SELECT * FROM topics LIMIT 10;")
 
 col_run, col_clear = st.columns([1, 5])

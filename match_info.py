@@ -163,15 +163,33 @@ if st.session_state["all_matches"]:
             con_3 = st.text_input("反方二副", value=current_data.get("con_3", ""))
             con_4 = st.text_input("反方結辯", value=current_data.get("con_4", ""))
 
-        current_access_code_from_sheet = str(current_data.get("access_code", ""))
-        display_access_code = current_access_code_from_sheet[1:] if current_access_code_from_sheet.startswith("'") else current_access_code_from_sheet
-        access_code = st.text_input("評判入場密碼", value=display_access_code)
+        access_code_value = current_data.get("access_code")
+        has_access_code = access_code_value is not None and str(access_code_value).strip() != "" and str(access_code_value).strip().lower() != "nan"
+        review_password_value = current_data.get("review_password")
+        has_review_password = review_password_value is not None and str(review_password_value).strip() != "" and str(review_password_value).strip().lower() != "nan"
 
-        current_review_password = str(current_data.get("review_password", "") or "")
-        review_password = st.text_input("查閱分紙密碼", value=current_review_password)
+        st.markdown("### 場次密碼")
+        st.caption("留空代表保留現有密碼；輸入新密碼代表更新；如需移除，請勾選清除。")
+
+        password_col1, password_col2 = st.columns(2)
+        with password_col1:
+            access_code = st.text_input("評判入場密碼", value="", placeholder="留空則保留現有密碼")
+            st.caption("目前狀態：已設定" if has_access_code else "目前狀態：未設定")
+            clear_access_code = st.checkbox("清除評判入場密碼", value=False, disabled=not has_access_code)
+
+        with password_col2:
+            review_password = st.text_input("查閱分紙密碼", value="", placeholder="留空則保留現有密碼")
+            st.caption("目前狀態：已設定" if has_review_password else "目前狀態：未設定")
+            clear_review_password = st.checkbox("清除查閱分紙密碼", value=False, disabled=not has_review_password)
 
         # Save edited info to db
         if st.form_submit_button("儲存場次資料"):
+            if clear_access_code and access_code:
+                st.error("如需清除評判入場密碼，請將密碼欄留空。")
+                st.stop()
+            if clear_review_password and review_password:
+                st.error("如需清除查閱分紙密碼，請將密碼欄留空。")
+                st.stop()
             match_data_prepare = {
                 "match_id": selected_match,
                 "date": match_date.strftime("%Y-%m-%d"),
@@ -179,9 +197,12 @@ if st.session_state["all_matches"]:
                 "que": que,
                 "pro": pro_team, "con": con_team,
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
-                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4, "access_code": access_code, "review_password": review_password}
-            st.session_state["all_matches"][selected_match] = match_data_prepare
+                "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4,
+                "access_code": access_code, "review_password": review_password,
+                "clear_access_code": clear_access_code, "clear_review_password": clear_review_password
+            }
             save_match_to_db(match_data_prepare)
+            st.session_state["all_matches"] = load_matches_from_db()
             st.session_state["match_action_message"] = {"type": "success", "content": f"場次「{selected_match}」資料已儲存至數據庫！"}
             st.rerun()
     

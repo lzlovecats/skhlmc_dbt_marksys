@@ -114,10 +114,10 @@ def enqueue_tg_notification(noti_type: str, payload: dict) -> None:
 
 def clear_caches():
     get_vote_data.clear()
-    from functions import get_active_user_count, get_member_participation_stats, _get_combined_vote_records
+    from functions import get_active_user_count, get_member_participation_stats, _compute_all_user_stats
     get_active_user_count.clear()
     get_member_participation_stats.clear()
-    _get_combined_vote_records.clear()
+    _compute_all_user_stats.clear()
 
 
 def _after_vote():
@@ -131,52 +131,65 @@ def render_refresh_button(key):
         st.rerun()
 
 
-_BALLOT_TABLE = {
-    "topic_votes": "topic_vote_ballots",
-    "topic_depose_votes": "depose_vote_ballots",
-}
+def _ballot_delete(table, topic, user_id):
+    params = {"user_id": user_id, "topic": topic}
+    if table == "topic_votes":
+        execute_query("DELETE FROM topic_vote_ballots WHERE topic = :topic AND user_id = :user_id", params)
+    else:
+        execute_query("DELETE FROM depose_vote_ballots WHERE topic = :topic AND user_id = :user_id", params)
+
+
+def _ballot_upsert(table, topic, user_id, vote, reasons=None):
+    params = {"user_id": user_id, "topic": topic}
+    if table == "topic_votes":
+        if vote == "agree":
+            execute_query(
+                "INSERT INTO topic_vote_ballots (topic, user_id, vote) VALUES (:topic, :user_id, 'agree')"
+                " ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'agree'", params)
+        else:
+            execute_query(
+                "INSERT INTO topic_vote_ballots (topic, user_id, vote, reasons) VALUES (:topic, :user_id, 'against', :reasons)"
+                " ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'against', reasons = EXCLUDED.reasons",
+                {**params, "reasons": reasons or "[]"})
+    else:
+        execute_query(
+            "INSERT INTO depose_vote_ballots (topic, user_id, vote) VALUES (:topic, :user_id, :vote)"
+            " ON CONFLICT (topic, user_id) DO UPDATE SET vote = :vote",
+            {**params, "vote": vote})
+
+
+def _ballot_switch_agree(table, topic, user_id):
+    params = {"user_id": user_id, "topic": topic}
+    if table == "topic_votes":
+        execute_query(
+            "UPDATE topic_vote_ballots SET vote = 'agree', reasons = '[]' WHERE topic = :topic AND user_id = :user_id", params)
+    else:
+        execute_query(
+            "UPDATE depose_vote_ballots SET vote = 'agree' WHERE topic = :topic AND user_id = :user_id", params)
 
 
 def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_reason_map,
                         table, agree_label, against_label, after_vote_fn, col2, col3,
                         against_dialog_fn=None, agree_switch_toast="已轉投同意票！"):
     """Renders the agree (col2) and against (col3) vote button columns."""
-    bt = _BALLOT_TABLE[table]
-    has_reasons = (table == "topic_votes")
 
     with col2:
         if user_id in agree_list:
             if st.button("已同意 (點擊撤回)", key=f"{table}_f_done_{i}"):
                 with st.spinner("撤回投票中..."):
-                    execute_query(
-                        f"DELETE FROM {bt} WHERE topic = :topic AND user_id = :user_id",
-                        {"user_id": user_id, "topic": topic}
-                    )
+                    _ballot_delete(table, topic, user_id)
                     st.toast("已撤回同意票！", icon="↩️")
                     after_vote_fn()
         elif user_id in against_list:
             if st.button("轉投同意", key=f"{table}_switch_to_f_{i}"):
                 with st.spinner("更改投票中..."):
-                    if has_reasons:
-                        execute_query(
-                            f"UPDATE {bt} SET vote = 'agree', reasons = '[]' WHERE topic = :topic AND user_id = :user_id",
-                            {"user_id": user_id, "topic": topic}
-                        )
-                    else:
-                        execute_query(
-                            f"UPDATE {bt} SET vote = 'agree' WHERE topic = :topic AND user_id = :user_id",
-                            {"user_id": user_id, "topic": topic}
-                        )
+                    _ballot_switch_agree(table, topic, user_id)
                     st.toast(agree_switch_toast, icon="↪️️")
                     after_vote_fn()
         else:
             if st.button(f"✅ {agree_label}", key=f"{table}_vote_f_{i}"):
                 with st.spinner("處理你的投票中，請稍等⋯"):
-                    execute_query(
-                        f"INSERT INTO {bt} (topic, user_id, vote) VALUES (:topic, :user_id, 'agree')"
-                        f" ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'agree'",
-                        {"user_id": user_id, "topic": topic}
-                    )
+                    _ballot_upsert(table, topic, user_id, "agree")
                     st.toast("已投下同意票！", icon="☑️")
                     after_vote_fn()
 
@@ -184,10 +197,7 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
         if user_id in against_list:
             if st.button("已反對 (點擊撤回)", key=f"{table}_a_done_{i}"):
                 with st.spinner("撤回投票中..."):
-                    execute_query(
-                        f"DELETE FROM {bt} WHERE topic = :topic AND user_id = :user_id",
-                        {"user_id": user_id, "topic": topic}
-                    )
+                    _ballot_delete(table, topic, user_id)
                     st.toast("已撤回不同意票！", icon="↩️")
                     after_vote_fn()
         elif user_id in agree_list:
@@ -196,10 +206,7 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
                     against_dialog_fn(topic, user_id, against_reason_map, is_switch=True)
                 else:
                     with st.spinner("更改投票中..."):
-                        execute_query(
-                            f"UPDATE {bt} SET vote = 'against' WHERE topic = :topic AND user_id = :user_id",
-                            {"user_id": user_id, "topic": topic}
-                        )
+                        _ballot_upsert(table, topic, user_id, "against")
                         st.toast("已轉投不同意票！", icon="↪️️")
                         after_vote_fn()
         else:
@@ -208,11 +215,7 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
                     against_dialog_fn(topic, user_id, against_reason_map, is_switch=False)
                 else:
                     with st.spinner("處理你的投票中，請稍等⋯"):
-                        execute_query(
-                            f"INSERT INTO {bt} (topic, user_id, vote) VALUES (:topic, :user_id, 'against')"
-                            f" ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'against'",
-                            {"user_id": user_id, "topic": topic}
-                        )
+                        _ballot_upsert(table, topic, user_id, "against")
                         st.toast("已投下不同意票！", icon="☑️")
                         after_vote_fn()
 
@@ -317,6 +320,15 @@ if not check_committee_login():
     st.stop()
 
 user_id = st.session_state["committee_user"]
+
+if user_id == "admin":
+    st.error("賽會人員帳戶不能使用辯題投票系統。請使用個人委員會帳戶登入。")
+    if st.button("登出"):
+        st.session_state["committee_user"] = None
+        del_cookie(cm, "committee_user")
+        time.sleep(0.5)
+        st.rerun()
+    st.stop()
 show_noti_popup(user_id)
 st.caption("活躍成員標準：整體投票率達40% 及 在最近十次投票中至少參與三次")
 st.info(f"已登入帳戶：**{user_id}**")
@@ -376,7 +388,16 @@ def get_vote_data():
 
     return pending, passed, rejected
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 提出動議", "📊 辯題投票", "✂️ 罷免投票", "👥 成員參與率", "🔐 管理帳戶"])
+# Pre-fetch pending counts for tab badges
+_pending_vote_data, _, _ = get_vote_data()
+_pending_vote_count = len(_pending_vote_data) if _pending_vote_data else 0
+_pending_depose_count_df = get_connection().query(
+    "SELECT COUNT(*) AS cnt FROM topic_depose_votes WHERE status = 'pending'", ttl=5)
+_pending_depose_count = int(_pending_depose_count_df.iloc[0]["cnt"]) if not _pending_depose_count_df.empty else 0
+
+_tab2_label = f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
+_tab3_label = f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 提出動議", _tab2_label, _tab3_label, "👥 成員參與率", "🔐 管理帳戶"])
 
 with tab1:
     st.subheader("提出新辯題")
@@ -571,17 +592,15 @@ with tab2:
     st.caption(f"只要同意票數達入庫門檻 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
     st.caption(f"只要不同意票數達入庫門檻 且 不同意 > 同意，系統會自動刪除辯題。")
 
-    button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
-    with button_col1:
-        render_refresh_button("refresh_vote_tab2")
-
-    with button_col2:
-        if st.button("💡 Gemini提提你", key="gemini_tab2"):
-            show_gemini_reminder(return_gemini_reminder)
-
-    with button_col3:
-        if st.button("🔍 ChatGPT提提你", key="chatgpt_tab2"):
-            show_chatgpt_reminder(return_chatgpt_reminder)
+    render_refresh_button("refresh_vote_tab2")
+    with st.expander("💡 AI 審題提示"):
+        ai_col1, ai_col2 = st.columns(2)
+        with ai_col1:
+            if st.button("Gemini提提你", key="gemini_tab2"):
+                show_gemini_reminder(return_gemini_reminder)
+        with ai_col2:
+            if st.button("ChatGPT提提你", key="chatgpt_tab2"):
+                show_chatgpt_reminder(return_chatgpt_reminder)
     st.divider()
     
     vote_data, passed_list, rejected_list = get_vote_data()
@@ -613,29 +632,27 @@ with tab2:
                 st.rerun()
 
             with st.container(border=True):
-                c1, c2, c3 = st.columns([3, 1, 1])
+                st.write(f"**{topic}**")
+                cat = row.get("category") or "—"
+                diff = row.get("difficulty")
+                diff_label = DIFFICULTY_OPTIONS.get(int(diff), "—") if diff else "—"
+                st.caption(f"🏷️ {cat}　｜　{diff_label}")
+                deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
+                st.caption(f"提出者：{author} | 入庫門檻：{row_threshold} 票 | 同意: {f_count} | 不同意: {a_count}{deadline_display}")
 
-                with c1:
-                    st.write(f"**{topic}**")
-                    cat = row.get("category") or "—"
-                    diff = row.get("difficulty")
-                    diff_label = DIFFICULTY_OPTIONS.get(int(diff), "—") if diff else "—"
-                    st.caption(f"🏷️ {cat}　｜　{diff_label}")
-                    deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
-                    st.caption(f"提出者：{author} | 入庫門檻：{row_threshold} 票 | 目前票數 - 同意: {f_count} | 不同意: {a_count}{deadline_display}")
+                f_progress = min(f_count / row_threshold, 1.0)
+                a_progress = min(a_count / row_threshold, 1.0)
 
-                    f_progress = min(f_count / row_threshold, 1.0)
-                    a_progress = min(a_count / row_threshold, 1.0)
+                st.progress(f_progress, text=f"同意票進度: {f_count} / {row_threshold}")
+                st.progress(a_progress, text=f"不同意票進度: {a_count} / {row_threshold}")
+                with st.expander("查看不同意理由", expanded=False):
+                    render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
 
-                    st.progress(f_progress, text=f"同意票進度: {f_count} / {row_threshold}")
-                    st.progress(a_progress, text=f"不同意票進度: {a_count} / {row_threshold}")
-                    with st.expander("查看不同意理由", expanded=False):
-                        render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
-                    
+                btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
                     i, user_id, topic, agree_list, against_list, against_reason_map,
                     table="topic_votes", agree_label="同意", against_label="不同意",
-                    after_vote_fn=_after_vote, col2=c2, col3=c3,
+                    after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
                     against_dialog_fn=cast_against_vote_dialog
                 )
 
@@ -644,18 +661,24 @@ with tab2:
                                    category=row.get("category"), difficulty=row.get("difficulty"))
 
     st.divider()
-    
-    with st.expander("📜 已通過辯題記錄 (最近十個)", expanded=False):
-        if passed_list:
-            for item in passed_list[:10]:
-                st.write(f"✅ {item}")
-        else:
-            st.caption("暫無記錄")
 
-    with st.expander("🗑️ 已否決辯題記錄 (最近十個)", expanded=False):
-        if rejected_list:
-            for item in rejected_list[:10]:
-                st.write(f"❌ {item}")
+    with st.expander("📜 投票歷史記錄 (最近二十個)", expanded=False):
+        from functions import query_params as _qp
+        history = _qp("""
+            SELECT tv.topic, tv.status, tv.created_at, tv.threshold, tv.category,
+                   (SELECT COUNT(*) FROM topic_vote_ballots b WHERE b.topic = tv.topic AND b.vote = 'agree') AS agree,
+                   (SELECT COUNT(*) FROM topic_vote_ballots b WHERE b.topic = tv.topic AND b.vote != 'agree') AS against
+            FROM topic_votes tv
+            WHERE tv.status != 'pending'
+            ORDER BY tv.created_at DESC
+            LIMIT 20
+        """)
+        if not history.empty:
+            for _, h in history.iterrows():
+                icon = "✅" if h["status"] == "passed" else "❌"
+                date_str = str(h["created_at"])[:10] if h["created_at"] else ""
+                cat = h.get("category") or ""
+                st.caption(f"{icon} {h['topic']}　|　{cat}　|　同意: {h['agree']} / 不同意: {h['against']} / 門檻: {h['threshold']}　|　{date_str}")
         else:
             st.caption("暫無記錄")
 
@@ -665,15 +688,15 @@ with tab3:
     st.caption(f"只要同意罷免票數達罷免門檻 且 同意 > 不同意，系統會自動刪除辯題。")
     st.caption(f"只要不同意罷免票數達罷免門檻 且 不同意 > 同意，系統會自動刪除罷免動議。")
 
-    button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
-    with button_col1:
-        render_refresh_button("refresh_vote_tab3")
-    with button_col2:
-        if st.button("💡 Gemini提醒你", key="gemini_tab3"):
-            show_gemini_reminder(return_gemini_depose_reminder)
-    with button_col3:
-        if st.button("🔍 ChatGPT提醒你", key="chatgpt_tab3"):
-            show_chatgpt_reminder(return_chatgpt_depose_reminder)
+    render_refresh_button("refresh_vote_tab3")
+    with st.expander("💡 AI 審題提示"):
+        ai_col1, ai_col2 = st.columns(2)
+        with ai_col1:
+            if st.button("Gemini提醒你", key="gemini_tab3"):
+                show_gemini_reminder(return_gemini_depose_reminder)
+        with ai_col2:
+            if st.button("ChatGPT提醒你", key="chatgpt_tab3"):
+                show_chatgpt_reminder(return_chatgpt_depose_reminder)
 
     conn = get_connection()
     df_depose = conn.query(
@@ -726,30 +749,28 @@ with tab3:
                 st.rerun()
 
             with st.container(border=True):
-                c1, c2, c3 = st.columns([3, 1, 1])
+                st.write(f"**{topic}**")
+                meta = topic_meta.get(topic, (None, None))
+                depose_cat = meta[0] or "—"
+                depose_diff = meta[1]
+                depose_diff_label = DIFFICULTY_OPTIONS.get(int(depose_diff), "—") if depose_diff else "—"
+                st.caption(f"🏷️ {depose_cat}　｜　{depose_diff_label}")
+                depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
+                st.caption(f"提出者: {mover} | 罷免門檻：{row_depose_threshold} 票 | 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
+                if proposal_reasons:
+                    st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
 
-                with c1:
-                    st.write(f"**{topic}**")
-                    meta = topic_meta.get(topic, (None, None))
-                    depose_cat = meta[0] or "—"
-                    depose_diff = meta[1]
-                    depose_diff_label = DIFFICULTY_OPTIONS.get(int(depose_diff), "—") if depose_diff else "—"
-                    st.caption(f"🏷️ {depose_cat}　｜　{depose_diff_label}")
-                    depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
-                    st.caption(f"提出者: {mover} | 罷免門檻：{row_depose_threshold} 票 | 目前票數 - 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
-                    if proposal_reasons:
-                        st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
+                f_progress = min(f_count / row_depose_threshold, 1.0)
+                a_progress = min(a_count / row_depose_threshold, 1.0)
 
-                    f_progress = min(f_count / row_depose_threshold, 1.0)
-                    a_progress = min(a_count / row_depose_threshold, 1.0)
+                st.progress(f_progress, text=f"同意罷免進度: {f_count} / {row_depose_threshold}")
+                st.progress(a_progress, text=f"不同意罷免進度: {a_count} / {row_depose_threshold}")
 
-                    st.progress(f_progress, text=f"同意罷免進度: {f_count} / {row_depose_threshold}")
-                    st.progress(a_progress, text=f"不同意罷免進度: {a_count} / {row_depose_threshold}")
-                    
+                btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
                     i, user_id, topic, agree_list, against_list, against_reason_map={},
                     table="topic_depose_votes", agree_label="同意罷免", against_label="不同意罷免",
-                    after_vote_fn=_after_vote, col2=c2, col3=c3,
+                    after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
                     agree_switch_toast="已轉投同意罷免票！"
                 )
 
@@ -771,14 +792,18 @@ with tab4:
     st.caption(f"目前活躍成員：{num_of_active} 人")
 
     if member_stats and user_id != "admin":
-        current_user_stats = next((s for s in member_stats if s["用戶"] == user_id), None)
+        current_user_stats = next(
+            (s for s in member_stats if str(s["用戶"]).strip() == str(user_id).strip()),
+            None
+        )
         if current_user_stats:
             st.subheader("我的參與情況")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("整體投票率", current_user_stats["整體投票率"])
-            m2.metric("最近10次參與", f"{current_user_stats['最近10次參與']} / 10")
-            m3.metric("投票同意率", current_user_stats["投票同意率"])
-            m4.metric("活躍狀態", current_user_stats["活躍狀態"])
+            row1_c1, row1_c2 = st.columns(2)
+            row1_c1.metric("整體投票率", current_user_stats["整體投票率"])
+            row1_c2.metric("最近10次參與", f"{current_user_stats['最近10次參與']} / 10")
+            row2_c1, row2_c2 = st.columns(2)
+            row2_c1.metric("投票同意率", current_user_stats["投票同意率"])
+            row2_c2.metric("活躍狀態", current_user_stats["活躍狀態"])
             st.divider()
 
     if member_stats:
