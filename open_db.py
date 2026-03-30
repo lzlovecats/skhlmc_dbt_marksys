@@ -24,6 +24,8 @@ DIFFICULTY_OPTIONS = {
 if "difficulty" in df.columns:
     df["difficulty_label"] = df["difficulty"].map(DIFFICULTY_OPTIONS)
 
+search_term = st.text_input("🔍 搜尋辯題", placeholder="輸入關鍵字搜尋...")
+
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -43,6 +45,8 @@ with col3:
 
 # 進行篩選
 filtered_df = df.copy()
+if search_term:
+    filtered_df = filtered_df[filtered_df["topic"].str.contains(search_term, case=False, na=False, regex=False)]
 if sel_author != "全部":
     filtered_df = filtered_df[filtered_df["author"] == sel_author]
 if sel_category != "全部":
@@ -78,14 +82,9 @@ if "category" in df.columns:
     total = len(df)
     cat_counts["佔比"] = cat_counts["辯題數量"].apply(lambda x: f"{x/total*100:.1f}%")
     
-    col_chart, col_table = st.columns([2, 1])
-    
-    with col_chart:
-        chart_data = cat_counts.set_index("類別")["辯題數量"]
-        st.bar_chart(chart_data)
-        
-    with col_table:
-        st.dataframe(cat_counts, use_container_width=True, hide_index=True)
+    chart_data = cat_counts.set_index("類別")["辯題數量"]
+    st.bar_chart(chart_data)
+    st.dataframe(cat_counts, use_container_width=True, hide_index=True)
 
 if "difficulty_label" in df.columns:
     st.divider()
@@ -96,14 +95,9 @@ if "difficulty_label" in df.columns:
     total = len(df)
     diff_counts["佔比"] = diff_counts["辯題數量"].apply(lambda x: f"{x/total*100:.1f}%")
 
-    col_chart, col_table = st.columns([2, 1])
-
-    with col_chart:
-        chart_data = diff_counts.set_index("難度")["辯題數量"]
-        st.bar_chart(chart_data)
-
-    with col_table:
-        st.dataframe(diff_counts, use_container_width=True, hide_index=True)
+    chart_data = diff_counts.set_index("難度")["辯題數量"]
+    st.bar_chart(chart_data)
+    st.dataframe(diff_counts, use_container_width=True, hide_index=True)
 
 if not vote_df.empty and "category" in vote_df.columns and "status" in vote_df.columns:
     resolved_vote_df = vote_df[vote_df["status"].isin(["passed", "rejected"])].copy()
@@ -126,11 +120,6 @@ if not vote_df.empty and "category" in vote_df.columns and "status" in vote_df.c
         display_vote_stats = cat_vote_stats.rename(columns={"category": "類別"}).copy()
         display_vote_stats["投票通過率"] = display_vote_stats["投票通過率"].apply(lambda x: f"{x:.1%}")
 
-        col_chart, col_table = st.columns([2, 1])
-
-        with col_chart:
-            chart_data = cat_vote_stats.set_index("category")["投票通過率"] * 100
-            st.bar_chart(chart_data)
-
-        with col_table:
-            st.dataframe(display_vote_stats, use_container_width=True, hide_index=True)
+        chart_data = cat_vote_stats.set_index("category")["投票通過率"] * 100
+        st.bar_chart(chart_data)
+        st.dataframe(display_vote_stats, use_container_width=True, hide_index=True)

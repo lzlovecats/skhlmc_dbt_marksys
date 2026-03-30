@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
-import json
-import io
-from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name
+from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 
 st.header("查閱評判分紙")
@@ -36,7 +34,7 @@ if selected_match not in st.session_state["score_unlocked_matches"]:
         st.stop()
     pwd = st.text_input("請輸入由賽會人員提供的密碼", type="password", key=f"pwd_{selected_match}")
     if st.button("登入"):
-        if pwd == review_password:
+        if _verify_config_password(pwd, review_password):
             st.session_state["score_unlocked_matches"].add(selected_match)
             st.rerun()
         else:
@@ -137,20 +135,20 @@ for i, row in temp_sheet.iterrows():
     side = str(row["team_side"]).strip()
     detail_json = row["data"]
     try:
-        data = detail_json if isinstance(detail_json, dict) else json.loads(detail_json)
+        data = _deserialize_score_data(detail_json)
         if side == "正方":
-            if "raw_df_a" in data:
-                pro_detail_a = pd.read_json(io.StringIO(data["raw_df_a"]))
-            if "raw_df_b" in data:
-                pro_detail_b = pd.read_json(io.StringIO(data["raw_df_b"]))
+            if isinstance(data.get("raw_df_a"), pd.DataFrame):
+                pro_detail_a = data["raw_df_a"]
+            if isinstance(data.get("raw_df_b"), pd.DataFrame):
+                pro_detail_b = data["raw_df_b"]
             loaded_final_sides.add("正方")
         elif side == "反方":
-            if "raw_df_a" in data:
-                con_detail_a = pd.read_json(io.StringIO(data["raw_df_a"]))
-            if "raw_df_b" in data:
-                con_detail_b = pd.read_json(io.StringIO(data["raw_df_b"]))
+            if isinstance(data.get("raw_df_a"), pd.DataFrame):
+                con_detail_a = data["raw_df_a"]
+            if isinstance(data.get("raw_df_b"), pd.DataFrame):
+                con_detail_b = data["raw_df_b"]
             loaded_final_sides.add("反方")
-    except (json.JSONDecodeError, KeyError):
+    except Exception:
         continue
 
 missing_final_sides = [side for side in ["正方", "反方"] if side not in loaded_final_sides]
