@@ -3,7 +3,6 @@ __pycache__/
 .DS_Store
 .cursor/
 .venv/
-.streamlit
 .idea
 .claude
 worker/node_modules/
