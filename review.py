@@ -92,7 +92,7 @@ temp_sheet = conn.query(
     SELECT *
     FROM temp_scores
     WHERE match_id = :mid
-      AND judge_name = :jname
+      AND lower(btrim(judge_name)) = :jname
       AND COALESCE(is_final, FALSE) = TRUE
     ORDER BY updated_at DESC
     """,
