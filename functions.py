@@ -4,6 +4,7 @@ import logging
 import pandas as pd
 import random
 import math
+import re
 import extra_streamlit_components as stx
 import datetime
 import time
@@ -14,6 +15,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
+
+MAINTENANCE_MODE = True
+MAINTENANCE_DEADLINE_TEXT = "2026年4月3日 23:59（香港時間）"
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -578,6 +582,108 @@ def return_user_manual():
 
 def return_rules():
     return load_markdown_asset("rules.md")
+
+
+def is_maintenance_mode() -> bool:
+    return MAINTENANCE_MODE
+
+
+def render_maintenance_notice():
+    with st.container(border=True):
+        st.warning("系統維護中")
+        st.write("目前系統正在進行更新工程，需要時間。")
+        st.write(f"預計會喺 **{MAINTENANCE_DEADLINE_TEXT}** 前完成。")
+        st.caption("所有功能現已暫停使用，請稍後再試。")
+
+
+def extract_markdown_section(content, heading_level, target_heading):
+    prefix = "#" * heading_level
+    match = re.search(
+        rf"^{re.escape(prefix)}\s+{re.escape(target_heading)}\s*$.*?(?=^{re.escape(prefix)}\s|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(0).strip() if match else None
+
+
+def render_user_manual_content(role_key: str):
+    role = st.radio(
+        "請先選擇你的身份：",
+        ["評判", "賽會人員", "比賽隊伍", "一般人員", "內部委員會成員"],
+        horizontal=True,
+        key=role_key,
+    )
+    st.divider()
+
+    role_section_map = {
+        "評判": "一、評判",
+        "賽會人員": "二、賽會人員",
+        "比賽隊伍": "三、比賽隊伍",
+        "一般人員": "四、一般人員",
+        "內部委員會成員": "五、內部委員會成員",
+    }
+
+    manual_content = return_user_manual()
+    section_text = extract_markdown_section(manual_content, 3, role_section_map[role])
+    if section_text:
+        st.markdown(section_text)
+    else:
+        st.markdown(manual_content)
+
+
+def render_rules_content(role_key: str):
+    role = st.radio(
+        "請先選擇你的身份：",
+        ["評判", "賽會人員", "參賽隊伍"],
+        horizontal=True,
+        key=role_key,
+    )
+    st.divider()
+
+    role_section_map = {
+        "評判": "一、評判",
+        "賽會人員": "二、賽會人員",
+        "參賽隊伍": "三、參賽隊伍",
+    }
+
+    rules_content = return_rules()
+    disclaimer_end = rules_content.find("---")
+    if disclaimer_end != -1:
+        st.markdown(rules_content[: disclaimer_end + 3])
+        rules_body = rules_content[disclaimer_end + 3 :]
+    else:
+        rules_body = rules_content
+
+    section_text = extract_markdown_section(rules_body, 2, role_section_map[role])
+    if section_text:
+        st.markdown(section_text)
+    else:
+        st.markdown(rules_body)
+
+
+@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
+def show_manual():
+    render_user_manual_content("manual_dialog_role")
+
+
+@st.dialog("校園隨想辯論比賽：賽規", width="large")
+def show_rules():
+    render_rules_content("rules_dialog_role")
+
+
+def render_home_reference():
+    with st.container(border=True):
+        st.markdown("### 📚 使用手冊及賽規")
+        st.caption("可由首頁直接開啟；左側 sidebar 亦保留相同按鈕。")
+        manual_col, rules_col = st.columns(2)
+
+        with manual_col:
+            if st.button("📖 閱讀使用手冊", use_container_width=True, key="home_show_manual"):
+                show_manual()
+
+        with rules_col:
+            if st.button("📋 查看賽規", use_container_width=True, key="home_show_rules"):
+                show_rules()
 
 
 def hash_password(plain: str) -> str:

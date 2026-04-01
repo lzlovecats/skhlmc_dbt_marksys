@@ -220,11 +220,11 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
                         after_vote_fn()
 
 
-def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, against_list,
+def check_vote_resolution(agree_count, against_count, threshold, topic, agree_list, against_list,
                           mode, author=None, category=None, difficulty=None):
     """Check vote counts and auto-resolve if threshold met. mode: 'topic' or 'depose'."""
     if mode == "topic":
-        if f_count >= threshold and f_count > a_count:
+        if agree_count >= threshold and agree_count > against_count:
             st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
             execute_query(
                 "INSERT INTO topics (topic, author, category, difficulty) VALUES (:topic, :author, :category, :difficulty)",
@@ -236,40 +236,40 @@ def check_vote_resolution(f_count, a_count, threshold, topic, agree_list, agains
             )
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "passed", "vote_type": "topic",
-                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
             })
             clear_caches()
             st.balloons()
             st.rerun()
-        if a_count >= threshold and a_count > f_count:
-            st.error(f"辯題「{topic}」已獲得{a_count}票不同意票，正在刪除辯題...")
+        if against_count >= threshold and against_count > agree_count:
+            st.error(f"辯題「{topic}」已獲得{against_count}票不同意票，正在刪除辯題...")
             execute_query(
                 "UPDATE topic_votes SET status = 'rejected' WHERE topic = :topic",
                 {"topic": topic}
             )
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "rejected", "vote_type": "topic",
-                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
             })
             clear_caches()
             st.rerun()
     elif mode == "depose":
-        if f_count >= threshold and f_count > a_count:
+        if agree_count >= threshold and agree_count > against_count:
             st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
             execute_query("UPDATE topic_depose_votes SET status = 'passed' WHERE topic = :topic", {"topic": topic})
             execute_query("DELETE FROM topics WHERE topic = :topic", {"topic": topic})
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "passed", "vote_type": "depose",
-                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
             })
             clear_caches()
             st.rerun()
-        if a_count >= threshold and a_count > f_count:
+        if against_count >= threshold and against_count > agree_count:
             st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
             execute_query("UPDATE topic_depose_votes SET status = 'rejected' WHERE topic = :topic", {"topic": topic})
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "rejected", "vote_type": "depose",
-                "agree_count": f_count, "against_count": a_count, "threshold": threshold
+                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
             })
             clear_caches()
             st.balloons()
@@ -480,9 +480,9 @@ with tab1:
                     st.success("辯題已加入投票區！")
 
     if st.session_state.get("confirm_imbalance"):
-        d = st.session_state["pending_topic_data"]
+        pending_topic_data = st.session_state["pending_topic_data"]
         st.warning(
-            f"⚠️ 類別「{d['new_category']}」目前佔比已超過 20%，繼續新增同類辯題將令辯題庫失衡。是否確認繼續？"
+            f"⚠️ 類別「{pending_topic_data['new_category']}」目前佔比已超過 20%，繼續新增同類辯題將令辯題庫失衡。是否確認繼續？"
         )
         col1, col2 = st.columns(2)
         with col1:
@@ -491,12 +491,12 @@ with tab1:
                 hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                 deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
                 query = "INSERT INTO topic_votes (topic, author, status, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
-                param = {"new_topic": d["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": d["new_category"], "difficulty": d["new_difficulty"]}
-                execute_query(query, param)
+                topic_params = {"new_topic": pending_topic_data["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": pending_topic_data["new_category"], "difficulty": pending_topic_data["new_difficulty"]}
+                execute_query(query, topic_params)
                 enqueue_tg_notification("new_topic", {
-                    "topic": d["new_topic"], "author": user_id,
-                    "category": d["new_category"],
-                    "difficulty_label": DIFFICULTY_OPTIONS.get(d["new_difficulty"], str(d["new_difficulty"])),
+                    "topic": pending_topic_data["new_topic"], "author": user_id,
+                    "category": pending_topic_data["new_category"],
+                    "difficulty_label": DIFFICULTY_OPTIONS.get(pending_topic_data["new_difficulty"], str(pending_topic_data["new_difficulty"])),
                     "threshold": ENTRY_THRESHOLD,
                     "deadline": deadline
                 })
@@ -618,8 +618,8 @@ with tab2:
             against_list = row["against_users"]
             against_reason_map = parse_reason_map(row.get("against_reasons", ""))
 
-            f_count = len(agree_list)
-            a_count = len(against_list)
+            agree_count = len(agree_list)
+            against_count = len(against_list)
             row_threshold = int(row.get("threshold") or ENTRY_THRESHOLD)
 
             deadline_passed, deadline_str = parse_deadline_row(row)
@@ -638,13 +638,13 @@ with tab2:
                 diff_label = DIFFICULTY_OPTIONS.get(int(diff), "—") if diff else "—"
                 st.caption(f"🏷️ {cat}　｜　{diff_label}")
                 deadline_display = f" | 截止：{deadline_str} 23:59" if deadline_str else ""
-                st.caption(f"提出者：{author} | 入庫門檻：{row_threshold} 票 | 同意: {f_count} | 不同意: {a_count}{deadline_display}")
+                st.caption(f"提出者：{author} | 入庫門檻：{row_threshold} 票 | 同意: {agree_count} | 不同意: {against_count}{deadline_display}")
 
-                f_progress = min(f_count / row_threshold, 1.0)
-                a_progress = min(a_count / row_threshold, 1.0)
+                agree_progress = min(agree_count / row_threshold, 1.0)
+                against_progress = min(against_count / row_threshold, 1.0)
 
-                st.progress(f_progress, text=f"同意票進度: {f_count} / {row_threshold}")
-                st.progress(a_progress, text=f"不同意票進度: {a_count} / {row_threshold}")
+                st.progress(agree_progress, text=f"同意票進度: {agree_count} / {row_threshold}")
+                st.progress(against_progress, text=f"不同意票進度: {against_count} / {row_threshold}")
                 with st.expander("查看不同意理由", expanded=False):
                     render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
 
@@ -656,7 +656,7 @@ with tab2:
                     against_dialog_fn=cast_against_vote_dialog
                 )
 
-            check_vote_resolution(f_count, a_count, row_threshold, topic, agree_list, against_list,
+            check_vote_resolution(agree_count, against_count, row_threshold, topic, agree_list, against_list,
                                    mode="topic", author=author,
                                    category=row.get("category"), difficulty=row.get("difficulty"))
 
@@ -733,8 +733,8 @@ with tab3:
             agree_list = row["agree_users"]
             against_list = row["against_users"]
 
-            f_count = len(agree_list)
-            a_count = len(against_list)
+            agree_count = len(agree_list)
+            against_count = len(against_list)
             row_depose_threshold = int(row.get("threshold") or DEPOSE_THRESHOLD)
 
             depose_deadline_passed, depose_deadline_str = parse_deadline_row(row)
@@ -756,15 +756,15 @@ with tab3:
                 depose_diff_label = DIFFICULTY_OPTIONS.get(int(depose_diff), "—") if depose_diff else "—"
                 st.caption(f"🏷️ {depose_cat}　｜　{depose_diff_label}")
                 depose_deadline_display = f" | 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
-                st.caption(f"提出者: {mover} | 罷免門檻：{row_depose_threshold} 票 | 同意罷免: {f_count} | 不同意罷免: {a_count}{depose_deadline_display}")
+                st.caption(f"提出者: {mover} | 罷免門檻：{row_depose_threshold} 票 | 同意罷免: {agree_count} | 不同意罷免: {against_count}{depose_deadline_display}")
                 if proposal_reasons:
                     st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
 
-                f_progress = min(f_count / row_depose_threshold, 1.0)
-                a_progress = min(a_count / row_depose_threshold, 1.0)
+                agree_progress = min(agree_count / row_depose_threshold, 1.0)
+                against_progress = min(against_count / row_depose_threshold, 1.0)
 
-                st.progress(f_progress, text=f"同意罷免進度: {f_count} / {row_depose_threshold}")
-                st.progress(a_progress, text=f"不同意罷免進度: {a_count} / {row_depose_threshold}")
+                st.progress(agree_progress, text=f"同意罷免進度: {agree_count} / {row_depose_threshold}")
+                st.progress(against_progress, text=f"不同意罷免進度: {against_count} / {row_depose_threshold}")
 
                 btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
@@ -774,7 +774,7 @@ with tab3:
                     agree_switch_toast="已轉投同意罷免票！"
                 )
 
-            check_vote_resolution(f_count, a_count, row_depose_threshold, topic, agree_list, against_list,
+            check_vote_resolution(agree_count, against_count, row_depose_threshold, topic, agree_list, against_list,
                                    mode="depose")
 
 

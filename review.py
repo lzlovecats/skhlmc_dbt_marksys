@@ -53,8 +53,8 @@ if match_results.empty:
     st.info("此場次未有評分紀錄。")
     st.stop()
 
-all_judge = match_results['judge_name'].unique()
-selected_judge = st.selectbox("請選擇評判", options=all_judge)
+all_judges = match_results['judge_name'].unique()
+selected_judge = st.selectbox("請選擇評判", options=all_judges)
 
 judge_record = match_results[match_results['judge_name'] == selected_judge].iloc[0]
 with st.container(border=True):

@@ -1,75 +1,13 @@
 import streamlit as st
-import re
-from functions import return_user_manual, return_rules
+from functions import is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
 
-
-def extract_markdown_section(content, heading_level, target_heading):
-    prefix = "#" * heading_level
-    m = re.search(
-        rf"^{re.escape(prefix)}\s+{re.escape(target_heading)}\s*$.*?(?=^{re.escape(prefix)}\s|\Z)",
-        content,
-        re.MULTILINE | re.DOTALL,
-    )
-    return m.group(0).strip() if m else None
-
-@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
-def show_manual():
-    role = st.radio(
-        "請先選擇你的身份：",
-        ["評判", "賽會人員", "比賽隊伍", "一般人員", "內部委員會成員"],
-        horizontal=True,
-    )
-    st.divider()
-
-    role_section_map = {
-        "評判": "一、評判",
-        "賽會人員": "二、賽會人員",
-        "比賽隊伍": "三、比賽隊伍",
-        "一般人員": "四、一般人員",
-        "內部委員會成員": "五、內部委員會成員",
-    }
-
-    manual_content = return_user_manual()
-    target = role_section_map[role]
-    section_text = extract_markdown_section(manual_content, 3, target)
-    if section_text:
-        st.markdown(section_text)
-    else:
-        st.markdown(manual_content)
-
-@st.dialog("校園隨想辯論比賽：賽規", width="large")
-def show_rules():
-    role = st.radio(
-        "請先選擇你的身份：",
-        ["評判", "賽會人員", "參賽隊伍"],
-        horizontal=True,
-    )
-    st.divider()
-
-    role_section_map = {
-        "評判": "一、評判",
-        "賽會人員": "二、賽會人員",
-        "參賽隊伍": "三、參賽隊伍",
-    }
-
-    rules_content = return_rules()
-    # Always show the disclaimer first
-    disclaimer_end = rules_content.find("---")
-    if disclaimer_end != -1:
-        st.markdown(rules_content[: disclaimer_end + 3])
-        body = rules_content[disclaimer_end + 3 :]
-    else:
-        body = rules_content
-
-    target = role_section_map[role]
-    section_text = extract_markdown_section(body, 2, target)
-    if section_text:
-        st.markdown(section_text)
-    else:
-        st.markdown(body)
+if is_maintenance_mode():
+    st.title("聖呂中辯電子分紙系統")
+    render_maintenance_notice()
+    st.stop()
 
 # Define pages
 page_home = st.Page("home.py", title="主頁", icon="🏠", default=True)
@@ -113,7 +51,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.13.1")
+    st.caption("🛠️ 系統版本：2.13.2")
     st.caption("🛜 Developed by lzlovecats @ 2026")
 
 pg.run()
