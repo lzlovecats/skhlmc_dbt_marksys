@@ -31,11 +31,11 @@ def show_draw_result_dialog(pro_team, con_team):
     st.info("抽籤結果已自動填入場次資料，請記得儲存！")
 # Show msg
 if st.session_state["match_action_message"]:
-    msg = st.session_state["match_action_message"]
-    if msg["type"] == "success":
-        st.success(msg["content"])
-    elif msg["type"] == "warning":
-        st.warning(msg["content"])
+    action_message = st.session_state["match_action_message"]
+    if action_message["type"] == "success":
+        st.success(action_message["content"])
+    elif action_message["type"] == "warning":
+        st.warning(action_message["content"])
     st.session_state["match_action_message"] = None
 
 # Authentication 
@@ -83,10 +83,10 @@ if st.session_state["all_matches"]:
         key=f"diff_filter_{selected_match}"
     )
     if st.button("抽辯題", key=f"draw_topic_{selected_match}"):
-        drawed_topic = draw_a_topic(difficulty=diff_filter if diff_filter != 0 else None)
-        if drawed_topic != "":
-            st.success(f"已抽取辯題：{drawed_topic}")
-            st.session_state["all_matches"][selected_match]["que"] = drawed_topic
+        drawn_topic = draw_a_topic(difficulty=diff_filter if diff_filter != 0 else None)
+        if drawn_topic != "":
+            st.success(f"已抽取辯題：{drawn_topic}")
+            st.session_state["all_matches"][selected_match]["que"] = drawn_topic
     else:
         st.info("按「抽辯題」以從辯題庫中抽取一條辯題。")
 
@@ -120,9 +120,9 @@ if st.session_state["all_matches"]:
                     st.rerun()
 
     if st.session_state.draw_result_dialog:
-        d = st.session_state.draw_result_dialog
+        draw_result = st.session_state.draw_result_dialog
         st.session_state.draw_result_dialog = None
-        show_draw_result_dialog(d["pro_team"], d["con_team"])
+        show_draw_result_dialog(draw_result["pro_team"], draw_result["con_team"])
 
     with st.form(key=f"form_{selected_match}"):
 
