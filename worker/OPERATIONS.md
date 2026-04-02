@@ -7,7 +7,7 @@ This file covers the day-to-day operational commands for the Cloudflare Telegram
 Run all Worker commands from:
 
 ```bash
-cd /Users/lzlovecats/Documents/GitHub/skhlmc_dbt_marksys.worktrees/codex-workspace/worker
+cd /Users/lzlovecats/Documents/GitHub/skhlmc_dbt_marksys/worker
 ```
 
 ## Health Check
@@ -91,20 +91,20 @@ If the PostgreSQL connection changes, update the Hyperdrive configuration in Clo
 
 ## Queue Troubleshooting
 
-The queue table is `tg_notification_queue`.
+The queue table is `telegram_notification_queue`.
 
 Important fields:
 
-- `processed`: row finished successfully
+- `is_processed`: row finished successfully
 - `processing_token`: row is currently claimed by a Worker run
 - `processing_started_at`: when the claim started
-- `last_error`: most recent processing error
+- `last_error_message`: most recent processing error
 
 Useful query:
 
 ```sql
-SELECT id, noti_type, created_at, processed, processing_token, processing_started_at, last_error
-FROM tg_notification_queue
+SELECT id, notification_type, created_at, is_processed, processing_token, processing_started_at, last_error_message
+FROM telegram_notification_queue
 ORDER BY created_at DESC
 LIMIT 50;
 ```
@@ -112,7 +112,7 @@ LIMIT 50;
 If rows are stuck:
 
 1. Check `npx wrangler tail`
-2. Check `last_error`
+2. Check `last_error_message`
 3. Confirm Telegram secrets are valid
 4. Confirm Hyperdrive still points to the correct database
 

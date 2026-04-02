@@ -75,13 +75,13 @@ A full-featured electronic scoring and management platform for school debate com
 ### ⚖️ 電子評判分紙 | Live Judging Interface (`judging.py`)
 **中文：**
 - 實時電子分紙，適合平板及手提電腦使用
-- 雲端自動暫存（PostgreSQL `temp_scores`），防止頁面刷新導致資料遺失
+- 雲端自動暫存（PostgreSQL `score_drafts`），防止頁面刷新導致資料遺失
 - 細項評分：甲部（台上發言）× 4 辯員、乙部（自由辯論）、丙部（扣分及連貫性）
 - 提交前確認對話框，防止誤操作
 
 **English:**
 - Real-time digital score sheets optimised for tablets and laptops
-- Cloud auto-save to PostgreSQL `temp_scores`, preventing data loss on refresh
+- Cloud auto-save to PostgreSQL `score_drafts`, preventing data loss on refresh
 - Granular scoring: Part A (Speeches) × 4 debaters, Part B (Free Debate), Part C (Deductions & Coherence)
 - Submission confirmation dialog to prevent accidental submissions
 
@@ -183,16 +183,16 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 |---|---|
 | `matches` | 場次資料（隊伍、辯題、密碼等）|
 | `scores` | 正式提交的評判評分 |
-| `temp_scores` | 評判評分暫存（JSON 格式）|
+| `score_drafts` | 評判評分暫存（JSON 格式）|
 | `topics` | 辯題庫 |
 | `topic_votes` | 待表決辯題投票紀錄 |
 | `topic_vote_ballots` | 辯題投票選票 |
-| `topic_depose_votes` | 辯題罷免投票紀錄 |
-| `depose_vote_ballots` | 罷免投票選票 |
+| `topic_removal_votes` | 辯題罷免投票紀錄 |
+| `topic_removal_vote_ballots` | 罷免投票選票 |
 | `accounts` | 委員會成員帳戶（含 Telegram 連結欄位）|
-| `login_record` | 成員登入紀錄 |
-| `noti` | 站內通知 |
-| `tg_notification_queue` | Telegram 推送通知佇列（由 Cloudflare Worker 處理）|
+| `login_records` | 成員登入紀錄 |
+| `notification_reads` | 站內通知已讀紀錄 |
+| `telegram_notification_queue` | Telegram 推送通知佇列（由 Cloudflare Worker 處理）|
 | `system_config` | 系統設定（賽會人員密碼、開發者密碼等，以 bcrypt 加密存放）|
 
 ---
@@ -213,12 +213,13 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 ├── draw_match_schedule.py    # 抽籤賽程 / Draw schedule
 ├── functions.py              # 核心工具函數 / Core utilities
 ├── scoring.py                # 評分常數及欄位 / Scoring constants
-├── schema.py                 # 資料庫建表語句 / DB schema definitions
+├── schema.py                 # 資料庫建表語句 + Python DB table constants / DB schema + Python DB identifiers
 ├── assets/
 │   ├── user_manual.md        # 使用手冊 / User manual
 │   ├── rules.md              # 賽規 / Competition rules
 │   └── *_reminder.md        # AI 審題建議 / AI topic review guides
 └── worker/                   # Cloudflare Worker — Telegram bot
+    ├── src/dbNames.ts        # TypeScript DB table-name mirror for Worker
     ├── src/index.ts          # Bot logic (commands + scheduled jobs)
     ├── wrangler.jsonc        # Cloudflare deployment config
     └── README.md             # Worker setup & deployment guide

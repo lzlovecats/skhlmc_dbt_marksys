@@ -4,6 +4,7 @@ import logging
 import pandas as pd
 import random
 import math
+import re
 import extra_streamlit_components as stx
 import datetime
 import time
@@ -12,8 +13,26 @@ import io
 import bcrypt
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
+from schema import (
+    TABLE_ACCOUNTS,
+    TABLE_DEBATERS,
+    TABLE_DEBATER_SCORES,
+    TABLE_LOGIN_RECORDS,
+    TABLE_MATCHES,
+    TABLE_NOTIFICATION_READS,
+    TABLE_SCORE_DRAFTS,
+    TABLE_SCORES,
+    TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
+    TABLE_TOPIC_REMOVAL_VOTES,
+    TABLE_TOPIC_VOTE_BALLOTS,
+    TABLE_TOPIC_VOTES,
+    TABLE_TOPICS,
+)
 
 logger = logging.getLogger(__name__)
+
+MAINTENANCE_MODE = False
+MAINTENANCE_DEADLINE_TEXT = "2026年4月3日 23:59（香港時間）"
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -84,7 +103,8 @@ def committee_cookie_manager():
 def _log_login(user_id: str, login_type: str):
     login_time = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
     execute_query(
-        "INSERT INTO login_record (user_id, login_type, login_time) VALUES (:user_id, :login_type, :login_time)",
+        f"INSERT INTO {TABLE_LOGIN_RECORDS} (user_id, login_type, logged_in_at) "
+        "VALUES (:user_id, :login_type, :login_time)",
         {"user_id": user_id, "login_type": login_type, "login_time": login_time}
     )
 
@@ -176,22 +196,39 @@ def execute_query_count(sql_str, params=None):
 
 def load_matches_from_db():
     conn = get_connection()
-    df = conn.query("SELECT * FROM matches", ttl=0)
-    debaters_df = conn.query("SELECT * FROM debaters", ttl=0)
+    df = conn.query(
+        f"""
+        SELECT
+            match_id,
+            match_date,
+            match_time,
+            topic_text,
+            pro_team,
+            con_team,
+            access_code_hash,
+            review_password_hash
+        FROM {TABLE_MATCHES}
+        """,
+        ttl=0,
+    )
+    debaters_df = conn.query(
+        f"SELECT match_id, side, position, debater_name FROM {TABLE_DEBATERS}",
+        ttl=0,
+    )
 
     data_dict = {}
     for i, row in df.iterrows():
         match_id = str(row["match_id"])
         raw = row.to_dict()
-        # Normalise DB column names to the app-internal keys used by judging.py / match_info.py
-        raw["que"] = raw.pop("topic", raw.get("que", ""))
-        raw["pro"] = raw.pop("pro_team", raw.get("pro", ""))
-        raw["con"] = raw.pop("con_team", raw.get("con", ""))
-        # Reconstruct pro_1~con_4 keys from the normalised debaters table
+        if raw.get("match_date") is not None and hasattr(raw["match_date"], "strftime"):
+            raw["match_date"] = raw["match_date"].strftime("%Y-%m-%d")
+        if raw.get("match_time") is not None and hasattr(raw["match_time"], "strftime"):
+            raw["match_time"] = raw["match_time"].strftime("%H:%M")
+
         match_debaters = debaters_df[debaters_df["match_id"] == match_id]
         for _, d in match_debaters.iterrows():
             key = f"{str(d['side']).strip()}_{int(d['position'])}"
-            raw[key] = str(d["name"]).strip() if d["name"] else ""
+            raw[key] = str(d["debater_name"]).strip() if d["debater_name"] else ""
         data_dict[match_id] = raw
 
     return data_dict
@@ -201,19 +238,25 @@ def save_match_to_db(match_data):
     match_id = match_data['match_id'].strip()
 
     exist_match = query_params(
-        "SELECT access_code, review_password FROM matches WHERE match_id = :match_id",
+        f"""
+        SELECT
+            access_code_hash,
+            review_password_hash
+        FROM {TABLE_MATCHES}
+        WHERE match_id = :match_id
+        """,
         {"match_id": match_id}
     )
 
-    raw_access_code = match_data.get('access_code', '') or ""
-    raw_review_password = match_data.get('review_password', '') or ""
+    raw_access_code = match_data.get("access_code_hash", "") or ""
+    raw_review_password = match_data.get("review_password_hash", "") or ""
     clear_access_code = bool(match_data.get("clear_access_code"))
     clear_review_password = bool(match_data.get("clear_review_password"))
     existing_access_code = None
     existing_review_password = None
     if not exist_match.empty:
-        existing_access_code = exist_match.iloc[0]["access_code"]
-        existing_review_password = exist_match.iloc[0]["review_password"]
+        existing_access_code = exist_match.iloc[0]["access_code_hash"]
+        existing_review_password = exist_match.iloc[0]["review_password_hash"]
         if pd.isna(existing_access_code):
             existing_access_code = None
         if pd.isna(existing_review_password):
@@ -239,28 +282,34 @@ def save_match_to_db(match_data):
 
     match_params = {
         "match_id": match_id,
-        "date": match_data['date'] if match_data['date'] else None,
-        "time": match_data['time'] if match_data['time'] else None,
-        "topic": match_data['que'],
-        "pro_team": match_data['pro'],
-        "con_team": match_data['con'],
-        "access_code": resolved_access_code,
-        "review_password": resolved_review_password
+        "match_date": match_data["match_date"] if match_data["match_date"] else None,
+        "match_time": match_data["match_time"] if match_data["match_time"] else None,
+        "topic_text": match_data["topic_text"],
+        "pro_team": match_data["pro_team"],
+        "con_team": match_data["con_team"],
+        "access_code_hash": resolved_access_code,
+        "review_password_hash": resolved_review_password
     }
 
     if not exist_match.empty:
-        execute_query("""
-            UPDATE matches SET
-                date = :date, time = :time, topic = :topic,
+        execute_query(f"""
+            UPDATE {TABLE_MATCHES} SET
+                match_date = :match_date, match_time = :match_time, topic_text = :topic_text,
                 pro_team = :pro_team, con_team = :con_team,
-                access_code = :access_code,
-                review_password = :review_password
+                access_code_hash = :access_code_hash,
+                review_password_hash = :review_password_hash
             WHERE match_id = :match_id
         """, match_params)
     else:
-        execute_query("""
-            INSERT INTO matches (match_id, date, time, topic, pro_team, con_team, access_code, review_password)
-            VALUES (:match_id, :date, :time, :topic, :pro_team, :con_team, :access_code, :review_password)
+        execute_query(f"""
+            INSERT INTO {TABLE_MATCHES} (
+                match_id, match_date, match_time, topic_text, pro_team, con_team,
+                access_code_hash, review_password_hash
+            )
+            VALUES (
+                :match_id, :match_date, :match_time, :topic_text, :pro_team, :con_team,
+                :access_code_hash, :review_password_hash
+            )
         """, match_params)
 
     # Upsert debater names into the normalised debaters table
@@ -271,10 +320,10 @@ def save_match_to_db(match_data):
     ]
     conn = get_connection()
     with conn.session as s:
-        s.execute(text("""
-            INSERT INTO debaters (match_id, side, position, name)
+        s.execute(text(f"""
+            INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name)
             VALUES (:match_id, :side, :position, :name)
-            ON CONFLICT (match_id, side, position) DO UPDATE SET name = EXCLUDED.name
+            ON CONFLICT (match_id, side, position) DO UPDATE SET debater_name = EXCLUDED.debater_name
         """), debater_params)
         s.commit()
 
@@ -288,9 +337,9 @@ def save_draft_to_db(match_id, judge_name, team_side, score_data):
     with conn.session as s:
         already_submitted = s.execute(text("""
             SELECT 1
-            FROM scores
+            FROM {table_scores}
             WHERE match_id = :match_id AND judge_name = :judge_name
-        """), {
+        """.format(table_scores=TABLE_SCORES)), {
             "match_id": match_id,
             "judge_name": normalized_judge_name
         }).fetchone()
@@ -298,19 +347,19 @@ def save_draft_to_db(match_id, judge_name, team_side, score_data):
         if already_submitted:
             raise ValueError("你已提交過評分！無法修改評分！")
 
-        s.execute(text("""
-            INSERT INTO temp_scores (match_id, judge_name, team_side, data, is_final, updated_at)
-            VALUES (:match_id, :judge_name, :team_side, :data, FALSE, :updated_at)
-            ON CONFLICT (match_id, judge_name, team_side)
+        s.execute(text(f"""
+            INSERT INTO {TABLE_SCORE_DRAFTS} (match_id, judge_name, side, score_payload, is_final, updated_at)
+            VALUES (:match_id, :judge_name, :side, :score_payload, FALSE, :updated_at)
+            ON CONFLICT (match_id, judge_name, side)
             DO UPDATE SET
-                data = EXCLUDED.data,
+                score_payload = EXCLUDED.score_payload,
                 is_final = FALSE,
                 updated_at = EXCLUDED.updated_at
         """), {
             "match_id": match_id,
             "judge_name": normalized_judge_name,
-            "team_side": team_side,
-            "data": json_str,
+            "side": team_side,
+            "score_payload": json_str,
             "updated_at": updated_at
         })
         s.commit()
@@ -322,9 +371,9 @@ def load_draft_from_db(match_id, judge_name):
     normalized_judge_name = normalize_judge_name(judge_name)
 
     exist_temp_data = query_params(
-        """
-        SELECT *
-        FROM temp_scores
+        f"""
+        SELECT match_id, judge_name, side, score_payload, is_final, updated_at
+        FROM {TABLE_SCORE_DRAFTS}
         WHERE match_id = :match_id
           AND judge_name = :judge_name
           AND COALESCE(is_final, FALSE) = FALSE
@@ -335,11 +384,11 @@ def load_draft_from_db(match_id, judge_name):
     
     drafts = {"正方": None, "反方": None}
     for i, row in exist_temp_data.iterrows():
-        team_side = str(row["team_side"]).strip()
+        team_side = str(row["side"]).strip()
         if team_side in drafts:
             try:
                 if drafts[team_side] is None:
-                    drafts[team_side] = _deserialize_score_data(row["data"])
+                    drafts[team_side] = _deserialize_score_data(row["score_payload"])
             except Exception:
                 pass  # Corrupt draft data — silently skip, judge will re-enter scores
                 
@@ -349,7 +398,7 @@ def load_draft_from_db(match_id, judge_name):
 def has_final_submission(match_id, judge_name):
     normalized_judge_name = normalize_judge_name(judge_name)
     existing_submit = query_params(
-        "SELECT 1 FROM scores WHERE match_id = :match_id AND judge_name = :judge_name",
+        f"SELECT 1 FROM {TABLE_SCORES} WHERE match_id = :match_id AND judge_name = :judge_name",
         {"match_id": match_id, "judge_name": normalized_judge_name}
     )
     return not existing_submit.empty
@@ -360,7 +409,7 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data):
     normalized_judge_name = normalize_judge_name(judge_name)
     submitted_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
     submitted_at_db = submitted_at.replace(tzinfo=None)
-    mark_time = submitted_at.strftime("%H:%M:%S")
+    submitted_time = submitted_at.strftime("%H:%M:%S")
 
     side_payloads = {
         "正方": _serialize_score_data(pro_data),
@@ -368,9 +417,9 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data):
     }
 
     with conn.session as s:
-        existing_submit = s.execute(text("""
+        existing_submit = s.execute(text(f"""
             SELECT 1
-            FROM scores
+            FROM {TABLE_SCORES}
             WHERE match_id = :match_id AND judge_name = :judge_name
         """), {
             "match_id": match_id,
@@ -382,28 +431,29 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data):
             return False
 
         for team_side, payload in side_payloads.items():
-            s.execute(text("""
-                INSERT INTO temp_scores (match_id, judge_name, team_side, data, is_final, updated_at)
-                VALUES (:match_id, :judge_name, :team_side, :data, TRUE, :updated_at)
-                ON CONFLICT (match_id, judge_name, team_side)
+            s.execute(text(f"""
+                INSERT INTO {TABLE_SCORE_DRAFTS} (match_id, judge_name, side, score_payload, is_final, updated_at)
+                VALUES (:match_id, :judge_name, :side, :score_payload, TRUE, :updated_at)
+                ON CONFLICT (match_id, judge_name, side)
                 DO UPDATE SET
-                    data = EXCLUDED.data,
+                    score_payload = EXCLUDED.score_payload,
                     is_final = TRUE,
                     updated_at = EXCLUDED.updated_at
             """), {
                 "match_id": match_id,
                 "judge_name": normalized_judge_name,
-                "team_side": team_side,
-                "data": payload,
+                "side": team_side,
+                "score_payload": payload,
                 "updated_at": submitted_at_db
             })
 
-        s.execute(text("""
-            INSERT INTO scores (
-                match_id, judge_name, pro_total, con_total, mark_time,
-                pro_free, con_free, pro_deduction, con_deduction, pro_coherence, con_coherence
+        s.execute(text(f"""
+            INSERT INTO {TABLE_SCORES} (
+                match_id, judge_name, pro_total_score, con_total_score, submitted_time,
+                pro_free_debate_score, con_free_debate_score, pro_deduction_points, con_deduction_points,
+                pro_coherence_score, con_coherence_score
             ) VALUES (
-                :match_id, :judge_name, :pro_total, :con_total, :mark_time,
+                :match_id, :judge_name, :pro_total, :con_total, :submitted_time,
                 :pro_free, :con_free, :pro_deduction, :con_deduction, :pro_coherence, :con_coherence
             )
         """), {
@@ -411,7 +461,7 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data):
             "judge_name": normalized_judge_name,
             "pro_total": pro_data["final_total"],
             "con_total": con_data["final_total"],
-            "mark_time": mark_time,
+            "submitted_time": submitted_time,
             "pro_free": pro_data["total_b"],
             "con_free": con_data["total_b"],
             "pro_deduction": pro_data["deduction"],
@@ -430,11 +480,11 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data):
                     "position": i + 1,
                     "score": int(score)
                 })
-        s.execute(text("""
-            INSERT INTO debater_scores (match_id, judge_name, side, position, score)
+        s.execute(text(f"""
+            INSERT INTO {TABLE_DEBATER_SCORES} (match_id, judge_name, side, position, debater_score)
             VALUES (:match_id, :judge_name, :side, :position, :score)
             ON CONFLICT (match_id, judge_name, side, position)
-            DO UPDATE SET score = EXCLUDED.score
+            DO UPDATE SET debater_score = EXCLUDED.debater_score
         """), debater_params)
 
         s.commit()
@@ -446,11 +496,13 @@ def load_topic_from_db(difficulty=None):
     conn = get_connection()
     if difficulty:
         all_records = conn.query(
-            "SELECT * FROM topics WHERE difficulty = :d", params={"d": difficulty}, ttl=0
+            f"SELECT topic_text FROM {TABLE_TOPICS} WHERE difficulty = :d",
+            params={"d": difficulty},
+            ttl=0,
         )
     else:
-        all_records = conn.query("SELECT * FROM topics", ttl=0)
-    return all_records["topic"].tolist()
+        all_records = conn.query(f"SELECT topic_text FROM {TABLE_TOPICS}", ttl=0)
+    return all_records["topic_text"].tolist()
 
 
 def draw_a_topic(difficulty=None):
@@ -478,17 +530,26 @@ def load_markdown_asset(filename):
 def get_score_data():
     try:
         scores_df = query_params("""
-            SELECT s.match_id, s.judge_name, s.pro_total, s.con_total, s.mark_time,
-                   s.pro_free, s.con_free, s.pro_deduction, s.con_deduction,
-                   s.pro_coherence, s.con_coherence,
-                   m.pro_team AS pro_name, m.con_team AS con_name
-            FROM scores s
-            LEFT JOIN matches m ON s.match_id = m.match_id
-        """)
+            SELECT s.match_id, s.judge_name,
+                   s.pro_total_score,
+                   s.con_total_score,
+                   s.submitted_time,
+                   s.pro_free_debate_score,
+                   s.con_free_debate_score,
+                   s.pro_deduction_points,
+                   s.con_deduction_points,
+                   s.pro_coherence_score,
+                   s.con_coherence_score,
+                   m.pro_team, m.con_team
+            FROM {table_scores} s
+            LEFT JOIN {table_matches} m ON s.match_id = m.match_id
+        """.format(table_scores=TABLE_SCORES, table_matches=TABLE_MATCHES))
         if scores_df.empty:
             return scores_df
 
-        ds_df = query_params("SELECT match_id, judge_name, side, position, score FROM debater_scores")
+        ds_df = query_params(
+            f"SELECT match_id, judge_name, side, position, debater_score FROM {TABLE_DEBATER_SCORES}"
+        )
         if ds_df.empty:
             for col in ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]:
                 scores_df[col] = None
@@ -496,7 +557,7 @@ def get_score_data():
 
         # Pivot debater_scores into wide format
         ds_df["col_name"] = ds_df["side"] + ds_df["position"].astype(str) + "_m"
-        pivot = ds_df.pivot_table(index=["match_id", "judge_name"], columns="col_name", values="score", aggfunc="first").reset_index()
+        pivot = ds_df.pivot_table(index=["match_id", "judge_name"], columns="col_name", values="debater_score", aggfunc="first").reset_index()
         result = scores_df.merge(pivot, on=["match_id", "judge_name"], how="left")
         # Ensure all expected columns exist
         for col in ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]:
@@ -510,12 +571,12 @@ def get_score_data():
 
 def get_best_debater_results(match_id, match_results):
     debaters_row = query_params(
-        "SELECT side, position, name FROM debaters WHERE match_id = :match_id",
+        f"SELECT side, position, debater_name FROM {TABLE_DEBATERS} WHERE match_id = :match_id",
         {"match_id": match_id}
     )
     if not debaters_row.empty:
         debater_names = {
-            (str(r["side"]).strip(), int(r["position"])): str(r["name"]).strip()
+            (str(r["side"]).strip(), int(r["position"])): str(r["debater_name"]).strip()
             for _, r in debaters_row.iterrows()
         }
 
@@ -580,6 +641,108 @@ def return_rules():
     return load_markdown_asset("rules.md")
 
 
+def is_maintenance_mode() -> bool:
+    return MAINTENANCE_MODE
+
+
+def render_maintenance_notice():
+    with st.container(border=True):
+        st.warning("系統維護中")
+        st.write("目前系統正在進行更新工程，需要時間。")
+        st.write(f"預計會喺 **{MAINTENANCE_DEADLINE_TEXT}** 前完成。")
+        st.caption("所有功能現已暫停使用，請稍後再試。")
+
+
+def extract_markdown_section(content, heading_level, target_heading):
+    prefix = "#" * heading_level
+    match = re.search(
+        rf"^{re.escape(prefix)}\s+{re.escape(target_heading)}\s*$.*?(?=^{re.escape(prefix)}\s|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(0).strip() if match else None
+
+
+def render_user_manual_content(role_key: str):
+    role = st.radio(
+        "請先選擇你的身份：",
+        ["評判", "賽會人員", "比賽隊伍", "一般人員", "內部委員會成員"],
+        horizontal=True,
+        key=role_key,
+    )
+    st.divider()
+
+    role_section_map = {
+        "評判": "一、評判",
+        "賽會人員": "二、賽會人員",
+        "比賽隊伍": "三、比賽隊伍",
+        "一般人員": "四、一般人員",
+        "內部委員會成員": "五、內部委員會成員",
+    }
+
+    manual_content = return_user_manual()
+    section_text = extract_markdown_section(manual_content, 3, role_section_map[role])
+    if section_text:
+        st.markdown(section_text)
+    else:
+        st.markdown(manual_content)
+
+
+def render_rules_content(role_key: str):
+    role = st.radio(
+        "請先選擇你的身份：",
+        ["評判", "賽會人員", "參賽隊伍"],
+        horizontal=True,
+        key=role_key,
+    )
+    st.divider()
+
+    role_section_map = {
+        "評判": "一、評判",
+        "賽會人員": "二、賽會人員",
+        "參賽隊伍": "三、參賽隊伍",
+    }
+
+    rules_content = return_rules()
+    disclaimer_end = rules_content.find("---")
+    if disclaimer_end != -1:
+        st.markdown(rules_content[: disclaimer_end + 3])
+        rules_body = rules_content[disclaimer_end + 3 :]
+    else:
+        rules_body = rules_content
+
+    section_text = extract_markdown_section(rules_body, 2, role_section_map[role])
+    if section_text:
+        st.markdown(section_text)
+    else:
+        st.markdown(rules_body)
+
+
+@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
+def show_manual():
+    render_user_manual_content("manual_dialog_role")
+
+
+@st.dialog("校園隨想辯論比賽：賽規", width="large")
+def show_rules():
+    render_rules_content("rules_dialog_role")
+
+
+def render_home_reference():
+    with st.container(border=True):
+        st.markdown("### 📚 使用手冊及賽規")
+        st.caption("可由首頁直接開啟；左側 sidebar 亦保留相同按鈕。")
+        manual_col, rules_col = st.columns(2)
+
+        with manual_col:
+            if st.button("📖 閱讀使用手冊", use_container_width=True, key="home_show_manual"):
+                show_manual()
+
+        with rules_col:
+            if st.button("📋 查看賽規", use_container_width=True, key="home_show_rules"):
+                show_rules()
+
+
 def hash_password(plain: str) -> str:
     """Hash a plaintext password with bcrypt."""
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
@@ -624,13 +787,13 @@ def check_committee_login():
         if submitted:
             conn = get_connection()
             acc_row = conn.query(
-                "SELECT userpw FROM accounts WHERE userid = :uid",
+                f"SELECT password_hash FROM {TABLE_ACCOUNTS} WHERE user_id = :uid",
                 params={"uid": uid.strip()},
                 ttl=0,
             )
             login_success = (
                 not acc_row.empty
-                and _verify_password(upw.strip(), str(acc_row.iloc[0]["userpw"]))
+                and _verify_password(upw.strip(), str(acc_row.iloc[0]["password_hash"]))
             )
 
             if login_success:
@@ -649,44 +812,44 @@ def return_expire_day():
     return datetime.datetime.now() + datetime.timedelta(days=1)
 
 
-_ACTIVITY_SQL = """
+_ACTIVITY_SQL = f"""
 WITH tv_events AS (
-    SELECT DISTINCT tv.topic, tv.created_at
-    FROM topic_votes tv
-    WHERE EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = tv.topic)
+    SELECT DISTINCT tv.topic_text, tv.created_at
+    FROM {TABLE_TOPIC_VOTES} tv
+    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text)
 ),
 tdv_events AS (
-    SELECT DISTINCT tdv.topic, tdv.created_at
-    FROM topic_depose_votes tdv
-    WHERE EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = tdv.topic)
+    SELECT DISTINCT tdv.topic_text, tdv.created_at
+    FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
+    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = tdv.topic_text)
 ),
 all_events AS (
-    SELECT topic, created_at, 'tv'  AS src FROM tv_events
+    SELECT topic_text, created_at, 'tv'  AS vote_source FROM tv_events
     UNION ALL
-    SELECT topic, created_at, 'tdv' AS src FROM tdv_events
+    SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
 ),
 past_10 AS (
-    SELECT topic, src FROM all_events ORDER BY created_at DESC LIMIT 10
+    SELECT topic_text, vote_source FROM all_events ORDER BY created_at DESC LIMIT 10
 )
 SELECT
     (SELECT COUNT(*) FROM all_events) AS total_votes,
     (SELECT COUNT(*) FROM all_events ae
-     WHERE (ae.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = ae.topic AND b.user_id = :user_id))
-        OR (ae.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = :user_id))
+     WHERE (ae.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = :user_id))
+        OR (ae.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = :user_id))
     ) AS total_participated,
     (SELECT COUNT(*) FROM past_10 p
-     WHERE (p.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = p.topic AND b.user_id = :user_id))
-        OR (p.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = p.topic AND b.user_id = :user_id))
+     WHERE (p.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = :user_id))
+        OR (p.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = :user_id))
     ) AS votes_in_last_10
 """
 
 
 def refresh_acc_type(user_id: str) -> str | None:
     acc = query_params(
-        "SELECT acc_type FROM accounts WHERE userid = :user_id",
+        f"SELECT account_status FROM {TABLE_ACCOUNTS} WHERE user_id = :user_id",
         {"user_id": user_id}
     )
-    if acc.empty or str(acc.iloc[0]["acc_type"]).strip() == "admin" or str(acc.iloc[0]["acc_type"]).strip() == "developer":
+    if acc.empty or str(acc.iloc[0]["account_status"]).strip() == "admin" or str(acc.iloc[0]["account_status"]).strip() == "developer":
         return None
 
     result = query_params(_ACTIVITY_SQL, {"user_id": user_id})
@@ -698,57 +861,57 @@ def refresh_acc_type(user_id: str) -> str | None:
     # Active criteria (matches user manual): overall rate ≥ 40% AND last-10 participation ≥ 3
     new_status = "active" if (overall_rate >= 0.4 and votes_in_last_10 >= 3) else "inactive"
     execute_query(
-        "UPDATE accounts SET acc_type = :acc_type WHERE userid = :user_id",
-        {"acc_type": new_status, "user_id": user_id}
+        f"UPDATE {TABLE_ACCOUNTS} SET account_status = :account_status WHERE user_id = :user_id",
+        {"account_status": new_status, "user_id": user_id}
     )
     return new_status
 
 
 def refresh_all_acc_type():
-    """Batch-update acc_type for all non-admin/developer accounts in a single query."""
-    execute_query("""
+    """Batch-update account_status for all non-admin/developer accounts in a single query."""
+    execute_query(f"""
         WITH tv_events AS (
-            SELECT DISTINCT tv.topic, tv.created_at
-            FROM topic_votes tv
-            WHERE EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = tv.topic)
+            SELECT DISTINCT tv.topic_text, tv.created_at
+            FROM {TABLE_TOPIC_VOTES} tv
+            WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text)
         ),
         tdv_events AS (
-            SELECT DISTINCT tdv.topic, tdv.created_at
-            FROM topic_depose_votes tdv
-            WHERE EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = tdv.topic)
+            SELECT DISTINCT tdv.topic_text, tdv.created_at
+            FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
+            WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = tdv.topic_text)
         ),
         all_events AS (
-            SELECT topic, created_at, 'tv' AS src FROM tv_events
+            SELECT topic_text, created_at, 'tv' AS vote_source FROM tv_events
             UNION ALL
-            SELECT topic, created_at, 'tdv' AS src FROM tdv_events
+            SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
         ),
         event_count AS (
             SELECT COUNT(*) AS total FROM all_events
         ),
         past_10 AS (
-            SELECT topic, src FROM all_events ORDER BY created_at DESC LIMIT 10
+            SELECT topic_text, vote_source FROM all_events ORDER BY created_at DESC LIMIT 10
         ),
         user_stats AS (
             SELECT
-                a.userid,
+                a.user_id,
                 COALESCE(SUM(CASE
-                    WHEN ae.src = 'tv' AND EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = a.userid) THEN 1
-                    WHEN ae.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = a.userid) THEN 1
+                    WHEN ae.vote_source = 'tv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id) THEN 1
+                    WHEN ae.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id) THEN 1
                     ELSE 0
                 END), 0) AS total_participated,
                 (SELECT total FROM event_count) AS total_votes,
                 COALESCE((
                     SELECT COUNT(*) FROM past_10 p
-                    WHERE (p.src = 'tv' AND EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = p.topic AND b.user_id = a.userid))
-                       OR (p.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = p.topic AND b.user_id = a.userid))
+                    WHERE (p.vote_source = 'tv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
+                       OR (p.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
                 ), 0) AS votes_in_last_10
-            FROM accounts a
+            FROM {TABLE_ACCOUNTS} a
             CROSS JOIN all_events ae
-            WHERE a.acc_type NOT IN ('admin', 'developer')
-            GROUP BY a.userid, (SELECT total FROM event_count)
+            WHERE a.account_status NOT IN ('admin', 'developer')
+            GROUP BY a.user_id, (SELECT total FROM event_count)
         )
-        UPDATE accounts
-        SET acc_type = CASE
+        UPDATE {TABLE_ACCOUNTS}
+        SET account_status = CASE
             WHEN us.total_votes > 0
                  AND us.total_participated::float / us.total_votes >= 0.4
                  AND us.votes_in_last_10 >= 3
@@ -756,14 +919,14 @@ def refresh_all_acc_type():
             ELSE 'inactive'
         END
         FROM user_stats us
-        WHERE accounts.userid = us.userid
+        WHERE {TABLE_ACCOUNTS}.user_id = us.user_id
     """)
 
 
 def compute_threshold(base_min: int, pct: float) -> int:
     """計算動態投票門檻：max(base_min, ceil(pct * active_users))"""
     result = query_params(
-        "SELECT COUNT(*) AS cnt FROM accounts WHERE acc_type = 'active'"
+        f"SELECT COUNT(*) AS cnt FROM {TABLE_ACCOUNTS} WHERE account_status = 'active'"
     )
     active_count = int(result.iloc[0]["cnt"])
     return max(base_min, math.ceil(pct * active_count))
@@ -777,54 +940,54 @@ def return_chatgpt_reminder():
     return load_markdown_asset("chatgpt_reminder.md")
 
 
-_ALL_USER_STATS_SQL = """
+_ALL_USER_STATS_SQL = f"""
 WITH tv_events AS (
-    SELECT DISTINCT tv.topic, tv.created_at
-    FROM topic_votes tv
-    WHERE EXISTS (SELECT 1 FROM topic_vote_ballots b WHERE b.topic = tv.topic)
+    SELECT DISTINCT tv.topic_text, tv.created_at
+    FROM {TABLE_TOPIC_VOTES} tv
+    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text)
 ),
 tdv_events AS (
-    SELECT DISTINCT tdv.topic, tdv.created_at
-    FROM topic_depose_votes tdv
-    WHERE EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = tdv.topic)
+    SELECT DISTINCT tdv.topic_text, tdv.created_at
+    FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
+    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = tdv.topic_text)
 ),
 all_events AS (
-    SELECT topic, created_at, 'tv' AS src FROM tv_events
+    SELECT topic_text, created_at, 'tv' AS vote_source FROM tv_events
     UNION ALL
-    SELECT topic, created_at, 'tdv' AS src FROM tdv_events
+    SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
 ),
 event_count AS (
     SELECT COUNT(*) AS total FROM all_events
 ),
 past_10 AS (
-    SELECT topic, src FROM all_events ORDER BY created_at DESC LIMIT 10
+    SELECT topic_text, vote_source FROM all_events ORDER BY created_at DESC LIMIT 10
 ),
 ballot_summary AS (
     SELECT user_id, COUNT(*) AS total_ballots,
-           SUM(CASE WHEN vote = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
+           SUM(CASE WHEN vote_choice = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
     FROM (
-        SELECT user_id, vote FROM topic_vote_ballots
+        SELECT user_id, vote_choice FROM {TABLE_TOPIC_VOTE_BALLOTS}
         UNION ALL
-        SELECT user_id, vote FROM depose_vote_ballots
+        SELECT user_id, vote_choice FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
     ) cb
     GROUP BY user_id
 )
 SELECT
-    a.userid,
+    a.user_id,
     (SELECT total FROM event_count) AS total_votes,
     (SELECT COUNT(*) FROM all_events ae
-     WHERE (ae.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = ae.topic AND b.user_id = a.userid))
-        OR (ae.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = ae.topic AND b.user_id = a.userid))
+     WHERE (ae.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id))
+        OR (ae.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id))
     ) AS total_participated,
     (SELECT COUNT(*) FROM past_10 p
-     WHERE (p.src = 'tv'  AND EXISTS (SELECT 1 FROM topic_vote_ballots  b WHERE b.topic = p.topic AND b.user_id = a.userid))
-        OR (p.src = 'tdv' AND EXISTS (SELECT 1 FROM depose_vote_ballots b WHERE b.topic = p.topic AND b.user_id = a.userid))
+     WHERE (p.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
+        OR (p.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
     ) AS votes_in_last_10,
     COALESCE(bs.total_ballots, 0) AS total_ballots,
     COALESCE(bs.agree_ballots, 0) AS agree_ballots
-FROM accounts a
-LEFT JOIN ballot_summary bs ON bs.user_id = a.userid
-WHERE a.userid NOT IN ('admin', 'developer', '')
+FROM {TABLE_ACCOUNTS} a
+LEFT JOIN ballot_summary bs ON bs.user_id = a.user_id
+WHERE a.user_id NOT IN ('admin', 'developer', '')
 """
 
 
@@ -850,14 +1013,14 @@ def get_active_user_count():
         (df["total_participated"].astype(float) / total_votes >= 0.4) &
         (df["votes_in_last_10"] >= 3)
     ]
-    return len(active), [str(user_id).strip() for user_id in active["userid"].tolist()]
+    return len(active), [str(user_id).strip() for user_id in active["user_id"].tolist()]
 
 
 @st.cache_data(ttl=60)
 def get_member_participation_stats():
     """
     Returns (stats_list, total_votes) with per-member participation details
-    across both topic_votes and topic_depose_votes.
+    across both topic_votes and topic_removal_votes.
     """
     df = _compute_all_user_stats()
     if df.empty:
@@ -875,7 +1038,7 @@ def get_member_participation_stats():
         is_active = overall_rate >= 0.4 and last10 >= 3
 
         stats.append({
-            "用戶": str(row["userid"]).strip(),
+            "用戶": str(row["user_id"]).strip(),
             "整體投票次數": f"{participated} / {total_votes}",
             "整體投票率": f"{overall_rate:.1%}",
             "最近10次參與": last10,
@@ -889,7 +1052,7 @@ def get_member_participation_stats():
 
 def show_noti_popup(user_id: str) -> None:
     """
-    Show a one-time notification dialog backed by the DB `noti` table.
+    Show a one-time notification dialog backed by the DB `notification_reads` table.
 
     assets/noti.md format:
         NOTI_ID: 1
@@ -920,12 +1083,12 @@ def show_noti_popup(user_id: str) -> None:
     if noti_id is None or noti_title is None:
         return
 
-    from schema import CREATE_NOTI
+    from schema import CREATE_NOTIFICATION_READS
 
-    execute_query(CREATE_NOTI)
+    execute_query(CREATE_NOTIFICATION_READS)
     content = "\n".join(lines[content_start:]).strip()
     seen = query_params(
-        "SELECT 1 FROM noti WHERE notiid = :nid AND userid = :uid",
+        f"SELECT 1 FROM {TABLE_NOTIFICATION_READS} WHERE notification_id = :nid AND user_id = :uid",
         {"nid": noti_id, "uid": user_id},
     )
     if not seen.empty:
@@ -937,9 +1100,9 @@ def show_noti_popup(user_id: str) -> None:
         if st.button("我已閱讀 ✓", type="primary", use_container_width=True):
             seen_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
             execute_query(
-                "INSERT INTO noti (notiid, notititle, userid, seen_at) "
+                f"INSERT INTO {TABLE_NOTIFICATION_READS} (notification_id, notification_title, user_id, read_at) "
                 "VALUES (:nid, :title, :uid, :seen_at) "
-                "ON CONFLICT (notiid, userid) DO NOTHING",
+                "ON CONFLICT (notification_id, user_id) DO NOTHING",
                 {"nid": noti_id, "title": noti_title, "uid": user_id, "seen_at": seen_at},
             )
             st.rerun()

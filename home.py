@@ -1,5 +1,14 @@
 import streamlit as st
-from functions import get_connection, query_params
+from functions import get_connection, is_maintenance_mode, query_params, render_home_reference, render_maintenance_notice
+from schema import (
+    TABLE_ACCOUNTS,
+    TABLE_LOGIN_RECORDS,
+    TABLE_MATCHES,
+    TABLE_SCORES,
+    TABLE_TELEGRAM_NOTIFICATION_QUEUE,
+    TABLE_TOPIC_VOTES,
+    TABLE_TOPICS,
+)
 
 # ─── Session state ────────────────────────────────────────────────────────────
 
@@ -34,28 +43,28 @@ def _run_status_checks() -> dict:
     # Check 2: Table row counts
     try:
         counts = {}
-        for table in ("accounts", "matches", "scores", "topics"):
-            df = query_params(f"SELECT COUNT(*) AS cnt FROM {table}")
-            counts[table] = int(df.iloc[0]["cnt"]) if not df.empty else 0
+        for table in (TABLE_ACCOUNTS, TABLE_MATCHES, TABLE_SCORES, TABLE_TOPICS):
+            count_df = query_params(f"SELECT COUNT(*) AS cnt FROM {table}")
+            counts[table] = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
         results["table_counts"] = counts
     except Exception as e:
         results["errors"].append(f"表格計數失敗: {e}")
 
     # Check 3: Telegram queue depth
     try:
-        df = query_params(
-            "SELECT COUNT(*) AS cnt FROM tg_notification_queue WHERE processed = FALSE"
+        queue_df = query_params(
+            f"SELECT COUNT(*) AS cnt FROM {TABLE_TELEGRAM_NOTIFICATION_QUEUE} WHERE is_processed = FALSE"
         )
-        results["tg_queue_depth"] = int(df.iloc[0]["cnt"]) if not df.empty else 0
+        results["tg_queue_depth"] = int(queue_df.iloc[0]["cnt"]) if not queue_df.empty else 0
     except Exception as e:
         results["errors"].append(f"Telegram 佇列查詢失敗: {e}")
 
     # Check 4: system_config key existence
     try:
-        df = query_params(
+        config_df = query_params(
             "SELECT key FROM system_config WHERE key IN ('admin_password', 'developer_password')"
         )
-        found_keys = set(df["key"].tolist()) if not df.empty else set()
+        found_keys = set(config_df["key"].tolist()) if not config_df.empty else set()
         results["config_admin_ok"] = "admin_password" in found_keys
         results["config_developer_ok"] = "developer_password" in found_keys
     except Exception as e:
@@ -63,18 +72,18 @@ def _run_status_checks() -> dict:
 
     # Check 5: Pending topic votes
     try:
-        df = query_params("SELECT COUNT(*) AS cnt FROM topic_votes WHERE status = 'pending'")
-        results["pending_votes"] = int(df.iloc[0]["cnt"]) if not df.empty else 0
+        pending_vote_df = query_params(f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'")
+        results["pending_votes"] = int(pending_vote_df.iloc[0]["cnt"]) if not pending_vote_df.empty else 0
     except Exception as e:
         results["errors"].append(f"辯題投票查詢失敗: {e}")
 
     # Check 6: Login activity in last 24h
     try:
-        df = query_params(
-            "SELECT COUNT(*) AS cnt FROM login_record "
-            "WHERE login_time >= NOW() - INTERVAL '24 hours'"
+        login_df = query_params(
+            f"SELECT COUNT(*) AS cnt FROM {TABLE_LOGIN_RECORDS} "
+            "WHERE logged_in_at >= NOW() - INTERVAL '24 hours'"
         )
-        results["logins_24h"] = int(df.iloc[0]["cnt"]) if not df.empty else 0
+        results["logins_24h"] = int(login_df.iloc[0]["cnt"]) if not login_df.empty else 0
     except Exception as e:
         results["errors"].append(f"登入紀錄查詢失敗: {e}")
 
@@ -97,12 +106,12 @@ def _render_status_results(results: dict):
         c4.metric("辯題庫", counts.get("topics", "—"))
 
     c5, c6, c7 = st.columns(3)
-    tg = results["tg_queue_depth"]
-    c5.metric("Telegram 推送待處理", tg if tg is not None else "—")
-    pv = results["pending_votes"]
-    c6.metric("待通過辯題投票", pv if pv is not None else "—")
-    l24 = results["logins_24h"]
-    c7.metric("24小時內登入次數", l24 if l24 is not None else "—")
+    tg_queue_depth = results["tg_queue_depth"]
+    c5.metric("Telegram 推送待處理", tg_queue_depth if tg_queue_depth is not None else "—")
+    pending_vote_count = results["pending_votes"]
+    c6.metric("待通過辯題投票", pending_vote_count if pending_vote_count is not None else "—")
+    login_count_24h = results["logins_24h"]
+    c7.metric("24小時內登入次數", login_count_24h if login_count_24h is not None else "—")
 
     if results["config_admin_ok"]:
         st.success("admin_password 已設定")
@@ -121,6 +130,10 @@ def _render_status_results(results: dict):
 
 st.title("聖呂中辯電子分紙系統")
 st.caption("請根據你的身份選擇對應功能")
+if is_maintenance_mode():
+    render_maintenance_notice()
+    st.stop()
+render_home_reference()
 st.divider()
 
 # ─── Role cards — 2-column grid ───────────────────────────────────────────────

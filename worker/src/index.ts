@@ -1,4 +1,5 @@
 import { Client } from "pg";
+import { TABLES } from "./dbNames";
 
 type HyperdriveBinding = {
   connectionString: string;
@@ -22,25 +23,25 @@ type TelegramMessage = {
 };
 
 type PendingRow = {
-  topic: string;
-  deadline: string | Date;
-  threshold: number | string;
+  topic_text: string;
+  deadline_date: string | Date;
+  approval_threshold: number | string;
   agree_count: number | string | null;
   against_count: number | string | null;
 };
 
 type QueueRow = {
   id: number;
-  noti_type: string;
+  notification_type: string;
   payload: unknown;
   processing_token: string;
 };
 
 type ActivityWarningRow = {
-  userid: string;
-  tg_chatid: string;
+  user_id: string;
+  telegram_chat_id: string;
   participated: number | string;
-  total: number | string;
+  total_votes: number | string;
   rate_pct: number | string | null;
   last10_count: number | string | null;
 };
@@ -59,56 +60,56 @@ const STATUS_LABELS: Record<string, string> = {
 
 const TOPIC_24H_SQL = `
 SELECT
-    tv.topic,
-    tv.deadline,
-    a.tg_chatid
-FROM topic_votes tv
-CROSS JOIN accounts a
+    tv.topic_text,
+    tv.deadline_date,
+    a.telegram_chat_id
+FROM ${TABLES.topicVotes} tv
+CROSS JOIN ${TABLES.accounts} a
 WHERE tv.status = 'pending'
-  AND a.acc_type = 'active'
-  AND a.tg_chatid IS NOT NULL
-  AND tv.deadline = CURRENT_DATE + INTERVAL '1 day'
+  AND a.account_status = 'active'
+  AND a.telegram_chat_id IS NOT NULL
+  AND tv.deadline_date = CURRENT_DATE + INTERVAL '1 day'
   AND NOT EXISTS (
-      SELECT 1 FROM topic_vote_ballots b
-      WHERE b.topic = tv.topic
-        AND b.user_id = a.userid
+      SELECT 1 FROM ${TABLES.topicVoteBallots} b
+      WHERE b.topic_text = tv.topic_text
+        AND b.user_id = a.user_id
   )
 `;
 
 const DEPOSE_24H_SQL = `
 SELECT
-    tdv.topic,
-    tdv.deadline,
-    a.tg_chatid
-FROM topic_depose_votes tdv
-CROSS JOIN accounts a
+    tdv.topic_text,
+    tdv.deadline_date,
+    a.telegram_chat_id
+FROM ${TABLES.topicRemovalVotes} tdv
+CROSS JOIN ${TABLES.accounts} a
 WHERE tdv.status = 'pending'
-  AND a.acc_type = 'active'
-  AND a.tg_chatid IS NOT NULL
-  AND tdv.deadline = CURRENT_DATE + INTERVAL '1 day'
+  AND a.account_status = 'active'
+  AND a.telegram_chat_id IS NOT NULL
+  AND tdv.deadline_date = CURRENT_DATE + INTERVAL '1 day'
   AND NOT EXISTS (
-      SELECT 1 FROM depose_vote_ballots b
-      WHERE b.topic = tdv.topic
-        AND b.user_id = a.userid
+      SELECT 1 FROM ${TABLES.topicRemovalVoteBallots} b
+      WHERE b.topic_text = tdv.topic_text
+        AND b.user_id = a.user_id
   )
 `;
 
 const ACTIVITY_WARNING_SQL = `
 WITH all_votes AS (
-    SELECT tv.topic, 'tv' AS src, tv.created_at FROM topic_votes tv
+    SELECT tv.topic_text, 'tv' AS vote_source, tv.created_at FROM ${TABLES.topicVotes} tv
     UNION ALL
-    SELECT tdv.topic, 'tdv' AS src, tdv.created_at FROM topic_depose_votes tdv
+    SELECT tdv.topic_text, 'tdv' AS vote_source, tdv.created_at FROM ${TABLES.topicRemovalVotes} tdv
 ),
 vote_events AS (
-    SELECT DISTINCT topic, src FROM all_votes
+    SELECT DISTINCT topic_text, vote_source FROM all_votes
 ),
 total_events AS (
-    SELECT COUNT(*) AS total FROM vote_events
+    SELECT COUNT(*) AS total_votes FROM vote_events
 ),
 last10 AS (
-    SELECT topic, src
+    SELECT topic_text, vote_source
     FROM (
-        SELECT topic, src, created_at,
+        SELECT topic_text, vote_source, created_at,
                ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
         FROM all_votes
     ) ranked
@@ -116,38 +117,38 @@ last10 AS (
 ),
 member_stats AS (
     SELECT
-        a.userid,
-        a.tg_chatid,
-        COUNT(DISTINCT CASE WHEN b.user_id = a.userid THEN ve.topic || ve.src END) AS participated,
-        COUNT(DISTINCT CASE WHEN b.user_id = a.userid
-                            THEN l10.topic || l10.src END) AS last10_count,
-        te.total
-    FROM accounts a
+        a.user_id,
+        a.telegram_chat_id,
+        COUNT(DISTINCT CASE WHEN b.user_id = a.user_id THEN ve.topic_text || ve.vote_source END) AS participated,
+        COUNT(DISTINCT CASE WHEN b.user_id = a.user_id
+                            THEN l10.topic_text || l10.vote_source END) AS last10_count,
+        te.total_votes
+    FROM ${TABLES.accounts} a
     CROSS JOIN total_events te
     LEFT JOIN vote_events ve ON TRUE
     LEFT JOIN (
-        SELECT tvb.topic, 'tv' AS src, tvb.user_id FROM topic_vote_ballots tvb
+        SELECT tvb.topic_text, 'tv' AS vote_source, tvb.user_id FROM ${TABLES.topicVoteBallots} tvb
         UNION ALL
-        SELECT dvb.topic, 'tdv' AS src, dvb.user_id FROM depose_vote_ballots dvb
-    ) b ON b.topic = ve.topic AND b.src = ve.src AND b.user_id = a.userid
+        SELECT dvb.topic_text, 'tdv' AS vote_source, dvb.user_id FROM ${TABLES.topicRemovalVoteBallots} dvb
+    ) b ON b.topic_text = ve.topic_text AND b.vote_source = ve.vote_source AND b.user_id = a.user_id
     LEFT JOIN last10 l10 ON TRUE
-    WHERE a.acc_type IN ('active', 'inactive')
-      AND a.tg_chatid IS NOT NULL
-    GROUP BY a.userid, a.tg_chatid, te.total
+    WHERE a.account_status IN ('active', 'inactive')
+      AND a.telegram_chat_id IS NOT NULL
+    GROUP BY a.user_id, a.telegram_chat_id, te.total_votes
 )
 SELECT
-    userid,
-    tg_chatid,
+    user_id,
+    telegram_chat_id,
     participated,
-    total,
-    CASE WHEN total > 0
-         THEN ROUND(participated::numeric / total * 100, 1)
+    total_votes,
+    CASE WHEN total_votes > 0
+         THEN ROUND(participated::numeric / total_votes * 100, 1)
          ELSE 0 END AS rate_pct,
     last10_count
 FROM member_stats
-WHERE total > 0
+WHERE total_votes > 0
   AND (
-      (total > 0 AND participated::numeric / total < 0.4)
+      (total_votes > 0 AND participated::numeric / total_votes < 0.4)
       OR last10_count < 3
   )
 `;
@@ -194,9 +195,9 @@ export function buildPendingMessage(
     lines.push("<b>— 辯題入庫投票 —</b>");
     for (const row of topicRows) {
       lines.push(
-        `• ${escapeHtml(row.topic)}\n` +
-          `  同意 ${toNumber(row.agree_count)} ／ 不同意 ${toNumber(row.against_count)}（門檻 ${toNumber(row.threshold)}）` +
-          `  截止：${formatDate(row.deadline)}`,
+        `• ${escapeHtml(row.topic_text)}\n` +
+          `  同意 ${toNumber(row.agree_count)} ／ 不同意 ${toNumber(row.against_count)}（門檻 ${toNumber(row.approval_threshold)}）` +
+          `  截止：${formatDate(row.deadline_date)}`,
       );
     }
   } else {
@@ -209,9 +210,9 @@ export function buildPendingMessage(
     lines.push("<b>— 罷免動議投票 —</b>");
     for (const row of deposeRows) {
       lines.push(
-        `• ${escapeHtml(row.topic)}\n` +
-          `  同意 ${toNumber(row.agree_count)} ／ 不同意 ${toNumber(row.against_count)}（門檻 ${toNumber(row.threshold)}）` +
-          `  截止：${formatDate(row.deadline)}`,
+        `• ${escapeHtml(row.topic_text)}\n` +
+          `  同意 ${toNumber(row.agree_count)} ／ 不同意 ${toNumber(row.against_count)}（門檻 ${toNumber(row.approval_threshold)}）` +
+          `  截止：${formatDate(row.deadline_date)}`,
       );
     }
   } else {
@@ -364,50 +365,50 @@ async function cmdLink(client: Client, env: Env, message: TelegramMessage, args:
     return;
   }
 
-  const userid = args[0].trim();
+  const userId = args[0].trim();
   const tgChatId = String(message.chat.id);
   const tgUserId = String(message.from?.id ?? "");
 
-  const account = await client.query<{ userid: string; acc_type: string }>(
-    "SELECT userid, acc_type FROM accounts WHERE userid = $1",
-    [userid],
+  const account = await client.query<{ user_id: string; account_status: string }>(
+    `SELECT user_id, account_status FROM ${TABLES.accounts} WHERE user_id = $1`,
+    [userId],
   );
   if ((account.rowCount ?? 0) === 0) {
-    await sendMessage(env, tgChatId, `找不到委員帳戶「${userid}」。請確認用戶名稱是否正確。`);
+    await sendMessage(env, tgChatId, `找不到委員帳戶「${userId}」。請確認用戶名稱是否正確。`);
     return;
   }
 
-  const existing = await client.query<{ userid: string }>(
-    "SELECT userid FROM accounts WHERE tg_chatid = $1 AND userid != $2",
-    [tgChatId, userid],
+  const existing = await client.query<{ user_id: string }>(
+    `SELECT user_id FROM ${TABLES.accounts} WHERE telegram_chat_id = $1 AND user_id != $2`,
+    [tgChatId, userId],
   );
   if ((existing.rowCount ?? 0) > 0) {
     await sendMessage(
       env,
       tgChatId,
-      `此 Telegram 帳戶已連結至委員帳戶「${existing.rows[0].userid}」。\n請先發送 /unlink 解除連結後再試。`,
+      `此 Telegram 帳戶已連結至委員帳戶「${existing.rows[0].user_id}」。\n請先發送 /unlink 解除連結後再試。`,
     );
     return;
   }
 
   await client.query(
-    "UPDATE accounts SET tg_userid = $1, tg_chatid = $2 WHERE userid = $3",
-    [tgUserId, tgChatId, userid],
+    `UPDATE ${TABLES.accounts} SET telegram_user_id = $1, telegram_chat_id = $2 WHERE user_id = $3`,
+    [tgUserId, tgChatId, userId],
   );
 
-  const accType = account.rows[0].acc_type;
+  const accType = account.rows[0].account_status;
   const statusLabel = STATUS_LABELS[accType] ?? accType;
   await sendMessage(
     env,
     tgChatId,
-    `✅ 連結成功！\n\n委員帳戶：${userid}\n帳戶狀態：${statusLabel}\n\n你將會收到辯題投票通知。\n前往投票：${buildVotePageUrl(env.APP_URL)}`,
+    `✅ 連結成功！\n\n委員帳戶：${userId}\n帳戶狀態：${statusLabel}\n\n你將會收到辯題投票通知。\n前往投票：${buildVotePageUrl(env.APP_URL)}`,
   );
 }
 
 async function cmdUnlink(client: Client, env: Env, message: TelegramMessage): Promise<void> {
   const tgChatId = String(message.chat.id);
   const result = await client.query(
-    "UPDATE accounts SET tg_userid = NULL, tg_chatid = NULL WHERE tg_chatid = $1",
+    `UPDATE ${TABLES.accounts} SET telegram_user_id = NULL, telegram_chat_id = NULL WHERE telegram_chat_id = $1`,
     [tgChatId],
   );
   if ((result.rowCount ?? 0) === 1) {
@@ -420,8 +421,8 @@ async function cmdUnlink(client: Client, env: Env, message: TelegramMessage): Pr
 
 async function cmdStatus(client: Client, env: Env, message: TelegramMessage): Promise<void> {
   const tgChatId = String(message.chat.id);
-  const result = await client.query<{ userid: string; acc_type: string }>(
-    "SELECT userid, acc_type FROM accounts WHERE tg_chatid = $1",
+  const result = await client.query<{ user_id: string; account_status: string }>(
+    `SELECT user_id, account_status FROM ${TABLES.accounts} WHERE telegram_chat_id = $1`,
     [tgChatId],
   );
   if ((result.rowCount ?? 0) === 0) {
@@ -430,30 +431,30 @@ async function cmdStatus(client: Client, env: Env, message: TelegramMessage): Pr
   }
 
   const row = result.rows[0];
-  const statusLabel = STATUS_LABELS[row.acc_type] ?? row.acc_type;
-  await sendMessage(env, tgChatId, `已連結帳戶：${row.userid}\n帳戶狀態：${statusLabel}`);
+  const statusLabel = STATUS_LABELS[row.account_status] ?? row.account_status;
+  await sendMessage(env, tgChatId, `已連結帳戶：${row.user_id}\n帳戶狀態：${statusLabel}`);
 }
 
 async function cmdPending(client: Client, env: Env, message: TelegramMessage): Promise<void> {
   const topicRows = await client.query<PendingRow>(`
-    SELECT tv.topic, tv.deadline, tv.threshold,
-           COUNT(CASE WHEN b.vote = 'agree' THEN 1 END)   AS agree_count,
-           COUNT(CASE WHEN b.vote = 'against' THEN 1 END) AS against_count
-    FROM topic_votes tv
-    LEFT JOIN topic_vote_ballots b ON b.topic = tv.topic
+    SELECT tv.topic_text, tv.deadline_date, tv.approval_threshold,
+           COUNT(CASE WHEN b.vote_choice = 'agree' THEN 1 END)   AS agree_count,
+           COUNT(CASE WHEN b.vote_choice = 'against' THEN 1 END) AS against_count
+    FROM ${TABLES.topicVotes} tv
+    LEFT JOIN ${TABLES.topicVoteBallots} b ON b.topic_text = tv.topic_text
     WHERE tv.status = 'pending'
-    GROUP BY tv.topic, tv.deadline, tv.threshold
-    ORDER BY tv.deadline ASC
+    GROUP BY tv.topic_text, tv.deadline_date, tv.approval_threshold
+    ORDER BY tv.deadline_date ASC
   `);
   const deposeRows = await client.query<PendingRow>(`
-    SELECT tdv.topic, tdv.deadline, tdv.threshold,
-           COUNT(CASE WHEN b.vote = 'agree' THEN 1 END)   AS agree_count,
-           COUNT(CASE WHEN b.vote = 'against' THEN 1 END) AS against_count
-    FROM topic_depose_votes tdv
-    LEFT JOIN depose_vote_ballots b ON b.topic = tdv.topic
+    SELECT tdv.topic_text, tdv.deadline_date, tdv.approval_threshold,
+           COUNT(CASE WHEN b.vote_choice = 'agree' THEN 1 END)   AS agree_count,
+           COUNT(CASE WHEN b.vote_choice = 'against' THEN 1 END) AS against_count
+    FROM ${TABLES.topicRemovalVotes} tdv
+    LEFT JOIN ${TABLES.topicRemovalVoteBallots} b ON b.topic_text = tdv.topic_text
     WHERE tdv.status = 'pending'
-    GROUP BY tdv.topic, tdv.deadline, tdv.threshold
-    ORDER BY tdv.deadline ASC
+    GROUP BY tdv.topic_text, tdv.deadline_date, tdv.approval_threshold
+    ORDER BY tdv.deadline_date ASC
   `);
 
   await sendHtml(
@@ -466,8 +467,8 @@ async function cmdPending(client: Client, env: Env, message: TelegramMessage): P
 
 async function cmdMyVotes(client: Client, env: Env, message: TelegramMessage): Promise<void> {
   const tgChatId = String(message.chat.id);
-  const account = await client.query<{ userid: string; acc_type: string }>(
-    "SELECT userid, acc_type FROM accounts WHERE tg_chatid = $1",
+  const account = await client.query<{ user_id: string; account_status: string }>(
+    `SELECT user_id, account_status FROM ${TABLES.accounts} WHERE telegram_chat_id = $1`,
     [tgChatId],
   );
   if ((account.rowCount ?? 0) === 0) {
@@ -475,50 +476,50 @@ async function cmdMyVotes(client: Client, env: Env, message: TelegramMessage): P
     return;
   }
 
-  const userid = account.rows[0].userid;
+  const userId = account.rows[0].user_id;
   const stats = await client.query<{
     total_votes: number | string | null;
-    participated: number | string | null;
+    participated_votes: number | string | null;
     last10_count: number | string | null;
   }>(
     `
     WITH vote_events AS (
-        SELECT topic, 'tv' AS src FROM topic_votes
+        SELECT topic_text, 'tv' AS vote_source FROM ${TABLES.topicVotes}
         UNION ALL
-        SELECT topic, 'tdv' AS src FROM topic_depose_votes
+        SELECT topic_text, 'tdv' AS vote_source FROM ${TABLES.topicRemovalVotes}
     ),
     ballots AS (
-        SELECT topic, 'tv' AS src FROM topic_vote_ballots WHERE user_id = $1
+        SELECT topic_text, 'tv' AS vote_source FROM ${TABLES.topicVoteBallots} WHERE user_id = $1
         UNION ALL
-        SELECT topic, 'tdv' AS src FROM depose_vote_ballots WHERE user_id = $1
+        SELECT topic_text, 'tdv' AS vote_source FROM ${TABLES.topicRemovalVoteBallots} WHERE user_id = $1
     ),
     last10 AS (
-        SELECT topic, src
+        SELECT topic_text, vote_source
         FROM (
-            SELECT topic, src, created_at,
+            SELECT topic_text, vote_source, created_at,
                    ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
             FROM (
-                SELECT topic, 'tv' AS src, created_at FROM topic_votes
+                SELECT topic_text, 'tv' AS vote_source, created_at FROM ${TABLES.topicVotes}
                 UNION ALL
-                SELECT topic, 'tdv' AS src, created_at FROM topic_depose_votes
+                SELECT topic_text, 'tdv' AS vote_source, created_at FROM ${TABLES.topicRemovalVotes}
             ) all_ev
         ) ranked
         WHERE rn <= 10
     )
     SELECT
         (SELECT COUNT(*) FROM vote_events) AS total_votes,
-        (SELECT COUNT(*) FROM ballots) AS participated,
-        (SELECT COUNT(*) FROM ballots b JOIN last10 l ON b.topic = l.topic AND b.src = l.src) AS last10_count
+        (SELECT COUNT(*) FROM ballots) AS participated_votes,
+        (SELECT COUNT(*) FROM ballots b JOIN last10 l ON b.topic_text = l.topic_text AND b.vote_source = l.vote_source) AS last10_count
     `,
-    [userid],
+    [userId],
   );
 
   const statRow = stats.rows[0];
   const total = toNumber(statRow.total_votes);
-  const participated = toNumber(statRow.participated);
+  const participated = toNumber(statRow.participated_votes);
   const last10 = toNumber(statRow.last10_count);
   const rate = total > 0 ? roundOneDecimal((participated / total) * 100) : 0;
-  const accType = account.rows[0].acc_type;
+  const accType = account.rows[0].account_status;
   const statusLabel = STATUS_LABELS[accType] ?? accType;
   const rateOk = rate >= 40 ? "✅" : "⚠️";
   const last10Ok = last10 >= 3 ? "✅" : "⚠️";
@@ -526,7 +527,7 @@ async function cmdMyVotes(client: Client, env: Env, message: TelegramMessage): P
   await sendHtml(
     env,
     tgChatId,
-    `<b>📊 個人投票紀錄 — ${escapeHtml(userid)}</b>\n\n` +
+    `<b>📊 個人投票紀錄 — ${escapeHtml(userId)}</b>\n\n` +
       `帳戶狀態：${escapeHtml(statusLabel)}\n` +
       `${rateOk} 整體投票率：${rate}%（${participated} / ${total} 次）\n` +
       `${last10Ok} 最近 10 次參與：${last10} 次\n\n` +
@@ -560,7 +561,7 @@ async function drainQueue(client: Client, env: Env): Promise<void> {
   for (const row of rows) {
     const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
     try {
-      switch (row.noti_type) {
+      switch (row.notification_type) {
         case "new_topic":
           await notifyNewTopicVote(client, env, payload as NewTopicPayload);
           break;
@@ -571,13 +572,13 @@ async function drainQueue(client: Client, env: Env): Promise<void> {
           await notifyVoteResult(client, env, payload as VoteResultPayload);
           break;
         default:
-          throw new Error(`Unknown noti_type '${row.noti_type}'`);
+          throw new Error(`Unknown notification_type '${row.notification_type}'`);
       }
 
       await markQueueRowProcessed(client, row.id, row.processing_token);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("Failed to process queue row", { id: row.id, notiType: row.noti_type, error: message });
+      console.error("Failed to process queue row", { id: row.id, notificationType: row.notification_type, error: message });
       await releaseQueueRow(client, row.id, row.processing_token, message);
     }
   }
@@ -590,8 +591,8 @@ async function claimQueueRows(client: Client, processingToken: string): Promise<
       `
       WITH candidates AS (
           SELECT id
-          FROM tg_notification_queue
-          WHERE processed = FALSE
+          FROM ${TABLES.telegramNotificationQueue}
+          WHERE is_processed = FALSE
             AND (
                 processing_token IS NULL
                 OR processing_started_at < NOW() - INTERVAL '${CLAIM_STALE_AFTER}'
@@ -600,13 +601,13 @@ async function claimQueueRows(client: Client, processingToken: string): Promise<
           LIMIT 50
           FOR UPDATE SKIP LOCKED
       )
-      UPDATE tg_notification_queue AS queue
+      UPDATE ${TABLES.telegramNotificationQueue} AS queue
       SET processing_token = $1,
           processing_started_at = NOW(),
-          last_error = NULL
+          last_error_message = NULL
       FROM candidates
       WHERE queue.id = candidates.id
-      RETURNING queue.id, queue.noti_type, queue.payload, queue.processing_token
+      RETURNING queue.id, queue.notification_type, queue.payload, queue.processing_token
       `,
       [processingToken],
     );
@@ -621,11 +622,11 @@ async function claimQueueRows(client: Client, processingToken: string): Promise<
 async function markQueueRowProcessed(client: Client, id: number, processingToken: string): Promise<void> {
   await client.query(
     `
-    UPDATE tg_notification_queue
-    SET processed = TRUE,
+    UPDATE ${TABLES.telegramNotificationQueue}
+    SET is_processed = TRUE,
         processing_token = NULL,
         processing_started_at = NULL,
-        last_error = NULL
+        last_error_message = NULL
     WHERE id = $1
       AND processing_token = $2
     `,
@@ -636,10 +637,10 @@ async function markQueueRowProcessed(client: Client, id: number, processingToken
 async function releaseQueueRow(client: Client, id: number, processingToken: string, errorMessage: string): Promise<void> {
   await client.query(
     `
-    UPDATE tg_notification_queue
+    UPDATE ${TABLES.telegramNotificationQueue}
     SET processing_token = NULL,
         processing_started_at = NULL,
-        last_error = $3
+        last_error_message = $3
     WHERE id = $1
       AND processing_token = $2
     `,
@@ -674,10 +675,10 @@ type VoteResultPayload = {
 };
 
 async function notifyNewTopicVote(client: Client, env: Env, payload: NewTopicPayload): Promise<void> {
-  const rows = await client.query<{ tg_chatid: string }>(
-    "SELECT tg_chatid FROM accounts WHERE acc_type = 'active' AND tg_chatid IS NOT NULL",
+  const rows = await client.query<{ telegram_chat_id: string }>(
+    `SELECT telegram_chat_id FROM ${TABLES.accounts} WHERE account_status = 'active' AND telegram_chat_id IS NOT NULL`,
   );
-  const chatIds = rows.rows.map((row) => row.tg_chatid);
+  const chatIds = rows.rows.map((row) => row.telegram_chat_id);
   if (chatIds.length === 0) {
     return;
   }
@@ -694,10 +695,10 @@ async function notifyNewTopicVote(client: Client, env: Env, payload: NewTopicPay
 }
 
 async function notifyNewDeposeVote(client: Client, env: Env, payload: NewDeposePayload): Promise<void> {
-  const rows = await client.query<{ tg_chatid: string }>(
-    "SELECT tg_chatid FROM accounts WHERE acc_type = 'active' AND tg_chatid IS NOT NULL",
+  const rows = await client.query<{ telegram_chat_id: string }>(
+    `SELECT telegram_chat_id FROM ${TABLES.accounts} WHERE account_status = 'active' AND telegram_chat_id IS NOT NULL`,
   );
-  const chatIds = rows.rows.map((row) => row.tg_chatid);
+  const chatIds = rows.rows.map((row) => row.telegram_chat_id);
   if (chatIds.length === 0) {
     return;
   }
@@ -715,10 +716,10 @@ async function notifyNewDeposeVote(client: Client, env: Env, payload: NewDeposeP
 }
 
 async function notifyVoteResult(client: Client, env: Env, payload: VoteResultPayload): Promise<void> {
-  const rows = await client.query<{ tg_chatid: string }>(
-    "SELECT tg_chatid FROM accounts WHERE tg_chatid IS NOT NULL",
+  const rows = await client.query<{ telegram_chat_id: string }>(
+    `SELECT telegram_chat_id FROM ${TABLES.accounts} WHERE telegram_chat_id IS NOT NULL`,
   );
-  const chatIds = rows.rows.map((row) => row.tg_chatid);
+  const chatIds = rows.rows.map((row) => row.telegram_chat_id);
   if (chatIds.length === 0) {
     return;
   }
@@ -727,25 +728,25 @@ async function notifyVoteResult(client: Client, env: Env, payload: VoteResultPay
 }
 
 async function sendDeadlineReminders(client: Client, env: Env): Promise<void> {
-  const topicRows = await client.query<{ topic: string; deadline: string | Date; tg_chatid: string }>(TOPIC_24H_SQL);
-  const deposeRows = await client.query<{ topic: string; deadline: string | Date; tg_chatid: string }>(DEPOSE_24H_SQL);
+  const topicRows = await client.query<{ topic_text: string; deadline_date: string | Date; telegram_chat_id: string }>(TOPIC_24H_SQL);
+  const deposeRows = await client.query<{ topic_text: string; deadline_date: string | Date; telegram_chat_id: string }>(DEPOSE_24H_SQL);
 
   for (const row of topicRows.rows) {
     const message =
       "<b>⏰ 投票截止提醒</b>\n\n" +
-      `辯題「${escapeHtml(row.topic)}」將於明日截止，你尚未投票。\n` +
-      `截止日期：${formatDate(row.deadline)} 23:59\n\n` +
+      `辯題「${escapeHtml(row.topic_text)}」將於明日截止，你尚未投票。\n` +
+      `截止日期：${formatDate(row.deadline_date)} 23:59\n\n` +
       `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
-    await sendToUsersBestEffort(env, [row.tg_chatid], message);
+    await sendToUsersBestEffort(env, [row.telegram_chat_id], message);
   }
 
   for (const row of deposeRows.rows) {
     const message =
       "<b>⏰ 罷免投票截止提醒</b>\n\n" +
-      `罷免動議「${escapeHtml(row.topic)}」將於明日截止，你尚未投票。\n` +
-      `截止日期：${formatDate(row.deadline)} 23:59\n\n` +
+      `罷免動議「${escapeHtml(row.topic_text)}」將於明日截止，你尚未投票。\n` +
+      `截止日期：${formatDate(row.deadline_date)} 23:59\n\n` +
       `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
-    await sendToUsersBestEffort(env, [row.tg_chatid], message);
+    await sendToUsersBestEffort(env, [row.telegram_chat_id], message);
   }
 }
 
@@ -753,7 +754,7 @@ async function sendActivityWarnings(client: Client, env: Env): Promise<void> {
   const rows = await client.query<ActivityWarningRow>(ACTIVITY_WARNING_SQL);
 
   for (const row of rows.rows) {
-    const total = toNumber(row.total);
+    const total = toNumber(row.total_votes);
     const participated = toNumber(row.participated);
     const last10 = toNumber(row.last10_count);
     const rate = toNumber(row.rate_pct);
@@ -771,11 +772,11 @@ async function sendActivityWarnings(client: Client, env: Env): Promise<void> {
 
     const message =
       "<b>📉 活躍度提醒</b>\n\n" +
-      `你好，${escapeHtml(row.userid)}！你的委員帳戶參與率未達標準：\n` +
+      `你好，${escapeHtml(row.user_id)}！你的委員帳戶參與率未達標準：\n` +
       warnings.map((item) => `• ${escapeHtml(item)}`).join("\n") +
       "\n\n如未改善，帳戶將轉為非活躍狀態，屆時將不能提出新辯題或罷免動議。\n\n" +
       `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
-    await sendToUsersBestEffort(env, [row.tg_chatid], message);
+    await sendToUsersBestEffort(env, [row.telegram_chat_id], message);
   }
 }
 

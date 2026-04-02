@@ -220,7 +220,7 @@ if not st.session_state["judge_authenticated"]:
     st.subheader("評判身分驗證")
     input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
 
-    stored_otp_value = current_match.get("access_code")
+    stored_otp_value = current_match.get("access_code_hash")
     stored_otp = ""
     if stored_otp_value is not None:
         stored_otp = str(stored_otp_value).strip()
@@ -244,7 +244,7 @@ if not st.session_state["judge_authenticated"]:
         st.stop()
 
 st.success(f"已進入場次：{selected_match_id}")
-motion = current_match.get("que", "（未輸入辯題）")
+motion = current_match.get("topic_text", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
 st.info("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
 
@@ -283,8 +283,8 @@ if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
 
     st.session_state["draft_loaded"] = True
 
-pro_team_name = current_match.get("pro", "未填寫")
-con_team_name = current_match.get("con", "未填寫")
+pro_team_name = current_match.get("pro_team", "未填寫")
+con_team_name = current_match.get("con_team", "未填寫")
 
 team_side = st.radio(
     "選擇評分隊伍",
@@ -306,11 +306,11 @@ if st.session_state["temp_scores"][team_side] and "last_saved" in st.session_sta
 if team_side == "正方":
     names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""),
              current_match.get("pro_3", ""), current_match.get("pro_4", "")]
-    team_name = current_match.get("pro", "正方")
+    team_name = current_match.get("pro_team", "正方")
 else:
     names = [current_match.get("con_1", ""), current_match.get("con_2", ""),
              current_match.get("con_3", ""), current_match.get("con_4", "")]
-    team_name = current_match.get("con", "反方")
+    team_name = current_match.get("con_team", "反方")
 
 # A
 st.subheader(f"（甲）台上發言 - {team_side}")

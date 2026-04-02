@@ -27,9 +27,9 @@ describe("buildPendingMessage", () => {
     const text = buildPendingMessage(
       [
         {
-          topic: "Example Topic",
-          deadline: "2026-03-30",
-          threshold: 5,
+          topic_text: "Example Topic",
+          deadline_date: "2026-03-30",
+          approval_threshold: 5,
           agree_count: 2,
           against_count: 1,
         },
