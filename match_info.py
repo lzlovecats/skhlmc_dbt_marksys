@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import datetime, timedelta
 from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query, DIFFICULTY_OPTIONS
+from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
 st.header("賽事資料輸入")
 
 # Create time slots 15:00 – 18:00 in 10-minute steps
@@ -53,12 +54,12 @@ if st.button("新增比賽場次"):
         if new_match_id not in st.session_state["all_matches"]:
             new_match_data = {
                 "match_id": new_match_id,
-                "date": "",
-                "time": "",
-                "que": "",
-                "pro": "", "con": "",
+                "match_date": "",
+                "match_time": "",
+                "topic_text": "",
+                "pro_team": "", "con_team": "",
                 "pro_1": "", "pro_2": "", "pro_3": "", "pro_4": "",
-                "con_1": "", "con_2": "", "con_3": "", "con_4": "", "access_code": "", "review_password": ""
+                "con_1": "", "con_2": "", "con_3": "", "con_4": "", "access_code_hash": "", "review_password_hash": ""
             }
             st.session_state["all_matches"][new_match_id] = new_match_data
             save_match_to_db(new_match_data)
@@ -86,7 +87,7 @@ if st.session_state["all_matches"]:
         drawn_topic = draw_a_topic(difficulty=diff_filter if diff_filter != 0 else None)
         if drawn_topic != "":
             st.success(f"已抽取辯題：{drawn_topic}")
-            st.session_state["all_matches"][selected_match]["que"] = drawn_topic
+            st.session_state["all_matches"][selected_match]["topic_text"] = drawn_topic
     else:
         st.info("按「抽辯題」以從辯題庫中抽取一條辯題。")
 
@@ -107,8 +108,8 @@ if st.session_state["all_matches"]:
                 if st.button("確定抽籤"):
                     if team1 and team2:
                         pro_team, con_team = draw_pro_con(team1, team2)
-                        st.session_state["all_matches"][selected_match]["pro"] = pro_team
-                        st.session_state["all_matches"][selected_match]["con"] = con_team
+                        st.session_state["all_matches"][selected_match]["pro_team"] = pro_team
+                        st.session_state["all_matches"][selected_match]["con_team"] = con_team
                         st.session_state.draw_result_dialog = {"pro_team": pro_team, "con_team": con_team}
                         st.session_state.show_draw_side_ui = False
                         st.rerun()
@@ -127,14 +128,14 @@ if st.session_state["all_matches"]:
     with st.form(key=f"form_{selected_match}"):
 
         default_date = datetime.now().date()
-        saved_date_str = str(current_data.get("date", ""))
+        saved_date_str = str(current_data.get("match_date", ""))
         if saved_date_str:
             try:
                 default_date = datetime.strptime(saved_date_str, "%Y-%m-%d").date()
             except ValueError:
                 pass
         
-        saved_time_str = str(current_data.get("time", "16:00"))
+        saved_time_str = str(current_data.get("match_time", "16:00"))
         try:
             index = time_slots.index(saved_time_str)
         except ValueError:
@@ -144,12 +145,12 @@ if st.session_state["all_matches"]:
         match_time_str = st.selectbox("比賽時間", options=time_slots, index=index)
         match_time = datetime.strptime(match_time_str, "%H:%M").time()
 
-        que = st.text_input("辯題", value=current_data.get("que", ""))
+        topic_text = st.text_input("辯題", value=current_data.get("topic_text", ""))
 
         pro, con = st.columns(2)
         with pro:
             st.markdown("### 正方資料")
-            pro_team = st.text_input("正方隊名", value=current_data.get("pro", ""))
+            pro_team = st.text_input("正方隊名", value=current_data.get("pro_team", ""))
             pro_1 = st.text_input("正方主辯", value=current_data.get("pro_1", ""))
             pro_2 = st.text_input("正方一副", value=current_data.get("pro_2", ""))
             pro_3 = st.text_input("正方二副", value=current_data.get("pro_3", ""))
@@ -157,15 +158,15 @@ if st.session_state["all_matches"]:
         
         with con:
             st.markdown("### 反方資料")
-            con_team = st.text_input("反方隊名", value=current_data.get("con", ""))
+            con_team = st.text_input("反方隊名", value=current_data.get("con_team", ""))
             con_1 = st.text_input("反方主辯", value=current_data.get("con_1", ""))
             con_2 = st.text_input("反方一副", value=current_data.get("con_2", ""))
             con_3 = st.text_input("反方二副", value=current_data.get("con_3", ""))
             con_4 = st.text_input("反方結辯", value=current_data.get("con_4", ""))
 
-        access_code_value = current_data.get("access_code")
+        access_code_value = current_data.get("access_code_hash")
         has_access_code = access_code_value is not None and str(access_code_value).strip() != "" and str(access_code_value).strip().lower() != "nan"
-        review_password_value = current_data.get("review_password")
+        review_password_value = current_data.get("review_password_hash")
         has_review_password = review_password_value is not None and str(review_password_value).strip() != "" and str(review_password_value).strip().lower() != "nan"
 
         st.markdown("### 場次密碼")
@@ -192,13 +193,13 @@ if st.session_state["all_matches"]:
                 st.stop()
             match_data_prepare = {
                 "match_id": selected_match,
-                "date": match_date.strftime("%Y-%m-%d"),
-                "time": match_time.strftime("%H:%M"),
-                "que": que,
-                "pro": pro_team, "con": con_team,
+                "match_date": match_date.strftime("%Y-%m-%d"),
+                "match_time": match_time.strftime("%H:%M"),
+                "topic_text": topic_text,
+                "pro_team": pro_team, "con_team": con_team,
                 "pro_1": pro_1, "pro_2": pro_2, "pro_3": pro_3, "pro_4": pro_4,
                 "con_1": con_1, "con_2": con_2, "con_3": con_3, "con_4": con_4,
-                "access_code": access_code, "review_password": review_password,
+                "access_code_hash": access_code, "review_password_hash": review_password,
                 "clear_access_code": clear_access_code, "clear_review_password": clear_review_password
             }
             save_match_to_db(match_data_prepare)
@@ -220,9 +221,9 @@ if st.session_state["all_matches"]:
         with col_del_1:
             if st.button("確定刪除", type="primary", key="confirm_delete_btn"):
                 try:
-                    execute_query("DELETE FROM matches WHERE match_id = :match_id", {"match_id": selected_match})
-                    execute_query("DELETE FROM scores WHERE match_id = :match_id", {"match_id": selected_match})
-                    execute_query("DELETE FROM temp_scores WHERE match_id = :match_id", {"match_id": selected_match})
+                    execute_query(f"DELETE FROM {TABLE_MATCHES} WHERE match_id = :match_id", {"match_id": selected_match})
+                    execute_query(f"DELETE FROM {TABLE_SCORES} WHERE match_id = :match_id", {"match_id": selected_match})
+                    execute_query(f"DELETE FROM {TABLE_SCORE_DRAFTS} WHERE match_id = :match_id", {"match_id": selected_match})
 
                     # Clean up session state and set final message
                     if selected_match in st.session_state["all_matches"]:

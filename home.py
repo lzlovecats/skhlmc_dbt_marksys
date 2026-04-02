@@ -1,5 +1,14 @@
 import streamlit as st
 from functions import get_connection, is_maintenance_mode, query_params, render_home_reference, render_maintenance_notice
+from schema import (
+    TABLE_ACCOUNTS,
+    TABLE_LOGIN_RECORDS,
+    TABLE_MATCHES,
+    TABLE_SCORES,
+    TABLE_TELEGRAM_NOTIFICATION_QUEUE,
+    TABLE_TOPIC_VOTES,
+    TABLE_TOPICS,
+)
 
 # ─── Session state ────────────────────────────────────────────────────────────
 
@@ -34,7 +43,7 @@ def _run_status_checks() -> dict:
     # Check 2: Table row counts
     try:
         counts = {}
-        for table in ("accounts", "matches", "scores", "topics"):
+        for table in (TABLE_ACCOUNTS, TABLE_MATCHES, TABLE_SCORES, TABLE_TOPICS):
             count_df = query_params(f"SELECT COUNT(*) AS cnt FROM {table}")
             counts[table] = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
         results["table_counts"] = counts
@@ -44,7 +53,7 @@ def _run_status_checks() -> dict:
     # Check 3: Telegram queue depth
     try:
         queue_df = query_params(
-            "SELECT COUNT(*) AS cnt FROM tg_notification_queue WHERE processed = FALSE"
+            f"SELECT COUNT(*) AS cnt FROM {TABLE_TELEGRAM_NOTIFICATION_QUEUE} WHERE is_processed = FALSE"
         )
         results["tg_queue_depth"] = int(queue_df.iloc[0]["cnt"]) if not queue_df.empty else 0
     except Exception as e:
@@ -63,7 +72,7 @@ def _run_status_checks() -> dict:
 
     # Check 5: Pending topic votes
     try:
-        pending_vote_df = query_params("SELECT COUNT(*) AS cnt FROM topic_votes WHERE status = 'pending'")
+        pending_vote_df = query_params(f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'")
         results["pending_votes"] = int(pending_vote_df.iloc[0]["cnt"]) if not pending_vote_df.empty else 0
     except Exception as e:
         results["errors"].append(f"辯題投票查詢失敗: {e}")
@@ -71,8 +80,8 @@ def _run_status_checks() -> dict:
     # Check 6: Login activity in last 24h
     try:
         login_df = query_params(
-            "SELECT COUNT(*) AS cnt FROM login_record "
-            "WHERE login_time >= NOW() - INTERVAL '24 hours'"
+            f"SELECT COUNT(*) AS cnt FROM {TABLE_LOGIN_RECORDS} "
+            "WHERE logged_in_at >= NOW() - INTERVAL '24 hours'"
         )
         results["logins_24h"] = int(login_df.iloc[0]["cnt"]) if not login_df.empty else 0
     except Exception as e:

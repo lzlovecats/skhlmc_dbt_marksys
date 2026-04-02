@@ -1,0 +1,16 @@
+export const TABLES = {
+  accounts: "accounts",
+  matches: "matches",
+  topics: "topics",
+  scores: "scores",
+  debaters: "debaters",
+  debaterScores: "debater_scores",
+  scoreDrafts: "score_drafts",
+  topicVotes: "topic_votes",
+  topicVoteBallots: "topic_vote_ballots",
+  topicRemovalVotes: "topic_removal_votes",
+  topicRemovalVoteBallots: "topic_removal_vote_ballots",
+  loginRecords: "login_records",
+  notificationReads: "notification_reads",
+  telegramNotificationQueue: "telegram_notification_queue",
+} as const;

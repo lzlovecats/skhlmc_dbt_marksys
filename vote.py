@@ -2,6 +2,15 @@ import json
 import math
 import streamlit as st
 from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS
+from schema import (
+    TABLE_ACCOUNTS,
+    TABLE_TELEGRAM_NOTIFICATION_QUEUE,
+    TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
+    TABLE_TOPIC_REMOVAL_VOTES,
+    TABLE_TOPIC_VOTE_BALLOTS,
+    TABLE_TOPIC_VOTES,
+    TABLE_TOPICS,
+)
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -84,7 +93,7 @@ def render_reason_lines(reason_map, empty_text):
         st.caption(f"• {reason}{suffix}")
 
 
-def parse_deadline_row(row, key="deadline"):
+def parse_deadline_row(row, key="deadline_date"):
     # row: the row of the vote data
     """Returns (deadline_passed: bool, deadline_str: str)."""
     deadline_val = row.get(key, "")
@@ -107,8 +116,8 @@ def parse_deadline_row(row, key="deadline"):
 def enqueue_tg_notification(noti_type: str, payload: dict) -> None:
     """Write a notification event to the queue table for the bot to pick up."""
     execute_query(
-        "INSERT INTO tg_notification_queue (noti_type, payload) VALUES (:noti_type, :payload)",
-        {"noti_type": noti_type, "payload": json.dumps(payload, ensure_ascii=False)}
+        f"INSERT INTO {TABLE_TELEGRAM_NOTIFICATION_QUEUE} (notification_type, payload) VALUES (:notification_type, :payload)",
+        {"notification_type": noti_type, "payload": json.dumps(payload, ensure_ascii=False)}
     )
 
 
@@ -132,40 +141,48 @@ def render_refresh_button(key):
 
 
 def _ballot_delete(table, topic, user_id):
-    params = {"user_id": user_id, "topic": topic}
-    if table == "topic_votes":
-        execute_query("DELETE FROM topic_vote_ballots WHERE topic = :topic AND user_id = :user_id", params)
+    params = {"user_id": user_id, "topic_text": topic}
+    if table == TABLE_TOPIC_VOTES:
+        execute_query(f"DELETE FROM {TABLE_TOPIC_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
     else:
-        execute_query("DELETE FROM depose_vote_ballots WHERE topic = :topic AND user_id = :user_id", params)
+        execute_query(f"DELETE FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
 
 
 def _ballot_upsert(table, topic, user_id, vote, reasons=None):
-    params = {"user_id": user_id, "topic": topic}
-    if table == "topic_votes":
+    params = {"user_id": user_id, "topic_text": topic}
+    if table == TABLE_TOPIC_VOTES:
         if vote == "agree":
             execute_query(
-                "INSERT INTO topic_vote_ballots (topic, user_id, vote) VALUES (:topic, :user_id, 'agree')"
-                " ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'agree'", params)
+                f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice) VALUES (:topic_text, :user_id, 'agree')"
+                " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'agree'",
+                params,
+            )
         else:
             execute_query(
-                "INSERT INTO topic_vote_ballots (topic, user_id, vote, reasons) VALUES (:topic, :user_id, 'against', :reasons)"
-                " ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'against', reasons = EXCLUDED.reasons",
-                {**params, "reasons": reasons or "[]"})
+                f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice, against_reasons) VALUES (:topic_text, :user_id, 'against', :reasons)"
+                " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'against', against_reasons = EXCLUDED.against_reasons",
+                {**params, "reasons": reasons or "[]"},
+            )
     else:
         execute_query(
-            "INSERT INTO depose_vote_ballots (topic, user_id, vote) VALUES (:topic, :user_id, :vote)"
-            " ON CONFLICT (topic, user_id) DO UPDATE SET vote = :vote",
-            {**params, "vote": vote})
+            f"INSERT INTO {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (topic_text, user_id, vote_choice) VALUES (:topic_text, :user_id, :vote)"
+            " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = :vote",
+            {**params, "vote": vote},
+        )
 
 
 def _ballot_switch_agree(table, topic, user_id):
-    params = {"user_id": user_id, "topic": topic}
-    if table == "topic_votes":
+    params = {"user_id": user_id, "topic_text": topic}
+    if table == TABLE_TOPIC_VOTES:
         execute_query(
-            "UPDATE topic_vote_ballots SET vote = 'agree', reasons = '[]' WHERE topic = :topic AND user_id = :user_id", params)
+            f"UPDATE {TABLE_TOPIC_VOTE_BALLOTS} SET vote_choice = 'agree', against_reasons = '[]' WHERE topic_text = :topic_text AND user_id = :user_id",
+            params,
+        )
     else:
         execute_query(
-            "UPDATE depose_vote_ballots SET vote = 'agree' WHERE topic = :topic AND user_id = :user_id", params)
+            f"UPDATE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} SET vote_choice = 'agree' WHERE topic_text = :topic_text AND user_id = :user_id",
+            params,
+        )
 
 
 def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_reason_map,
@@ -227,12 +244,12 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
         if agree_count >= threshold and agree_count > against_count:
             st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
             execute_query(
-                "INSERT INTO topics (topic, author, category, difficulty) VALUES (:topic, :author, :category, :difficulty)",
-                {"topic": topic, "author": author, "category": category, "difficulty": difficulty}
+                f"INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty) VALUES (:topic_text, :author, :category, :difficulty)",
+                {"topic_text": topic, "author": author, "category": category, "difficulty": difficulty}
             )
             execute_query(
-                "UPDATE topic_votes SET status = 'passed' WHERE topic = :topic",
-                {"topic": topic}
+                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text",
+                {"topic_text": topic}
             )
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "passed", "vote_type": "topic",
@@ -244,8 +261,8 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
         if against_count >= threshold and against_count > agree_count:
             st.error(f"辯題「{topic}」已獲得{against_count}票不同意票，正在刪除辯題...")
             execute_query(
-                "UPDATE topic_votes SET status = 'rejected' WHERE topic = :topic",
-                {"topic": topic}
+                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+                {"topic_text": topic}
             )
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "rejected", "vote_type": "topic",
@@ -256,8 +273,11 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
     elif mode == "depose":
         if agree_count >= threshold and agree_count > against_count:
             st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
-            execute_query("UPDATE topic_depose_votes SET status = 'passed' WHERE topic = :topic", {"topic": topic})
-            execute_query("DELETE FROM topics WHERE topic = :topic", {"topic": topic})
+            execute_query(
+                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text",
+                {"topic_text": topic},
+            )
+            execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "passed", "vote_type": "depose",
                 "agree_count": agree_count, "against_count": against_count, "threshold": threshold
@@ -266,7 +286,10 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
             st.rerun()
         if against_count >= threshold and against_count > agree_count:
             st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
-            execute_query("UPDATE topic_depose_votes SET status = 'rejected' WHERE topic = :topic", {"topic": topic})
+            execute_query(
+                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+                {"topic_text": topic},
+            )
             enqueue_tg_notification("vote_result", {
                 "topic": topic, "result": "rejected", "vote_type": "depose",
                 "agree_count": agree_count, "against_count": against_count, "threshold": threshold
@@ -307,10 +330,10 @@ def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False
         else:
             with st.spinner("處理你的投票中，請稍等⋯"):
                 execute_query(
-                    "INSERT INTO topic_vote_ballots (topic, user_id, vote, reasons)"
-                    " VALUES (:topic, :user_id, 'against', :reasons)"
-                    " ON CONFLICT (topic, user_id) DO UPDATE SET vote = 'against', reasons = EXCLUDED.reasons",
-                    {"topic": topic, "user_id": user_id, "reasons": dump_json(reasons)}
+                    f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice, against_reasons)"
+                    " VALUES (:topic_text, :user_id, 'against', :reasons)"
+                    " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'against', against_reasons = EXCLUDED.against_reasons",
+                    {"topic_text": topic, "user_id": user_id, "reasons": dump_json(reasons)}
                 )
                 st.toast("已轉投不同意票！" if is_switch else "已投下不同意票！", icon="↪️️" if is_switch else "☑️")
                 clear_caches()
@@ -347,26 +370,41 @@ if user_id != "admin":
 @st.cache_data(ttl=5)
 def get_vote_data():
     conn = get_connection()
-    df = conn.query("SELECT * FROM topic_votes ORDER BY created_at DESC", ttl=5)
+    df = conn.query(
+        f"""
+        SELECT
+            topic_text,
+            proposer_user_id,
+            status,
+            created_at,
+            deadline_date,
+            approval_threshold,
+            category,
+            difficulty
+        FROM {TABLE_TOPIC_VOTES}
+        ORDER BY created_at DESC
+        """,
+        ttl=5,
+    )
     df = df.fillna("")
 
     # Load ballots for pending topics only — historical ballots are not needed for the UI
     ballots = conn.query(
-        "SELECT b.topic, b.user_id, b.vote, b.reasons"
-        " FROM topic_vote_ballots b"
-        " JOIN topic_votes tv ON b.topic = tv.topic"
+        f"SELECT b.topic_text, b.user_id, b.vote_choice, b.against_reasons"
+        f" FROM {TABLE_TOPIC_VOTE_BALLOTS} b"
+        f" JOIN {TABLE_TOPIC_VOTES} tv ON b.topic_text = tv.topic_text"
         " WHERE tv.status = 'pending'",
         ttl=0
     )
     agree_map, against_map, reasons_map = {}, {}, {}
     if not ballots.empty:
         for _, b in ballots.iterrows():
-            t, uid, v = b["topic"], b["user_id"], b["vote"]
+            t, uid, v = b["topic_text"], b["user_id"], b["vote_choice"]
             if v == "agree":
                 agree_map.setdefault(t, []).append(uid)
             else:
                 against_map.setdefault(t, []).append(uid)
-                raw = b.get("reasons")
+                raw = b.get("against_reasons")
                 r = raw if isinstance(raw, list) else (json.loads(raw) if raw else [])
                 if r:
                     reasons_map.setdefault(t, {})[uid] = r
@@ -374,7 +412,7 @@ def get_vote_data():
     pending, passed, rejected = [], [], []
     for _, row in df.iterrows():
         row_dict = row.to_dict()
-        t = row_dict["topic"]
+        t = row_dict["topic_text"]
         row_dict["agree_users"] = agree_map.get(t, [])
         row_dict["against_users"] = against_map.get(t, [])
         row_dict["against_reasons"] = reasons_map.get(t, {})
@@ -392,7 +430,9 @@ def get_vote_data():
 _pending_vote_data, _, _ = get_vote_data()
 _pending_vote_count = len(_pending_vote_data) if _pending_vote_data else 0
 _pending_depose_count_df = get_connection().query(
-    "SELECT COUNT(*) AS cnt FROM topic_depose_votes WHERE status = 'pending'", ttl=5)
+    f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
+    ttl=5,
+)
 _pending_depose_count = int(_pending_depose_count_df.iloc[0]["cnt"]) if not _pending_depose_count_df.empty else 0
 
 _tab2_label = f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
@@ -434,11 +474,17 @@ with tab1:
             st.warning("你未輸入任何文字！")
         else:
             conn = get_connection()
-            all_topics_df = conn.query("SELECT topic, category FROM topics", ttl=5)
-            all_votes_df = conn.query("SELECT topic FROM topic_votes WHERE status = 'pending'", ttl=5)
+            all_topics_df = conn.query(
+                f"SELECT topic_text, category FROM {TABLE_TOPICS}",
+                ttl=5,
+            )
+            all_votes_df = conn.query(
+                f"SELECT topic_text FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'",
+                ttl=5,
+            )
 
-            existing_topics = all_topics_df["topic"].tolist() if not all_topics_df.empty else []
-            existing_votes = all_votes_df["topic"].tolist() if not all_votes_df.empty else []
+            existing_topics = all_topics_df["topic_text"].tolist() if not all_topics_df.empty else []
+            existing_votes = all_votes_df["topic_text"].tolist() if not all_votes_df.empty else []
 
             if new_topic in existing_votes or new_topic in existing_topics:
                 st.error("此辯題已存在！")
@@ -466,7 +512,11 @@ with tab1:
                     hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                     hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                     deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                    query = "INSERT INTO topic_votes (topic, author, status, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
+                    query = (
+                        f"INSERT INTO {TABLE_TOPIC_VOTES} "
+                        "(topic_text, proposer_user_id, status, created_at, deadline_date, approval_threshold, category, difficulty) "
+                        "VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
+                    )
                     param = {"new_topic": new_topic, "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
                     execute_query(query, param)
                     enqueue_tg_notification("new_topic", {
@@ -490,7 +540,11 @@ with tab1:
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                 hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                 deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                query = "INSERT INTO topic_votes (topic, author, status, created_at, deadline, threshold, category, difficulty) VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
+                query = (
+                    f"INSERT INTO {TABLE_TOPIC_VOTES} "
+                    "(topic_text, proposer_user_id, status, created_at, deadline_date, approval_threshold, category, difficulty) "
+                    "VALUES (:new_topic, :user_id, 'pending', :created_at, :deadline, :threshold, :category, :difficulty)"
+                )
                 topic_params = {"new_topic": pending_topic_data["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": pending_topic_data["new_category"], "difficulty": pending_topic_data["new_difficulty"]}
                 execute_query(query, topic_params)
                 enqueue_tg_notification("new_topic", {
@@ -514,14 +568,14 @@ with tab1:
 
     try:
         conn = get_connection()
-        df = conn.query("SELECT * FROM topics", ttl=5)
+        df = conn.query(f"SELECT topic_text FROM {TABLE_TOPICS}", ttl=5)
     except Exception as e:
         st.error(f"連線錯誤: {e}")
         st.stop()
     
     topics_to_depose = st.multiselect(
             "請選擇要提出罷免動議的辯題 (可多選)",
-            options=df["topic"].to_list()
+            options=df["topic_text"].to_list()
         )
     depose_reason_choices = st.multiselect(
         "請選擇提出罷免動議的原因（可多選）",
@@ -544,8 +598,11 @@ with tab1:
             st.warning("請至少交代一個罷免原因。")
         else:
             conn = get_connection()
-            exist_votes = conn.query("SELECT topic FROM topic_depose_votes WHERE status = 'pending'", ttl=5)
-            exist_depose_topics = exist_votes["topic"].tolist()
+            exist_votes = conn.query(
+                f"SELECT topic_text FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
+                ttl=5,
+            )
+            exist_depose_topics = exist_votes["topic_text"].tolist()
             if len(exist_depose_topics) >= 10:
                 st.warning("目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。")
                 st.stop()
@@ -558,9 +615,9 @@ with tab1:
                     hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
                     hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
                     deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                    query = """
-                    INSERT INTO topic_depose_votes (
-                        topic, mover, status, created_at, proposal_reasons, deadline, threshold
+                    query = f"""
+                    INSERT INTO {TABLE_TOPIC_REMOVAL_VOTES} (
+                        topic_text, proposer_user_id, status, created_at, removal_reasons, deadline_date, approval_threshold
                     ) VALUES (
                         :topic, :user_id, 'pending', :created_at, :proposal_reasons, :deadline, :threshold
                     )
@@ -611,8 +668,8 @@ with tab2:
         conn = get_connection()
 
         for i, row in enumerate(vote_data):
-            topic = row["topic"]
-            author = row["author"]
+            topic = row["topic_text"]
+            author = row["proposer_user_id"]
 
             agree_list = row["agree_users"]
             against_list = row["against_users"]
@@ -620,14 +677,17 @@ with tab2:
 
             agree_count = len(agree_list)
             against_count = len(against_list)
-            row_threshold = int(row.get("threshold") or ENTRY_THRESHOLD)
+            row_threshold = int(row.get("approval_threshold") or ENTRY_THRESHOLD)
 
             deadline_passed, deadline_str = parse_deadline_row(row)
 
             # Auto-reject expired topics before rendering the card (avoids flash)
             if deadline_passed:
                 st.warning(f"辯題「{topic}」投票期限（{deadline_str} 23:59）已過，未達入庫標準，系統自動否決。")
-                execute_query("UPDATE topic_votes SET status = 'rejected' WHERE topic = :topic", {"topic": topic})
+                execute_query(
+                    f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+                    {"topic_text": topic},
+                )
                 clear_caches()
                 st.rerun()
 
@@ -651,7 +711,7 @@ with tab2:
                 btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
                     i, user_id, topic, agree_list, against_list, against_reason_map,
-                    table="topic_votes", agree_label="同意", against_label="不同意",
+                    table=TABLE_TOPIC_VOTES, agree_label="同意", against_label="不同意",
                     after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
                     against_dialog_fn=cast_against_vote_dialog
                 )
@@ -664,11 +724,11 @@ with tab2:
 
     with st.expander("📜 投票歷史記錄 (最近二十個)", expanded=False):
         from functions import query_params as _qp
-        history = _qp("""
-            SELECT tv.topic, tv.status, tv.created_at, tv.threshold, tv.category,
-                   (SELECT COUNT(*) FROM topic_vote_ballots b WHERE b.topic = tv.topic AND b.vote = 'agree') AS agree,
-                   (SELECT COUNT(*) FROM topic_vote_ballots b WHERE b.topic = tv.topic AND b.vote != 'agree') AS against
-            FROM topic_votes tv
+        history = _qp(f"""
+            SELECT tv.topic_text, tv.status, tv.created_at, tv.approval_threshold, tv.category,
+                   (SELECT COUNT(*) FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text AND b.vote_choice = 'agree') AS agree,
+                   (SELECT COUNT(*) FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text AND b.vote_choice != 'agree') AS against
+            FROM {TABLE_TOPIC_VOTES} tv
             WHERE tv.status != 'pending'
             ORDER BY tv.created_at DESC
             LIMIT 20
@@ -678,7 +738,7 @@ with tab2:
                 icon = "✅" if h["status"] == "passed" else "❌"
                 date_str = str(h["created_at"])[:10] if h["created_at"] else ""
                 cat = h.get("category") or ""
-                st.caption(f"{icon} {h['topic']}　|　{cat}　|　同意: {h['agree']} / 不同意: {h['against']} / 門檻: {h['threshold']}　|　{date_str}")
+                st.caption(f"{icon} {h['topic_text']}　|　{cat}　|　同意: {h['agree']} / 不同意: {h['against']} / 門檻: {h['approval_threshold']}　|　{date_str}")
         else:
             st.caption("暫無記錄")
 
@@ -700,42 +760,58 @@ with tab3:
 
     conn = get_connection()
     df_depose = conn.query(
-        "SELECT * FROM topic_depose_votes WHERE status = 'pending' ORDER BY created_at DESC", ttl=5
+        f"""
+        SELECT
+            topic_text,
+            proposer_user_id,
+            status,
+            removal_reasons,
+            created_at,
+            deadline_date,
+            approval_threshold
+        FROM {TABLE_TOPIC_REMOVAL_VOTES}
+        WHERE status = 'pending'
+        ORDER BY created_at DESC
+        """,
+        ttl=5,
     )
-    depose_ballots = conn.query("SELECT topic, user_id, vote FROM depose_vote_ballots", ttl=0)
+    depose_ballots = conn.query(
+        f"SELECT topic_text, user_id, vote_choice FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}",
+        ttl=0,
+    )
     agree_depose, against_depose = {}, {}
     if not depose_ballots.empty:
         for _, b in depose_ballots.iterrows():
-            t = b["topic"]
-            if b["vote"] == "agree":
+            t = b["topic_text"]
+            if b["vote_choice"] == "agree":
                 agree_depose.setdefault(t, []).append(b["user_id"])
             else:
                 against_depose.setdefault(t, []).append(b["user_id"])
     vote_data = []
     for _, row in df_depose.iterrows():
         row_dict = row.to_dict()
-        t = row_dict["topic"]
+        t = row_dict["topic_text"]
         row_dict["agree_users"] = agree_depose.get(t, [])
         row_dict["against_users"] = against_depose.get(t, [])
         vote_data.append(row_dict)
 
-    topics_meta_df = conn.query("SELECT topic, category, difficulty FROM topics", ttl=5)
-    topic_meta = {r["topic"]: (r.get("category"), r.get("difficulty")) for _, r in topics_meta_df.iterrows()}
+    topics_meta_df = conn.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}", ttl=5)
+    topic_meta = {r["topic_text"]: (r.get("category"), r.get("difficulty")) for _, r in topics_meta_df.iterrows()}
 
     if not vote_data:
         st.info("目前沒有待罷免的辯題。")
     else:
         for i, row in enumerate(vote_data):
-            topic = row["topic"]
-            mover = row["mover"]
-            proposal_reasons = parse_reason_list(row.get("proposal_reasons", ""))
+            topic = row["topic_text"]
+            mover = row["proposer_user_id"]
+            proposal_reasons = parse_reason_list(row.get("removal_reasons", ""))
 
             agree_list = row["agree_users"]
             against_list = row["against_users"]
 
             agree_count = len(agree_list)
             against_count = len(against_list)
-            row_depose_threshold = int(row.get("threshold") or DEPOSE_THRESHOLD)
+            row_depose_threshold = int(row.get("approval_threshold") or DEPOSE_THRESHOLD)
 
             depose_deadline_passed, depose_deadline_str = parse_deadline_row(row)
 
@@ -744,7 +820,10 @@ with tab3:
             # Topic vote expiries use UPDATE status='rejected' to preserve the rejection log in tab2.
             if depose_deadline_passed:
                 st.warning(f"罷免動議「{topic}」投票期限（{depose_deadline_str} 23:59）已過，未達罷免標準，動議自動取消。")
-                execute_query("UPDATE topic_depose_votes SET status = 'rejected' WHERE topic = :topic", {"topic": topic})
+                execute_query(
+                    f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+                    {"topic_text": topic},
+                )
                 clear_caches()
                 st.rerun()
 
@@ -769,7 +848,7 @@ with tab3:
                 btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
                     i, user_id, topic, agree_list, against_list, against_reason_map={},
-                    table="topic_depose_votes", agree_label="同意罷免", against_label="不同意罷免",
+                    table=TABLE_TOPIC_REMOVAL_VOTES, agree_label="同意罷免", against_label="不同意罷免",
                     after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
                     agree_switch_toast="已轉投同意罷免票！"
                 )
@@ -843,7 +922,10 @@ with tab5:
                 st.warning("你未輸入密碼！")
             else:
                 try:
-                    execute_query("UPDATE accounts SET userpw = :userpw WHERE userid = :userid", {"userpw": hash_password(new_pw.strip()), "userid": user_id})
+                    execute_query(
+                        f"UPDATE {TABLE_ACCOUNTS} SET password_hash = :password_hash WHERE user_id = :user_id",
+                        {"password_hash": hash_password(new_pw.strip()), "user_id": user_id},
+                    )
                     st.success("帳戶密碼已更改！下次登入請使用新密碼！")
                 except Exception as e:
                     st.error(f"無法連接至數據庫: {e}")

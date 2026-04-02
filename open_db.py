@@ -1,12 +1,16 @@
 import streamlit as st
 import pandas as pd
 from functions import get_connection
+from schema import TABLE_TOPICS, TABLE_TOPIC_VOTES
 st.header("查閱辯題庫")
 
 try:
     conn = get_connection()
-    topics_df = conn.query("SELECT * FROM topics", ttl=60)
-    topic_vote_stats_df = conn.query("SELECT category, status FROM topic_votes", ttl=60)
+    topics_df = conn.query(
+        f"SELECT topic_text, author, category, difficulty FROM {TABLE_TOPICS}",
+        ttl=60,
+    )
+    topic_vote_stats_df = conn.query(f"SELECT category, status FROM {TABLE_TOPIC_VOTES}", ttl=60)
 except Exception as e:
     st.error(f"連線錯誤: {e}")
     st.stop()
@@ -46,7 +50,7 @@ with col3:
 # 進行篩選
 filtered_df = topics_df.copy()
 if search_term:
-    filtered_df = filtered_df[filtered_df["topic"].str.contains(search_term, case=False, na=False, regex=False)]
+    filtered_df = filtered_df[filtered_df["topic_text"].str.contains(search_term, case=False, na=False, regex=False)]
 if sel_author != "全部":
     filtered_df = filtered_df[filtered_df["author"] == sel_author]
 if sel_category != "全部":
@@ -59,12 +63,12 @@ display_df = filtered_df.copy()
 if "difficulty_label" in display_df.columns:
     display_df = display_df.drop(columns=["difficulty"])
     display_df = display_df.rename(columns={"difficulty_label": "difficulty"})
-display_columns = ["topic", "author", "category", "difficulty"]
+display_columns = ["topic_text", "author", "category", "difficulty"]
 # 確保欄位存在
 display_columns = [c for c in display_columns if c in display_df.columns]
 display_df = display_df[display_columns]
 display_df = display_df.rename(columns={
-    "topic": "辯題",
+    "topic_text": "辯題",
     "author": "作者",
     "category": "類別",
     "difficulty": "難度"
