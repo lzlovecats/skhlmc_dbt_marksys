@@ -7,7 +7,6 @@ import math
 import re
 import extra_streamlit_components as stx
 import datetime
-import time
 import os
 import io
 import bcrypt
@@ -236,90 +235,87 @@ def load_matches_from_db():
 
 def save_match_to_db(match_data):
     match_id = match_data['match_id'].strip()
-
-    exist_match = query_params(
-        f"""
-        SELECT
-            access_code_hash,
-            review_password_hash
-        FROM {TABLE_MATCHES}
-        WHERE match_id = :match_id
-        """,
-        {"match_id": match_id}
-    )
-
-    raw_access_code = match_data.get("access_code_hash", "") or ""
-    raw_review_password = match_data.get("review_password_hash", "") or ""
-    clear_access_code = bool(match_data.get("clear_access_code"))
-    clear_review_password = bool(match_data.get("clear_review_password"))
-    existing_access_code = None
-    existing_review_password = None
-    if not exist_match.empty:
-        existing_access_code = exist_match.iloc[0]["access_code_hash"]
-        existing_review_password = exist_match.iloc[0]["review_password_hash"]
-        if pd.isna(existing_access_code):
-            existing_access_code = None
-        if pd.isna(existing_review_password):
-            existing_review_password = None
-
-    if clear_access_code:
-        resolved_access_code = None
-    elif raw_access_code:
-        resolved_access_code = hash_password(raw_access_code)
-    elif not exist_match.empty:
-        resolved_access_code = existing_access_code
-    else:
-        resolved_access_code = None
-
-    if clear_review_password:
-        resolved_review_password = None
-    elif raw_review_password:
-        resolved_review_password = hash_password(raw_review_password)
-    elif not exist_match.empty:
-        resolved_review_password = existing_review_password
-    else:
-        resolved_review_password = None
-
-    match_params = {
-        "match_id": match_id,
-        "match_date": match_data["match_date"] if match_data["match_date"] else None,
-        "match_time": match_data["match_time"] if match_data["match_time"] else None,
-        "topic_text": match_data["topic_text"],
-        "pro_team": match_data["pro_team"],
-        "con_team": match_data["con_team"],
-        "access_code_hash": resolved_access_code,
-        "review_password_hash": resolved_review_password
-    }
-
-    if not exist_match.empty:
-        execute_query(f"""
-            UPDATE {TABLE_MATCHES} SET
-                match_date = :match_date, match_time = :match_time, topic_text = :topic_text,
-                pro_team = :pro_team, con_team = :con_team,
-                access_code_hash = :access_code_hash,
-                review_password_hash = :review_password_hash
-            WHERE match_id = :match_id
-        """, match_params)
-    else:
-        execute_query(f"""
-            INSERT INTO {TABLE_MATCHES} (
-                match_id, match_date, match_time, topic_text, pro_team, con_team,
-                access_code_hash, review_password_hash
-            )
-            VALUES (
-                :match_id, :match_date, :match_time, :topic_text, :pro_team, :con_team,
-                :access_code_hash, :review_password_hash
-            )
-        """, match_params)
-
-    # Upsert debater names into the normalised debaters table
-    debater_params = [
-        {"match_id": match_id, "side": side, "position": pos,
-         "name": match_data.get(f"{side}_{pos}", "") or ""}
-        for side in ("pro", "con") for pos in (1, 2, 3, 4)
-    ]
     conn = get_connection()
+
     with conn.session as s:
+        exist_match = s.execute(text(f"""
+            SELECT
+                access_code_hash,
+                review_password_hash
+            FROM {TABLE_MATCHES}
+            WHERE match_id = :match_id
+        """), {"match_id": match_id}).fetchone()
+
+        raw_access_code = match_data.get("access_code_hash", "") or ""
+        raw_review_password = match_data.get("review_password_hash", "") or ""
+        clear_access_code = bool(match_data.get("clear_access_code"))
+        clear_review_password = bool(match_data.get("clear_review_password"))
+        existing_access_code = None
+        existing_review_password = None
+        if exist_match is not None:
+            existing_access_code = exist_match._mapping["access_code_hash"]
+            existing_review_password = exist_match._mapping["review_password_hash"]
+            if pd.isna(existing_access_code):
+                existing_access_code = None
+            if pd.isna(existing_review_password):
+                existing_review_password = None
+
+        if clear_access_code:
+            resolved_access_code = None
+        elif raw_access_code:
+            resolved_access_code = hash_password(raw_access_code)
+        elif exist_match is not None:
+            resolved_access_code = existing_access_code
+        else:
+            resolved_access_code = None
+
+        if clear_review_password:
+            resolved_review_password = None
+        elif raw_review_password:
+            resolved_review_password = hash_password(raw_review_password)
+        elif exist_match is not None:
+            resolved_review_password = existing_review_password
+        else:
+            resolved_review_password = None
+
+        match_params = {
+            "match_id": match_id,
+            "match_date": match_data["match_date"] if match_data["match_date"] else None,
+            "match_time": match_data["match_time"] if match_data["match_time"] else None,
+            "topic_text": match_data["topic_text"],
+            "pro_team": match_data["pro_team"],
+            "con_team": match_data["con_team"],
+            "access_code_hash": resolved_access_code,
+            "review_password_hash": resolved_review_password
+        }
+
+        if exist_match is not None:
+            s.execute(text(f"""
+                UPDATE {TABLE_MATCHES} SET
+                    match_date = :match_date, match_time = :match_time, topic_text = :topic_text,
+                    pro_team = :pro_team, con_team = :con_team,
+                    access_code_hash = :access_code_hash,
+                    review_password_hash = :review_password_hash
+                WHERE match_id = :match_id
+            """), match_params)
+        else:
+            s.execute(text(f"""
+                INSERT INTO {TABLE_MATCHES} (
+                    match_id, match_date, match_time, topic_text, pro_team, con_team,
+                    access_code_hash, review_password_hash
+                )
+                VALUES (
+                    :match_id, :match_date, :match_time, :topic_text, :pro_team, :con_team,
+                    :access_code_hash, :review_password_hash
+                )
+            """), match_params)
+
+        # Upsert debater names into the normalised debaters table
+        debater_params = [
+            {"match_id": match_id, "side": side, "position": pos,
+             "name": match_data.get(f"{side}_{pos}", "") or ""}
+            for side in ("pro", "con") for pos in (1, 2, 3, 4)
+        ]
         s.execute(text(f"""
             INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name)
             VALUES (:match_id, :side, :position, :name)
@@ -802,7 +798,6 @@ def check_committee_login():
                 st.session_state["committee_user"] = uid.strip()
                 set_cookie(cookie_manager, "committee_user", uid.strip(), expires_at=return_expire_day())
                 st.success(f"你好，{uid.strip()}！")
-                time.sleep(1)
                 st.rerun()
             else:
                 st.error("User ID或Password錯誤！")

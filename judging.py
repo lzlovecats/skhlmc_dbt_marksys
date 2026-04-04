@@ -155,8 +155,10 @@ def _sync_side_input_state(match_id, team_side, force=False):
     cohere_key = _widget_key("cohere", match_id, team_side)
 
     if side_data is None:
-        st.session_state.pop(deduct_key, None)
-        st.session_state.pop(cohere_key, None)
+        if force or deduct_key not in st.session_state:
+            st.session_state[deduct_key] = 0
+        if force or cohere_key not in st.session_state:
+            st.session_state[cohere_key] = 0
         return
 
     if force or deduct_key not in st.session_state:
@@ -366,28 +368,21 @@ st.markdown(f"總分：{total_score_b}/{FREE_DEBATE_MAX}")
 st.divider()
 st.subheader("（丙）扣分及內容連貫")
 
-existing_deduct = 0
-existing_cohere = 0
-
-if st.session_state["temp_scores"][team_side] is not None:
-    existing_deduct = st.session_state["temp_scores"][team_side].get("deduction", 0)
-    existing_cohere = st.session_state["temp_scores"][team_side].get("coherence", 0)
-
 _sync_side_input_state(selected_match_id, team_side)
+deduct_key = _widget_key("deduct", selected_match_id, team_side)
+cohere_key = _widget_key("cohere", selected_match_id, team_side)
 deduction = st.number_input(
     "扣分總和",
     min_value=0,
     step=1,
-    value=st.session_state.get(_widget_key("deduct", selected_match_id, team_side), existing_deduct),
-    key=_widget_key("deduct", selected_match_id, team_side)
+    key=deduct_key
 )
 coherence = st.number_input(
     f"內容連貫 ({COHERENCE_MAX})",
     min_value=0,
     max_value=COHERENCE_MAX,
     step=1,
-    value=st.session_state.get(_widget_key("cohere", selected_match_id, team_side), existing_cohere),
-    key=_widget_key("cohere", selected_match_id, team_side)
+    key=cohere_key
 )
 
 final_total = total_score_a + total_score_b - deduction + coherence

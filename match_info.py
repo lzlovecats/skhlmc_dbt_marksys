@@ -35,8 +35,10 @@ if st.session_state["match_action_message"]:
     action_message = st.session_state["match_action_message"]
     if action_message["type"] == "success":
         st.success(action_message["content"])
+        st.toast(action_message["content"], icon="✅")
     elif action_message["type"] == "warning":
         st.warning(action_message["content"])
+        st.toast(action_message["content"], icon="⚠️")
     st.session_state["match_action_message"] = None
 
 # Authentication 

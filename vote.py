@@ -11,7 +11,6 @@ from schema import (
     TABLE_TOPIC_VOTES,
     TABLE_TOPICS,
 )
-import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -349,7 +348,6 @@ if user_id == "admin":
     if st.button("登出"):
         st.session_state["committee_user"] = None
         del_cookie(cm, "committee_user")
-        time.sleep(0.5)
         st.rerun()
     st.stop()
 show_noti_popup(user_id)
@@ -437,9 +435,25 @@ _pending_depose_count = int(_pending_depose_count_df.iloc[0]["cnt"]) if not _pen
 
 _tab2_label = f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
 _tab3_label = f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 提出動議", _tab2_label, _tab3_label, "👥 成員參與率", "🔐 管理帳戶"])
+tab_labels = {
+    "proposal": "📝 提出動議",
+    "topic_vote": _tab2_label,
+    "depose_vote": _tab3_label,
+    "member_stats": "👥 成員參與率",
+    "account": "🔐 管理帳戶",
+}
+if "vote_active_tab" not in st.session_state:
+    st.session_state["vote_active_tab"] = "proposal"
+active_tab = st.radio(
+    "功能分頁",
+    options=list(tab_labels.keys()),
+    format_func=lambda tab_id: tab_labels[tab_id],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="vote_active_tab",
+)
 
-with tab1:
+if active_tab == "proposal":
     st.subheader("提出新辯題")
     st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
     new_topic = st.text_input("請輸入完整辯題")
@@ -644,7 +658,7 @@ with tab1:
                 st.warning("有辯題已存在於罷免動議區，該辯題將不會被重複提出。其他辯題已成功提出罷免動議。")
 
 
-with tab2:
+if active_tab == "topic_vote":
     st.subheader("待表決辯題")
     st.caption(f"只要同意票數達入庫門檻 且 同意 > 不同意，系統會自動將辯題新增至辯題庫。")
     st.caption(f"只要不同意票數達入庫門檻 且 不同意 > 同意，系統會自動刪除辯題。")
@@ -743,7 +757,7 @@ with tab2:
             st.caption("暫無記錄")
 
 
-with tab3:
+if active_tab == "depose_vote":
     st.subheader("罷免投票")
     st.caption(f"只要同意罷免票數達罷免門檻 且 同意 > 不同意，系統會自動刪除辯題。")
     st.caption(f"只要不同意罷免票數達罷免門檻 且 不同意 > 同意，系統會自動刪除罷免動議。")
@@ -858,7 +872,7 @@ with tab3:
 
 
 
-with tab4:
+if active_tab == "member_stats":
     st.subheader("成員參與率")
     st.caption("計算辯題投票及罷免投票的整體參與情況。活躍成員標準：整體投票率 ≥ 40% 且 最近10次投票至少參與3次。")
 
@@ -891,7 +905,7 @@ with tab4:
         st.info("暫無成員資料。")
 
 
-with tab5:
+if active_tab == "account":
     st.subheader("帳戶管理")
 
     with st.expander("📲 連結 Telegram Bot（接收投票通知）", expanded=True):
@@ -934,5 +948,4 @@ with tab5:
     if st.button("登出", type="primary"):
         st.session_state["committee_user"] = None
         del_cookie(cm, "committee_user")
-        time.sleep(1)
         st.rerun()
