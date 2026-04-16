@@ -143,6 +143,24 @@ _SCHEMAS = {
         ("processing_started_at", "TIMESTAMP",   "Bot 開始處理時間"),
         ("last_error_message",    "TEXT",        "最後錯誤訊息（若有）"),
     ],
+    "telegram_link_tokens — Telegram 一次連結碼": [
+        ("token_hash",   "TEXT (PK)",       "一次連結碼的 SHA-256 hash"),
+        ("user_id",      "TEXT (FK→accounts)", "對應委員帳戶"),
+        ("issued_at",    "TIMESTAMP",       "簽發時間"),
+        ("expires_at",   "TIMESTAMP",       "失效時間"),
+        ("consumed_at",  "TIMESTAMP",       "已使用時間（未使用則為 NULL）"),
+    ],
+    "committee_vote_activity_view — 委員參與統計 view": [
+        ("user_id",              "TEXT",    "委員帳戶"),
+        ("telegram_chat_id",     "TEXT",    "已連結的 Telegram chat id"),
+        ("account_status",       "TEXT",    "accounts 內現有帳戶狀態"),
+        ("total_votes",          "INTEGER", "已開始的投票事件總數"),
+        ("participated_votes",   "INTEGER", "該委員已參與的投票事件數"),
+        ("last10_participated",  "INTEGER", "最近 10 次投票中已參與的次數"),
+        ("overall_rate_pct",     "NUMERIC", "整體投票率（百分比）"),
+        ("agree_rate_pct",       "NUMERIC", "同意票比例（百分比）"),
+        ("is_active",            "BOOLEAN", "是否達到活躍成員標準"),
+    ],
 }
 
 with st.expander("📋 數據庫表結構參考", expanded=False):

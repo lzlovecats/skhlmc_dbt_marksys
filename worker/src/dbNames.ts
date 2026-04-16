@@ -13,4 +13,6 @@ export const TABLES = {
   loginRecords: "login_records",
   notificationReads: "notification_reads",
   telegramNotificationQueue: "telegram_notification_queue",
+  telegramLinkTokens: "telegram_link_tokens",
+  committeeVoteActivityView: "committee_vote_activity_view",
 } as const;

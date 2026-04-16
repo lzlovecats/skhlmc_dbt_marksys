@@ -6,6 +6,14 @@ This worker replaces the long-running Python Telegram bot with:
 - `GET /health` for smoke checks
 - cron triggers for queue draining and reminder jobs
 
+## Bot Behavior
+
+- `/link <code>` uses a one-time code generated from the website account page
+- account linking only works in a private Telegram chat
+- `/status`, `/pending`, `/myvotes`, and `/unlink` only work for linked private chats
+- notification broadcasts target linked committee accounts, not just `active` rows in `accounts`
+- a blocked / invalid Telegram chat is auto-unlinked so one bad recipient does not stall the whole queue
+
 ## Setup
 
 1. Create a Hyperdrive binding for the existing PostgreSQL database.

@@ -5,6 +5,8 @@ import pandas as pd
 import random
 import math
 import re
+import secrets
+import hashlib
 import extra_streamlit_components as stx
 import datetime
 import os
@@ -19,6 +21,7 @@ from schema import (
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
     TABLE_NOTIFICATION_READS,
+    TABLE_TELEGRAM_LINK_TOKENS,
     TABLE_SCORE_DRAFTS,
     TABLE_SCORES,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
@@ -26,6 +29,7 @@ from schema import (
     TABLE_TOPIC_VOTE_BALLOTS,
     TABLE_TOPIC_VOTES,
     TABLE_TOPICS,
+    VIEW_COMMITTEE_VOTE_ACTIVITY,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,12 +42,34 @@ CATEGORIES = [
     "香港社會政策", "青少年與教育", "哲理／價值觀"
 ]
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
+TELEGRAM_LINK_CODE_TTL_MINUTES = 10
+_TELEGRAM_LINK_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def normalize_judge_name(name: str) -> str:
     raw = str(name or "").replace("\u3000", " ").strip()
     raw = " ".join(raw.split())
     return "".join(ch.lower() if "A" <= ch <= "Z" else ch for ch in raw)
+
+
+def normalize_telegram_link_code(code: str) -> str:
+    return re.sub(r"[^A-Z2-9]", "", str(code or "").upper())
+
+
+def hash_telegram_link_code(code: str) -> str:
+    normalized = normalize_telegram_link_code(code)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def generate_telegram_link_code() -> str:
+    raw = "".join(secrets.choice(_TELEGRAM_LINK_CODE_ALPHABET) for _ in range(12))
+    return "-".join([raw[0:4], raw[4:8], raw[8:12]])
+
+
+def is_committee_member_active(total_votes: int, participated_votes: int, last10_participated: int) -> bool:
+    if total_votes <= 0:
+        return False
+    return (participated_votes / total_votes) >= 0.4 and last10_participated >= 3
 
 
 def _serialize_score_data(score_data):
@@ -807,36 +833,55 @@ def return_expire_day():
     return datetime.datetime.now() + datetime.timedelta(days=1)
 
 
-_ACTIVITY_SQL = f"""
-WITH tv_events AS (
-    SELECT DISTINCT tv.topic_text, tv.created_at
-    FROM {TABLE_TOPIC_VOTES} tv
-    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text)
-),
-tdv_events AS (
-    SELECT DISTINCT tdv.topic_text, tdv.created_at
-    FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
-    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = tdv.topic_text)
-),
-all_events AS (
-    SELECT topic_text, created_at, 'tv'  AS vote_source FROM tv_events
-    UNION ALL
-    SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
-),
-past_10 AS (
-    SELECT topic_text, vote_source FROM all_events ORDER BY created_at DESC LIMIT 10
-)
+def issue_telegram_link_code(user_id: str) -> tuple[str, datetime.datetime]:
+    code = generate_telegram_link_code()
+    token_hash = hash_telegram_link_code(code)
+    expires_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")) + datetime.timedelta(minutes=TELEGRAM_LINK_CODE_TTL_MINUTES)
+    conn = get_connection()
+
+    with conn.session as s:
+        s.execute(
+            text(
+                f"DELETE FROM {TABLE_TELEGRAM_LINK_TOKENS} "
+                "WHERE user_id = :user_id AND consumed_at IS NULL"
+            ),
+            {"user_id": user_id},
+        )
+        s.execute(
+            text(
+                f"INSERT INTO {TABLE_TELEGRAM_LINK_TOKENS} "
+                "(token_hash, user_id, issued_at, expires_at) "
+                f"VALUES (:token_hash, :user_id, NOW(), NOW() + INTERVAL '{TELEGRAM_LINK_CODE_TTL_MINUTES} minutes')"
+            ),
+            {"token_hash": token_hash, "user_id": user_id},
+        )
+        s.commit()
+
+    return code, expires_at
+
+
+_ACTIVITY_VIEW_SQL = f"""
 SELECT
-    (SELECT COUNT(*) FROM all_events) AS total_votes,
-    (SELECT COUNT(*) FROM all_events ae
-     WHERE (ae.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = :user_id))
-        OR (ae.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = :user_id))
-    ) AS total_participated,
-    (SELECT COUNT(*) FROM past_10 p
-     WHERE (p.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = :user_id))
-        OR (p.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = :user_id))
-    ) AS votes_in_last_10
+    user_id,
+    telegram_chat_id,
+    account_status,
+    total_votes,
+    participated_votes,
+    last10_participated,
+    total_ballots,
+    agree_ballots,
+    overall_rate_pct,
+    agree_rate_pct,
+    is_active
+FROM {VIEW_COMMITTEE_VOTE_ACTIVITY}
+ORDER BY user_id
 """
+
+
+def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "t", "1", "yes"}
 
 
 def refresh_acc_type(user_id: str) -> str | None:
@@ -847,14 +892,14 @@ def refresh_acc_type(user_id: str) -> str | None:
     if acc.empty or str(acc.iloc[0]["account_status"]).strip() == "admin" or str(acc.iloc[0]["account_status"]).strip() == "developer":
         return None
 
-    result = query_params(_ACTIVITY_SQL, {"user_id": user_id})
-    total_votes      = int(result.iloc[0]["total_votes"])
-    total_participated = int(result.iloc[0]["total_participated"])
-    votes_in_last_10 = int(result.iloc[0]["votes_in_last_10"])
-
-    overall_rate = total_participated / total_votes if total_votes > 0 else 0.0
-    # Active criteria (matches user manual): overall rate ≥ 40% AND last-10 participation ≥ 3
-    new_status = "active" if (overall_rate >= 0.4 and votes_in_last_10 >= 3) else "inactive"
+    result = query_params(
+        f"SELECT is_active FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} WHERE user_id = :user_id",
+        {"user_id": user_id},
+    )
+    if result.empty:
+        new_status = "inactive"
+    else:
+        new_status = "active" if _coerce_bool(result.iloc[0]["is_active"]) else "inactive"
     execute_query(
         f"UPDATE {TABLE_ACCOUNTS} SET account_status = :account_status WHERE user_id = :user_id",
         {"account_status": new_status, "user_id": user_id}
@@ -865,56 +910,13 @@ def refresh_acc_type(user_id: str) -> str | None:
 def refresh_all_acc_type():
     """Batch-update account_status for all non-admin/developer accounts in a single query."""
     execute_query(f"""
-        WITH tv_events AS (
-            SELECT DISTINCT tv.topic_text, tv.created_at
-            FROM {TABLE_TOPIC_VOTES} tv
-            WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text)
-        ),
-        tdv_events AS (
-            SELECT DISTINCT tdv.topic_text, tdv.created_at
-            FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
-            WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = tdv.topic_text)
-        ),
-        all_events AS (
-            SELECT topic_text, created_at, 'tv' AS vote_source FROM tv_events
-            UNION ALL
-            SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
-        ),
-        event_count AS (
-            SELECT COUNT(*) AS total FROM all_events
-        ),
-        past_10 AS (
-            SELECT topic_text, vote_source FROM all_events ORDER BY created_at DESC LIMIT 10
-        ),
-        user_stats AS (
-            SELECT
-                a.user_id,
-                COALESCE(SUM(CASE
-                    WHEN ae.vote_source = 'tv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id) THEN 1
-                    WHEN ae.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id) THEN 1
-                    ELSE 0
-                END), 0) AS total_participated,
-                (SELECT total FROM event_count) AS total_votes,
-                COALESCE((
-                    SELECT COUNT(*) FROM past_10 p
-                    WHERE (p.vote_source = 'tv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
-                       OR (p.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
-                ), 0) AS votes_in_last_10
-            FROM {TABLE_ACCOUNTS} a
-            CROSS JOIN all_events ae
-            WHERE a.account_status NOT IN ('admin', 'developer')
-            GROUP BY a.user_id, (SELECT total FROM event_count)
-        )
-        UPDATE {TABLE_ACCOUNTS}
+        UPDATE {TABLE_ACCOUNTS} AS accounts
         SET account_status = CASE
-            WHEN us.total_votes > 0
-                 AND us.total_participated::float / us.total_votes >= 0.4
-                 AND us.votes_in_last_10 >= 3
-            THEN 'active'
+            WHEN activity.is_active THEN 'active'
             ELSE 'inactive'
         END
-        FROM user_stats us
-        WHERE {TABLE_ACCOUNTS}.user_id = us.user_id
+        FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} AS activity
+        WHERE accounts.user_id = activity.user_id
     """)
 
 
@@ -935,61 +937,10 @@ def return_chatgpt_reminder():
     return load_markdown_asset("chatgpt_reminder.md")
 
 
-_ALL_USER_STATS_SQL = f"""
-WITH tv_events AS (
-    SELECT DISTINCT tv.topic_text, tv.created_at
-    FROM {TABLE_TOPIC_VOTES} tv
-    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text)
-),
-tdv_events AS (
-    SELECT DISTINCT tdv.topic_text, tdv.created_at
-    FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
-    WHERE EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = tdv.topic_text)
-),
-all_events AS (
-    SELECT topic_text, created_at, 'tv' AS vote_source FROM tv_events
-    UNION ALL
-    SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
-),
-event_count AS (
-    SELECT COUNT(*) AS total FROM all_events
-),
-past_10 AS (
-    SELECT topic_text, vote_source FROM all_events ORDER BY created_at DESC LIMIT 10
-),
-ballot_summary AS (
-    SELECT user_id, COUNT(*) AS total_ballots,
-           SUM(CASE WHEN vote_choice = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
-    FROM (
-        SELECT user_id, vote_choice FROM {TABLE_TOPIC_VOTE_BALLOTS}
-        UNION ALL
-        SELECT user_id, vote_choice FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
-    ) cb
-    GROUP BY user_id
-)
-SELECT
-    a.user_id,
-    (SELECT total FROM event_count) AS total_votes,
-    (SELECT COUNT(*) FROM all_events ae
-     WHERE (ae.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id))
-        OR (ae.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = ae.topic_text AND b.user_id = a.user_id))
-    ) AS total_participated,
-    (SELECT COUNT(*) FROM past_10 p
-     WHERE (p.vote_source = 'tv'  AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
-        OR (p.vote_source = 'tdv' AND EXISTS (SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b WHERE b.topic_text = p.topic_text AND b.user_id = a.user_id))
-    ) AS votes_in_last_10,
-    COALESCE(bs.total_ballots, 0) AS total_ballots,
-    COALESCE(bs.agree_ballots, 0) AS agree_ballots
-FROM {TABLE_ACCOUNTS} a
-LEFT JOIN ballot_summary bs ON bs.user_id = a.user_id
-WHERE a.user_id NOT IN ('admin', 'developer', '')
-"""
-
-
 @st.cache_data(ttl=60)
 def _compute_all_user_stats():
     """Compute participation stats for all users in a single SQL query."""
-    return query_params(_ALL_USER_STATS_SQL)
+    return query_params(_ACTIVITY_VIEW_SQL)
 
 
 @st.cache_data(ttl=60)
@@ -1004,10 +955,7 @@ def get_active_user_count():
     total_votes = int(df.iloc[0]["total_votes"])
     if total_votes == 0:
         return 0, []
-    active = df[
-        (df["total_participated"].astype(float) / total_votes >= 0.4) &
-        (df["votes_in_last_10"] >= 3)
-    ]
+    active = df[df["is_active"].apply(_coerce_bool)]
     return len(active), [str(user_id).strip() for user_id in active["user_id"].tolist()]
 
 
@@ -1024,13 +972,13 @@ def get_member_participation_stats():
 
     stats = []
     for _, row in df.iterrows():
-        participated = int(row["total_participated"])
+        participated = int(row["participated_votes"])
         overall_rate = participated / total_votes if total_votes > 0 else 0
-        last10 = int(row["votes_in_last_10"])
+        last10 = int(row["last10_participated"])
         total_ballots = int(row["total_ballots"])
         agree_ballots = int(row["agree_ballots"])
         agree_rate = agree_ballots / total_ballots if total_ballots > 0 else None
-        is_active = overall_rate >= 0.4 and last10 >= 3
+        is_active = _coerce_bool(row["is_active"])
 
         stats.append({
             "用戶": str(row["user_id"]).strip(),

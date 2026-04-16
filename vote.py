@@ -1,7 +1,7 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, issue_telegram_link_code, TELEGRAM_LINK_CODE_TTL_MINUTES, CATEGORIES, DIFFICULTY_OPTIONS
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_TELEGRAM_NOTIFICATION_QUEUE,
@@ -910,19 +910,34 @@ if active_tab == "account":
 
     with st.expander("📲 連結 Telegram Bot（接收投票通知）", expanded=True):
         st.markdown(
-            "連結後你將透過 Telegram 收到新辯題通知、截止提醒及投票結果公告。"
+            "連結後你將透過 Telegram 收到新辯題通知、截止提醒、投票結果公告及活躍度提醒。"
         )
+        if st.button("Generate Telegram OTP", use_container_width=True):
+            try:
+                link_code, expires_at = issue_telegram_link_code(user_id)
+                st.session_state["telegram_link_code"] = link_code
+                st.session_state["telegram_link_expires_at"] = expires_at.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                st.error("產生 Telegram 連結碼時出現錯誤。請聯絡管理員檢查Database Schema。")
+
+        current_link_code = st.session_state.get("telegram_link_code")
+        current_link_expiry = st.session_state.get("telegram_link_expires_at")
+        if current_link_code and current_link_expiry:
+            st.info(f"此連結碼將於 {current_link_expiry}（HKT）失效。")
+            st.code(f"/link {current_link_code}")
+
         st.markdown(
             "**使用步驟：**\n"
-            "1. 點擊下方連結，開啟 Bot 對話視窗\n"
-            f"2. 發送 `/link {user_id}` 完成連結\n"
-            "3. 發送 `/status` 確認連結狀態"
+            "1. 點擊下方link\n"
+            f"2. 按上方按鈕產生一個 {TELEGRAM_LINK_CODE_TTL_MINUTES} 分鐘內有效的OTP\n"
+            "3. 在 Bot 私訊發送 `/link <OTP>` 完成連結\n"
+            "4. 發送 `/status` 確認連結狀態"
         )
         st.link_button(
             "🤖 前往 Telegram Bot（@lmcdbt_marysys_bot）",
             "https://t.me/lmcdbt_marysys_bot",
         )
-        st.caption("如需解除連結，在 Bot 發送 /unlink 即可。")
+        st.caption("向 Bot 發送 /unlink 即可取消連結。")
 
     st.divider()
 

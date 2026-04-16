@@ -116,14 +116,20 @@ If rows are stuck:
 3. Confirm Telegram secrets are valid
 4. Confirm Hyperdrive still points to the correct database
 
+Notes:
+
+- Permanent Telegram delivery errors such as blocked / deleted chats are auto-unlinked and should not keep the queue row stuck.
+- `last_error_message` is mainly for rows that fully failed with transient errors; partial-success broadcasts are marked processed after valid recipients are delivered.
+
 ## Smoke Test Checklist
 
 After deploy:
 
 1. `curl /health`
-2. Send `/help` to the bot
-3. Send `/status` to the bot
-4. Trigger a new queue event from the app and confirm delivery
+2. Generate a one-time link code from the website account page
+3. Send `/link <code>` to the bot in a private chat
+4. Send `/status` to the bot
+5. Trigger a new queue event from the app and confirm delivery
 
 ## Rollback
 

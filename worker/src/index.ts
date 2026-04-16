@@ -17,7 +17,7 @@ type TelegramUpdate = {
 };
 
 type TelegramMessage = {
-  chat: { id: number | string };
+  chat: { id: number | string; type?: string };
   from?: { id: number | string };
   text?: string;
 };
@@ -37,13 +37,32 @@ type QueueRow = {
   processing_token: string;
 };
 
-type ActivityWarningRow = {
+type ActivityRow = {
   user_id: string;
   telegram_chat_id: string;
-  participated: number | string;
+  account_status: string;
+  participated_votes: number | string;
   total_votes: number | string;
-  rate_pct: number | string | null;
-  last10_count: number | string | null;
+  overall_rate_pct: number | string | null;
+  last10_participated: number | string | null;
+  is_active: boolean | string | null;
+};
+
+type LinkedAccountRow = {
+  user_id: string;
+  account_status: string;
+};
+
+type LinkTokenRow = {
+  user_id: string;
+  is_expired: boolean;
+  is_consumed: boolean;
+};
+
+type DeliveryStats = {
+  attempted: number;
+  delivered: number;
+  transientFailures: string[];
 };
 
 const DRAIN_QUEUE_CRON = "*/15 * * * *";
@@ -51,6 +70,13 @@ const DEADLINE_REMINDERS_CRON = "0 1 * * *";
 const ACTIVITY_WARNINGS_CRON = "0 9 * * FRI";
 const CLAIM_STALE_AFTER = "1 hour";
 const BOT_API_BASE = "https://api.telegram.org";
+const PERMANENT_TELEGRAM_ERROR_SNIPPETS = [
+  "bot was blocked by the user",
+  "chat not found",
+  "user is deactivated",
+  "bot was kicked",
+  "user is deleted",
+];
 
 const STATUS_LABELS: Record<string, string> = {
   admin: "管理員",
@@ -62,17 +88,16 @@ const TOPIC_24H_SQL = `
 SELECT
     tv.topic_text,
     tv.deadline_date,
-    a.telegram_chat_id
+    activity.telegram_chat_id
 FROM ${TABLES.topicVotes} tv
-CROSS JOIN ${TABLES.accounts} a
+CROSS JOIN ${TABLES.committeeVoteActivityView} activity
 WHERE tv.status = 'pending'
-  AND a.account_status = 'active'
-  AND a.telegram_chat_id IS NOT NULL
+  AND activity.telegram_chat_id IS NOT NULL
   AND tv.deadline_date = CURRENT_DATE + INTERVAL '1 day'
   AND NOT EXISTS (
       SELECT 1 FROM ${TABLES.topicVoteBallots} b
       WHERE b.topic_text = tv.topic_text
-        AND b.user_id = a.user_id
+        AND b.user_id = activity.user_id
   )
 `;
 
@@ -80,77 +105,33 @@ const DEPOSE_24H_SQL = `
 SELECT
     tdv.topic_text,
     tdv.deadline_date,
-    a.telegram_chat_id
+    activity.telegram_chat_id
 FROM ${TABLES.topicRemovalVotes} tdv
-CROSS JOIN ${TABLES.accounts} a
+CROSS JOIN ${TABLES.committeeVoteActivityView} activity
 WHERE tdv.status = 'pending'
-  AND a.account_status = 'active'
-  AND a.telegram_chat_id IS NOT NULL
+  AND activity.telegram_chat_id IS NOT NULL
   AND tdv.deadline_date = CURRENT_DATE + INTERVAL '1 day'
   AND NOT EXISTS (
       SELECT 1 FROM ${TABLES.topicRemovalVoteBallots} b
       WHERE b.topic_text = tdv.topic_text
-        AND b.user_id = a.user_id
+        AND b.user_id = activity.user_id
   )
 `;
 
 const ACTIVITY_WARNING_SQL = `
-WITH all_votes AS (
-    SELECT tv.topic_text, 'tv' AS vote_source, tv.created_at FROM ${TABLES.topicVotes} tv
-    UNION ALL
-    SELECT tdv.topic_text, 'tdv' AS vote_source, tdv.created_at FROM ${TABLES.topicRemovalVotes} tdv
-),
-vote_events AS (
-    SELECT DISTINCT topic_text, vote_source FROM all_votes
-),
-total_events AS (
-    SELECT COUNT(*) AS total_votes FROM vote_events
-),
-last10 AS (
-    SELECT topic_text, vote_source
-    FROM (
-        SELECT topic_text, vote_source, created_at,
-               ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
-        FROM all_votes
-    ) ranked
-    WHERE rn <= 10
-),
-member_stats AS (
-    SELECT
-        a.user_id,
-        a.telegram_chat_id,
-        COUNT(DISTINCT CASE WHEN b.user_id = a.user_id THEN ve.topic_text || ve.vote_source END) AS participated,
-        COUNT(DISTINCT CASE WHEN b.user_id = a.user_id
-                            THEN l10.topic_text || l10.vote_source END) AS last10_count,
-        te.total_votes
-    FROM ${TABLES.accounts} a
-    CROSS JOIN total_events te
-    LEFT JOIN vote_events ve ON TRUE
-    LEFT JOIN (
-        SELECT tvb.topic_text, 'tv' AS vote_source, tvb.user_id FROM ${TABLES.topicVoteBallots} tvb
-        UNION ALL
-        SELECT dvb.topic_text, 'tdv' AS vote_source, dvb.user_id FROM ${TABLES.topicRemovalVoteBallots} dvb
-    ) b ON b.topic_text = ve.topic_text AND b.vote_source = ve.vote_source AND b.user_id = a.user_id
-    LEFT JOIN last10 l10 ON TRUE
-    WHERE a.account_status IN ('active', 'inactive')
-      AND a.telegram_chat_id IS NOT NULL
-    GROUP BY a.user_id, a.telegram_chat_id, te.total_votes
-)
 SELECT
     user_id,
     telegram_chat_id,
-    participated,
+    account_status,
+    participated_votes,
     total_votes,
-    CASE WHEN total_votes > 0
-         THEN ROUND(participated::numeric / total_votes * 100, 1)
-         ELSE 0 END AS rate_pct,
-    last10_count
-FROM member_stats
+    overall_rate_pct,
+    last10_participated,
+    is_active
+FROM ${TABLES.committeeVoteActivityView}
 WHERE total_votes > 0
-  AND (
-      (total_votes > 0 AND participated::numeric / total_votes < 0.4)
-      OR last10_count < 3
-  )
+  AND telegram_chat_id IS NOT NULL
+  AND is_active = FALSE
 `;
 
 export function buildVotePageUrl(appUrl: string): string {
@@ -182,6 +163,27 @@ export function normalizeCommand(text?: string | null): { command: string; args:
     command: `/${command}`,
     args: parts.slice(1),
   };
+}
+
+export function isPrivateChat(message: TelegramMessage): boolean {
+  return message.chat.type === "private";
+}
+
+export function normalizeLinkCode(value?: string | null): string {
+  return String(value ?? "").toUpperCase().replace(/[^A-Z2-9]/g, "");
+}
+
+export async function hashTelegramLinkCode(code: string): Promise<string> {
+  const normalized = normalizeLinkCode(code);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function isPermanentTelegramError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return PERMANENT_TELEGRAM_ERROR_SNIPPETS.some((snippet) => lower.includes(snippet));
 }
 
 export function buildPendingMessage(
@@ -329,7 +331,44 @@ async function withClient<T>(env: Env, run: (client: Client) => Promise<T>): Pro
   }
 }
 
-async function handleTelegramCommand(client: Client, env: Env, message: TelegramMessage): Promise<void> {
+async function getLinkedAccountByChatId(client: Client, tgChatId: string): Promise<LinkedAccountRow | null> {
+  const result = await client.query<LinkedAccountRow>(
+    `
+    SELECT user_id, account_status
+    FROM ${TABLES.accounts}
+    WHERE telegram_chat_id = $1
+      AND user_id NOT IN ('admin', 'developer', '')
+    `,
+    [tgChatId],
+  );
+  return (result.rowCount ?? 0) > 0 ? result.rows[0] : null;
+}
+
+async function requireLinkedPrivateAccount(
+  client: Client,
+  env: Env,
+  message: TelegramMessage,
+): Promise<LinkedAccountRow | null> {
+  const tgChatId = String(message.chat.id);
+  if (!isPrivateChat(message)) {
+    await sendMessage(env, tgChatId, "請以 Telegram 私訊使用此指令。");
+    return null;
+  }
+
+  const linkedAccount = await getLinkedAccountByChatId(client, tgChatId);
+  if (!linkedAccount) {
+    await sendMessage(
+      env,
+      tgChatId,
+      "此 Telegram 帳戶未連結任何委員帳戶。\n請先到網站帳戶管理頁產生一次連結碼，再使用 /link <code> 進行連結。",
+    );
+    return null;
+  }
+
+  return linkedAccount;
+}
+
+export async function handleTelegramCommand(client: Client, env: Env, message: TelegramMessage): Promise<void> {
   const parsed = normalizeCommand(message.text);
   if (!parsed) {
     return;
@@ -360,82 +399,140 @@ async function handleTelegramCommand(client: Client, env: Env, message: Telegram
 }
 
 async function cmdLink(client: Client, env: Env, message: TelegramMessage, args: string[]): Promise<void> {
-  if (args.length === 0) {
-    await sendMessage(env, String(message.chat.id), "用法：/link <你的個人帳戶用戶名稱>\n例如：/link leungph");
-    return;
-  }
-
-  const userId = args[0].trim();
   const tgChatId = String(message.chat.id);
-  const tgUserId = String(message.from?.id ?? "");
-
-  const account = await client.query<{ user_id: string; account_status: string }>(
-    `SELECT user_id, account_status FROM ${TABLES.accounts} WHERE user_id = $1`,
-    [userId],
-  );
-  if ((account.rowCount ?? 0) === 0) {
-    await sendMessage(env, tgChatId, `找不到委員帳戶「${userId}」。請確認用戶名稱是否正確。`);
+  if (!isPrivateChat(message)) {
+    await sendMessage(env, tgChatId, "請以 Telegram 私訊使用 /link，群組或頻道不接受連結。");
     return;
   }
 
-  const existing = await client.query<{ user_id: string }>(
-    `SELECT user_id FROM ${TABLES.accounts} WHERE telegram_chat_id = $1 AND user_id != $2`,
-    [tgChatId, userId],
-  );
-  if ((existing.rowCount ?? 0) > 0) {
+  if (args.length === 0) {
+    await sendMessage(env, tgChatId, "用法：/link <一次連結碼>\n請先到網站帳戶管理頁產生連結碼。");
+    return;
+  }
+
+  const normalizedCode = normalizeLinkCode(args[0]);
+  if (!normalizedCode) {
+    await sendMessage(env, tgChatId, "連結碼格式不正確。請返回網站重新產生後再試。");
+    return;
+  }
+
+  const tokenHash = await hashTelegramLinkCode(normalizedCode);
+  const tgUserId = String(message.from?.id ?? "");
+  await client.query("BEGIN");
+  try {
+    const tokenResult = await client.query<LinkTokenRow>(
+      `
+      SELECT
+          user_id,
+          expires_at <= NOW() AS is_expired,
+          consumed_at IS NOT NULL AS is_consumed
+      FROM ${TABLES.telegramLinkTokens}
+      WHERE token_hash = $1
+      FOR UPDATE
+      `,
+      [tokenHash],
+    );
+    if ((tokenResult.rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      await sendMessage(env, tgChatId, "連結碼無效。請返回網站重新產生後再試。");
+      return;
+    }
+
+    const tokenRow = tokenResult.rows[0];
+    if (tokenRow.is_consumed) {
+      await client.query("ROLLBACK");
+      await sendMessage(env, tgChatId, "此連結碼已被使用。請返回網站重新產生後再試。");
+      return;
+    }
+    if (tokenRow.is_expired) {
+      await client.query("ROLLBACK");
+      await sendMessage(env, tgChatId, "此連結碼已過期。請返回網站重新產生後再試。");
+      return;
+    }
+
+    const conflict = await client.query<{ user_id: string }>(
+      `
+      SELECT user_id
+      FROM ${TABLES.accounts}
+      WHERE (telegram_chat_id = $1 OR telegram_user_id = $2)
+        AND user_id != $3
+      LIMIT 1
+      `,
+      [tgChatId, tgUserId, tokenRow.user_id],
+    );
+    if ((conflict.rowCount ?? 0) > 0) {
+      await client.query("ROLLBACK");
+      await sendMessage(
+        env,
+        tgChatId,
+        `此 Telegram 帳戶已連結至委員帳戶「${conflict.rows[0].user_id}」。\n請先發送 /unlink 解除連結後再試。`,
+      );
+      return;
+    }
+
+    const account = await client.query<{ account_status: string }>(
+      `SELECT account_status FROM ${TABLES.accounts} WHERE user_id = $1`,
+      [tokenRow.user_id],
+    );
+    if ((account.rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      await sendMessage(env, tgChatId, "找不到對應的委員帳戶。請返回網站重新產生連結碼。");
+      return;
+    }
+
+    await client.query(
+      `UPDATE ${TABLES.accounts} SET telegram_user_id = $1, telegram_chat_id = $2 WHERE user_id = $3`,
+      [tgUserId, tgChatId, tokenRow.user_id],
+    );
+    await client.query(
+      `UPDATE ${TABLES.telegramLinkTokens} SET consumed_at = NOW() WHERE token_hash = $1`,
+      [tokenHash],
+    );
+    await client.query("COMMIT");
+
+    const accType = account.rows[0].account_status;
+    const statusLabel = STATUS_LABELS[accType] ?? accType;
     await sendMessage(
       env,
       tgChatId,
-      `此 Telegram 帳戶已連結至委員帳戶「${existing.rows[0].user_id}」。\n請先發送 /unlink 解除連結後再試。`,
+      `✅ 連結成功！\n\n委員帳戶：${tokenRow.user_id}\n帳戶狀態：${statusLabel}\n\n你將會收到委員通知。\n前往投票：${buildVotePageUrl(env.APP_URL)}`,
     );
+    return;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
+async function cmdUnlink(client: Client, env: Env, message: TelegramMessage): Promise<void> {
+  const linkedAccount = await requireLinkedPrivateAccount(client, env, message);
+  if (!linkedAccount) {
     return;
   }
 
   await client.query(
-    `UPDATE ${TABLES.accounts} SET telegram_user_id = $1, telegram_chat_id = $2 WHERE user_id = $3`,
-    [tgUserId, tgChatId, userId],
+    `UPDATE ${TABLES.accounts} SET telegram_user_id = NULL, telegram_chat_id = NULL WHERE user_id = $1`,
+    [linkedAccount.user_id],
   );
-
-  const accType = account.rows[0].account_status;
-  const statusLabel = STATUS_LABELS[accType] ?? accType;
-  await sendMessage(
-    env,
-    tgChatId,
-    `✅ 連結成功！\n\n委員帳戶：${userId}\n帳戶狀態：${statusLabel}\n\n你將會收到辯題投票通知。\n前往投票：${buildVotePageUrl(env.APP_URL)}`,
-  );
-}
-
-async function cmdUnlink(client: Client, env: Env, message: TelegramMessage): Promise<void> {
-  const tgChatId = String(message.chat.id);
-  const result = await client.query(
-    `UPDATE ${TABLES.accounts} SET telegram_user_id = NULL, telegram_chat_id = NULL WHERE telegram_chat_id = $1`,
-    [tgChatId],
-  );
-  if ((result.rowCount ?? 0) === 1) {
-    await sendMessage(env, tgChatId, "已成功解除 Telegram 帳戶連結。");
-    return;
-  }
-
-  await sendMessage(env, tgChatId, "此 Telegram 帳戶未連結任何委員帳戶。\n使用 /link <userid> 進行連結。");
+  await sendMessage(env, String(message.chat.id), "已成功解除 Telegram 帳戶連結。");
 }
 
 async function cmdStatus(client: Client, env: Env, message: TelegramMessage): Promise<void> {
-  const tgChatId = String(message.chat.id);
-  const result = await client.query<{ user_id: string; account_status: string }>(
-    `SELECT user_id, account_status FROM ${TABLES.accounts} WHERE telegram_chat_id = $1`,
-    [tgChatId],
-  );
-  if ((result.rowCount ?? 0) === 0) {
-    await sendMessage(env, tgChatId, "此 Telegram 帳戶未連結任何委員帳戶。\n使用 /link <userid> 進行連結。");
+  const linkedAccount = await requireLinkedPrivateAccount(client, env, message);
+  if (!linkedAccount) {
     return;
   }
 
-  const row = result.rows[0];
-  const statusLabel = STATUS_LABELS[row.account_status] ?? row.account_status;
-  await sendMessage(env, tgChatId, `已連結帳戶：${row.user_id}\n帳戶狀態：${statusLabel}`);
+  const statusLabel = STATUS_LABELS[linkedAccount.account_status] ?? linkedAccount.account_status;
+  await sendMessage(env, String(message.chat.id), `已連結帳戶：${linkedAccount.user_id}\n帳戶狀態：${statusLabel}`);
 }
 
 async function cmdPending(client: Client, env: Env, message: TelegramMessage): Promise<void> {
+  const linkedAccount = await requireLinkedPrivateAccount(client, env, message);
+  if (!linkedAccount) {
+    return;
+  }
+
   const topicRows = await client.query<PendingRow>(`
     SELECT tv.topic_text, tv.deadline_date, tv.approval_threshold,
            COUNT(CASE WHEN b.vote_choice = 'agree' THEN 1 END)   AS agree_count,
@@ -466,68 +563,41 @@ async function cmdPending(client: Client, env: Env, message: TelegramMessage): P
 }
 
 async function cmdMyVotes(client: Client, env: Env, message: TelegramMessage): Promise<void> {
-  const tgChatId = String(message.chat.id);
-  const account = await client.query<{ user_id: string; account_status: string }>(
-    `SELECT user_id, account_status FROM ${TABLES.accounts} WHERE telegram_chat_id = $1`,
-    [tgChatId],
-  );
-  if ((account.rowCount ?? 0) === 0) {
-    await sendMessage(env, tgChatId, "此 Telegram 帳戶未連結任何委員帳戶。\n使用 /link <userid> 進行連結。");
+  const linkedAccount = await requireLinkedPrivateAccount(client, env, message);
+  if (!linkedAccount) {
     return;
   }
 
-  const userId = account.rows[0].user_id;
-  const stats = await client.query<{
-    total_votes: number | string | null;
-    participated_votes: number | string | null;
-    last10_count: number | string | null;
-  }>(
+  const stats = await client.query<ActivityRow>(
     `
-    WITH vote_events AS (
-        SELECT topic_text, 'tv' AS vote_source FROM ${TABLES.topicVotes}
-        UNION ALL
-        SELECT topic_text, 'tdv' AS vote_source FROM ${TABLES.topicRemovalVotes}
-    ),
-    ballots AS (
-        SELECT topic_text, 'tv' AS vote_source FROM ${TABLES.topicVoteBallots} WHERE user_id = $1
-        UNION ALL
-        SELECT topic_text, 'tdv' AS vote_source FROM ${TABLES.topicRemovalVoteBallots} WHERE user_id = $1
-    ),
-    last10 AS (
-        SELECT topic_text, vote_source
-        FROM (
-            SELECT topic_text, vote_source, created_at,
-                   ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
-            FROM (
-                SELECT topic_text, 'tv' AS vote_source, created_at FROM ${TABLES.topicVotes}
-                UNION ALL
-                SELECT topic_text, 'tdv' AS vote_source, created_at FROM ${TABLES.topicRemovalVotes}
-            ) all_ev
-        ) ranked
-        WHERE rn <= 10
-    )
     SELECT
-        (SELECT COUNT(*) FROM vote_events) AS total_votes,
-        (SELECT COUNT(*) FROM ballots) AS participated_votes,
-        (SELECT COUNT(*) FROM ballots b JOIN last10 l ON b.topic_text = l.topic_text AND b.vote_source = l.vote_source) AS last10_count
+        user_id,
+        account_status,
+        participated_votes,
+        total_votes,
+        overall_rate_pct,
+        last10_participated,
+        is_active
+    FROM ${TABLES.committeeVoteActivityView}
+    WHERE user_id = $1
     `,
-    [userId],
+    [linkedAccount.user_id],
   );
 
   const statRow = stats.rows[0];
-  const total = toNumber(statRow.total_votes);
-  const participated = toNumber(statRow.participated_votes);
-  const last10 = toNumber(statRow.last10_count);
+  const total = toNumber(statRow?.total_votes);
+  const participated = toNumber(statRow?.participated_votes);
+  const last10 = toNumber(statRow?.last10_participated);
   const rate = total > 0 ? roundOneDecimal((participated / total) * 100) : 0;
-  const accType = account.rows[0].account_status;
+  const accType = statRow?.account_status ?? linkedAccount.account_status;
   const statusLabel = STATUS_LABELS[accType] ?? accType;
   const rateOk = rate >= 40 ? "✅" : "⚠️";
   const last10Ok = last10 >= 3 ? "✅" : "⚠️";
 
   await sendHtml(
     env,
-    tgChatId,
-    `<b>📊 個人投票紀錄 — ${escapeHtml(userId)}</b>\n\n` +
+    String(message.chat.id),
+    `<b>📊 個人投票紀錄 — ${escapeHtml(linkedAccount.user_id)}</b>\n\n` +
       `帳戶狀態：${escapeHtml(statusLabel)}\n` +
       `${rateOk} 整體投票率：${rate}%（${participated} / ${total} 次）\n` +
       `${last10Ok} 最近 10 次參與：${last10} 次\n\n` +
@@ -540,11 +610,11 @@ async function cmdHelp(env: Env, message: TelegramMessage): Promise<void> {
     env,
     String(message.chat.id),
     "<b>聖呂中辯電子分紙系統 — Telegram Bot 使用說明</b>\n\n" +
-      "/link &lt;userid&gt; — 連結你的委員帳戶\n" +
-      "/unlink — 解除 Telegram 連結\n" +
-      "/status — 查看連結狀態及帳戶類型\n" +
-      "/pending — 查看所有待表決的辯題及罷免動議\n" +
-      "/myvotes — 查看個人投票參與率\n" +
+      "/link &lt;code&gt; — 使用網站產生的一次連結碼綁定帳戶（只限私訊）\n" +
+      "/unlink — 解除 Telegram 連結（只限私訊）\n" +
+      "/status — 查看連結狀態及帳戶類型（只限私訊）\n" +
+      "/pending — 查看所有待表決的辯題及罷免動議（只限私訊）\n" +
+      "/myvotes — 查看個人投票參與率（只限私訊）\n" +
       "/help — 顯示此說明\n\n" +
       `前往投票系統：${escapeHtml(buildVotePageUrl(env.APP_URL))}`,
     true,
@@ -561,21 +631,26 @@ async function drainQueue(client: Client, env: Env): Promise<void> {
   for (const row of rows) {
     const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
     try {
+      let delivery: DeliveryStats;
       switch (row.notification_type) {
         case "new_topic":
-          await notifyNewTopicVote(client, env, payload as NewTopicPayload);
+          delivery = await notifyNewTopicVote(client, env, payload as NewTopicPayload);
           break;
         case "new_depose":
-          await notifyNewDeposeVote(client, env, payload as NewDeposePayload);
+          delivery = await notifyNewDeposeVote(client, env, payload as NewDeposePayload);
           break;
         case "vote_result":
-          await notifyVoteResult(client, env, payload as VoteResultPayload);
+          delivery = await notifyVoteResult(client, env, payload as VoteResultPayload);
           break;
         default:
           throw new Error(`Unknown notification_type '${row.notification_type}'`);
       }
 
-      await markQueueRowProcessed(client, row.id, row.processing_token);
+      if (delivery.delivered > 0 || delivery.transientFailures.length === 0) {
+        await markQueueRowProcessed(client, row.id, row.processing_token);
+      } else {
+        await releaseQueueRow(client, row.id, row.processing_token, delivery.transientFailures.join(" | "));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("Failed to process queue row", { id: row.id, notificationType: row.notification_type, error: message });
@@ -674,14 +749,58 @@ type VoteResultPayload = {
   threshold: number | string;
 };
 
-async function notifyNewTopicVote(client: Client, env: Env, payload: NewTopicPayload): Promise<void> {
+async function getCommitteeAudienceChatIds(client: Client): Promise<string[]> {
   const rows = await client.query<{ telegram_chat_id: string }>(
-    `SELECT telegram_chat_id FROM ${TABLES.accounts} WHERE account_status = 'active' AND telegram_chat_id IS NOT NULL`,
+    `
+    SELECT telegram_chat_id
+    FROM ${TABLES.committeeVoteActivityView}
+    WHERE telegram_chat_id IS NOT NULL
+    `,
   );
-  const chatIds = rows.rows.map((row) => row.telegram_chat_id);
-  if (chatIds.length === 0) {
-    return;
+  return rows.rows.map((row) => row.telegram_chat_id);
+}
+
+async function clearTelegramLinkage(client: Client, chatId: string): Promise<void> {
+  await client.query(
+    `UPDATE ${TABLES.accounts} SET telegram_user_id = NULL, telegram_chat_id = NULL WHERE telegram_chat_id = $1`,
+    [chatId],
+  );
+}
+
+export async function deliverBroadcast(
+  client: Client,
+  env: Env,
+  chatIds: string[],
+  message: string,
+): Promise<DeliveryStats> {
+  const delivery: DeliveryStats = {
+    attempted: chatIds.length,
+    delivered: 0,
+    transientFailures: [],
+  };
+
+  for (const chatId of chatIds) {
+    try {
+      await sendHtml(env, chatId, message, true);
+      delivery.delivered += 1;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (isPermanentTelegramError(errorMessage)) {
+        await clearTelegramLinkage(client, chatId);
+        console.error("Removed invalid Telegram linkage after permanent delivery failure", { chatId, error: errorMessage });
+        continue;
+      }
+
+      delivery.transientFailures.push(`chat_id=${chatId}: ${errorMessage}`);
+      console.error("Failed to deliver Telegram message", { chatId, error: errorMessage });
+    }
   }
+
+  return delivery;
+}
+
+async function notifyNewTopicVote(client: Client, env: Env, payload: NewTopicPayload): Promise<DeliveryStats> {
+  const chatIds = await getCommitteeAudienceChatIds(client);
 
   const message =
     "<b>📋 新辯題待表決</b>\n\n" +
@@ -691,17 +810,11 @@ async function notifyNewTopicVote(client: Client, env: Env, payload: NewTopicPay
     `入庫門檻：${toNumber(payload.threshold)} 票　｜　截止：${escapeHtml(payload.deadline)} 23:59\n\n` +
     `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
 
-  await sendToUsersStrict(env, chatIds, message);
+  return deliverBroadcast(client, env, chatIds, message);
 }
 
-async function notifyNewDeposeVote(client: Client, env: Env, payload: NewDeposePayload): Promise<void> {
-  const rows = await client.query<{ telegram_chat_id: string }>(
-    `SELECT telegram_chat_id FROM ${TABLES.accounts} WHERE account_status = 'active' AND telegram_chat_id IS NOT NULL`,
-  );
-  const chatIds = rows.rows.map((row) => row.telegram_chat_id);
-  if (chatIds.length === 0) {
-    return;
-  }
+async function notifyNewDeposeVote(client: Client, env: Env, payload: NewDeposePayload): Promise<DeliveryStats> {
+  const chatIds = await getCommitteeAudienceChatIds(client);
 
   const reasons = payload.reasons.length > 0 ? payload.reasons.map(escapeHtml).join("；") : "（未提供）";
   const message =
@@ -712,19 +825,12 @@ async function notifyNewDeposeVote(client: Client, env: Env, payload: NewDeposeP
     `罷免門檻：${toNumber(payload.threshold)} 票　｜　截止：${escapeHtml(payload.deadline)} 23:59\n\n` +
     `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
 
-  await sendToUsersStrict(env, chatIds, message);
+  return deliverBroadcast(client, env, chatIds, message);
 }
 
-async function notifyVoteResult(client: Client, env: Env, payload: VoteResultPayload): Promise<void> {
-  const rows = await client.query<{ telegram_chat_id: string }>(
-    `SELECT telegram_chat_id FROM ${TABLES.accounts} WHERE telegram_chat_id IS NOT NULL`,
-  );
-  const chatIds = rows.rows.map((row) => row.telegram_chat_id);
-  if (chatIds.length === 0) {
-    return;
-  }
-
-  await sendToUsersStrict(env, chatIds, buildVoteResultMessage(buildVotePageUrl(env.APP_URL), payload));
+async function notifyVoteResult(client: Client, env: Env, payload: VoteResultPayload): Promise<DeliveryStats> {
+  const chatIds = await getCommitteeAudienceChatIds(client);
+  return deliverBroadcast(client, env, chatIds, buildVoteResultMessage(buildVotePageUrl(env.APP_URL), payload));
 }
 
 async function sendDeadlineReminders(client: Client, env: Env): Promise<void> {
@@ -737,7 +843,7 @@ async function sendDeadlineReminders(client: Client, env: Env): Promise<void> {
       `辯題「${escapeHtml(row.topic_text)}」將於明日截止，你尚未投票。\n` +
       `截止日期：${formatDate(row.deadline_date)} 23:59\n\n` +
       `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
-    await sendToUsersBestEffort(env, [row.telegram_chat_id], message);
+    await deliverBroadcast(client, env, [row.telegram_chat_id], message);
   }
 
   for (const row of deposeRows.rows) {
@@ -746,18 +852,18 @@ async function sendDeadlineReminders(client: Client, env: Env): Promise<void> {
       `罷免動議「${escapeHtml(row.topic_text)}」將於明日截止，你尚未投票。\n` +
       `截止日期：${formatDate(row.deadline_date)} 23:59\n\n` +
       `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
-    await sendToUsersBestEffort(env, [row.telegram_chat_id], message);
+    await deliverBroadcast(client, env, [row.telegram_chat_id], message);
   }
 }
 
 async function sendActivityWarnings(client: Client, env: Env): Promise<void> {
-  const rows = await client.query<ActivityWarningRow>(ACTIVITY_WARNING_SQL);
+  const rows = await client.query<ActivityRow>(ACTIVITY_WARNING_SQL);
 
   for (const row of rows.rows) {
     const total = toNumber(row.total_votes);
-    const participated = toNumber(row.participated);
-    const last10 = toNumber(row.last10_count);
-    const rate = toNumber(row.rate_pct);
+    const participated = toNumber(row.participated_votes);
+    const last10 = toNumber(row.last10_participated);
+    const rate = toNumber(row.overall_rate_pct);
     const warnings: string[] = [];
 
     if (total > 0 && participated / total < 0.4) {
@@ -776,32 +882,7 @@ async function sendActivityWarnings(client: Client, env: Env): Promise<void> {
       warnings.map((item) => `• ${escapeHtml(item)}`).join("\n") +
       "\n\n如未改善，帳戶將轉為非活躍狀態，屆時將不能提出新辯題或罷免動議。\n\n" +
       `<a href='${escapeHtml(buildVotePageUrl(env.APP_URL))}'>➡️ 立即前往投票</a>`;
-    await sendToUsersBestEffort(env, [row.telegram_chat_id], message);
-  }
-}
-
-async function sendToUsersStrict(env: Env, chatIds: string[], message: string): Promise<void> {
-  const failures: string[] = [];
-  for (const chatId of chatIds) {
-    try {
-      await sendHtml(env, chatId, message, true);
-    } catch (error) {
-      failures.push(error instanceof Error ? `chat_id=${chatId}: ${error.message}` : `chat_id=${chatId}: ${String(error)}`);
-    }
-  }
-
-  if (failures.length > 0) {
-    throw new Error(failures.join(" | "));
-  }
-}
-
-async function sendToUsersBestEffort(env: Env, chatIds: string[], message: string): Promise<void> {
-  for (const chatId of chatIds) {
-    try {
-      await sendHtml(env, chatId, message, true);
-    } catch (error) {
-      console.error("Failed to deliver Telegram message", { chatId, error });
-    }
+    await deliverBroadcast(client, env, [row.telegram_chat_id], message);
   }
 }
 

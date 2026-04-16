@@ -1,7 +1,7 @@
 const BOT_API_BASE = "https://api.telegram.org";
 
 const BOT_COMMANDS = [
-  { command: "link", description: "連結委員帳戶 /link <userid>" },
+  { command: "link", description: "連結委員帳戶 /link <code>" },
   { command: "unlink", description: "解除 Telegram 連結" },
   { command: "status", description: "查看連結狀態" },
   { command: "pending", description: "查看所有待表決議案" },
