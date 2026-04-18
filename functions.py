@@ -752,8 +752,8 @@ def show_rules():
 
 def render_home_reference():
     with st.container(border=True):
-        st.markdown("### 📚 使用手冊及賽規")
-        st.caption("可由首頁直接開啟；左側 sidebar 亦保留相同按鈕。")
+        st.markdown("#### 📚 使用手冊及賽規")
+        st.caption("不熟悉此系統或對賽規有疑問？以下提示幫到你！ :>")
         manual_col, rules_col = st.columns(2)
 
         with manual_col:

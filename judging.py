@@ -248,7 +248,7 @@ if not st.session_state["judge_authenticated"]:
 st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("topic_text", "（未輸入辯題）")
 st.markdown(f"辯題：{motion}")
-st.info("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
+st.caption("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
 
 # Pre-fill judge name if available from session state
 default_judge_name = st.session_state.get("last_judge_name", "")
@@ -432,7 +432,7 @@ auto_save_current_side()
 
 if st.button(f"暫存{team_side}評分"):
     if not judge_name_raw:
-        st.error("請輸入評判姓名！")
+        st.error("未輸入評判姓名！")
     else:
         if has_final_submission(selected_match_id, judge_name):
             st.error("你已提交過評分！無法修改評分！")
