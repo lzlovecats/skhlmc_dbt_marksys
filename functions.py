@@ -670,8 +670,8 @@ def is_maintenance_mode() -> bool:
 def render_maintenance_notice():
     with st.container(border=True):
         st.warning("系統維護中")
-        st.write("目前系統正在進行更新工程，需要時間。")
-        st.write(f"預計會喺 **{MAINTENANCE_DEADLINE_TEXT}** 前完成。")
+        st.write("目前系統正在進行更新，所有功能暫停開放。")
+        st.write(f"預計於 **{MAINTENANCE_DEADLINE_TEXT}** 或之前完成。")
         st.caption("所有功能現已暫停使用，請稍後再試。")
 
 
@@ -752,8 +752,32 @@ def show_rules():
 
 def render_home_reference():
     with st.container(border=True):
-        st.markdown("### 📚 使用手冊及賽規")
-        st.caption("可由首頁直接開啟；左側 sidebar 亦保留相同按鈕。")
+        st.markdown("### 🚀 第一次使用？")
+        st.caption("請按你的身份進入對應頁面。如需完整說明，可先閱讀使用手冊或賽規。")
+
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.markdown("**評判**：選擇場次、輸入評判入場密碼，開始填寫電子分紙。")
+            st.page_link("judging.py", label="前往電子分紙", icon="📝")
+
+            st.markdown("**比賽隊伍**：輸入查閱分紙密碼後查看指定場次的評分詳情。")
+            st.page_link("review.py", label="前往查閱比賽分紙", icon="📄")
+
+            st.markdown("**一般人員**：無須登入即可搜尋及篩選辯題庫。")
+            st.page_link("open_db.py", label="前往查閱辯題庫", icon="📚")
+
+        with col_right:
+            st.markdown("**賽會人員**：使用賽會人員密碼登入後管理場次、賽果及賽程。")
+            st.page_link("match_info.py", label="前往比賽場次管理", icon="📋")
+
+            st.markdown("**內部委員會成員**：登入個人帳戶後提出辯題、投票及管理帳戶。")
+            st.page_link("vote.py", label="前往辯題徵集、投票及罷免", icon="🗳️")
+
+            st.markdown("**開發者**：使用開發者密碼進入系統設定頁面。")
+            st.page_link("dev_settings.py", label="前往開發者設定", icon="🛠️")
+
+        st.divider()
         manual_col, rules_col = st.columns(2)
 
         with manual_col:
@@ -763,6 +787,18 @@ def render_home_reference():
         with rules_col:
             if st.button("📋 查看賽規", use_container_width=True, key="home_show_rules"):
                 show_rules()
+
+
+def render_page_guidance(steps, glossary=None, title="首次使用此頁"):
+    with st.expander(f"ℹ️ {title}", expanded=False):
+        for step in steps:
+            st.markdown(f"- {step}")
+
+        if glossary:
+            st.divider()
+            st.markdown("**名詞說明**")
+            for term, desc in glossary:
+                st.markdown(f"- **{term}**：{desc}")
 
 
 def hash_password(plain: str) -> str:
@@ -799,11 +835,11 @@ def check_committee_login():
     if st.session_state["committee_user"]:
         return True
 
-    st.subheader("賽會人員個人帳戶登入")
+    st.subheader("內部委員會成員登入")
 
     with st.form("committee_login"):
-        uid = st.text_input("用戶名稱 (User ID)")
-        upw = st.text_input("密碼 (Password)", type="password")
+        uid = st.text_input("用戶名稱")
+        upw = st.text_input("密碼", type="password")
         submitted = st.form_submit_button("登入")
 
         if submitted:
@@ -823,10 +859,10 @@ def check_committee_login():
                 _log_login(uid.strip(), "committee")
                 st.session_state["committee_user"] = uid.strip()
                 set_cookie(cookie_manager, "committee_user", uid.strip(), expires_at=return_expire_day())
-                st.success(f"你好，{uid.strip()}！")
+                st.success(f"歡迎，{uid.strip()}。")
                 st.rerun()
             else:
-                st.error("User ID或Password錯誤！")
+                st.error("用戶名稱或密碼錯誤。")
 
 
 def return_expire_day():

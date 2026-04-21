@@ -1,8 +1,20 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query, DIFFICULTY_OPTIONS
+from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query, DIFFICULTY_OPTIONS, render_page_guidance
 from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
-st.header("賽事資料輸入")
+st.header("比賽場次管理")
+render_page_guidance(
+    [
+        "使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。",
+        "編輯場次時，請確認正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。",
+        "刪除場次會一併刪除該場次的正式評分與暫存資料，請先確認不再需要相關紀錄。",
+    ],
+    glossary=[
+        ("賽會人員密碼", "賽會人員進入管理頁面所使用的共用密碼。"),
+        ("評判入場密碼", "評判登入指定場次電子分紙時使用的密碼。"),
+        ("查閱分紙密碼", "比賽隊伍查閱該場次評分詳情時使用的密碼。"),
+    ],
+)
 
 # Create time slots 15:00 – 18:00 in 10-minute steps
 time_slots = []
@@ -206,7 +218,7 @@ if st.session_state["all_matches"]:
             }
             save_match_to_db(match_data_prepare)
             st.session_state["all_matches"] = load_matches_from_db()
-            st.session_state["match_action_message"] = {"type": "success", "content": f"場次「{selected_match}」資料已儲存至數據庫！"}
+            st.session_state["match_action_message"] = {"type": "success", "content": f"場次「{selected_match}」資料已儲存至資料庫！"}
             st.rerun()
     
     # Delete a match

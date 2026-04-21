@@ -1,4 +1,4 @@
-# SKH LMC 辯電子評分系統 | SKH LMC Debate Marking System
+# SKH LMC 辯電子分紙系統 | SKH LMC Debate Marking System
 
 > 聖呂中辯電子分紙系統
 
@@ -66,7 +66,7 @@ A full-featured electronic scoring and management platform for school debate com
 - 安全保護：`system_config` 表不可在此修改；無 WHERE 條件的 UPDATE / DELETE 需二次確認
 
 **English:**
-- Admin-only SQL console for direct production database access
+- Organiser-only SQL console for direct production database access
 - Supports SELECT, INSERT, UPDATE, DELETE; results displayed as tables
 - Safety guards: `system_config` table is blocked from modification; UPDATE/DELETE without WHERE requires explicit re-confirmation
 
@@ -105,11 +105,11 @@ A full-featured electronic scoring and management platform for school debate com
 | 角色 / Role | 頁面 / Pages | 認證方式 / Auth |
 |---|---|---|
 | 評判 / Judge | 電子分紙 | 賽會提供入場密碼 |
-| 賽會人員 / Organiser | 場次管理、賽果統計、數據庫控制台、抽取賽程 | 管理員密碼（存於 DB） |
-| 比賽隊伍 / Teams | 查閱分紙 | 查卷密碼 |
+| 賽會人員 / Organiser | 場次管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
+| 比賽隊伍 / Teams | 查閱分紙 | 查閱分紙密碼 |
 | 一般人員 / Public | 查閱辯題庫 | 無需登入 |
-| 委員會成員 / Committee | 辯題投票系統 | 個人帳戶 (ID + 密碼) |
-| Developer | Developer Settings | 開發者密碼（存於 DB） |
+| 委員會成員 / Committee | 辯題徵集、投票及罷免 | 個人帳戶（用戶名稱 + 密碼） |
+| Developer | 開發者設定 | 開發者密碼（存於 DB） |
 
 ---
 
@@ -156,7 +156,7 @@ password = "your_password"
 
 首次部署時，需直接在資料庫插入初始密碼（可以明文，登入後再改為加密版本）：
 
-On first deploy, seed initial passwords directly in the database (plaintext is accepted initially; change them via Developer Settings after first login):
+On first deploy, seed initial passwords directly in the database (plaintext is accepted initially; change them via 開發者設定 after first login):
 
 ```sql
 INSERT INTO system_config (key, value, updated_at) VALUES
@@ -177,7 +177,7 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 
 ---
 
-## 🗄️ 資料庫結構 | Database Schema
+## 🗄️ 資料庫結構 | Database Structure
 
 | 資料表 / Table | 內容 / Contents |
 |---|---|
@@ -220,7 +220,7 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 │   └── *_reminder.md        # AI 審題建議 / AI topic review guides
 └── worker/                   # Cloudflare Worker — Telegram bot
     ├── src/dbNames.ts        # TypeScript DB table-name mirror for Worker
-    ├── src/index.ts          # Bot logic (commands + scheduled jobs)
+    ├── src/index.ts          # Telegram Bot logic (commands + scheduled jobs)
     ├── wrangler.jsonc        # Cloudflare deployment config
     └── README.md             # Worker setup & deployment guide
 ```
@@ -232,12 +232,12 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 - 所有資料庫操作均使用參數化查詢，防範 SQL Injection
 - All database operations use parameterized queries to prevent SQL injection
 - 密碼以 session state 及 cookie 管理，不以明文傳輸
-- Passwords managed via session state and cookies, not transmitted in plaintext
+- Session state and cookies handle credentials, avoiding plaintext transmission
 - 賽會人員密碼及開發者密碼以 bcrypt 加密存放於資料庫 `system_config` 表，不寫入設定檔
-- Admin and developer passwords are bcrypt-hashed and stored in the `system_config` DB table, not in config files
+- Organiser and developer passwords are bcrypt-hashed and stored in the `system_config` DB table, not in config files
 - 數據庫管理控制台設有保護：禁止修改 `system_config` 表，無 WHERE 條件的危險操作須二次確認
 - The SQL console blocks modifications to `system_config` and requires explicit re-confirmation for UPDATE/DELETE without WHERE
 
 ---
 
-*Developed by lzlovecats @ 2026*
+*Maintained by lzlovecats @ 2026*

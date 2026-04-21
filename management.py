@@ -1,7 +1,17 @@
 import streamlit as st
-from functions import check_admin, get_score_data, get_best_debater_results, query_params
+from functions import check_admin, get_score_data, get_best_debater_results, query_params, render_page_guidance
 from schema import TABLE_MATCHES
-st.header("賽事結果統計")
+st.header("查閱比賽結果")
+render_page_guidance(
+    [
+        "使用賽會人員密碼登入後，選擇場次即可查看票數、最佳辯論員及評分異常提示。",
+        "此頁只顯示已正式提交的評分紀錄；如尚未有紀錄，請先確認評判已完成提交。",
+        "如票數相同，可按賽規考慮加設自由辯論環節。",
+    ],
+    glossary=[
+        ("賽會人員密碼", "賽會人員進入管理頁面所使用的共用密碼。"),
+    ],
+)
 
 if not check_admin():
         st.stop()
@@ -9,7 +19,7 @@ if not check_admin():
 df_scores = get_score_data()
 
 if df_scores is None or df_scores.empty:
-    st.info("系統中未有任何評分紀錄。")
+    st.info("目前未有正式評分紀錄。請先確認評判已在「電子分紙」完成提交。")
     st.stop()
 
 df_scores['match_id'] = df_scores['match_id'].astype(str)
@@ -43,7 +53,7 @@ elif con_votes > pro_votes:
     winner_text = f"🏆勝方：反方 ({match_results['con_team'].iloc[0]})"
     st.info(winner_text)
 else:
-    st.warning("票數相同，依賽規需要重新運作自由辯論環節。")
+    st.warning("票數相同，可按賽規加設自由辯論環節重新評分。")
 
 df_final_best, best_one = get_best_debater_results(selected_match, match_results)
 if df_final_best is not None and best_one is not None:

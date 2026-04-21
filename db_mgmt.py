@@ -2,9 +2,20 @@ import re
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from functions import check_admin, get_connection, get_system_config, _verify_config_password
+from functions import check_admin, get_connection, get_system_config, _verify_config_password, render_page_guidance
 
-st.header("數據庫管理控制台")
+st.header("資料庫管理控制台")
+render_page_guidance(
+    [
+        "使用賽會人員密碼登入後，此頁仍需輸入額外的 SQL 存取密碼才可執行查詢。",
+        "此頁可直接查詢或修改正式資料庫，請先確認 SQL 內容及影響範圍。",
+        "system_config 在此頁面完全不可存取，沒有 WHERE 條件的 UPDATE 或 DELETE 會要求再次確認。",
+    ],
+    glossary=[
+        ("賽會人員密碼", "賽會人員進入管理頁面所使用的共用密碼。"),
+        ("SQL 存取密碼", "資料庫管理控制台專用的額外保護密碼。"),
+    ],
+)
 
 if not check_admin():
     st.stop()
@@ -15,13 +26,13 @@ if "sql_verified" not in st.session_state:
     st.session_state["sql_verified"] = False
 
 if not st.session_state["sql_verified"]:
-    st.subheader("數據庫訪問驗證")
-    st.caption("此頁面需要額外的 SQL 訪問密碼。")
-    sql_pwd = st.text_input("請輸入 SQL 訪問密碼", type="password")
+    st.subheader("資料庫存取驗證")
+    st.caption("此頁面需要額外的 SQL 存取密碼。")
+    sql_pwd = st.text_input("請輸入 SQL 存取密碼", type="password")
     if st.button("驗證"):
         stored = get_system_config("sql_password")
         if stored is None:
-            st.error("系統錯誤：未能讀取 SQL 訪問密碼，請聯絡開發人員")
+            st.error("系統錯誤：未能讀取 SQL 存取密碼，請聯絡開發人員。")
         elif _verify_config_password(sql_pwd, stored):
             st.session_state["sql_verified"] = True
             st.rerun()
@@ -29,7 +40,7 @@ if not st.session_state["sql_verified"]:
             st.error("密碼錯誤")
     st.stop()
 
-st.caption("⚠️ 此頁面直接操作生產數據庫，請謹慎使用。")
+st.caption("⚠️ 此頁面可直接操作正式資料庫，請謹慎使用。")
 
 # ── Table schema reference ────────────────────────────────────────────────────
 
@@ -49,7 +60,7 @@ _SCHEMAS = {
         ("pro_team",             "TEXT",      "正方隊伍名稱"),
         ("con_team",             "TEXT",      "反方隊伍名稱"),
         ("access_code_hash",     "TEXT",      "評判入場密碼（hash）"),
-        ("review_password_hash", "TEXT",      "隊伍查卷密碼（hash）"),
+        ("review_password_hash", "TEXT",      "查閱分紙密碼（hash）"),
     ],
     "debaters — 辯員名單": [
         ("match_id",     "TEXT (PK, FK→matches)", "所屬場次"),
@@ -125,7 +136,7 @@ _SCHEMAS = {
         ("id",           "SERIAL (PK)", "自動編號"),
         ("user_id",      "TEXT",        "登入帳號（委員會帳號或 'admin'）"),
         ("login_type",   "TEXT",        "'committee' | 'admin' | 'score_review'"),
-        ("logged_in_at", "TIMESTAMP",   "登入時間（HKT）"),
+        ("logged_in_at", "TIMESTAMP",   "登入時間（香港時間／HKT）"),
     ],
     "notification_reads — 站內通知": [
         ("notification_id",    "INT (PK)",     "通知編號（見 assets/noti.md）"),
@@ -138,9 +149,9 @@ _SCHEMAS = {
         ("notification_type",     "TEXT",        "'new_topic' | 'new_depose' | 'vote_result'"),
         ("payload",               "JSONB",       "通知內容（含推送所需全部資料）"),
         ("created_at",            "TIMESTAMP",   "建立時間"),
-        ("is_processed",          "BOOLEAN",     "是否已由 Bot 處理"),
+        ("is_processed",          "BOOLEAN",     "是否已由 Telegram Bot 處理"),
         ("processing_token",      "TEXT",        "防重複處理 token"),
-        ("processing_started_at", "TIMESTAMP",   "Bot 開始處理時間"),
+        ("processing_started_at", "TIMESTAMP",   "Telegram Bot 開始處理時間"),
         ("last_error_message",    "TEXT",        "最後錯誤訊息（若有）"),
     ],
     "telegram_link_tokens — Telegram 一次連結碼": [
@@ -163,7 +174,7 @@ _SCHEMAS = {
     ],
 }
 
-with st.expander("📋 數據庫表結構參考", expanded=False):
+with st.expander("📋 資料庫表結構參考", expanded=False):
     for table_label, columns in _SCHEMAS.items():
         st.markdown(f"**{table_label}**")
         st.dataframe(
@@ -221,7 +232,7 @@ with st.expander("📋 登入記錄", expanded=False):
         st.caption("暫無登入記錄。")
 
 st.divider()
-sql_input = st.text_area("SQL Query", height=160, placeholder="SELECT * FROM topics LIMIT 10;")
+sql_input = st.text_area("SQL 查詢", height=160, placeholder="SELECT * FROM topics LIMIT 10;")
 
 col_run, col_clear = st.columns([1, 5])
 with col_run:
@@ -236,7 +247,7 @@ if run_clicked and sql_input.strip():
     sql = sql_input.strip()
 
     if _touches_system_config(sql):
-        st.error("🚫 Access Denied: 'system_config' is not allowed to access")
+        st.error("🚫 不允許存取：此頁面不可讀取或修改 system_config。")
     elif _is_dangerous_no_where(sql):
         st.session_state["sql_pending_confirm"] = True
         st.session_state["sql_pending_query"] = sql

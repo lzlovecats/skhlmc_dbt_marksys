@@ -92,9 +92,9 @@ def _run_status_checks() -> dict:
 
 def _render_status_results(results: dict):
     if results["db_ok"]:
-        st.success("數據庫連線正常")
+        st.success("資料庫連線正常")
     else:
-        st.error(f"數據庫連線失敗: {results['db_error']}")
+        st.error(f"資料庫連線失敗: {results['db_error']}")
         return
 
     if results["table_counts"] is not None:
@@ -107,20 +107,20 @@ def _render_status_results(results: dict):
 
     c5, c6, c7 = st.columns(3)
     tg_queue_depth = results["tg_queue_depth"]
-    c5.metric("Telegram 推送待處理", tg_queue_depth if tg_queue_depth is not None else "—")
+    c5.metric("Telegram Bot 待處理通知", tg_queue_depth if tg_queue_depth is not None else "—")
     pending_vote_count = results["pending_votes"]
-    c6.metric("待通過辯題投票", pending_vote_count if pending_vote_count is not None else "—")
+    c6.metric("待表決辯題", pending_vote_count if pending_vote_count is not None else "—")
     login_count_24h = results["logins_24h"]
-    c7.metric("24小時內登入次數", login_count_24h if login_count_24h is not None else "—")
+    c7.metric("24 小時內登入次數", login_count_24h if login_count_24h is not None else "—")
 
     if results["config_admin_ok"]:
-        st.success("admin_password 已設定")
+        st.success("賽會人員密碼已設定")
     else:
-        st.warning("在system_config中找不到admin_password")
+        st.warning("尚未設定賽會人員密碼")
     if results["config_developer_ok"]:
-        st.success("developer_password 已設定")
+        st.success("開發者密碼已設定")
     else:
-        st.warning("在system_config中找不到developer_password")
+        st.warning("尚未設定開發者密碼")
 
     if results["errors"]:
         st.warning("部分檢查未能完成：\n" + "\n".join(f"- {e}" for e in results["errors"]))
@@ -159,7 +159,7 @@ with col_right:
 
     with st.container(border=True):
         st.markdown("### 🎛️ 賽會人員")
-        st.write("管理比賽場次、查閱結果、辯題庫及賽程抽籤。")
+        st.write("管理比賽場次、查閱比賽結果、使用資料庫管理控制台及抽取賽程。")
         st.page_link("match_info.py", label="比賽場次管理", icon="📋")
         st.page_link("management.py", label="查閱比賽結果", icon="📊")
         st.page_link("db_mgmt.py", label="資料庫管理控制台", icon="🖥️")
@@ -167,8 +167,8 @@ with col_right:
 
 with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
-    st.write("辯題徵集、投票及罷免系統。")
-    st.page_link("vote.py", label="辯題投票系統", icon="🗳️")
+    st.write("提出辯題、參與投票、提出罷免動議及管理個人帳戶。")
+    st.page_link("vote.py", label="辯題徵集、投票及罷免", icon="🗳️")
 
 # ─── System status check — collapsed at bottom ────────────────────────────────
 

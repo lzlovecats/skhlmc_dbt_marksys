@@ -3,7 +3,7 @@ import random
 import pandas as pd
 import streamlit as st
 
-from functions import check_admin
+from functions import check_admin, render_page_guidance
 
 
 def normalize_teams(raw_text):
@@ -24,7 +24,7 @@ def build_draw_result(teams):
             "場次": "場次 1",
             "正方／甲方": shuffled[0],
             "反方／乙方": shuffled[1],
-            "備註": "2 支隊伍直接進入決賽"
+            "備註": "2 隊隊伍直接進入決賽"
         })
         return {
             "teams": teams,
@@ -185,6 +185,16 @@ def build_draw_result(teams):
 
 
 st.header("抽取賽程")
+render_page_guidance(
+    [
+        "使用賽會人員密碼登入後，每行輸入一隊參賽隊伍名稱，再按「抽取賽程」。",
+        "如隊伍名單有變更，舊抽籤結果會自動失效，請重新抽取。",
+        "此頁面提供賽程預覽與總表，方便稍後抄錄到「比賽場次管理」。",
+    ],
+    glossary=[
+        ("賽會人員密碼", "賽會人員進入管理頁面所使用的共用密碼。"),
+    ],
+)
 
 if not check_admin():
     st.stop()
@@ -202,10 +212,10 @@ if "draw_result_invalidated" not in st.session_state:
     st.session_state["draw_result_invalidated"] = False
 
 st.subheader("輸入參賽隊伍")
-st.caption("每行輸入一支隊伍名稱。修改名單後，舊抽籤結果會自動失效。")
+st.caption("每行輸入一隊隊伍名稱。修改名單後，舊抽籤結果會自動失效。")
 
 teams_input = st.text_area(
-    "每行輸入一支隊伍名稱",
+    "每行輸入一隊隊伍名稱",
     key="raw_input_text",
     placeholder="例如：\n思若秋澄\n請你食薯餅\n預設名稱一",
     height=180
@@ -223,12 +233,12 @@ if st.session_state["draw_result_invalidated"]:
     st.warning("隊伍名單已變更，請重新抽籤。")
 
 with st.form("draw_schedule_form"):
-    st.write(f"目前已輸入 **{len(current_teams)}** 支隊伍。")
+    st.write(f"目前已輸入 **{len(current_teams)}** 隊隊伍。")
     draw_btn = st.form_submit_button("🎲 抽取賽程", type="primary", use_container_width=True)
 
 if draw_btn:
     if len(current_teams) < 2:
-        st.error("至少需要 2 支隊伍。")
+        st.error("至少需要 2 隊隊伍。")
     elif len(current_teams) != len(set(current_teams)):
         st.error("隊伍名稱有重複，請檢查輸入。")
     else:
@@ -241,7 +251,7 @@ if st.session_state["draw_result"]:
     with col1:
         if st.button("🔄 重新抽取", use_container_width=True):
             if len(current_teams) < 2:
-                st.error("至少需要 2 支隊伍。")
+                st.error("至少需要 2 隊隊伍。")
             elif len(current_teams) != len(set(current_teams)):
                 st.error("隊伍名稱有重複，請檢查輸入。")
             else:
@@ -273,7 +283,7 @@ if st.session_state["draw_result"]:
     st.divider()
     st.subheader("正賽")
     if result["direct_final"]:
-        st.info("本次只有 2 支隊伍，毋須進行正賽及負方賽，直接進入決賽。")
+        st.info("本次只有 2 隊隊伍，毋須進行正賽及負方賽，直接進入決賽。")
     else:
         for round_data in result["main_rounds"]:
             st.write(f"**{round_data['title']}**")
@@ -293,7 +303,7 @@ if st.session_state["draw_result"]:
     st.divider()
     st.subheader("負方賽")
     if result["direct_final"]:
-        st.write("本次只有 2 支隊伍，毋須進行負方賽。")
+        st.write("本次只有 2 隊隊伍，毋須進行負方賽。")
     else:
         for round_data in result["loser_rounds"]:
             st.write(f"**{round_data['title']}**")
