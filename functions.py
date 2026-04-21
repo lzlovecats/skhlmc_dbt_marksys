@@ -167,9 +167,14 @@ def check_admin():
         st.session_state["admin_logged_in"] = False
 
     if not st.session_state["admin_logged_in"]:
-        st.subheader("賽會人員登入")
-        pwd = st.text_input("請輸入賽會人員密碼", type="password")
-        if st.button("登入"):
+        pwd = render_password_gate(
+            "賽會人員登入",
+            "請輸入賽會人員密碼以進入管理頁面。",
+            "請輸入賽會人員密碼",
+            "登入",
+            form_key="admin_login_gate",
+        )
+        if pwd is not None:
             stored = get_system_config("admin_password")
             if stored is None:
                 st.error("系統錯誤：未能讀取密碼，請聯絡開發人員")
@@ -789,16 +794,22 @@ def render_home_reference():
                 show_rules()
 
 
-def render_page_guidance(steps, glossary=None, title="首次使用此頁"):
+def render_password_gate(title, description, field_label, button_label, form_key):
+    with st.container(border=True):
+        st.subheader(title)
+        st.caption(description)
+        with st.form(form_key):
+            pwd = st.text_input(field_label, type="password")
+            submitted = st.form_submit_button(button_label, use_container_width=True)
+        if submitted:
+            return pwd
+    return None
+
+
+def render_page_guidance(steps, title="首次使用指南"):
     with st.expander(f"ℹ️ {title}", expanded=False):
         for step in steps:
             st.markdown(f"- {step}")
-
-        if glossary:
-            st.divider()
-            st.markdown("**名詞說明**")
-            for term, desc in glossary:
-                st.markdown(f"- **{term}**：{desc}")
 
 
 def hash_password(plain: str) -> str:

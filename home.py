@@ -1,5 +1,5 @@
 import streamlit as st
-from functions import get_connection, is_maintenance_mode, query_params, render_home_reference, render_maintenance_notice
+from functions import get_connection, is_maintenance_mode, query_params, render_maintenance_notice, show_manual, show_rules
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_LOGIN_RECORDS,
@@ -133,8 +133,6 @@ st.caption("請根據你的身份選擇對應功能")
 if is_maintenance_mode():
     render_maintenance_notice()
     st.stop()
-render_home_reference()
-st.divider()
 
 # ─── Role cards — 2-column grid ───────────────────────────────────────────────
 
@@ -169,6 +167,18 @@ with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
     st.write("提出辯題、參與投票、提出罷免動議及管理個人帳戶。")
     st.page_link("vote.py", label="辯題徵集、投票及罷免", icon="🗳️")
+
+st.divider()
+with st.container(border=True):
+    st.markdown("### 📚 支援資料")
+    st.caption("如需了解操作流程或比賽規則，可在此開啟完整說明。")
+    support_col1, support_col2 = st.columns(2)
+    with support_col1:
+        if st.button("📖 閱讀使用手冊", use_container_width=True, key="home_show_manual"):
+            show_manual()
+    with support_col2:
+        if st.button("📋 查看賽規", use_container_width=True, key="home_show_rules"):
+            show_rules()
 
 # ─── System status check — collapsed at bottom ────────────────────────────────
 

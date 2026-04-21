@@ -10,6 +10,7 @@ from functions import (
     submit_final_scores,
     _verify_config_password,
     render_page_guidance,
+    render_password_gate,
 )
 from scoring import (
     SPEECH_CRITERIA, speech_col, SPEECH_TOTAL_MAX,
@@ -24,9 +25,6 @@ render_page_guidance(
         "輸入評判姓名後，先完成其中一方評分，再按「暫存正方評分」或「暫存反方評分」。",
         "切換至另一方完成評分並暫存，確認兩方資料均已暫存。",
         "最後按「正式提交評分」，提交後將無法修改。",
-    ],
-    glossary=[
-        ("評判入場密碼", "由賽會人員為每場比賽設定，評判憑此密碼進入電子分紙。"),
     ],
 )
 
@@ -205,6 +203,112 @@ def render_post_submit_receipt():
     st.stop()
 
 
+def get_team_context(current_match, team_side):
+    if team_side == "正方":
+        names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""),
+                 current_match.get("pro_3", ""), current_match.get("pro_4", "")]
+        team_name = current_match.get("pro_team", "正方")
+    else:
+        names = [current_match.get("con_1", ""), current_match.get("con_2", ""),
+                 current_match.get("con_3", ""), current_match.get("con_4", "")]
+        team_name = current_match.get("con_team", "反方")
+    return team_name, names
+
+
+def render_side_editor(team_side, selected_match_id, current_match):
+    team_name, names = get_team_context(current_match, team_side)
+    side_saved_data = st.session_state["temp_scores"][team_side]
+    if side_saved_data and "last_saved" in side_saved_data:
+        try:
+            last_saved_dt = datetime.fromisoformat(side_saved_data["last_saved"])
+            diff = datetime.now() - last_saved_dt
+            minutes = int(diff.total_seconds() / 60)
+            st.caption(f"上一次儲存 {team_side} 分數：{minutes} 分鐘前")
+        except Exception:
+            pass
+
+    st.subheader(f"（甲）台上發言 - {team_side}")
+    roles = ["主辯", "一副", "二副", "結辯"]
+    if side_saved_data is not None:
+        df_a_source = side_saved_data["raw_df_a"]
+    else:
+        df_a_source = pd.DataFrame([
+            {"辯位": role, "姓名": name, **{speech_col(c): 0 for c in SPEECH_CRITERIA}}
+            for role, name in zip(roles, names)
+        ])
+
+    edited_df_a = st.data_editor(
+        df_a_source,
+        column_config={
+            "辯位": st.column_config.TextColumn(disabled=True),
+            "姓名": st.column_config.TextColumn(disabled=True),
+            **{speech_col(c): st.column_config.NumberColumn(min_value=0, max_value=c["max"], step=1, required=True)
+               for c in SPEECH_CRITERIA}
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=f"editor_a_{selected_match_id}_{team_side}"
+    )
+
+    individual_scores = sum(edited_df_a[speech_col(c)] * c["weight"] for c in SPEECH_CRITERIA)
+    total_score_a = individual_scores.sum()
+    st.markdown(f"總分：{total_score_a}/{SPEECH_TOTAL_MAX}")
+
+    st.divider()
+    st.subheader("（乙）自由辯論")
+    if side_saved_data is not None and "raw_df_b" in side_saved_data:
+        df_b = side_saved_data["raw_df_b"]
+    else:
+        df_b = pd.DataFrame([{free_debate_col(c): 0 for c in FREE_DEBATE_CRITERIA}])
+
+    edited_df_b = st.data_editor(
+        df_b,
+        column_config={
+            free_debate_col(c): st.column_config.NumberColumn(min_value=0, max_value=c["max"], step=1, required=True)
+            for c in FREE_DEBATE_CRITERIA
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=f"editor_b_{selected_match_id}_{team_side}"
+    )
+    total_score_b = edited_df_b.sum().sum()
+    st.markdown(f"總分：{total_score_b}/{FREE_DEBATE_MAX}")
+
+    st.divider()
+    st.subheader("（丙）扣分及內容連貫")
+    _sync_side_input_state(selected_match_id, team_side)
+    deduct_key = _widget_key("deduct", selected_match_id, team_side)
+    cohere_key = _widget_key("cohere", selected_match_id, team_side)
+    deduction = st.number_input(
+        "扣分總和",
+        min_value=0,
+        step=1,
+        key=deduct_key
+    )
+    coherence = st.number_input(
+        f"內容連貫 ({COHERENCE_MAX})",
+        min_value=0,
+        max_value=COHERENCE_MAX,
+        step=1,
+        key=cohere_key
+    )
+
+    final_total = total_score_a + total_score_b - deduction + coherence
+    st.metric("目前總分", f"{final_total} / {GRAND_TOTAL}")
+    save_requested = st.button(f"暫存{team_side}評分", key=f"save_{team_side}", use_container_width=True)
+
+    return {
+        "team_name": team_name,
+        "data": build_side_data(team_name, total_score_a, total_score_b, deduction,
+                                 coherence, final_total, individual_scores, edited_df_a, edited_df_b),
+        "cols_a": [speech_col(c) for c in SPEECH_CRITERIA],
+        "cols_b": [free_debate_col(c) for c in FREE_DEBATE_CRITERIA],
+        "edited_df_a": edited_df_a,
+        "edited_df_b": edited_df_b,
+        "save_requested": save_requested,
+    }
+
+
 _init_session_state()
 
 all_matches = st.session_state.get("all_matches", {})
@@ -231,9 +335,6 @@ if st.session_state["auth_match_id"] != selected_match_id:
 render_post_submit_receipt()
 
 if not st.session_state["judge_authenticated"]:
-    st.subheader("評判身分驗證")
-    input_otp = st.text_input("請輸入由賽會提供的入場密碼", type="password")
-
     stored_otp_value = current_match.get("access_code_hash")
     stored_otp = ""
     if stored_otp_value is not None:
@@ -243,7 +344,19 @@ if not st.session_state["judge_authenticated"]:
         elif stored_otp.startswith("'"):
             stored_otp = stored_otp[1:]
 
-    if st.button("驗證入場"):
+    if not stored_otp:
+        st.warning("該場次未開放評分，請向賽會人員查詢。")
+        st.stop()
+
+    input_otp = render_password_gate(
+        "評判身分驗證",
+        "請輸入由賽會人員提供的評判入場密碼。",
+        "請輸入評判入場密碼",
+        "驗證入場",
+        form_key=f"judge_gate_{selected_match_id}",
+    )
+
+    if input_otp is not None:
         if not stored_otp:
             st.error("該場次未開放評分，請向賽會人員查詢。")
             st.stop()
@@ -257,20 +370,25 @@ if not st.session_state["judge_authenticated"]:
     else:
         st.stop()
 
-st.success(f"已進入場次：{selected_match_id}")
 motion = current_match.get("topic_text", "（未輸入辯題）")
-st.markdown(f"辯題：{motion}")
-st.info("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
-
-# Pre-fill judge name if available from session state
 default_judge_name = st.session_state.get("last_judge_name", "")
-judge_name_input = st.text_input("評判姓名", value=default_judge_name)
-st.caption("請輸入中文全名。系統會自動統一空格及英文大小寫，以避免重複身份。")
+pro_team_name = current_match.get("pro_team", "未填寫")
+con_team_name = current_match.get("con_team", "未填寫")
+
+with st.container(border=True):
+    summary_col1, summary_col2 = st.columns([3, 1])
+    with summary_col1:
+        st.success(f"已進入場次：{selected_match_id}")
+        st.write(f"**辯題：** {motion}")
+    with summary_col2:
+        if st.button("登出評判帳戶", use_container_width=True):
+            confirm_logout_dialog()
+    judge_name_input = st.text_input("評判姓名", value=default_judge_name)
+    st.caption("請輸入中文全名。系統會自動統一空格及英文大小寫，以避免重複身份。")
+    st.caption("手機建議橫向使用，以便輸入台上發言及自由辯論表格。")
+
 judge_name_raw = judge_name_input.strip() if judge_name_input else ""
 judge_name = normalize_judge_name(judge_name_raw)
-
-if st.button("登出評判帳戶"):
-    confirm_logout_dialog()
 
 if judge_name != st.session_state["last_judge_identity"]:
     _clear_side_input_state(selected_match_id)
@@ -297,126 +415,38 @@ if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
 
     st.session_state["draft_loaded"] = True
 
-pro_team_name = current_match.get("pro_team", "未填寫")
-con_team_name = current_match.get("con_team", "未填寫")
+ready_to_submit = bool(st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"])
 
-team_side = st.radio(
-    "選擇評分隊伍",
-    ["正方", "反方"],
-    format_func=lambda x: f"{x} ({pro_team_name})" if x == "正方" else f"{x} ({con_team_name})",
-    horizontal=True
-)
+with st.container(border=True):
+    st.subheader("評分總覽")
+    status_col1, status_col2, status_col3 = st.columns(3)
+    status_col1.metric(f"正方 ({pro_team_name})", "已暫存" if st.session_state["temp_scores"]["正方"] else "未暫存")
+    status_col2.metric(f"反方 ({con_team_name})", "已暫存" if st.session_state["temp_scores"]["反方"] else "未暫存")
+    status_col3.metric("提交狀態", "可提交" if ready_to_submit and judge_name_raw else "未完成")
+    render_submission_message()
+    if ready_to_submit:
+        st.success("雙方評分已完成，確認無誤後可正式提交。")
+    else:
+        st.caption("請先分別完成正方及反方評分，並各自暫存。")
+    submit_requested = st.button(
+        "正式提交評分",
+        type="primary",
+        use_container_width=True,
+        disabled=not ready_to_submit or not judge_name_raw,
+    )
 
-if st.session_state["temp_scores"][team_side] and "last_saved" in st.session_state["temp_scores"][team_side]:
-    try:
-        last_saved_str = st.session_state["temp_scores"][team_side]["last_saved"]
-        last_saved_dt = datetime.fromisoformat(last_saved_str)
-        diff = datetime.now() - last_saved_dt
-        minutes = int(diff.total_seconds() / 60)
-        st.caption(f"上一次儲存 {team_side} 分數：{minutes} 分鐘前")
-    except Exception:
-        pass
+side_results = {}
+tab_pro, tab_con = st.tabs([f"正方：{pro_team_name}", f"反方：{con_team_name}"])
 
-if team_side == "正方":
-    names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""),
-             current_match.get("pro_3", ""), current_match.get("pro_4", "")]
-    team_name = current_match.get("pro_team", "正方")
-else:
-    names = [current_match.get("con_1", ""), current_match.get("con_2", ""),
-             current_match.get("con_3", ""), current_match.get("con_4", "")]
-    team_name = current_match.get("con_team", "反方")
+with tab_pro:
+    side_results["正方"] = render_side_editor("正方", selected_match_id, current_match)
 
-# A
-st.subheader(f"（甲）台上發言 - {team_side}")
-roles = ["主辯", "一副", "二副", "結辯"]
-if st.session_state["temp_scores"][team_side] is not None:
-    df_a_source = st.session_state["temp_scores"][team_side]["raw_df_a"]
-else:
-    df_a_source = pd.DataFrame([
-        {"辯位": role, "姓名": name, **{speech_col(c): 0 for c in SPEECH_CRITERIA}}
-        for role, name in zip(roles, names)
-    ])
+with tab_con:
+    side_results["反方"] = render_side_editor("反方", selected_match_id, current_match)
 
-edited_df_a = st.data_editor(
-    df_a_source,
-    column_config={
-        "辯位": st.column_config.TextColumn(disabled=True),
-        "姓名": st.column_config.TextColumn(disabled=True),
-        **{speech_col(c): st.column_config.NumberColumn(min_value=0, max_value=c["max"], step=1, required=True)
-           for c in SPEECH_CRITERIA}
-    },
-    hide_index=True,
-    use_container_width=True,
-    key=f"editor_a_{selected_match_id}_{team_side}"
-)
-
-individual_scores = sum(edited_df_a[speech_col(c)] * c["weight"] for c in SPEECH_CRITERIA)
-total_score_a = individual_scores.sum()
-st.markdown(f"總分：{total_score_a}/{SPEECH_TOTAL_MAX}")
-
-# B
-st.divider()
-st.subheader("（乙）自由辯論")
-
-if st.session_state["temp_scores"][team_side] is not None and "raw_df_b" in st.session_state["temp_scores"][team_side]:
-    df_b = st.session_state["temp_scores"][team_side]["raw_df_b"]
-else:
-    df_b = pd.DataFrame([{free_debate_col(c): 0 for c in FREE_DEBATE_CRITERIA}])
-
-edited_df_b = st.data_editor(
-    df_b,
-    column_config={
-        free_debate_col(c): st.column_config.NumberColumn(min_value=0, max_value=c["max"], step=1, required=True)
-        for c in FREE_DEBATE_CRITERIA
-    },
-    hide_index=True,
-    use_container_width=True,
-    key=f"editor_b_{selected_match_id}_{team_side}"
-)
-total_score_b = edited_df_b.sum().sum()
-st.markdown(f"總分：{total_score_b}/{FREE_DEBATE_MAX}")
-
-# C
-st.divider()
-st.subheader("（丙）扣分及內容連貫")
-
-_sync_side_input_state(selected_match_id, team_side)
-deduct_key = _widget_key("deduct", selected_match_id, team_side)
-cohere_key = _widget_key("cohere", selected_match_id, team_side)
-deduction = st.number_input(
-    "扣分總和",
-    min_value=0,
-    step=1,
-    key=deduct_key
-)
-coherence = st.number_input(
-    f"內容連貫 ({COHERENCE_MAX})",
-    min_value=0,
-    max_value=COHERENCE_MAX,
-    step=1,
-    key=cohere_key
-)
-
-final_total = total_score_a + total_score_b - deduction + coherence
-
-st.markdown("---")
-st.title(f"總分：{final_total} / {GRAND_TOTAL}")
-
-st.write("**評分進度：**")
-if st.session_state["temp_scores"]["正方"]:
-    st.success(f"正方 ({pro_team_name})：已暫存 ✅")
-else:
-    st.warning(f"正方 ({pro_team_name})：未評分 ✖️")
-
-if st.session_state["temp_scores"]["反方"]:
-    st.success(f"反方 ({con_team_name})：已暫存 ✅")
-else:
-    st.warning(f"反方 ({con_team_name})：未評分 ✖️")
-
-render_submission_message()
 
 @st.fragment(run_every=120)
-def auto_save_current_side():
+def auto_save_current_sides():
     if not st.session_state.get("judge_authenticated") or not judge_name_raw:
         return
     if has_final_submission(selected_match_id, judge_name):
@@ -430,28 +460,28 @@ def auto_save_current_side():
     if (now - last_auto).total_seconds() < 120:
         return
 
-    auto_side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
-                                     coherence, final_total, individual_scores, edited_df_a, edited_df_b)
     try:
-        save_draft_to_db(selected_match_id, judge_name, team_side, auto_side_data)
-        st.session_state["temp_scores"][team_side] = auto_side_data
+        for side in ["正方", "反方"]:
+            save_draft_to_db(selected_match_id, judge_name, side, side_results[side]["data"])
+            st.session_state["temp_scores"][side] = side_results[side]["data"]
         st.session_state["last_auto_save"] = now
     except ValueError:
         pass
 
 
-auto_save_current_side()
+auto_save_current_sides()
 
-if st.button(f"暫存{team_side}評分"):
-    if not judge_name_raw:
-        st.error("請輸入評判姓名！")
-    else:
+for team_side in ["正方", "反方"]:
+    side_result = side_results[team_side]
+    if side_result["save_requested"]:
+        if not judge_name_raw:
+            st.error("請輸入評判姓名！")
+            st.stop()
         if has_final_submission(selected_match_id, judge_name):
             st.error("你已提交過評分！無法修改評分！")
             st.stop()
 
-        side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
-                                    coherence, final_total, individual_scores, edited_df_a, edited_df_b)
+        side_data = side_result["data"]
         st.session_state["temp_scores"][team_side] = side_data
 
         try:
@@ -461,30 +491,21 @@ if st.button(f"暫存{team_side}評分"):
             st.error(str(e))
             st.stop()
 
-        cols_a = [speech_col(c) for c in SPEECH_CRITERIA]
-        cols_b = [free_debate_col(c) for c in FREE_DEBATE_CRITERIA]
-        has_zeros = (edited_df_a[cols_a] == 0).any().any() or (edited_df_b[cols_b] == 0).any().any()
-
+        has_zeros = (side_result["edited_df_a"][side_result["cols_a"]] == 0).any().any() or (side_result["edited_df_b"][side_result["cols_b"]] == 0).any().any()
         st.session_state["last_auto_save"] = datetime.now()
-        st.session_state["submission_message"] = build_save_message(team_side, team_name, has_zeros, success)
+        st.session_state["submission_message"] = build_save_message(team_side, side_result["team_name"], has_zeros, success)
         st.rerun()
 
-if st.session_state["temp_scores"]["正方"] and st.session_state["temp_scores"]["反方"]:
-    st.success("🎉 雙方評分已完成！（尚未正式提交）")
-    st.warning("⚠️ 正式提交評分後將無法修改分數，請確認所有資料輸入正確。")
-    if st.button("正式提交評分", type="primary"):
-        try:
-            if not judge_name_raw:
-                st.error("請輸入評判姓名！")
-                st.stop()
+if submit_requested:
+    try:
+        if has_final_submission(selected_match_id, judge_name):
+            st.error("你已提交過評分！無法修改評分！")
+            st.stop()
 
-            side_data = build_side_data(team_name, total_score_a, total_score_b, deduction,
-                                        coherence, final_total, individual_scores, edited_df_a, edited_df_b)
-            st.session_state["temp_scores"][team_side] = side_data
-
-            pro = st.session_state["temp_scores"]["正方"]
-            con = st.session_state["temp_scores"]["反方"]
-
-            confirm_submit(pro, con, selected_match_id, judge_name_raw)
-        except Exception as e:
-            st.error(f"儲存失敗: {e}")
+        st.session_state["temp_scores"]["正方"] = side_results["正方"]["data"]
+        st.session_state["temp_scores"]["反方"] = side_results["反方"]["data"]
+        pro = st.session_state["temp_scores"]["正方"]
+        con = st.session_state["temp_scores"]["反方"]
+        confirm_submit(pro, con, selected_match_id, judge_name_raw)
+    except Exception as e:
+        st.error(f"儲存失敗: {e}")

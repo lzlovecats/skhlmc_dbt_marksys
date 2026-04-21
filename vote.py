@@ -21,12 +21,6 @@ render_page_guidance(
         "活躍成員可提出新辯題或罷免動議；所有成員均可參與投票。",
         "每項動議均設 7 日截止日期，達門檻且票數過半時會自動更新狀態。",
     ],
-    glossary=[
-        ("活躍成員", "整體投票率達 40%，且最近十次投票至少參與三次的成員。"),
-        ("入庫門檻", "辯題通過並寫入辯題庫所需的最低同意票數。"),
-        ("罷免門檻", "罷免動議通過所需的最低同意票數。"),
-        ("Telegram 一次連結碼", "用於把網站帳戶與 Telegram Bot 綁定的限時驗證碼。"),
-    ],
 )
 
 TOPIC_REJECTION_REASONS = [
@@ -448,38 +442,29 @@ _pending_depose_count = int(_pending_depose_count_df.iloc[0]["cnt"]) if not _pen
 
 _tab2_label = f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
 _tab3_label = f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
-tab_labels = {
-    "proposal": "📝 提出辯題／罷免動議",
-    "topic_vote": _tab2_label,
-    "depose_vote": _tab3_label,
-    "member_stats": "👥 成員參與率",
-    "account": "🔐 管理帳戶",
-}
-if "vote_active_tab" not in st.session_state:
-    st.session_state["vote_active_tab"] = "proposal"
-active_tab = st.radio(
-    "功能分頁",
-    options=list(tab_labels.keys()),
-    format_func=lambda tab_id: tab_labels[tab_id],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="vote_active_tab",
-)
+tab_proposal, tab_topic_vote, tab_depose_vote, tab_member_stats, tab_account = st.tabs([
+    "📝 提案",
+    _tab2_label,
+    _tab3_label,
+    "👥 參與率",
+    "🔐 帳戶",
+])
 
-if active_tab == "proposal":
-    st.subheader("提出新辯題")
-    st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
-    new_topic = st.text_input("請輸入完整辯題")
-    new_category = st.selectbox("辯題類別", options=CATEGORIES)
-    st.caption("辯題難度標準：")
-    st.caption("Lv1：概念日常、背景知識少，適合完全無經驗的新手")
-    st.caption("Lv2：需要一定議題認識或邏輯鋪陳，但不需要專業知識")
-    st.caption("Lv3：涉及專業政策、複雜概念界定、或需要大量資料支撐")
-    new_difficulty = st.selectbox(
-        "辯題難度",
-        options=[1, 2, 3],
-        format_func=lambda x: DIFFICULTY_OPTIONS[x]
-    )
+with tab_proposal:
+    with st.container(border=True):
+        st.subheader("提出新辯題")
+        st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
+        new_topic = st.text_input("請輸入完整辯題")
+        new_category = st.selectbox("辯題類別", options=CATEGORIES)
+        st.caption("辯題難度標準：")
+        st.caption("Lv1：概念日常、背景知識少，適合完全無經驗的新手")
+        st.caption("Lv2：需要一定議題認識或邏輯鋪陳，但不需要專業知識")
+        st.caption("Lv3：涉及專業政策、複雜概念界定、或需要大量資料支撐")
+        new_difficulty = st.selectbox(
+            "辯題難度",
+            options=[1, 2, 3],
+            format_func=lambda x: DIFFICULTY_OPTIONS[x]
+        )
 
     # If there are >= 10 pending topics, block new submissions and remind voting first.
     pending_vote_data, _, _ = get_vote_data()
@@ -589,89 +574,89 @@ if active_tab == "proposal":
                 st.session_state["confirm_imbalance"] = False
                 st.rerun()
 
-    st.divider()
-    st.subheader("提出罷免動議")
-    st.caption(f"目前活躍成員：{_active_count} 人 ｜ 罷免門檻：{DEPOSE_THRESHOLD} 票")
+    with st.container(border=True):
+        st.subheader("提出罷免動議")
+        st.caption(f"目前活躍成員：{_active_count} 人 ｜ 罷免門檻：{DEPOSE_THRESHOLD} 票")
 
-    try:
-        conn = get_connection()
-        df = conn.query(f"SELECT topic_text FROM {TABLE_TOPICS}", ttl=5)
-    except Exception as e:
-        st.error(f"連線錯誤: {e}")
-        st.stop()
-    
-    topics_to_depose = st.multiselect(
-            "請選擇要提出罷免動議的辯題 (可多選)",
-            options=df["topic_text"].to_list()
-        )
-    depose_reason_choices = st.multiselect(
-        "請選擇提出罷免動議的原因（可多選）",
-        options=DEPOSE_REASONS,
-        key="depose_reason_choices"
-    )
-    depose_reason_other = st.text_area(
-        "其他補充原因（如有）",
-        key="depose_reason_other",
-        placeholder="例如：題目最近已在其他比賽打過。"
-    )
-
-    if not is_active:
-        st.info("非活躍成員不能提出罷免動議。")
-
-    if st.button("提出罷免動議", disabled=not is_active):
-        if not topics_to_depose:
-            st.warning("你未選擇任何辯題！")
-        elif not collect_reasons(depose_reason_choices, depose_reason_other):
-            st.warning("請至少交代一個罷免原因。")
-        else:
+        try:
             conn = get_connection()
-            exist_votes = conn.query(
-                f"SELECT topic_text FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
-                ttl=5,
+            df = conn.query(f"SELECT topic_text FROM {TABLE_TOPICS}", ttl=5)
+        except Exception as e:
+            st.error(f"連線錯誤: {e}")
+            st.stop()
+
+        topics_to_depose = st.multiselect(
+                "請選擇要提出罷免動議的辯題 (可多選)",
+                options=df["topic_text"].to_list()
             )
-            exist_depose_topics = exist_votes["topic_text"].tolist()
-            if len(exist_depose_topics) >= 10:
-                st.warning("目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。")
-                st.stop()
-            proposed = True
-            proposal_reasons = collect_reasons(depose_reason_choices, depose_reason_other)
-            for t in topics_to_depose:
-                if t in exist_depose_topics:
-                    proposed = False
-                else:
-                    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
-                    hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
-                    deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
-                    query = f"""
-                    INSERT INTO {TABLE_TOPIC_REMOVAL_VOTES} (
-                        topic_text, proposer_user_id, status, created_at, removal_reasons, deadline_date, approval_threshold
-                    ) VALUES (
-                        :topic, :user_id, 'pending', :created_at, :proposal_reasons, :deadline, :threshold
-                    )
-                    """
-                    param = {
-                        "topic": t,
-                        "user_id": user_id,
-                        "created_at": hk_time,
-                        "proposal_reasons": dump_json(proposal_reasons),
-                        "deadline": deadline,
-                        "threshold": DEPOSE_THRESHOLD
-                    }
-                    execute_query(query, param)
-                    enqueue_tg_notification("new_depose", {
-                        "topic": t, "mover": user_id,
-                        "reasons": proposal_reasons,
-                        "threshold": DEPOSE_THRESHOLD,
-                        "deadline": deadline
-                    })
-            clear_caches()
-            if proposed:
-                st.success("罷免動議已提出！")
+        depose_reason_choices = st.multiselect(
+            "請選擇提出罷免動議的原因（可多選）",
+            options=DEPOSE_REASONS,
+            key="depose_reason_choices"
+        )
+        depose_reason_other = st.text_area(
+            "其他補充原因（如有）",
+            key="depose_reason_other",
+            placeholder="例如：題目最近已在其他比賽打過。"
+        )
+
+        if not is_active:
+            st.info("非活躍成員不能提出罷免動議。")
+
+        if st.button("提出罷免動議", disabled=not is_active):
+            if not topics_to_depose:
+                st.warning("你未選擇任何辯題！")
+            elif not collect_reasons(depose_reason_choices, depose_reason_other):
+                st.warning("請至少交代一個罷免原因。")
             else:
-                st.warning("有辯題已存在於罷免動議區，該辯題將不會被重複提出。其他辯題已成功提出罷免動議。")
+                conn = get_connection()
+                exist_votes = conn.query(
+                    f"SELECT topic_text FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
+                    ttl=5,
+                )
+                exist_depose_topics = exist_votes["topic_text"].tolist()
+                if len(exist_depose_topics) >= 10:
+                    st.warning("目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。")
+                    st.stop()
+                proposed = True
+                proposal_reasons = collect_reasons(depose_reason_choices, depose_reason_other)
+                for t in topics_to_depose:
+                    if t in exist_depose_topics:
+                        proposed = False
+                    else:
+                        hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+                        hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+                        deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
+                        query = f"""
+                        INSERT INTO {TABLE_TOPIC_REMOVAL_VOTES} (
+                            topic_text, proposer_user_id, status, created_at, removal_reasons, deadline_date, approval_threshold
+                        ) VALUES (
+                            :topic, :user_id, 'pending', :created_at, :proposal_reasons, :deadline, :threshold
+                        )
+                        """
+                        param = {
+                            "topic": t,
+                            "user_id": user_id,
+                            "created_at": hk_time,
+                            "proposal_reasons": dump_json(proposal_reasons),
+                            "deadline": deadline,
+                            "threshold": DEPOSE_THRESHOLD
+                        }
+                        execute_query(query, param)
+                        enqueue_tg_notification("new_depose", {
+                            "topic": t, "mover": user_id,
+                            "reasons": proposal_reasons,
+                            "threshold": DEPOSE_THRESHOLD,
+                            "deadline": deadline
+                        })
+                clear_caches()
+                if proposed:
+                    st.success("罷免動議已提出！")
+                else:
+                    st.warning("有辯題已存在於罷免動議區，該辯題將不會被重複提出。其他辯題已成功提出罷免動議。")
 
 
-if active_tab == "topic_vote":
+with tab_topic_vote:
     st.subheader("待表決辯題")
     st.caption("當同意票數達入庫門檻，且同意票多於不同意票時，系統會自動將辯題寫入辯題庫。")
     st.caption("當不同意票數達入庫門檻，且不同意票多於同意票時，系統會自動否決該辯題。")
@@ -692,8 +677,6 @@ if active_tab == "topic_vote":
     if not vote_data:
         st.info("目前沒有待表決的辯題。")
     else:
-        conn = get_connection()
-
         for i, row in enumerate(vote_data):
             topic = row["topic_text"]
             author = row["proposer_user_id"]
@@ -719,21 +702,19 @@ if active_tab == "topic_vote":
                 st.rerun()
 
             with st.container(border=True):
-                st.write(f"**{topic}**")
+                st.markdown(f"#### {topic}")
                 cat = row.get("category") or "—"
                 diff = row.get("difficulty")
                 diff_label = DIFFICULTY_OPTIONS.get(int(diff), "—") if diff else "—"
-                st.caption(f"🏷️ {cat}　｜　{diff_label}")
                 deadline_display = f" ｜ 截止：{deadline_str} 23:59" if deadline_str else ""
-                st.caption(f"提出者：{author} ｜ 入庫門檻：{row_threshold} 票 ｜ 同意：{agree_count} ｜ 不同意：{against_count}{deadline_display}")
+                st.caption(f"🏷️ {cat} ｜ {diff_label}{deadline_display}")
+                st.caption(f"提出者：{author} ｜ 入庫門檻：{row_threshold} 票")
 
                 agree_progress = min(agree_count / row_threshold, 1.0)
                 against_progress = min(against_count / row_threshold, 1.0)
 
-                st.progress(agree_progress, text=f"同意票進度: {agree_count} / {row_threshold}")
-                st.progress(against_progress, text=f"不同意票進度: {against_count} / {row_threshold}")
-                with st.expander("查看不同意理由", expanded=False):
-                    render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
+                st.progress(agree_progress, text=f"同意票進度：{agree_count} / {row_threshold}")
+                st.progress(against_progress, text=f"不同意票進度：{against_count} / {row_threshold}")
 
                 btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
@@ -742,6 +723,10 @@ if active_tab == "topic_vote":
                     after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
                     against_dialog_fn=cast_against_vote_dialog
                 )
+
+            if against_reason_map:
+                with st.expander(f"查看「{topic}」不同意理由", expanded=False):
+                    render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
 
             check_vote_resolution(agree_count, against_count, row_threshold, topic, agree_list, against_list,
                                    mode="topic", author=author,
@@ -770,7 +755,7 @@ if active_tab == "topic_vote":
             st.caption("暫無記錄")
 
 
-if active_tab == "depose_vote":
+with tab_depose_vote:
     st.subheader("罷免投票")
     st.caption("當同意罷免票數達罷免門檻，且同意票多於不同意票時，系統會自動刪除辯題。")
     st.caption("當不同意票數達罷免門檻，且不同意票多於同意票時，系統會自動否決罷免動議。")
@@ -855,22 +840,20 @@ if active_tab == "depose_vote":
                 st.rerun()
 
             with st.container(border=True):
-                st.write(f"**{topic}**")
+                st.markdown(f"#### {topic}")
                 meta = topic_meta.get(topic, (None, None))
                 depose_cat = meta[0] or "—"
                 depose_diff = meta[1]
                 depose_diff_label = DIFFICULTY_OPTIONS.get(int(depose_diff), "—") if depose_diff else "—"
-                st.caption(f"🏷️ {depose_cat}　｜　{depose_diff_label}")
                 depose_deadline_display = f" ｜ 截止：{depose_deadline_str} 23:59" if depose_deadline_str else ""
-                st.caption(f"提出者：{mover} ｜ 罷免門檻：{row_depose_threshold} 票 ｜ 同意罷免：{agree_count} ｜ 不同意罷免：{against_count}{depose_deadline_display}")
-                if proposal_reasons:
-                    st.caption(f"提出原因：{'；'.join(proposal_reasons)}")
+                st.caption(f"🏷️ {depose_cat} ｜ {depose_diff_label}{depose_deadline_display}")
+                st.caption(f"提出者：{mover} ｜ 罷免門檻：{row_depose_threshold} 票")
 
                 agree_progress = min(agree_count / row_depose_threshold, 1.0)
                 against_progress = min(against_count / row_depose_threshold, 1.0)
 
-                st.progress(agree_progress, text=f"同意罷免進度: {agree_count} / {row_depose_threshold}")
-                st.progress(against_progress, text=f"不同意罷免進度: {against_count} / {row_depose_threshold}")
+                st.progress(agree_progress, text=f"同意罷免進度：{agree_count} / {row_depose_threshold}")
+                st.progress(against_progress, text=f"不同意罷免進度：{against_count} / {row_depose_threshold}")
 
                 btn_col1, btn_col2 = st.columns(2)
                 render_vote_buttons(
@@ -880,12 +863,16 @@ if active_tab == "depose_vote":
                     agree_switch_toast="已轉投同意罷免票！"
                 )
 
+            if proposal_reasons:
+                with st.expander(f"查看「{topic}」提出原因", expanded=False):
+                    st.caption("；".join(proposal_reasons))
+
             check_vote_resolution(agree_count, against_count, row_depose_threshold, topic, agree_list, against_list,
                                    mode="depose")
 
 
 
-if active_tab == "member_stats":
+with tab_member_stats:
     st.subheader("成員參與率")
     st.caption("計算辯題投票及罷免投票的整體參與情況。活躍成員標準：整體投票率 ≥ 40% 且 最近10次投票至少參與3次。")
 
@@ -918,7 +905,7 @@ if active_tab == "member_stats":
         st.info("暫無成員資料。")
 
 
-if active_tab == "account":
+with tab_account:
     st.subheader("帳戶管理")
 
     with st.expander("📲 連結 Telegram Bot（接收投票通知）", expanded=True):

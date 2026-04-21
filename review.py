@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data, render_page_guidance
+from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data, render_page_guidance, render_password_gate
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
 
@@ -10,9 +10,6 @@ render_page_guidance(
         "先選擇場次，再輸入由賽會人員提供的查閱分紙密碼。",
         "登入後可選擇評判，查看該場次已提交的完整分紙內容。",
         "如目前未有評分紀錄，請稍後再試或向賽會人員查詢。",
-    ],
-    glossary=[
-        ("查閱分紙密碼", "比賽隊伍查閱指定場次評分詳情時使用的密碼。"),
     ],
 )
 
@@ -39,12 +36,17 @@ review_password_hash = match_row["review_password_hash"]
 
 # Per-match password gate
 if selected_match not in st.session_state["score_unlocked_matches"]:
-    st.subheader("查閱分紙驗證")
     if not review_password_hash:
         st.warning("此場次尚未設定查閱分紙密碼，請聯絡賽會人員。")
         st.stop()
-    pwd = st.text_input("請輸入由賽會人員提供的查閱分紙密碼", type="password", key=f"pwd_{selected_match}")
-    if st.button("登入"):
+    pwd = render_password_gate(
+        "查閱分紙驗證",
+        "請輸入由賽會人員提供的查閱分紙密碼。",
+        "請輸入查閱分紙密碼",
+        "登入",
+        form_key=f"review_gate_{selected_match}",
+    )
+    if pwd is not None:
         if _verify_config_password(pwd, review_password_hash):
             st.session_state["score_unlocked_matches"].add(selected_match)
             st.rerun()

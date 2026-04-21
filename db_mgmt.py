@@ -2,7 +2,7 @@ import re
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from functions import check_admin, get_connection, get_system_config, _verify_config_password, render_page_guidance
+from functions import check_admin, get_connection, get_system_config, _verify_config_password, render_page_guidance, render_password_gate
 
 st.header("資料庫管理控制台")
 render_page_guidance(
@@ -10,10 +10,6 @@ render_page_guidance(
         "使用賽會人員密碼登入後，此頁仍需輸入額外的 SQL 存取密碼才可執行查詢。",
         "此頁可直接查詢或修改正式資料庫，請先確認 SQL 內容及影響範圍。",
         "system_config 在此頁面完全不可存取，沒有 WHERE 條件的 UPDATE 或 DELETE 會要求再次確認。",
-    ],
-    glossary=[
-        ("賽會人員密碼", "賽會人員進入管理頁面所使用的共用密碼。"),
-        ("SQL 存取密碼", "資料庫管理控制台專用的額外保護密碼。"),
     ],
 )
 
@@ -26,10 +22,14 @@ if "sql_verified" not in st.session_state:
     st.session_state["sql_verified"] = False
 
 if not st.session_state["sql_verified"]:
-    st.subheader("資料庫存取驗證")
-    st.caption("此頁面需要額外的 SQL 存取密碼。")
-    sql_pwd = st.text_input("請輸入 SQL 存取密碼", type="password")
-    if st.button("驗證"):
+    sql_pwd = render_password_gate(
+        "資料庫存取驗證",
+        "此頁面需要額外的 SQL 存取密碼。",
+        "請輸入 SQL 存取密碼",
+        "驗證",
+        form_key="sql_gate",
+    )
+    if sql_pwd is not None:
         stored = get_system_config("sql_password")
         if stored is None:
             st.error("系統錯誤：未能讀取 SQL 存取密碼，請聯絡開發人員。")
