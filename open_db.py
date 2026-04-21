@@ -75,7 +75,10 @@ display_df = display_df.rename(columns={
 })
 
 st.caption(f"共找到 {len(display_df)} 條符合條件的辯題")
-st.dataframe(display_df, use_container_width=True, hide_index=True)
+if display_df.empty:
+    st.info("沒有符合條件的辯題。請調整搜尋關鍵字或篩選條件後再試。")
+else:
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 st.divider()
 st.subheader("📊 類別分佈 (所有辯題)")

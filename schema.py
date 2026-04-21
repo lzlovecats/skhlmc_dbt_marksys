@@ -431,7 +431,7 @@ CREATE INDEX IF NOT EXISTS idx_telegram_link_tokens_user_id
     ON {TABLE_TELEGRAM_LINK_TOKENS}(user_id, consumed_at, expires_at);
 """
 
-# System-wide configuration (e.g. hashed passwords managed via Developer Settings page)
+# System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
 CREATE_SYSTEM_CONFIG = """
 CREATE TABLE IF NOT EXISTS system_config (
     key        TEXT PRIMARY KEY,

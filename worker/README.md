@@ -6,7 +6,7 @@ This worker replaces the long-running Python Telegram bot with:
 - `GET /health` for smoke checks
 - cron triggers for queue draining and reminder jobs
 
-## Bot Behavior
+## Telegram Bot Behavior
 
 - `/link <code>` uses a one-time code generated from the website account page
 - account linking only works in a private Telegram chat

@@ -1,10 +1,17 @@
 import streamlit as st
 import pandas as pd
-from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data
+from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data, render_page_guidance, render_password_gate
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
 
-st.header("查閱評判分紙")
+st.header("查閱比賽分紙")
+render_page_guidance(
+    [
+        "先選擇場次，再輸入由賽會人員提供的查閱分紙密碼。",
+        "登入後可選擇評判，查看該場次已提交的完整分紙內容。",
+        "如目前未有評分紀錄，請稍後再試或向賽會人員查詢。",
+    ],
+)
 
 if "score_unlocked_matches" not in st.session_state:
     st.session_state["score_unlocked_matches"] = set()
@@ -18,7 +25,7 @@ matches_with_scores = query_params("""
 """.format(table_matches=TABLE_MATCHES, table_scores=TABLE_SCORES))
 
 if matches_with_scores.empty:
-    st.info("數據庫上未有任何評分紀錄。")
+    st.info("目前未有可查閱的評分紀錄。請稍後再試或向賽會人員查詢。")
     st.stop()
 
 all_match_ids = matches_with_scores["match_id"].tolist()
@@ -29,12 +36,17 @@ review_password_hash = match_row["review_password_hash"]
 
 # Per-match password gate
 if selected_match not in st.session_state["score_unlocked_matches"]:
-    st.subheader("查閱比賽分紙登入")
     if not review_password_hash:
-        st.warning("此場次未設定查閱密碼，請聯絡賽會人員。")
+        st.warning("此場次尚未設定查閱分紙密碼，請聯絡賽會人員。")
         st.stop()
-    pwd = st.text_input("請輸入由賽會人員提供的密碼", type="password", key=f"pwd_{selected_match}")
-    if st.button("登入"):
+    pwd = render_password_gate(
+        "查閱分紙驗證",
+        "請輸入由賽會人員提供的查閱分紙密碼。",
+        "請輸入查閱分紙密碼",
+        "登入",
+        form_key=f"review_gate_{selected_match}",
+    )
+    if pwd is not None:
         if _verify_config_password(pwd, review_password_hash):
             st.session_state["score_unlocked_matches"].add(selected_match)
             st.rerun()
@@ -46,12 +58,12 @@ if selected_match not in st.session_state["score_unlocked_matches"]:
 df_scores = get_score_data()
 
 if df_scores is None or df_scores.empty:
-    st.info("數據庫上未有任何評分紀錄。")
+    st.info("目前未有可查閱的評分紀錄。請稍後再試或向賽會人員查詢。")
     st.stop()
 
 match_results = df_scores[df_scores['match_id'] == selected_match]
 if match_results.empty:
-    st.info("此場次未有評分紀錄。")
+    st.info("此場次暫未有評分紀錄。請稍後再試或向賽會人員查詢。")
     st.stop()
 
 all_judges = match_results['judge_name'].unique()
@@ -61,7 +73,7 @@ judge_record = match_results[match_results['judge_name'] == selected_judge].iloc
 with st.container(border=True):
     st.write(f"**正方：** {judge_record['pro_team']}")
     st.write(f"**反方：** {judge_record['con_team']}")
-    st.write(f"**提交時間（HKT）：** {judge_record['submitted_time']}")
+    st.write(f"**提交時間（香港時間／HKT）：** {judge_record['submitted_time']}")
 
 pro_total = judge_record['pro_total_score']
 con_total = judge_record['con_total_score']

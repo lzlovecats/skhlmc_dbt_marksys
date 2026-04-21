@@ -4,7 +4,7 @@ import datetime
 from zoneinfo import ZoneInfo
 from functions import get_system_config, _verify_config_password, execute_query
 
-st.header("Developer Settings")
+st.header("開發者設定")
 
 # ── Developer authentication ──────────────────────────────────────────────────
 
@@ -15,31 +15,31 @@ if not st.session_state["dev_logged_in"]:
     stored_dev_pw = get_system_config("developer_password")
     if stored_dev_pw is None:
         st.error(
-            "Developer password is not yet set。\n\n"
-            "Insert the follow record in `system_config` and refresh this page：\n\n"
+            "尚未設定開發者密碼。\n\n"
+            "請先在 `system_config` 加入以下紀錄，然後重新整理此頁：\n\n"
             "```sql\n"
             "INSERT INTO system_config (key, value, updated_at)\n"
             "VALUES ('developer_password', '<your password>', NOW()::TEXT);\n"
             "```\n\n"
-            "You should set a plaintext password in the first time，change the password immediately after your first login。"
+            "首次設定時請先使用明文密碼，並於首次登入後立即改為加密版本。"
         )
         st.stop()
 
-    st.subheader("Developer Login")
-    dev_pwd = st.text_input("Input developer password", type="password")
-    if st.button("Login"):
+    st.subheader("開發者登入")
+    dev_pwd = st.text_input("請輸入開發者密碼", type="password")
+    if st.button("登入"):
         if _verify_config_password(dev_pwd, stored_dev_pw):
             st.session_state["dev_logged_in"] = True
             st.rerun()
         else:
-            st.error("Wrong Password!")
+            st.error("密碼錯誤。")
     st.stop()
 
 # ── Settings (only shown after login) ────────────────────────────────────────
 
 with st.sidebar:
     st.write("")
-    if st.button("Logout developer", use_container_width=True):
+    if st.button("登出開發者帳戶", use_container_width=True):
         st.session_state["dev_logged_in"] = False
         st.rerun()
 
