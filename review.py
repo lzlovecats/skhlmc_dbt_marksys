@@ -18,7 +18,7 @@ if "score_unlocked_matches" not in st.session_state:
 
 # Load matches that have scores (joined to get review_password)
 matches_with_scores = query_params("""
-    SELECT DISTINCT m.match_id, m.review_password_hash
+    SELECT DISTINCT m.match_id, m.review_password_hash, m.match_date, m.match_time, m.topic_text
     FROM {table_matches} m
     INNER JOIN {table_scores} s ON m.match_id = s.match_id
     ORDER BY m.match_id
@@ -143,6 +143,7 @@ def display_team_scores(side_label, team_name, record, detail_a, detail_b):
 
 pro_detail_a, pro_detail_b = pd.DataFrame(), pd.DataFrame()
 con_detail_a, con_detail_b = pd.DataFrame(), pd.DataFrame()
+pro_data, con_data = None, None
 loaded_final_sides = set()
 for i, row in temp_sheet.iterrows():
     side = str(row["side"]).strip()
@@ -150,12 +151,14 @@ for i, row in temp_sheet.iterrows():
     try:
         data = _deserialize_score_data(detail_json)
         if side == "正方":
+            pro_data = data
             if isinstance(data.get("raw_df_a"), pd.DataFrame):
                 pro_detail_a = data["raw_df_a"]
             if isinstance(data.get("raw_df_b"), pd.DataFrame):
                 pro_detail_b = data["raw_df_b"]
             loaded_final_sides.add("正方")
         elif side == "反方":
+            con_data = data
             if isinstance(data.get("raw_df_a"), pd.DataFrame):
                 con_detail_a = data["raw_df_a"]
             if isinstance(data.get("raw_df_b"), pd.DataFrame):
@@ -167,6 +170,22 @@ for i, row in temp_sheet.iterrows():
 missing_final_sides = [side for side in ["正方", "反方"] if side not in loaded_final_sides]
 if missing_final_sides:
     st.error(f"此評判的最終分紙細項資料不完整（缺少：{'、'.join(missing_final_sides)}），請聯絡賽會人員。")
+elif pro_data is not None and con_data is not None:
+    try:
+        from score_sheet_pdf import build_score_sheet_pdf
+
+        pdf_bytes = build_score_sheet_pdf(match_row, judge_record, pro_data, con_data)
+        safe_match = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(selected_match))
+        safe_judge = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(selected_judge))
+        st.download_button(
+            "匯出 PDF",
+            data=pdf_bytes,
+            file_name=f"{safe_match}_{safe_judge}_評判評分表.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.error(f"產生 PDF 失敗：{e}")
 
 tab_pro, tab_con = st.tabs([f"正方：{judge_record['pro_team']}", f"反方：{judge_record['con_team']}"])
 
