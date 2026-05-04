@@ -7,6 +7,7 @@ extra-streamlit-components
 SQLAlchemy
 psycopg2-binary
 bcrypt
+python-docx
 # Telegram bot service
 python-telegram-bot>=21.0
 APScheduler>=3.10
