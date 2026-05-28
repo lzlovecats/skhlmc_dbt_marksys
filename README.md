@@ -33,12 +33,28 @@ A full-featured electronic scoring and management platform for school debate com
 
 ### 🏠 主頁導航 | Home Page (`home.py`)
 **中文：**
-- 以身份分區（評判、賽會人員、比賽隊伍、一般人員、內部委員會成員）展示所有入口
+- 以身份分區（評判、賽會人員、參賽隊伍、一般人員、內部委員會成員）展示所有入口
 - 每個區塊提供一鍵跳轉對應頁面的快捷連結
+- 報名時間開放時，主頁標題下方會顯示下一屆比賽報名提示及報名連結
 
 **English:**
 - Identity-based card layout (Judge, Organiser, Teams, Public, Committee) with direct page links
 - One-click navigation to all system functions from a single landing page
+- When registration is open, a homepage banner appears below the title with the signup steps and registration link
+
+---
+
+### 📝 比賽報名 | Competition Registration (`registration.py`, `registration_admin.py`)
+**中文：**
+- 報名時間內開放公開報名頁，收集隊名、四位辯員姓名及聯絡人資料
+- 同一屆比賽不可重覆提交相同隊名
+- 賽會人員可設定比賽屆數、報名開始／截止時間、查看報名紀錄、更新狀態及匯出 CSV
+
+**English:**
+- Public signup page opens only during the configured registration window
+- Captures team name, four debater names, and contact details
+- Prevents duplicate team names within the same competition edition
+- Organisers can set the edition/window, review submissions, update status, and export CSV
 
 ---
 
@@ -107,8 +123,9 @@ A full-featured electronic scoring and management platform for school debate com
 | 角色 / Role | 頁面 / Pages | 認證方式 / Auth |
 |---|---|---|
 | 評判 / Judge | 電子分紙 | 賽會提供入場密碼 |
-| 賽會人員 / Organiser | 場次管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
-| 比賽隊伍 / Teams | 查閱分紙 | 查閱分紙密碼 |
+| 賽會人員 / Organiser | 報名管理、場次管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
+| 準參賽隊伍 / Prospective Teams | 比賽報名 | 無需登入（只限報名時間內） |
+| 參賽隊伍 / Teams | 查閱分紙 | 查閱分紙密碼 |
 | 一般人員 / Public | 查閱辯題庫 | 無需登入 |
 | 委員會成員 / Committee | 辯題徵集、投票及罷免 | 個人帳戶（用戶名稱 + 密碼） |
 | Developer | 開發者設定 | 開發者密碼（存於 DB） |
@@ -201,6 +218,8 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 | `login_records` | 成員登入紀錄 |
 | `notification_reads` | 站內通知已讀紀錄 |
 | `telegram_notification_queue` | Telegram 推送通知佇列（由 Cloudflare Worker 處理）|
+| `competition_registration_settings` | 下一屆比賽報名設定（屆數、開始及截止時間）|
+| `competition_registrations` | 比賽報名紀錄（隊伍、辯員、聯絡人及狀態）|
 | `system_config` | 系統設定（賽會人員密碼、開發者密碼等，以 bcrypt 加密存放）|
 
 ---
@@ -213,6 +232,8 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 ├── judging.py                # 電子分紙 / Judge scoring interface
 ├── match_info.py             # 場次管理 / Match management
 ├── management.py             # 賽果統計 / Results dashboard
+├── registration.py           # 公開比賽報名 / Public competition registration
+├── registration_admin.py     # 比賽報名管理 / Registration management
 ├── review.py                 # 查閱分紙 / Score review
 ├── vote.py                   # 辯題投票系統 / Topic voting system
 ├── open_db.py                # 公開辯題庫 / Public topic viewer
