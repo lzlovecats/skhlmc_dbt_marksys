@@ -1,5 +1,5 @@
 import streamlit as st
-from functions import get_connection, is_maintenance_mode, query_params, render_maintenance_notice, show_manual, show_rules
+from functions import get_connection, get_registration_status, is_maintenance_mode, query_params, render_maintenance_notice, show_manual, show_rules
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_LOGIN_RECORDS,
@@ -134,6 +134,20 @@ if is_maintenance_mode():
     render_maintenance_notice()
     st.stop()
 
+registration_status = get_registration_status()
+if registration_status["is_open"]:
+    settings = registration_status["settings"]
+    with st.container(border=True):
+        st.markdown(f"### 第 {settings['competition_edition']} 屆比賽現正接受報名")
+        st.write("報名步驟：填寫隊伍資料 → 確認聯絡方法 → 提交報名")
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            st.caption(
+                f"截止時間（香港時間／HKT）：{settings['registration_end'].strftime('%Y-%m-%d %H:%M')}"
+            )
+        with c2:
+            st.page_link("registration.py", label="前往比賽報名", icon="📝")
+
 # ─── Role cards — 2-column grid ───────────────────────────────────────────────
 
 col_left, col_right = st.columns(2)
@@ -151,13 +165,14 @@ with col_left:
 
 with col_right:
     with st.container(border=True):
-        st.markdown("### 🏆 比賽隊伍")
+        st.markdown("### 🏆 參賽隊伍")
         st.write("查閱所參與比賽的評判評分紙。")
         st.page_link("review.py", label="查閱比賽分紙", icon="📄")
 
     with st.container(border=True):
         st.markdown("### 🎛️ 賽會人員")
-        st.write("管理比賽場次、查閱比賽結果、使用資料庫管理控制台及抽取賽程。")
+        st.write("管理比賽報名、比賽場次、賽果、資料庫控制台及抽取賽程。")
+        st.page_link("registration_admin.py", label="比賽報名管理", icon="🗂️")
         st.page_link("match_info.py", label="比賽場次管理", icon="📋")
         st.page_link("management.py", label="查閱比賽結果", icon="📊")
         st.page_link("db_mgmt.py", label="資料庫管理控制台", icon="🖥️")

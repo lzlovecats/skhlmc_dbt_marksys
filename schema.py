@@ -21,6 +21,8 @@ TABLE_LOGIN_RECORDS = "login_records"
 TABLE_NOTIFICATION_READS = "notification_reads"
 TABLE_TELEGRAM_NOTIFICATION_QUEUE = "telegram_notification_queue"
 TABLE_TELEGRAM_LINK_TOKENS = "telegram_link_tokens"
+TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
+TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -293,6 +295,41 @@ CREATE TABLE IF NOT EXISTS {TABLE_TELEGRAM_LINK_TOKENS} (
 );
 """
 
+# Table: COMPETITION_REGISTRATION_SETTINGS
+# Stores the current public registration window and competition edition.
+CREATE_COMPETITION_REGISTRATION_SETTINGS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_REGISTRATION_SETTINGS} (
+    id                      INTEGER     PRIMARY KEY CHECK (id = 1),
+    competition_edition     INTEGER     NOT NULL,
+    registration_start      TIMESTAMP   NOT NULL,
+    registration_end        TIMESTAMP   NOT NULL,
+    updated_at              TIMESTAMP
+);
+"""
+
+# Table: COMPETITION_REGISTRATIONS
+# Public signup records for the next competition year.
+# status: 'submitted' | 'contacted' | 'confirmed' | 'withdrawn'
+CREATE_COMPETITION_REGISTRATIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_REGISTRATIONS} (
+    id                          SERIAL      PRIMARY KEY,
+    competition_edition         INTEGER     NOT NULL,
+    team_name                   TEXT        NOT NULL,
+    main_debater_name           TEXT        NOT NULL,
+    first_deputy_name           TEXT        NOT NULL,
+    second_deputy_name          TEXT        NOT NULL,
+    closing_debater_name        TEXT        NOT NULL,
+    contact_name                TEXT        NOT NULL,
+    contact_class               TEXT        NOT NULL,
+    contact_phone               TEXT        NOT NULL,
+    status                      TEXT        DEFAULT 'submitted'
+                                            CHECK (status IN ('submitted', 'contacted', 'confirmed', 'withdrawn')),
+    submitted_at                TIMESTAMP   DEFAULT NOW(),
+    updated_at                  TIMESTAMP,
+    UNIQUE (competition_edition, team_name)
+);
+"""
+
 # View: COMMITTEE_VOTE_ACTIVITY
 # Canonical source for committee participation metrics used by both Streamlit and the Telegram Worker.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
@@ -429,6 +466,8 @@ CREATE INDEX IF NOT EXISTS idx_telegram_notification_queue_claim
     ON {TABLE_TELEGRAM_NOTIFICATION_QUEUE}(is_processed, processing_token, created_at);
 CREATE INDEX IF NOT EXISTS idx_telegram_link_tokens_user_id
     ON {TABLE_TELEGRAM_LINK_TOKENS}(user_id, consumed_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_competition_registrations_edition_status
+    ON {TABLE_COMPETITION_REGISTRATIONS}(competition_edition, status);
 """
 
 # System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
@@ -458,6 +497,8 @@ ALL_SCHEMAS = [
     CREATE_NOTIFICATION_READS,         # → accounts
     CREATE_TELEGRAM_NOTIFICATION_QUEUE,  # no deps
     CREATE_TELEGRAM_LINK_TOKENS,         # → accounts
+    CREATE_COMPETITION_REGISTRATION_SETTINGS,  # no deps
+    CREATE_COMPETITION_REGISTRATIONS,           # no deps
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables

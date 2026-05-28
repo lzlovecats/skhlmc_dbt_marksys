@@ -16,6 +16,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from schema import (
     TABLE_ACCOUNTS,
+    CREATE_COMPETITION_REGISTRATION_SETTINGS,
+    CREATE_COMPETITION_REGISTRATIONS,
+    TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_DEBATERS,
     TABLE_DEBATER_SCORES,
     TABLE_LOGIN_RECORDS,
@@ -149,6 +152,87 @@ def get_system_config(key: str):
     except Exception as e:
         logger.warning("get_system_config(%s) failed: %s", key, e)
         return None
+
+
+def ensure_registration_tables():
+    if st.session_state.get("_registration_tables_ready"):
+        return True
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_COMPETITION_REGISTRATION_SETTINGS))
+            s.execute(text(CREATE_COMPETITION_REGISTRATIONS))
+            s.commit()
+        st.session_state["_registration_tables_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_registration_tables failed: %s", e)
+        return False
+
+
+def _coerce_db_datetime(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if isinstance(value, str):
+        try:
+            value = datetime.datetime.fromisoformat(value.replace(" ", "T"))
+        except ValueError:
+            return None
+    if hasattr(value, "tzinfo") and value.tzinfo is not None:
+        value = value.astimezone(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    return value
+
+
+def get_registration_settings():
+    if not ensure_registration_tables():
+        return None
+
+    try:
+        result = query_params(
+            f"""
+            SELECT competition_edition, registration_start, registration_end, updated_at
+            FROM {TABLE_COMPETITION_REGISTRATION_SETTINGS}
+            WHERE id = 1
+            """
+        )
+        if result.empty:
+            return None
+        row = result.iloc[0].to_dict()
+        return {
+            "competition_edition": int(row["competition_edition"]),
+            "registration_start": _coerce_db_datetime(row["registration_start"]),
+            "registration_end": _coerce_db_datetime(row["registration_end"]),
+            "updated_at": _coerce_db_datetime(row.get("updated_at")),
+        }
+    except Exception as e:
+        logger.warning("get_registration_settings failed: %s", e)
+        return None
+
+
+def get_registration_status():
+    settings = get_registration_settings()
+    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+
+    if not settings:
+        return {"settings": None, "is_open": False, "now": now, "message": "尚未設定報名時間。"}
+
+    start = settings.get("registration_start")
+    end = settings.get("registration_end")
+    if start is None or end is None:
+        return {"settings": settings, "is_open": False, "now": now, "message": "報名時間設定不完整。"}
+    if now < start:
+        return {"settings": settings, "is_open": False, "now": now, "message": "報名尚未開始。"}
+    if now > end:
+        return {"settings": settings, "is_open": False, "now": now, "message": "報名已截止。"}
+    return {"settings": settings, "is_open": True, "now": now, "message": "報名現正開放。"}
 
 
 def _verify_config_password(plain: str, stored: str) -> bool:
@@ -693,7 +777,7 @@ def extract_markdown_section(content, heading_level, target_heading):
 def render_user_manual_content(role_key: str):
     role = st.radio(
         "請先選擇你的身份：",
-        ["評判", "賽會人員", "比賽隊伍", "一般人員", "內部委員會成員"],
+        ["評判", "賽會人員", "參賽隊伍", "一般人員", "內部委員會成員"],
         horizontal=True,
         key=role_key,
     )
@@ -702,7 +786,7 @@ def render_user_manual_content(role_key: str):
     role_section_map = {
         "評判": "一、評判",
         "賽會人員": "二、賽會人員",
-        "比賽隊伍": "三、比賽隊伍",
+        "參賽隊伍": "三、參賽隊伍",
         "一般人員": "四、一般人員",
         "內部委員會成員": "五、內部委員會成員",
     }
@@ -766,14 +850,15 @@ def render_home_reference():
             st.markdown("**評判**：選擇場次、輸入評判入場密碼，開始填寫電子分紙。")
             st.page_link("judging.py", label="前往電子分紙", icon="📝")
 
-            st.markdown("**比賽隊伍**：輸入查閱分紙密碼後查看指定場次的評分詳情。")
+            st.markdown("**參賽隊伍**：輸入查閱分紙密碼後查看指定場次的評分詳情。")
             st.page_link("review.py", label="前往查閱比賽分紙", icon="📄")
 
             st.markdown("**一般人員**：無須登入即可搜尋及篩選辯題庫。")
             st.page_link("open_db.py", label="前往查閱辯題庫", icon="📚")
 
         with col_right:
-            st.markdown("**賽會人員**：使用賽會人員密碼登入後管理場次、賽果及賽程。")
+            st.markdown("**賽會人員**：使用賽會人員密碼登入後管理報名、場次、賽果及賽程。")
+            st.page_link("registration_admin.py", label="前往比賽報名管理", icon="🗂️")
             st.page_link("match_info.py", label="前往比賽場次管理", icon="📋")
 
             st.markdown("**內部委員會成員**：登入個人帳戶後提出辯題、投票及管理帳戶。")
