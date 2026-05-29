@@ -5,7 +5,6 @@ from schema import (
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
     TABLE_SCORES,
-    TABLE_TELEGRAM_NOTIFICATION_QUEUE,
     TABLE_TOPIC_VOTES,
     TABLE_TOPICS,
 )
@@ -23,7 +22,6 @@ def _run_status_checks() -> dict:
         "db_ok": False,
         "db_error": None,
         "table_counts": None,
-        "tg_queue_depth": None,
         "config_admin_ok": False,
         "config_developer_ok": False,
         "pending_votes": None,
@@ -50,16 +48,7 @@ def _run_status_checks() -> dict:
     except Exception as e:
         results["errors"].append(f"表格計數失敗: {e}")
 
-    # Check 3: Telegram queue depth
-    try:
-        queue_df = query_params(
-            f"SELECT COUNT(*) AS cnt FROM {TABLE_TELEGRAM_NOTIFICATION_QUEUE} WHERE is_processed = FALSE"
-        )
-        results["tg_queue_depth"] = int(queue_df.iloc[0]["cnt"]) if not queue_df.empty else 0
-    except Exception as e:
-        results["errors"].append(f"Telegram 佇列查詢失敗: {e}")
-
-    # Check 4: system_config key existence
+    # Check 3: system_config key existence
     try:
         config_df = query_params(
             "SELECT key FROM system_config WHERE key IN ('admin_password', 'developer_password')"
@@ -70,14 +59,14 @@ def _run_status_checks() -> dict:
     except Exception as e:
         results["errors"].append(f"系統設定查詢失敗: {e}")
 
-    # Check 5: Pending topic votes
+    # Check 4: Pending topic votes
     try:
         pending_vote_df = query_params(f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'")
         results["pending_votes"] = int(pending_vote_df.iloc[0]["cnt"]) if not pending_vote_df.empty else 0
     except Exception as e:
         results["errors"].append(f"辯題投票查詢失敗: {e}")
 
-    # Check 6: Login activity in last 24h
+    # Check 5: Login activity in last 24h
     try:
         login_df = query_params(
             f"SELECT COUNT(*) AS cnt FROM {TABLE_LOGIN_RECORDS} "
@@ -105,13 +94,11 @@ def _render_status_results(results: dict):
         c3.metric("評分紀錄", counts.get("scores", "—"))
         c4.metric("辯題庫", counts.get("topics", "—"))
 
-    c5, c6, c7 = st.columns(3)
-    tg_queue_depth = results["tg_queue_depth"]
-    c5.metric("Telegram Bot 待處理通知", tg_queue_depth if tg_queue_depth is not None else "—")
+    c5, c6 = st.columns(2)
     pending_vote_count = results["pending_votes"]
-    c6.metric("待表決辯題", pending_vote_count if pending_vote_count is not None else "—")
+    c5.metric("待表決辯題", pending_vote_count if pending_vote_count is not None else "—")
     login_count_24h = results["logins_24h"]
-    c7.metric("24 小時內登入次數", login_count_24h if login_count_24h is not None else "—")
+    c6.metric("24 小時內登入次數", login_count_24h if login_count_24h is not None else "—")
 
     if results["config_admin_ok"]:
         st.success("賽會人員密碼已設定")

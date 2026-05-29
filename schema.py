@@ -19,8 +19,6 @@ TABLE_TOPIC_REMOVAL_VOTES = "topic_removal_votes"
 TABLE_TOPIC_REMOVAL_VOTE_BALLOTS = "topic_removal_vote_ballots"
 TABLE_LOGIN_RECORDS = "login_records"
 TABLE_NOTIFICATION_READS = "notification_reads"
-TABLE_TELEGRAM_NOTIFICATION_QUEUE = "telegram_notification_queue"
-TABLE_TELEGRAM_LINK_TOKENS = "telegram_link_tokens"
 TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
 TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
@@ -31,14 +29,11 @@ VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 # account_status: 'admin' | 'active' | 'inactive'
 # password_hash stores bcrypt hashes. Use hash_password() from functions.py when creating/updating accounts.
 # Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
-# telegram_user_id / telegram_chat_id: Telegram user ID and chat ID for push notifications (NULL = not linked).
 CREATE_ACCOUNTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
     user_id             TEXT    PRIMARY KEY,
     password_hash       TEXT,
-    account_status      TEXT    DEFAULT 'inactive',
-    telegram_user_id    TEXT    UNIQUE,
-    telegram_chat_id    TEXT    UNIQUE
+    account_status      TEXT    DEFAULT 'inactive'
 );
 """
 
@@ -260,41 +255,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_NOTIFICATION_READS} (
 );
 """
 
-
-# Table: TELEGRAM_NOTIFICATION_QUEUE
-# Decouples Streamlit from the Telegram bot service.
-# Streamlit writes notification events here; the bot's scheduler drains them every 15 minutes.
-# notification_type: 'new_topic' | 'new_depose' | 'vote_result'
-# payload: JSONB blob with all data needed to render the notification message.
-CREATE_TELEGRAM_NOTIFICATION_QUEUE = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_TELEGRAM_NOTIFICATION_QUEUE} (
-    id                      SERIAL      PRIMARY KEY,
-    notification_type       TEXT        NOT NULL,
-    payload                 JSONB       NOT NULL,
-    created_at              TIMESTAMP   DEFAULT NOW(),
-    is_processed            BOOLEAN     DEFAULT FALSE,
-    processing_token        TEXT,
-    processing_started_at   TIMESTAMP,
-    last_error_message      TEXT
-);
-"""
-
-# Table: TELEGRAM_LINK_TOKENS
-# Stores one-time Telegram linking codes generated from the website account page.
-# token_hash stores the SHA-256 hash of the normalized code; plaintext codes are never persisted.
-CREATE_TELEGRAM_LINK_TOKENS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_TELEGRAM_LINK_TOKENS} (
-    token_hash       TEXT        PRIMARY KEY,
-    user_id          TEXT        NOT NULL,
-    issued_at        TIMESTAMP   NOT NULL,
-    expires_at       TIMESTAMP   NOT NULL,
-    consumed_at      TIMESTAMP,
-    CONSTRAINT fk_telegram_link_tokens_user
-        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE CASCADE
-);
-"""
-
 # Table: COMPETITION_REGISTRATION_SETTINGS
 # Stores the current public registration window and competition edition.
 CREATE_COMPETITION_REGISTRATION_SETTINGS = f"""
@@ -331,9 +291,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_REGISTRATIONS} (
 """
 
 # View: COMMITTEE_VOTE_ACTIVITY
-# Canonical source for committee participation metrics used by both Streamlit and the Telegram Worker.
+# Canonical source for committee participation metrics used by Streamlit.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
-CREATE OR REPLACE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
+DROP VIEW IF EXISTS {VIEW_COMMITTEE_VOTE_ACTIVITY};
+CREATE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
 WITH tv_events AS (
     SELECT DISTINCT tv.topic_text, tv.created_at
     FROM {TABLE_TOPIC_VOTES} tv
@@ -379,7 +340,6 @@ ballot_summary AS (
 base_stats AS (
     SELECT
         a.user_id,
-        a.telegram_chat_id,
         a.account_status,
         COALESCE((SELECT total_votes FROM event_count), 0) AS total_votes,
         (
@@ -426,7 +386,6 @@ base_stats AS (
 )
 SELECT
     user_id,
-    telegram_chat_id,
     account_status,
     total_votes,
     participated_votes,
@@ -462,10 +421,6 @@ CREATE INDEX IF NOT EXISTS idx_tvb_user_id ON {TABLE_TOPIC_VOTE_BALLOTS}(user_id
 CREATE INDEX IF NOT EXISTS idx_tvb_topic_text ON {TABLE_TOPIC_VOTE_BALLOTS}(topic_text);
 CREATE INDEX IF NOT EXISTS idx_trvb_user_id ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(user_id);
 CREATE INDEX IF NOT EXISTS idx_trvb_topic_text ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(topic_text);
-CREATE INDEX IF NOT EXISTS idx_telegram_notification_queue_claim
-    ON {TABLE_TELEGRAM_NOTIFICATION_QUEUE}(is_processed, processing_token, created_at);
-CREATE INDEX IF NOT EXISTS idx_telegram_link_tokens_user_id
-    ON {TABLE_TELEGRAM_LINK_TOKENS}(user_id, consumed_at, expires_at);
 CREATE INDEX IF NOT EXISTS idx_competition_registrations_edition_status
     ON {TABLE_COMPETITION_REGISTRATIONS}(competition_edition, status);
 """
@@ -495,8 +450,6 @@ ALL_SCHEMAS = [
     CREATE_TOPIC_REMOVAL_VOTE_BALLOTS,  # → topic_removal_votes, accounts
     CREATE_LOGIN_RECORDS,              # → accounts
     CREATE_NOTIFICATION_READS,         # → accounts
-    CREATE_TELEGRAM_NOTIFICATION_QUEUE,  # no deps
-    CREATE_TELEGRAM_LINK_TOKENS,         # → accounts
     CREATE_COMPETITION_REGISTRATION_SETTINGS,  # no deps
     CREATE_COMPETITION_REGISTRATIONS,           # no deps
     CREATE_SYSTEM_CONFIG,                # no deps

@@ -49,8 +49,6 @@ _SCHEMAS = {
         ("user_id",          "TEXT (PK)",  "成員帳號（登入用）"),
         ("password_hash",    "TEXT",       "密碼（bcrypt 加密）"),
         ("account_status",   "TEXT",       "'admin' | 'active' | 'inactive'"),
-        ("telegram_user_id", "TEXT",       "Telegram 用戶 ID（未連結則為 NULL）"),
-        ("telegram_chat_id", "TEXT",       "Telegram Chat ID（未連結則為 NULL）"),
     ],
     "matches — 比賽場次": [
         ("match_id",             "TEXT (PK)", "場次編號（例如：第一屆初賽）"),
@@ -144,23 +142,6 @@ _SCHEMAS = {
         ("user_id",            "VARCHAR(50)",  "已閱讀的成員帳號"),
         ("read_at",            "TIMESTAMP",    "閱讀時間"),
     ],
-    "telegram_notification_queue — Telegram 推送佇列": [
-        ("id",                    "SERIAL (PK)", "自動編號"),
-        ("notification_type",     "TEXT",        "'new_topic' | 'new_depose' | 'vote_result'"),
-        ("payload",               "JSONB",       "通知內容（含推送所需全部資料）"),
-        ("created_at",            "TIMESTAMP",   "建立時間"),
-        ("is_processed",          "BOOLEAN",     "是否已由 Telegram Bot 處理"),
-        ("processing_token",      "TEXT",        "防重複處理 token"),
-        ("processing_started_at", "TIMESTAMP",   "Telegram Bot 開始處理時間"),
-        ("last_error_message",    "TEXT",        "最後錯誤訊息（若有）"),
-    ],
-    "telegram_link_tokens — Telegram 一次連結碼": [
-        ("token_hash",   "TEXT (PK)",       "一次連結碼的 SHA-256 hash"),
-        ("user_id",      "TEXT (FK→accounts)", "對應委員帳戶"),
-        ("issued_at",    "TIMESTAMP",       "簽發時間"),
-        ("expires_at",   "TIMESTAMP",       "失效時間"),
-        ("consumed_at",  "TIMESTAMP",       "已使用時間（未使用則為 NULL）"),
-    ],
     "competition_registration_settings — 比賽報名設定": [
         ("id",                    "INTEGER (PK)", "固定為 1，只保留目前報名設定"),
         ("competition_edition",   "INTEGER",      "比賽屆數"),
@@ -185,7 +166,6 @@ _SCHEMAS = {
     ],
     "committee_vote_activity_view — 委員參與統計 view": [
         ("user_id",              "TEXT",    "委員帳戶"),
-        ("telegram_chat_id",     "TEXT",    "已連結的 Telegram chat id"),
         ("account_status",       "TEXT",    "accounts 內現有帳戶狀態"),
         ("total_votes",          "INTEGER", "已開始的投票事件總數"),
         ("participated_votes",   "INTEGER", "該委員已參與的投票事件數"),
