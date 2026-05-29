@@ -1,10 +1,9 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, issue_telegram_link_code, TELEGRAM_LINK_CODE_TTL_MINUTES, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance
 from schema import (
     TABLE_ACCOUNTS,
-    TABLE_TELEGRAM_NOTIFICATION_QUEUE,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
     TABLE_TOPIC_REMOVAL_VOTES,
     TABLE_TOPIC_VOTE_BALLOTS,
@@ -117,14 +116,6 @@ def parse_deadline_row(row, key="deadline_date"):
         except Exception:
             pass
     return deadline_passed, deadline_str
-
-
-def enqueue_tg_notification(noti_type: str, payload: dict) -> None:
-    """Write a notification event to the queue table for the bot to pick up."""
-    execute_query(
-        f"INSERT INTO {TABLE_TELEGRAM_NOTIFICATION_QUEUE} (notification_type, payload) VALUES (:notification_type, :payload)",
-        {"notification_type": noti_type, "payload": json.dumps(payload, ensure_ascii=False)}
-    )
 
 
 def clear_caches():
@@ -257,10 +248,6 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
                 f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text",
                 {"topic_text": topic}
             )
-            enqueue_tg_notification("vote_result", {
-                "topic": topic, "result": "passed", "vote_type": "topic",
-                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
-            })
             clear_caches()
             st.balloons()
             st.rerun()
@@ -270,10 +257,6 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
                 f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
                 {"topic_text": topic}
             )
-            enqueue_tg_notification("vote_result", {
-                "topic": topic, "result": "rejected", "vote_type": "topic",
-                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
-            })
             clear_caches()
             st.rerun()
     elif mode == "depose":
@@ -284,10 +267,6 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
                 {"topic_text": topic},
             )
             execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
-            enqueue_tg_notification("vote_result", {
-                "topic": topic, "result": "passed", "vote_type": "depose",
-                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
-            })
             clear_caches()
             st.rerun()
         if against_count >= threshold and against_count > agree_count:
@@ -296,10 +275,6 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
                 f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
                 {"topic_text": topic},
             )
-            enqueue_tg_notification("vote_result", {
-                "topic": topic, "result": "rejected", "vote_type": "depose",
-                "agree_count": agree_count, "against_count": against_count, "threshold": threshold
-            })
             clear_caches()
             st.balloons()
             st.rerun()
@@ -531,13 +506,6 @@ with tab_proposal:
                     )
                     param = {"new_topic": new_topic, "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
                     execute_query(query, param)
-                    enqueue_tg_notification("new_topic", {
-                        "topic": new_topic, "author": user_id,
-                        "category": new_category,
-                        "difficulty_label": DIFFICULTY_OPTIONS.get(new_difficulty, str(new_difficulty)),
-                        "threshold": ENTRY_THRESHOLD,
-                        "deadline": deadline
-                    })
                     clear_caches()
                     st.success("辯題已加入投票區！")
 
@@ -559,13 +527,6 @@ with tab_proposal:
                 )
                 topic_params = {"new_topic": pending_topic_data["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": pending_topic_data["new_category"], "difficulty": pending_topic_data["new_difficulty"]}
                 execute_query(query, topic_params)
-                enqueue_tg_notification("new_topic", {
-                    "topic": pending_topic_data["new_topic"], "author": user_id,
-                    "category": pending_topic_data["new_category"],
-                    "difficulty_label": DIFFICULTY_OPTIONS.get(pending_topic_data["new_difficulty"], str(pending_topic_data["new_difficulty"])),
-                    "threshold": ENTRY_THRESHOLD,
-                    "deadline": deadline
-                })
                 clear_caches()
                 st.session_state["confirm_imbalance"] = False
                 st.success("辯題已加入投票區！")
@@ -643,12 +604,6 @@ with tab_proposal:
                             "threshold": DEPOSE_THRESHOLD
                         }
                         execute_query(query, param)
-                        enqueue_tg_notification("new_depose", {
-                            "topic": t, "mover": user_id,
-                            "reasons": proposal_reasons,
-                            "threshold": DEPOSE_THRESHOLD,
-                            "deadline": deadline
-                        })
                 clear_caches()
                 if proposed:
                     st.success("罷免動議已提出！")
@@ -907,39 +862,6 @@ with tab_member_stats:
 
 with tab_account:
     st.subheader("帳戶管理")
-
-    with st.expander("📲 連結 Telegram Bot（接收投票通知）", expanded=True):
-        st.markdown(
-            "連結後你將透過 Telegram 收到新辯題通知、截止提醒、投票結果公告及活躍度提醒。"
-        )
-        if st.button("產生 Telegram 一次性連結碼", use_container_width=True):
-            try:
-                link_code, expires_at = issue_telegram_link_code(user_id)
-                st.session_state["telegram_link_code"] = link_code
-                st.session_state["telegram_link_expires_at"] = expires_at.strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                st.error("產生 Telegram 一次性連結碼時出現錯誤。請聯絡管理員檢查資料庫設定。")
-
-        current_link_code = st.session_state.get("telegram_link_code")
-        current_link_expiry = st.session_state.get("telegram_link_expires_at")
-        if current_link_code and current_link_expiry:
-            st.info(f"此連結碼將於 {current_link_expiry}（香港時間／HKT）失效。")
-            st.code(f"/link {current_link_code}")
-
-        st.markdown(
-            "**使用步驟：**\n"
-            "1. 點擊下方連結並開啟 Telegram Bot。\n"
-            f"2. 按上方按鈕產生一個 {TELEGRAM_LINK_CODE_TTL_MINUTES} 分鐘內有效的 Telegram 一次連結碼（OTP）。\n"
-            "3. 在 Telegram Bot 私訊發送 `/link <一次連結碼>` 完成連結。\n"
-            "4. 發送 `/status` 確認連結狀態。"
-        )
-        st.link_button(
-            "🤖 前往 Telegram Bot（@lmcdbt_marysys_bot）",
-            "https://t.me/lmcdbt_marysys_bot",
-        )
-        st.caption("向 Telegram Bot 發送 `/unlink` 即可取消連結。")
-
-    st.divider()
 
     with st.expander("更改密碼", expanded=False):
         with st.form("change_user_password"):

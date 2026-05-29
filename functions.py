@@ -5,8 +5,6 @@ import pandas as pd
 import random
 import math
 import re
-import secrets
-import hashlib
 import extra_streamlit_components as stx
 import datetime
 import os
@@ -24,7 +22,6 @@ from schema import (
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
     TABLE_NOTIFICATION_READS,
-    TABLE_TELEGRAM_LINK_TOKENS,
     TABLE_SCORE_DRAFTS,
     TABLE_SCORES,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
@@ -45,28 +42,12 @@ CATEGORIES = [
     "香港社會政策", "青少年與教育", "哲理／價值觀"
 ]
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
-TELEGRAM_LINK_CODE_TTL_MINUTES = 10
-_TELEGRAM_LINK_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def normalize_judge_name(name: str) -> str:
     raw = str(name or "").replace("\u3000", " ").strip()
     raw = " ".join(raw.split())
     return "".join(ch.lower() if "A" <= ch <= "Z" else ch for ch in raw)
-
-
-def normalize_telegram_link_code(code: str) -> str:
-    return re.sub(r"[^A-Z2-9]", "", str(code or "").upper())
-
-
-def hash_telegram_link_code(code: str) -> str:
-    normalized = normalize_telegram_link_code(code)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def generate_telegram_link_code() -> str:
-    raw = "".join(secrets.choice(_TELEGRAM_LINK_CODE_ALPHABET) for _ in range(12))
-    return "-".join([raw[0:4], raw[4:8], raw[8:12]])
 
 
 def is_committee_member_active(total_votes: int, participated_votes: int, last10_participated: int) -> bool:
@@ -965,37 +946,9 @@ def return_expire_day():
     return datetime.datetime.now() + datetime.timedelta(days=1)
 
 
-def issue_telegram_link_code(user_id: str) -> tuple[str, datetime.datetime]:
-    code = generate_telegram_link_code()
-    token_hash = hash_telegram_link_code(code)
-    expires_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")) + datetime.timedelta(minutes=TELEGRAM_LINK_CODE_TTL_MINUTES)
-    conn = get_connection()
-
-    with conn.session as s:
-        s.execute(
-            text(
-                f"DELETE FROM {TABLE_TELEGRAM_LINK_TOKENS} "
-                "WHERE user_id = :user_id AND consumed_at IS NULL"
-            ),
-            {"user_id": user_id},
-        )
-        s.execute(
-            text(
-                f"INSERT INTO {TABLE_TELEGRAM_LINK_TOKENS} "
-                "(token_hash, user_id, issued_at, expires_at) "
-                f"VALUES (:token_hash, :user_id, NOW(), NOW() + INTERVAL '{TELEGRAM_LINK_CODE_TTL_MINUTES} minutes')"
-            ),
-            {"token_hash": token_hash, "user_id": user_id},
-        )
-        s.commit()
-
-    return code, expires_at
-
-
 _ACTIVITY_VIEW_SQL = f"""
 SELECT
     user_id,
-    telegram_chat_id,
     account_status,
     total_votes,
     participated_votes,

@@ -18,7 +18,6 @@ A full-featured electronic scoring and management platform for school debate com
 - 每個投票設有 7 日截止期限，逾期自動否決
 - 活躍成員制度：整體投票率 ≥ 40% 且最近10次至少參與3次
 - AI 審題建議（Gemini / ChatGPT 整合）
-- Telegram 推送通知（新辯題、罷免動議、投票結果、24 小時截止提醒、活躍度警告）
 
 **English:**
 - Committee members submit topics for collective vote
@@ -27,7 +26,6 @@ A full-featured electronic scoring and management platform for school debate com
 - 7-day voting deadline per topic, auto-rejected on expiry
 - Active member system: ≥ 40% overall participation rate AND ≥ 3 of last 10 votes
 - AI topic review suggestions (Gemini / ChatGPT integration)
-- Telegram push notifications (new topics, depositions, vote results, 24h deadline reminders, activity warnings)
 
 ---
 
@@ -141,8 +139,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 數據處理 / Data | Pandas, NumPy |
 | 文件輸出 / Document Export | python-docx + LibreOffice headless PDF conversion |
 | 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
-| Telegram Bot / 通知 | Cloudflare Worker (TypeScript) + Hyperdrive |
-| 部署 / Deployment | Streamlit Community Cloud + Cloudflare Workers |
+| 部署 / Deployment | Streamlit Community Cloud |
 
 ---
 
@@ -194,14 +191,6 @@ INSERT INTO system_config (key, value, updated_at) VALUES
 streamlit run main.py
 ```
 
-**5. （可選）部署 Telegram Bot / (Optional) Deploy Telegram Bot**
-
-詳見 `worker/README.md`。需要 Cloudflare 帳戶、Hyperdrive 及 Telegram Bot Token。
-
-See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive, and a Telegram Bot Token.
-
----
-
 ## 🗄️ 資料庫結構 | Database Structure
 
 | 資料表 / Table | 內容 / Contents |
@@ -214,10 +203,9 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 | `topic_vote_ballots` | 辯題投票選票 |
 | `topic_removal_votes` | 辯題罷免投票紀錄 |
 | `topic_removal_vote_ballots` | 罷免投票選票 |
-| `accounts` | 委員會成員帳戶（含 Telegram 連結欄位）|
+| `accounts` | 委員會成員帳戶 |
 | `login_records` | 成員登入紀錄 |
 | `notification_reads` | 站內通知已讀紀錄 |
-| `telegram_notification_queue` | Telegram 推送通知佇列（由 Cloudflare Worker 處理）|
 | `competition_registration_settings` | 下一屆比賽報名設定（屆數、開始及截止時間）|
 | `competition_registrations` | 比賽報名紀錄（隊伍、辯員、聯絡人及狀態）|
 | `system_config` | 系統設定（賽會人員密碼、開發者密碼等，以 bcrypt 加密存放）|
@@ -245,16 +233,11 @@ See `worker/README.md` for full setup. Requires a Cloudflare account, Hyperdrive
 ├── score_sheet_pdf.py        # DOCX 評分表填寫及 PDF 匯出 / DOCX score sheet PDF export
 ├── schema.py                 # 資料庫建表語句 + Python DB table constants / DB schema + Python DB identifiers
 ├── packages.txt              # 系統套件（LibreOffice、CJK 字型）/ System packages
-├── assets/
-│   ├── user_manual.md        # 使用手冊 / User manual
-│   ├── rules.md              # 賽規 / Competition rules
-│   ├── pdf_templates/        # 評分表 DOCX 模板 / Score sheet DOCX template
-│   └── *_reminder.md        # AI 審題建議 / AI topic review guides
-└── worker/                   # Cloudflare Worker — Telegram bot
-    ├── src/dbNames.ts        # TypeScript DB table-name mirror for Worker
-    ├── src/index.ts          # Telegram Bot logic (commands + scheduled jobs)
-    ├── wrangler.jsonc        # Cloudflare deployment config
-    └── README.md             # Worker setup & deployment guide
+└── assets/
+    ├── user_manual.md        # 使用手冊 / User manual
+    ├── rules.md              # 賽規 / Competition rules
+    ├── pdf_templates/        # 評分表 DOCX 模板 / Score sheet DOCX template
+    └── *_reminder.md         # AI 審題建議 / AI topic review guides
 ```
 
 ---
