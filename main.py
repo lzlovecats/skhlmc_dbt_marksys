@@ -18,13 +18,15 @@ page_registration_admin = st.Page("registration_admin.py", title="比賽報名�
 page_db_mgmt = st.Page("db_mgmt.py", title="資料庫管理控制台")
 page_draw_schedule = st.Page("draw_match_schedule.py", title="抽取賽程")
 page_score_sheet = st.Page("review.py", title="查閱比賽分紙")
+page_video_replay = st.Page("video_replay.py", title="比賽片段重溫")
+page_video_admin = st.Page("video_admin.py", title="比賽片段管理")
 page_registration = st.Page("registration.py", title="比賽報名", url_path="registration")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫")
 page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免", url_path="vote")
 page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
 
 registration_status = get_registration_status()
-public_pages = [page_open_db]
+public_pages = [page_video_replay, page_open_db]
 if registration_status["is_open"]:
     public_pages.insert(0, page_registration)
 
@@ -34,7 +36,7 @@ pg = st.navigation({
     "評判": [page_judging],
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
-    "賽會人員": [page_registration_admin, page_match_mgmt, page_mgmt, page_db_mgmt, page_draw_schedule],
+    "賽會人員": [page_registration_admin, page_match_mgmt, page_video_admin, page_mgmt, page_db_mgmt, page_draw_schedule],
     "內部委員會成員": [page_vote],
     "開發者": [page_dev_settings],
 })
@@ -58,7 +60,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.14.0")
+    st.caption("🛠️ 系統版本：2.15.1")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

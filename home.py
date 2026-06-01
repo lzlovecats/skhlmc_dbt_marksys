@@ -147,7 +147,8 @@ with col_left:
 
     with st.container(border=True):
         st.markdown("### 🌐 一般人員")
-        st.write("瀏覽公開辯題庫及相關統計。")
+        st.write("瀏覽比賽片段、公開辯題庫及相關統計。")
+        st.page_link("video_replay.py", label="比賽片段重溫", icon="🎬")
         st.page_link("open_db.py", label="查閱辯題庫", icon="📚")
 
 with col_right:
@@ -158,9 +159,10 @@ with col_right:
 
     with st.container(border=True):
         st.markdown("### 🎛️ 賽會人員")
-        st.write("管理比賽報名、比賽場次、賽果、資料庫控制台及抽取賽程。")
+        st.write("管理比賽報名、比賽場次、比賽片段、賽果、資料庫控制台及抽取賽程。")
         st.page_link("registration_admin.py", label="比賽報名管理", icon="🗂️")
         st.page_link("match_info.py", label="比賽場次管理", icon="📋")
+        st.page_link("video_admin.py", label="比賽片段管理", icon="🎬")
         st.page_link("management.py", label="查閱比賽結果", icon="📊")
         st.page_link("db_mgmt.py", label="資料庫管理控制台", icon="🖥️")
         st.page_link("draw_match_schedule.py", label="抽取賽程", icon="🎲")
