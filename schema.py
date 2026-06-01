@@ -21,6 +21,7 @@ TABLE_LOGIN_RECORDS = "login_records"
 TABLE_NOTIFICATION_READS = "notification_reads"
 TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
 TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
+TABLE_MATCH_VIDEOS = "match_videos"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -290,6 +291,28 @@ CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_REGISTRATIONS} (
 );
 """
 
+# Table: MATCH_VIDEOS
+# Public YouTube replay links for matches and legacy standalone videos.
+CREATE_MATCH_VIDEOS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_MATCH_VIDEOS} (
+    id              SERIAL      PRIMARY KEY,
+    match_id        TEXT,
+    match_label     TEXT,
+    video_title     TEXT        NOT NULL,
+    youtube_url     TEXT        NOT NULL,
+    standalone_topic_text  TEXT,
+    standalone_pro_team    TEXT,
+    standalone_con_team    TEXT,
+    is_visible      BOOLEAN     DEFAULT TRUE,
+    display_order   INTEGER     DEFAULT 0,
+    created_at      TIMESTAMP,
+    updated_at      TIMESTAMP,
+    CONSTRAINT fk_match_videos_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
+        ON DELETE CASCADE
+);
+"""
+
 # View: COMMITTEE_VOTE_ACTIVITY
 # Canonical source for committee participation metrics used by Streamlit.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
@@ -423,6 +446,10 @@ CREATE INDEX IF NOT EXISTS idx_trvb_user_id ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS
 CREATE INDEX IF NOT EXISTS idx_trvb_topic_text ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(topic_text);
 CREATE INDEX IF NOT EXISTS idx_competition_registrations_edition_status
     ON {TABLE_COMPETITION_REGISTRATIONS}(competition_edition, status);
+CREATE INDEX IF NOT EXISTS idx_match_videos_match_id
+    ON {TABLE_MATCH_VIDEOS}(match_id);
+CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order
+    ON {TABLE_MATCH_VIDEOS}(is_visible, display_order);
 """
 
 # System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
@@ -452,6 +479,7 @@ ALL_SCHEMAS = [
     CREATE_NOTIFICATION_READS,         # → accounts
     CREATE_COMPETITION_REGISTRATION_SETTINGS,  # no deps
     CREATE_COMPETITION_REGISTRATIONS,           # no deps
+    CREATE_MATCH_VIDEOS,              # → matches
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables

@@ -2,9 +2,9 @@
 
 > 聖呂中辯電子分紙系統
 
-一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、評判電子分紙及成績統計。
+一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、評判電子分紙、比賽片段重溫及成績統計。
 
-A full-featured electronic scoring and management platform for school debate competitions, covering topic voting, match management, live judge scoring, and automated result aggregation.
+A full-featured electronic scoring and management platform for school debate competitions, covering topic voting, match management, live judge scoring, match video replay, and automated result aggregation.
 
 ---
 
@@ -73,6 +73,21 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
+### 🎬 比賽片段重溫 | Match Video Replay (`video_replay.py`, `video_admin.py`)
+**中文：**
+- 賽會人員可為現有場次新增多條 YouTube 比賽片段連結
+- 未使用電子分紙系統的舊比賽，可手動輸入比賽名稱、辯題及正反方隊名
+- 支援 `https://youtube.com/watch?v=...`、`youtube.com/watch?v=...`、`www.youtube.com/watch?v=...` 及 `youtu.be/...` 格式
+- 公開重溫頁無須登入，可按場次、隊伍、辯題或片段標題搜尋
+
+**English:**
+- Organisers can add multiple YouTube replay links for each existing match
+- Legacy matches that were not scored in the system can be added with manually entered metadata
+- Supports common YouTube URL formats, including links without an explicit `https://` prefix
+- The public replay page is login-free and searchable by match, team, motion, or video title
+
+---
+
 ### 🖥️ 數據庫管理控制台 | Database Management Console (`db_mgmt.py`)
 **中文：**
 - 賽會人員專用 SQL 控制台，直接查詢及操作生產數據庫
@@ -121,10 +136,10 @@ A full-featured electronic scoring and management platform for school debate com
 | 角色 / Role | 頁面 / Pages | 認證方式 / Auth |
 |---|---|---|
 | 評判 / Judge | 電子分紙 | 賽會提供入場密碼 |
-| 賽會人員 / Organiser | 報名管理、場次管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
+| 賽會人員 / Organiser | 報名管理、場次管理、比賽片段管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
 | 準參賽隊伍 / Prospective Teams | 比賽報名 | 無需登入（只限報名時間內） |
 | 參賽隊伍 / Teams | 查閱分紙 | 查閱分紙密碼 |
-| 一般人員 / Public | 查閱辯題庫 | 無需登入 |
+| 一般人員 / Public | 比賽片段重溫、查閱辯題庫 | 無需登入 |
 | 委員會成員 / Committee | 辯題徵集、投票及罷免 | 個人帳戶（用戶名稱 + 密碼） |
 | Developer | 開發者設定 | 開發者密碼（存於 DB） |
 
@@ -196,6 +211,7 @@ streamlit run main.py
 | 資料表 / Table | 內容 / Contents |
 |---|---|
 | `matches` | 場次資料（隊伍、辯題、密碼等）|
+| `match_videos` | 比賽片段連結（可連結現有場次，亦可記錄舊比賽手動資料）|
 | `scores` | 正式提交的評判評分 |
 | `score_drafts` | 評判評分暫存（JSON 格式）|
 | `topics` | 辯題庫 |
@@ -219,6 +235,8 @@ streamlit run main.py
 ├── home.py                   # 主頁 / Landing page with role-based navigation
 ├── judging.py                # 電子分紙 / Judge scoring interface
 ├── match_info.py             # 場次管理 / Match management
+├── video_admin.py            # 比賽片段管理 / Match video management
+├── video_replay.py           # 比賽片段重溫 / Public match video replay
 ├── management.py             # 賽果統計 / Results dashboard
 ├── registration.py           # 公開比賽報名 / Public competition registration
 ├── registration_admin.py     # 比賽報名管理 / Registration management

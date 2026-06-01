@@ -16,11 +16,13 @@ from schema import (
     TABLE_ACCOUNTS,
     CREATE_COMPETITION_REGISTRATION_SETTINGS,
     CREATE_COMPETITION_REGISTRATIONS,
+    CREATE_MATCH_VIDEOS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_DEBATERS,
     TABLE_DEBATER_SCORES,
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
+    TABLE_MATCH_VIDEOS,
     TABLE_NOTIFICATION_READS,
     TABLE_SCORE_DRAFTS,
     TABLE_SCORES,
@@ -149,6 +151,35 @@ def ensure_registration_tables():
         return True
     except Exception as e:
         logger.warning("ensure_registration_tables failed: %s", e)
+        return False
+
+
+def ensure_match_videos_table():
+    if st.session_state.get("_match_videos_table_ready"):
+        return True
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_MATCH_VIDEOS))
+            s.execute(text(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ALTER COLUMN match_id DROP NOT NULL"))
+            s.execute(text(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS match_label TEXT"))
+            s.execute(text(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS standalone_topic_text TEXT"))
+            s.execute(text(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS standalone_pro_team TEXT"))
+            s.execute(text(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS standalone_con_team TEXT"))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_match_videos_match_id "
+                f"ON {TABLE_MATCH_VIDEOS}(match_id)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order "
+                f"ON {TABLE_MATCH_VIDEOS}(is_visible, display_order)"
+            ))
+            s.commit()
+        st.session_state["_match_videos_table_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_match_videos_table failed: %s", e)
         return False
 
 
