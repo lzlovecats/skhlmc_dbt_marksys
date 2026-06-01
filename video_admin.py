@@ -10,6 +10,16 @@ from schema import TABLE_MATCHES, TABLE_MATCH_VIDEOS
 
 SOURCE_EXISTING = "連結現有場次"
 SOURCE_STANDALONE = "手動輸入舊比賽"
+ADD_FIELD_DEFAULTS = {
+    "add_match_label": "",
+    "add_standalone_topic_text": "",
+    "add_standalone_pro_team": "",
+    "add_standalone_con_team": "",
+    "add_video_title": "",
+    "add_youtube_url": "",
+    "add_display_order": 0,
+    "add_is_visible": True,
+}
 
 
 def _is_youtube_url(url):
@@ -73,6 +83,11 @@ def _to_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _clear_add_video_fields():
+    for key, value in ADD_FIELD_DEFAULTS.items():
+        st.session_state[key] = value
 
 
 def _source_options():
@@ -147,33 +162,39 @@ with st.container(border=True):
         options=_source_options(),
         horizontal=True,
         key="add_video_source",
+        on_change=_clear_add_video_fields,
     )
+    selected_match = None
+    if add_source == SOURCE_EXISTING:
+        selected_match = st.selectbox(
+            "選擇比賽場次",
+            options=match_options,
+            format_func=_format_match_option,
+            key="add_selected_match",
+            on_change=_clear_add_video_fields,
+        )
+    else:
+        st.button("清除新增欄位內容", use_container_width=True, on_click=_clear_add_video_fields)
+
     with st.form("add_video_form"):
-        selected_match = None
         match_label = ""
         standalone_topic_text = ""
         standalone_pro_team = ""
         standalone_con_team = ""
 
-        if add_source == SOURCE_EXISTING:
-            selected_match = st.selectbox(
-                "選擇比賽場次",
-                options=match_options,
-                format_func=_format_match_option,
-            )
-        else:
-            match_label = st.text_input("比賽名稱／場次", placeholder="例：第 1 屆決賽")
-            standalone_topic_text = st.text_input("辯題（可留空）")
+        if add_source == SOURCE_STANDALONE:
+            match_label = st.text_input("比賽名稱／場次", placeholder="例：第 1 屆決賽", key="add_match_label")
+            standalone_topic_text = st.text_input("辯題（可留空）", key="add_standalone_topic_text")
             team_col1, team_col2 = st.columns(2)
             with team_col1:
-                standalone_pro_team = st.text_input("正方隊名（可留空）")
+                standalone_pro_team = st.text_input("正方隊名（可留空）", key="add_standalone_pro_team")
             with team_col2:
-                standalone_con_team = st.text_input("反方隊名（可留空）")
+                standalone_con_team = st.text_input("反方隊名（可留空）", key="add_standalone_con_team")
 
-        video_title = st.text_input("片段標題", placeholder="例：全場片段／上半場／下半場")
-        youtube_url = st.text_input("YouTube 連結")
-        display_order = st.number_input("排序", min_value=0, step=1, value=0)
-        is_visible = st.checkbox("在公開重溫頁顯示", value=True)
+        video_title = st.text_input("片段標題", placeholder="例：全場片段／上半場／下半場", key="add_video_title")
+        youtube_url = st.text_input("YouTube 連結", key="add_youtube_url")
+        display_order = st.number_input("排序", min_value=0, step=1, value=0, key="add_display_order")
+        is_visible = st.checkbox("在公開重溫頁顯示", value=True, key="add_is_visible")
         add_video = st.form_submit_button("新增片段", type="primary", use_container_width=True)
 
     if add_video:

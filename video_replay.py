@@ -25,6 +25,10 @@ def _format_value(value, default="未設定"):
 
 
 st.header("比賽片段重溫")
+if st.button("🔄重新整理"):
+    st.cache_data.clear()
+    st.rerun()
+
 render_page_guidance(
     [
         "此頁列出賽會已公開的 YouTube 比賽片段連結。",
