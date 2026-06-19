@@ -81,6 +81,34 @@ def confirm_logout_dialog():
         st.session_state["last_auto_save"] = None
         st.rerun()
 
+@st.dialog("確認切換場次")
+def confirm_match_switch_dialog(new_match_id):
+    st.warning("切換場次後，目前未提交的評分進度將會清除。請確保已暫存至雲端。")
+    col_confirm, col_cancel = st.columns(2)
+    with col_confirm:
+        if st.button("確認切換", type="primary", use_container_width=True):
+            _clear_side_input_state(st.session_state["active_match_id"])
+            st.session_state["temp_scores"] = {"正方": None, "反方": None}
+            st.session_state["active_match_id"] = new_match_id
+            st.session_state["draft_loaded"] = False
+            st.session_state["last_auto_save"] = None
+            st.session_state["_final_submission_cache"] = None
+            st.rerun()
+    with col_cancel:
+        if st.button("取消", use_container_width=True):
+            st.session_state["_pending_match_switch"] = None
+            st.rerun()
+
+def _cached_has_final_submission(match_id, judge_name):
+    cache_key = (match_id, judge_name)
+    cached = st.session_state.get("_final_submission_cache")
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    result = has_final_submission(match_id, judge_name)
+    st.session_state["_final_submission_cache"] = (cache_key, result)
+    return result
+
+
 def _init_session_state():
     if "auth_match_id" not in st.session_state:
         st.session_state["auth_match_id"] = None
@@ -104,6 +132,10 @@ def _init_session_state():
         st.session_state["post_submit_receipt"] = None
     if "last_auto_save" not in st.session_state:
         st.session_state["last_auto_save"] = None
+    if "_final_submission_cache" not in st.session_state:
+        st.session_state["_final_submission_cache"] = None
+    if "_pending_match_switch" not in st.session_state:
+        st.session_state["_pending_match_switch"] = None
 
 
 def render_submission_message():
@@ -221,9 +253,7 @@ def render_side_editor(team_side, selected_match_id, current_match):
     if side_saved_data and "last_saved" in side_saved_data:
         try:
             last_saved_dt = datetime.fromisoformat(side_saved_data["last_saved"])
-            diff = datetime.now() - last_saved_dt
-            minutes = int(diff.total_seconds() / 60)
-            st.caption(f"上一次儲存 {team_side} 分數：{minutes} 分鐘前")
+            st.caption(f"上一次儲存 {team_side} 分數：{last_saved_dt.strftime('%H:%M:%S')}")
         except Exception:
             pass
 
@@ -323,11 +353,20 @@ selected_match_id = st.selectbox("請選擇比賽場次", options=list(all_match
 current_match = all_matches[selected_match_id]
 
 if st.session_state["active_match_id"] != selected_match_id:
-    _clear_side_input_state(st.session_state["active_match_id"])
-    st.session_state["temp_scores"] = {"正方": None, "反方": None}
-    st.session_state["active_match_id"] = selected_match_id
-    st.session_state["draft_loaded"] = False
-    st.session_state["last_auto_save"] = None
+    has_unsaved = (
+        st.session_state["temp_scores"]["正方"] is not None
+        or st.session_state["temp_scores"]["反方"] is not None
+    )
+    if has_unsaved and st.session_state["active_match_id"] is not None:
+        confirm_match_switch_dialog(selected_match_id)
+        st.stop()
+    else:
+        _clear_side_input_state(st.session_state["active_match_id"])
+        st.session_state["temp_scores"] = {"正方": None, "反方": None}
+        st.session_state["active_match_id"] = selected_match_id
+        st.session_state["draft_loaded"] = False
+        st.session_state["last_auto_save"] = None
+        st.session_state["_final_submission_cache"] = None
 
 if st.session_state["auth_match_id"] != selected_match_id:
     st.session_state["judge_authenticated"] = False
@@ -335,14 +374,7 @@ if st.session_state["auth_match_id"] != selected_match_id:
 render_post_submit_receipt()
 
 if not st.session_state["judge_authenticated"]:
-    stored_otp_value = current_match.get("access_code_hash")
-    stored_otp = ""
-    if stored_otp_value is not None:
-        stored_otp = str(stored_otp_value).strip()
-        if stored_otp.lower() == "nan":
-            stored_otp = ""
-        elif stored_otp.startswith("'"):
-            stored_otp = stored_otp[1:]
+    stored_otp = current_match.get("access_code_hash")
 
     if not stored_otp:
         st.warning("該場次未開放評分，請向賽會人員查詢。")
@@ -357,10 +389,7 @@ if not st.session_state["judge_authenticated"]:
     )
 
     if input_otp is not None:
-        if not stored_otp:
-            st.error("該場次未開放評分，請向賽會人員查詢。")
-            st.stop()
-        elif _verify_config_password(input_otp, stored_otp):
+        if _verify_config_password(input_otp, stored_otp):
             st.session_state["judge_authenticated"] = True
             st.session_state["auth_match_id"] = selected_match_id
             st.rerun()
@@ -397,6 +426,7 @@ if judge_name != st.session_state["last_judge_identity"]:
     st.session_state["last_judge_name"] = judge_name_raw
     st.session_state["last_judge_identity"] = judge_name
     st.session_state["last_auto_save"] = None
+    st.session_state["_final_submission_cache"] = None
 
 if judge_name and selected_match_id and not st.session_state["draft_loaded"]:
     with st.spinner("正在檢查雲端暫存紀錄..."):
@@ -444,27 +474,28 @@ with tab_pro:
 with tab_con:
     side_results["反方"] = render_side_editor("反方", selected_match_id, current_match)
 
+submit_requested_bottom = st.button(
+    "正式提交評分",
+    type="primary",
+    use_container_width=True,
+    disabled=not ready_to_submit or not judge_name_raw,
+    key="submit_bottom",
+)
+submit_requested = submit_requested or submit_requested_bottom
+
 
 @st.fragment(run_every=120)
 def auto_save_current_sides():
     if not st.session_state.get("judge_authenticated") or not judge_name_raw:
         return
-    if has_final_submission(selected_match_id, judge_name):
-        return
-
-    now = datetime.now()
-    last_auto = st.session_state.get("last_auto_save")
-    if last_auto is None:
-        st.session_state["last_auto_save"] = now
-        return
-    if (now - last_auto).total_seconds() < 120:
+    if _cached_has_final_submission(selected_match_id, judge_name):
         return
 
     try:
         for side in ["正方", "反方"]:
             save_draft_to_db(selected_match_id, judge_name, side, side_results[side]["data"])
             st.session_state["temp_scores"][side] = side_results[side]["data"]
-        st.session_state["last_auto_save"] = now
+        st.session_state["last_auto_save"] = datetime.now()
     except ValueError:
         pass
 
@@ -477,7 +508,7 @@ for team_side in ["正方", "反方"]:
         if not judge_name_raw:
             st.error("請輸入評判姓名！")
             st.stop()
-        if has_final_submission(selected_match_id, judge_name):
+        if _cached_has_final_submission(selected_match_id, judge_name):
             st.error("你已提交過評分！無法修改評分！")
             st.stop()
 
@@ -498,7 +529,7 @@ for team_side in ["正方", "反方"]:
 
 if submit_requested:
     try:
-        if has_final_submission(selected_match_id, judge_name):
+        if _cached_has_final_submission(selected_match_id, judge_name):
             st.error("你已提交過評分！無法修改評分！")
             st.stop()
 

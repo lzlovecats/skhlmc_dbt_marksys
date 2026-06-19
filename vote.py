@@ -1,7 +1,7 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
@@ -832,7 +832,7 @@ with tab_member_stats:
     st.caption("計算辯題投票及罷免投票的整體參與情況。活躍成員標準：整體投票率 ≥ 40% 且 最近10次投票至少參與3次。")
 
     if st.button("🔄 重新整理", key="refresh_member_stats"):
-        st.cache_data.clear()
+        clear_caches()
 
     member_stats, total_topic_votes = get_member_participation_stats()
     num_of_active, _ = get_active_user_count()
@@ -865,21 +865,34 @@ with tab_account:
 
     with st.expander("更改密碼", expanded=False):
         with st.form("change_user_password"):
-            new_pw = st.text_input("輸入新密碼", type="password")
+            current_pw = st.text_input("目前密碼", type="password")
+            new_pw = st.text_input("新密碼", type="password")
+            confirm_pw = st.text_input("確認新密碼", type="password")
             submit_new_pw = st.form_submit_button("確認更改")
-        
+
         if submit_new_pw:
-            if not new_pw.strip():
-                st.warning("你未輸入密碼！")
+            if not current_pw.strip():
+                st.warning("請輸入目前密碼！")
+            elif not new_pw.strip():
+                st.warning("請輸入新密碼！")
+            elif new_pw.strip() != confirm_pw.strip():
+                st.error("兩次輸入的新密碼不一致。")
             else:
-                try:
-                    execute_query(
-                        f"UPDATE {TABLE_ACCOUNTS} SET password_hash = :password_hash WHERE user_id = :user_id",
-                        {"password_hash": hash_password(new_pw.strip()), "user_id": user_id},
-                    )
-                    st.success("帳戶密碼已更改！下次登入請使用新密碼！")
-                except Exception as e:
-                    st.error(f"無法連接至資料庫：{e}")
+                acc_row = query_params(
+                    f"SELECT password_hash FROM {TABLE_ACCOUNTS} WHERE user_id = :user_id",
+                    {"user_id": user_id},
+                )
+                if acc_row.empty or not _verify_config_password(current_pw.strip(), str(acc_row.iloc[0]["password_hash"])):
+                    st.error("目前密碼錯誤。")
+                else:
+                    try:
+                        execute_query(
+                            f"UPDATE {TABLE_ACCOUNTS} SET password_hash = :password_hash WHERE user_id = :user_id",
+                            {"password_hash": hash_password(new_pw.strip()), "user_id": user_id},
+                        )
+                        st.success("帳戶密碼已更改！下次登入請使用新密碼！")
+                    except Exception as e:
+                        st.error(f"無法連接至資料庫：{e}")
     
     st.divider()
     if st.button("登出", type="primary"):

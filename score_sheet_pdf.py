@@ -2,18 +2,13 @@ from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 import datetime as dt
-import os
-import shutil
-import subprocess
-import tempfile
 
 import pandas as pd
-from docx import Document
-from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Pt
+from pypdf import PdfReader, PdfWriter
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 
 from scoring import (
     FREE_DEBATE_CRITERIA,
@@ -23,9 +18,65 @@ from scoring import (
 )
 
 
-TEMPLATE_PATH = Path(__file__).resolve().parent / "assets" / "pdf_templates" / "score_sheet_template.docx"
-FONT_NAME = "Noto Sans CJK TC"
-TABLES_PER_PAGE = 8
+TEMPLATE_PATH = Path(__file__).resolve().parent / "assets" / "pdf_templates" / "score_sheet_template.pdf"
+FONT_NAME = "ScoreSheetCJK"
+FALLBACK_CID_FONT = "MSung-Light"
+FONT_CANDIDATES = [
+    (Path(__file__).resolve().parent / "assets" / "fonts" / "NotoSansTC-Regular.otf", 0),
+    (Path(__file__).resolve().parent / "assets" / "fonts" / "NotoSansTC-Regular.ttf", 0),
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf"), 0),
+    (Path("/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf"), 0),
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 3),
+    (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 4),
+    (Path("/System/Library/Fonts/STHeiti Light.ttc"), 0),
+    (Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"), 0),
+    (Path("/System/Library/Fonts/Supplemental/Songti.ttc"), 0),
+]
+
+META_POS = {
+    "date": (120, 637),
+    "time": (388, 637),
+    "side": (140, 611),
+    "match_id": (390, 611),
+    "topic": (95, 579),
+}
+SPEECH_Y = [487, 453, 419, 384]
+SPEECH_X = {
+    "name": 123,
+    "content": 174,
+    "delivery": 238,
+    "structure": 302,
+    "manner": 365,
+    "total": 429,
+    "rank": 512,
+}
+FREE_DEBATE_Y = 306
+FREE_DEBATE_X = [82, 163, 244, 324, 405, 486]
+DEDUCTION_Y = 230
+DEDUCTION_X = [86, 171, 256, 341, 424]
+SUMMARY_Y = 193
+SUMMARY_X = {
+    "subtotal": 134,
+    "coherence": 267,
+    "final_total": 407,
+}
+WINNER_POS = (100, 166)
+JUDGE_NAME_POS = (135, 136)
+
+
+def _register_font():
+    global FONT_NAME
+    if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+        for font_path, subfont_index in FONT_CANDIDATES:
+            if font_path.exists():
+                try:
+                    pdfmetrics.registerFont(TTFont(FONT_NAME, str(font_path), subfontIndex=subfont_index))
+                    return
+                except Exception:
+                    continue
+        FONT_NAME = FALLBACK_CID_FONT
+        if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(UnicodeCIDFont(FONT_NAME))
 
 
 def _is_blank(value):
@@ -96,29 +147,49 @@ def _row_value(df, row_index, column, default=""):
     return _get(df.iloc[row_index], column, default)
 
 
-def _set_run_font(run, size=10, bold=False):
-    run.font.name = FONT_NAME
-    run.font.size = Pt(size)
-    run.bold = bold
-    r_pr = run._element.get_or_add_rPr()
-    r_fonts = r_pr.rFonts
-    if r_fonts is None:
-        r_fonts = OxmlElement("w:rFonts")
-        r_pr.append(r_fonts)
-    for name in ("eastAsia", "ascii", "hAnsi", "cs"):
-        r_fonts.set(qn(f"w:{name}"), FONT_NAME)
+def _text(value):
+    return "" if _is_blank(value) else str(value)
 
 
-def _set_cell_text(cell, text, size=10, bold=False, align=WD_ALIGN_PARAGRAPH.CENTER):
-    cell.text = ""
-    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    paragraph = cell.paragraphs[0]
-    paragraph.alignment = align
-    paragraph.paragraph_format.space_before = Pt(0)
-    paragraph.paragraph_format.space_after = Pt(0)
-    paragraph.paragraph_format.line_spacing = 1
-    run = paragraph.add_run(str(text))
-    _set_run_font(run, size=size, bold=bold)
+def _draw_center(c, x, y, value, size=10):
+    c.setFont(FONT_NAME, size)
+    c.drawCentredString(x, y, _text(value))
+
+
+def _draw_left(c, x, y, value, size=10):
+    c.setFont(FONT_NAME, size)
+    c.drawString(x, y, _text(value))
+
+
+def _draw_fit(c, x, y, value, max_width, size=10, min_size=7):
+    text = _text(value)
+    c.setFont(FONT_NAME, size)
+    while size > min_size and pdfmetrics.stringWidth(text, FONT_NAME, size) > max_width:
+        size -= 0.5
+        c.setFont(FONT_NAME, size)
+    c.drawString(x, y, text)
+
+
+def _draw_topic(c, x, y, value, max_width=455, size=9):
+    text = _text(value)
+    if not text:
+        return
+
+    lines = []
+    current = ""
+    for ch in text:
+        test = current + ch
+        if current and pdfmetrics.stringWidth(test, FONT_NAME, size) > max_width:
+            lines.append(current)
+            current = ch
+        else:
+            current = test
+    if current:
+        lines.append(current)
+
+    c.setFont(FONT_NAME, size)
+    for i, line in enumerate(lines[:2]):
+        c.drawString(x, y - i * 12, line)
 
 
 def _weighted_speech_scores(df, row_index):
@@ -160,156 +231,97 @@ def _winner_label(judge_record):
     return "平局"
 
 
-def _duplicate_template_page(doc):
-    body = doc._body._element
-    original_elements = [
-        deepcopy(element)
-        for element in list(body)
-        if element.tag != qn("w:sectPr")
-    ]
-
-    page_break = OxmlElement("w:p")
-    run = OxmlElement("w:r")
-    br = OxmlElement("w:br")
-    br.set(qn("w:type"), "page")
-    run.append(br)
-    page_break.append(run)
-
-    insert_at = len(body) - 1 if body[-1].tag == qn("w:sectPr") else len(body)
-    body.insert(insert_at, page_break)
-    insert_at += 1
-    for element in original_elements:
-        body.insert(insert_at, element)
-        insert_at += 1
-
-
-def _fill_meta_table(table, match_info, side_label, team_name):
-    _set_cell_text(table.cell(0, 1), _format_date(_get(match_info, "match_date")), align=WD_ALIGN_PARAGRAPH.LEFT)
-    _set_cell_text(table.cell(0, 3), _format_time(_get(match_info, "match_time")), align=WD_ALIGN_PARAGRAPH.LEFT)
-    _set_cell_text(table.cell(1, 1), f"{side_label}：{team_name}", size=10, align=WD_ALIGN_PARAGRAPH.LEFT)
-    _set_cell_text(table.cell(1, 3), _get(match_info, "match_id"), size=10, align=WD_ALIGN_PARAGRAPH.LEFT)
-    _set_cell_text(table.cell(2, 1), _get(match_info, "topic_text"), size=9, align=WD_ALIGN_PARAGRAPH.LEFT)
-
-
-def _fill_speech_table(table, side_data, ranks):
-    df = _as_df(side_data.get("raw_df_a"))
-    for row_index in range(4):
-        table_row = row_index + 1
-        name = _row_value(df, row_index, "姓名", "")
-        weighted_scores = _weighted_speech_scores(df, row_index)
-        values = [name, *weighted_scores, sum(weighted_scores), ranks[row_index] if row_index < len(ranks) else ""]
-        for col_index, value in enumerate(values, start=1):
-            _set_cell_text(table.cell(table_row, col_index), value, size=10)
-
-
-def _fill_free_debate_table(table, side_data):
-    df = _as_df(side_data.get("raw_df_b"))
-    total = 0
-    for col_index, criterion in enumerate(FREE_DEBATE_CRITERIA):
-        score = _num(_row_value(df, 0, free_debate_col(criterion), 0))
-        total += score
-        _set_cell_text(table.cell(1, col_index), score, size=10)
-    _set_cell_text(table.cell(1, 5), total, size=10)
-
-
-def _fill_deduction_table(table, side_data):
-    for col_index in range(4):
-        _set_cell_text(table.cell(1, col_index), "", size=10)
-    _set_cell_text(table.cell(1, 4), _num(side_data.get("deduction")), size=10)
-
-
-def _fill_footer_tables(totals_table, winner_table, signature_table, side_data, judge_record):
+def _side_totals(side_data):
     total_a = _num(side_data.get("total_a"))
     total_b = _num(side_data.get("total_b"))
     deduction = _num(side_data.get("deduction"))
     coherence = _num(side_data.get("coherence"))
+    final_total = _num(side_data.get("final_total"), total_a + total_b - deduction + coherence)
+    return total_a, total_b, deduction, coherence, final_total
+
+
+def _draw_meta(c, match_info, judge_record, side_label, team_name):
+    _draw_center(c, *META_POS["date"], _format_date(_get(match_info, "match_date")), size=9)
+    _draw_center(c, *META_POS["time"], _format_time(_get(match_info, "match_time")), size=9)
+    _draw_center(c, *META_POS["side"], f"{side_label}：{team_name}", size=9)
+    _draw_center(c, *META_POS["match_id"], _get(match_info, "match_id"), size=9)
+    _draw_topic(c, *META_POS["topic"], _get(match_info, "topic_text"))
+
+
+def _draw_speech_scores(c, side_data, ranks):
+    df = _as_df(side_data.get("raw_df_a"))
+    score_keys = ["content", "delivery", "structure", "manner"]
+    for row_index, y in enumerate(SPEECH_Y):
+        weighted_scores = _weighted_speech_scores(df, row_index)
+        _draw_fit(c, SPEECH_X["name"] - 27, y, _row_value(df, row_index, "姓名", ""), 52, size=9)
+        for key, score in zip(score_keys, weighted_scores):
+            _draw_center(c, SPEECH_X[key], y, score, size=9)
+        _draw_center(c, SPEECH_X["total"], y, sum(weighted_scores), size=9)
+        _draw_center(c, SPEECH_X["rank"], y, ranks[row_index] if row_index < len(ranks) else "", size=9)
+
+
+def _draw_free_debate_scores(c, side_data):
+    df = _as_df(side_data.get("raw_df_b"))
+    scores = [_num(_row_value(df, 0, free_debate_col(criterion), 0)) for criterion in FREE_DEBATE_CRITERIA]
+    for x, score in zip(FREE_DEBATE_X, scores + [sum(scores)]):
+        _draw_center(c, x, FREE_DEBATE_Y, score, size=9)
+
+
+def _draw_deductions(c, side_data):
+    deduction = _num(side_data.get("deduction"))
+    for x in DEDUCTION_X[:-1]:
+        _draw_center(c, x, DEDUCTION_Y, "", size=9)
+    _draw_center(c, DEDUCTION_X[-1], DEDUCTION_Y, deduction, size=9)
+
+
+def _draw_summary(c, side_data, judge_record):
+    total_a, total_b, deduction, coherence, final_total = _side_totals(side_data)
     subtotal = total_a + total_b - deduction
-    final_total = _num(side_data.get("final_total"))
-
-    _set_cell_text(totals_table.cell(0, 1), subtotal, size=10)
-    _set_cell_text(totals_table.cell(0, 3), coherence, size=10)
-    _set_cell_text(totals_table.cell(0, 5), final_total, size=10)
-    _set_cell_text(winner_table.cell(0, 0), f"勝方：{_winner_label(judge_record)}", size=10, bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
-    _set_cell_text(signature_table.cell(0, 1), _get(judge_record, "judge_name"), size=10, align=WD_ALIGN_PARAGRAPH.LEFT)
+    _draw_center(c, SUMMARY_X["subtotal"], SUMMARY_Y, subtotal, size=9)
+    _draw_center(c, SUMMARY_X["coherence"], SUMMARY_Y, coherence, size=9)
+    _draw_center(c, SUMMARY_X["final_total"], SUMMARY_Y, final_total, size=9)
+    _draw_center(c, *WINNER_POS, _winner_label(judge_record), size=9)
+    _draw_left(c, *JUDGE_NAME_POS, _get(judge_record, "judge_name"), size=9)
 
 
-def _fill_score_sheet_page(tables, match_info, judge_record, side_label, team_name, side_data, ranks):
-    _fill_meta_table(tables[1], match_info, side_label, team_name)
-    _fill_speech_table(tables[2], side_data, ranks)
-    _fill_free_debate_table(tables[3], side_data)
-    _fill_deduction_table(tables[4], side_data)
-    _fill_footer_tables(tables[5], tables[6], tables[7], side_data, judge_record)
+def _overlay_page(page_width, page_height, match_info, judge_record, side_label, team_name, side_data, ranks):
+    packet = BytesIO()
+    c = canvas.Canvas(packet, pagesize=(page_width, page_height))
+    _register_font()
+    c.setFillColorRGB(0, 0, 0)
 
+    _draw_meta(c, match_info, judge_record, side_label, team_name)
+    _draw_speech_scores(c, side_data, ranks)
+    _draw_free_debate_scores(c, side_data)
+    _draw_deductions(c, side_data)
+    _draw_summary(c, side_data, judge_record)
 
-def _build_score_sheet_docx(match_info, judge_record, pro_data, con_data):
-    if not TEMPLATE_PATH.exists():
-        raise FileNotFoundError(f"DOCX template not found: {TEMPLATE_PATH}")
-
-    doc = Document(str(TEMPLATE_PATH))
-    if len(doc.tables) != TABLES_PER_PAGE:
-        raise ValueError(f"DOCX template should contain {TABLES_PER_PAGE} tables, found {len(doc.tables)}.")
-
-    _duplicate_template_page(doc)
-    if len(doc.tables) != TABLES_PER_PAGE * 2:
-        raise ValueError("Failed to duplicate DOCX score sheet template.")
-
-    ranks = _build_ranks(pro_data, con_data)
-    pages = [
-        (doc.tables[:TABLES_PER_PAGE], "正方", _get(judge_record, "pro_team"), pro_data),
-        (doc.tables[TABLES_PER_PAGE:TABLES_PER_PAGE * 2], "反方", _get(judge_record, "con_team"), con_data),
-    ]
-    for tables, side_label, team_name, side_data in pages:
-        _fill_score_sheet_page(tables, match_info, judge_record, side_label, team_name, side_data, ranks[side_label])
-
-    buffer = BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()
-
-
-def _find_soffice():
-    soffice = shutil.which("soffice")
-    if soffice:
-        return soffice
-
-    mac_soffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-    if Path(mac_soffice).exists():
-        return mac_soffice
-    return None
-
-
-def _convert_docx_to_pdf(docx_bytes):
-    soffice = _find_soffice()
-    if not soffice:
-        raise RuntimeError("PDF 轉換工具未安裝：請在部署環境安裝 LibreOffice（soffice）。")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        docx_path = tmp_path / "score_sheet.docx"
-        pdf_path = tmp_path / "score_sheet.pdf"
-        profile_dir = tmp_path / "lo_profile"
-        docx_path.write_bytes(docx_bytes)
-
-        env = os.environ.copy()
-        env["HOME"] = str(tmp_path)
-        cmd = [
-            soffice,
-            "--headless",
-            "--nologo",
-            "--nofirststartwizard",
-            f"-env:UserInstallation=file://{profile_dir}",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(tmp_path),
-            str(docx_path),
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=60)
-        if result.returncode != 0 or not pdf_path.exists():
-            message = result.stderr.strip() or result.stdout.strip() or "LibreOffice PDF conversion failed."
-            raise RuntimeError(f"PDF 轉換失敗：{message}")
-        return pdf_path.read_bytes()
+    c.save()
+    packet.seek(0)
+    return PdfReader(packet).pages[0]
 
 
 def build_score_sheet_pdf(match_info, judge_record, pro_data, con_data):
-    docx_bytes = _build_score_sheet_docx(match_info, judge_record, pro_data, con_data)
-    return _convert_docx_to_pdf(docx_bytes)
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"PDF template not found: {TEMPLATE_PATH}")
+
+    template_reader = PdfReader(str(TEMPLATE_PATH))
+    template_page = template_reader.pages[0]
+    page_width = float(template_page.mediabox.width)
+    page_height = float(template_page.mediabox.height)
+    ranks = _build_ranks(pro_data, con_data)
+
+    writer = PdfWriter()
+    pages = [
+        ("正方", _get(judge_record, "pro_team"), pro_data, ranks["正方"]),
+        ("反方", _get(judge_record, "con_team"), con_data, ranks["反方"]),
+    ]
+    for side_label, team_name, side_data, side_ranks in pages:
+        page = deepcopy(template_page)
+        overlay = _overlay_page(page_width, page_height, match_info, judge_record, side_label, team_name, side_data, side_ranks)
+        page.merge_page(overlay)
+        writer.add_page(page)
+
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()

@@ -7,4 +7,5 @@ extra-streamlit-components
 SQLAlchemy
 psycopg2-binary
 bcrypt
-python-docx
+reportlab
+pypdf

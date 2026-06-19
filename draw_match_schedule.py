@@ -333,8 +333,17 @@ if st.session_state["draw_result"]:
     st.divider()
     st.subheader("賽程總表")
     st.caption("以下為預覽結果，方便人工抄錄到「比賽場次管理」頁面。")
+    summary_df = pd.DataFrame(result["summary_rows"])
     st.dataframe(
-        pd.DataFrame(result["summary_rows"]),
+        summary_df,
         use_container_width=True,
         hide_index=True
+    )
+    csv_bytes = summary_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "匯出賽程總表 CSV",
+        data=csv_bytes,
+        file_name="draw_schedule.csv",
+        mime="text/csv",
+        use_container_width=True,
     )
