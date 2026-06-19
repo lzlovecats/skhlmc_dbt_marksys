@@ -15,14 +15,16 @@ render_page_guidance(
 
 if "score_unlocked_matches" not in st.session_state:
     st.session_state["score_unlocked_matches"] = set()
+if "score_sheet_pdf_cache" not in st.session_state:
+    st.session_state["score_sheet_pdf_cache"] = {}
 
 # Load matches that have scores (joined to get review_password)
-matches_with_scores = query_params("""
+matches_with_scores = query_params(f"""
     SELECT DISTINCT m.match_id, m.review_password_hash, m.match_date, m.match_time, m.topic_text
-    FROM {table_matches} m
-    INNER JOIN {table_scores} s ON m.match_id = s.match_id
+    FROM {TABLE_MATCHES} m
+    INNER JOIN {TABLE_SCORES} s ON m.match_id = s.match_id
     ORDER BY m.match_id
-""".format(table_matches=TABLE_MATCHES, table_scores=TABLE_SCORES))
+""")
 
 if matches_with_scores.empty:
     st.info("目前未有可查閱的評分紀錄。請稍後再試或向賽會人員查詢。")
@@ -33,6 +35,8 @@ selected_match = st.selectbox("請選擇要查看的場次", options=all_match_i
 
 match_row = matches_with_scores[matches_with_scores["match_id"] == selected_match].iloc[0]
 review_password_hash = match_row["review_password_hash"]
+if pd.isna(review_password_hash):
+    review_password_hash = None
 
 # Per-match password gate
 if selected_match not in st.session_state["score_unlocked_matches"]:
@@ -55,7 +59,7 @@ if selected_match not in st.session_state["score_unlocked_matches"]:
     st.stop()
 
 # Authenticated — show scores for selected match
-df_scores = get_score_data()
+df_scores = get_score_data(match_id=selected_match)
 
 if df_scores is None or df_scores.empty:
     st.info("目前未有可查閱的評分紀錄。請稍後再試或向賽會人員查詢。")
@@ -171,12 +175,39 @@ missing_final_sides = [side for side in ["正方", "反方"] if side not in load
 if missing_final_sides:
     st.error(f"此評判的最終分紙細項資料不完整（缺少：{'、'.join(missing_final_sides)}），請聯絡賽會人員。")
 elif pro_data is not None and con_data is not None:
-    try:
-        from score_sheet_pdf import build_score_sheet_pdf
+    safe_match = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(selected_match))
+    safe_judge = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(selected_judge))
+    final_updated_at = "|".join(
+        f"{row['side']}:{row['updated_at']}"
+        for _, row in temp_sheet.sort_values("side").iterrows()
+    )
+    pdf_cache_key = "|".join([
+        str(selected_match),
+        normalize_judge_name(str(selected_judge)),
+        str(match_row["match_date"]),
+        str(match_row["match_time"]),
+        str(match_row["topic_text"]),
+        str(judge_record["pro_team"]),
+        str(judge_record["con_team"]),
+        str(judge_record["submitted_time"]),
+        final_updated_at,
+    ])
+    pdf_bytes = st.session_state["score_sheet_pdf_cache"].get(pdf_cache_key)
 
-        pdf_bytes = build_score_sheet_pdf(match_row, judge_record, pro_data, con_data)
-        safe_match = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(selected_match))
-        safe_judge = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(selected_judge))
+    if pdf_bytes is None:
+        try:
+            from score_sheet_pdf import build_score_sheet_pdf
+
+            with st.spinner("正在產生 PDF，請稍候..."):
+                pdf_bytes = build_score_sheet_pdf(match_row, judge_record, pro_data, con_data)
+            st.session_state["score_sheet_pdf_cache"][pdf_cache_key] = pdf_bytes
+            if len(st.session_state["score_sheet_pdf_cache"]) > 5:
+                oldest_key = next(iter(st.session_state["score_sheet_pdf_cache"]))
+                st.session_state["score_sheet_pdf_cache"].pop(oldest_key, None)
+        except Exception as e:
+            st.error(f"產生 PDF 失敗：{e}")
+
+    if pdf_bytes is not None:
         st.download_button(
             "匯出 PDF",
             data=pdf_bytes,
@@ -184,8 +215,6 @@ elif pro_data is not None and con_data is not None:
             mime="application/pdf",
             use_container_width=True,
         )
-    except Exception as e:
-        st.error(f"產生 PDF 失敗：{e}")
 
 tab_pro, tab_con = st.tabs([f"正方：{judge_record['pro_team']}", f"反方：{judge_record['con_team']}"])
 

@@ -1,7 +1,7 @@
 import streamlit as st
 from datetime import datetime, timedelta
 from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query, DIFFICULTY_OPTIONS, render_page_guidance
-from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
+from schema import TABLE_MATCHES
 st.header("比賽場次管理")
 render_page_guidance(
     [
@@ -27,10 +27,10 @@ if "match_action_message" not in st.session_state:
     st.session_state["match_action_message"] = None
 
 if "show_draw_side_ui" not in st.session_state:
-    st.session_state.show_draw_side_ui = False
+    st.session_state["show_draw_side_ui"] = False
 
 if "draw_result_dialog" not in st.session_state:
-    st.session_state.draw_result_dialog = None
+    st.session_state["draw_result_dialog"] = None
 
 @st.dialog("抽站方結果")
 def show_draw_result_dialog(pro_team, con_team):
@@ -120,9 +120,9 @@ with st.container(border=True):
         with st.container(border=True):
             st.markdown("### 抽站方")
             st.caption("輸入兩隊名稱後抽出正反方，結果會自動填入下方場次資料。")
-            if not st.session_state.show_draw_side_ui:
+            if not st.session_state["show_draw_side_ui"]:
                 if st.button("開始抽站方", use_container_width=True):
-                    st.session_state.show_draw_side_ui = True
+                    st.session_state["show_draw_side_ui"] = True
                     st.rerun()
             else:
                 team1 = st.text_input("隊伍名稱1", key="team1_draw")
@@ -135,19 +135,19 @@ with st.container(border=True):
                             pro_team, con_team = draw_pro_con(team1, team2)
                             st.session_state["all_matches"][selected_match]["pro_team"] = pro_team
                             st.session_state["all_matches"][selected_match]["con_team"] = con_team
-                            st.session_state.draw_result_dialog = {"pro_team": pro_team, "con_team": con_team}
-                            st.session_state.show_draw_side_ui = False
+                            st.session_state["draw_result_dialog"] = {"pro_team": pro_team, "con_team": con_team}
+                            st.session_state["show_draw_side_ui"] = False
                             st.rerun()
                         else:
                             st.error("請輸入兩隊隊伍名稱。")
                 with col2:
                     if st.button("取消", use_container_width=True):
-                        st.session_state.show_draw_side_ui = False
+                        st.session_state["show_draw_side_ui"] = False
                         st.rerun()
 
-if st.session_state.draw_result_dialog:
-    draw_result = st.session_state.draw_result_dialog
-    st.session_state.draw_result_dialog = None
+if st.session_state["draw_result_dialog"]:
+    draw_result = st.session_state["draw_result_dialog"]
+    st.session_state["draw_result_dialog"] = None
     show_draw_result_dialog(draw_result["pro_team"], draw_result["con_team"])
 
 with st.container(border=True):
@@ -249,8 +249,6 @@ with st.expander("危險操作", expanded=st.session_state["delete_confirm_id"] 
             if st.button("確定刪除", type="primary", key="confirm_delete_btn", use_container_width=True):
                 try:
                     execute_query(f"DELETE FROM {TABLE_MATCHES} WHERE match_id = :match_id", {"match_id": selected_match})
-                    execute_query(f"DELETE FROM {TABLE_SCORES} WHERE match_id = :match_id", {"match_id": selected_match})
-                    execute_query(f"DELETE FROM {TABLE_SCORE_DRAFTS} WHERE match_id = :match_id", {"match_id": selected_match})
 
                     if selected_match in st.session_state["all_matches"]:
                         del st.session_state["all_matches"][selected_match]

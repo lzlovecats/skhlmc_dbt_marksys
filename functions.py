@@ -1,10 +1,13 @@
 import streamlit as st
+import hashlib
+import hmac
 import json
 import logging
 import pandas as pd
 import random
 import math
 import re
+import secrets
 import extra_streamlit_components as stx
 import datetime
 import os
@@ -36,7 +39,6 @@ from schema import (
 
 logger = logging.getLogger(__name__)
 
-MAINTENANCE_MODE = False
 MAINTENANCE_DEADLINE_TEXT = "2026年4月3日 23:59（香港時間）"
 
 CATEGORIES = [
@@ -109,6 +111,38 @@ def committee_cookie_manager():
     if "committee_cookie_manager" not in st.session_state:
         st.session_state["committee_cookie_manager"] = stx.CookieManager(key="committee_cookies")
     return st.session_state["committee_cookie_manager"]
+
+
+def _get_cookie_secret() -> str:
+    secret = get_system_config("cookie_secret")
+    if secret:
+        return secret
+    new_secret = secrets.token_hex(32)
+    execute_query(
+        "INSERT INTO system_config (key, value, updated_at) "
+        "VALUES ('cookie_secret', :value, :updated_at) "
+        "ON CONFLICT (key) DO NOTHING",
+        {"value": new_secret, "updated_at": datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")}
+    )
+    stored = get_system_config("cookie_secret")
+    return stored if stored else new_secret
+
+
+def _sign_cookie(user_id: str) -> str:
+    secret = _get_cookie_secret()
+    sig = hmac.new(secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
+    return f"{user_id}:{sig}"
+
+
+def _verify_cookie(cookie_value: str) -> str | None:
+    if not cookie_value or ":" not in cookie_value:
+        return None
+    user_id, sig = cookie_value.rsplit(":", 1)
+    secret = _get_cookie_secret()
+    expected = hmac.new(secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
+    if hmac.compare_digest(sig, expected):
+        return user_id
+    return None
 
 
 def _log_login(user_id: str, login_type: str):
@@ -287,12 +321,8 @@ def check_admin():
 
 
 def get_connection():
-    try:
-        conn = st.connection("postgresql", type="sql")
-        return conn
-    except Exception as e:
-        st.error(f"連線錯誤: {e}")
-        return None
+    conn = st.connection("postgresql", type="sql")
+    return conn
 
 
 def execute_query(sql_str, params=None):
@@ -350,6 +380,19 @@ def load_matches_from_db():
             raw["match_date"] = raw["match_date"].strftime("%Y-%m-%d")
         if raw.get("match_time") is not None and hasattr(raw["match_time"], "strftime"):
             raw["match_time"] = raw["match_time"].strftime("%H:%M")
+
+        for hash_key in ("access_code_hash", "review_password_hash"):
+            val = raw.get(hash_key)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                raw[hash_key] = None
+            else:
+                val = str(val).strip()
+                if val.lower() == "nan" or val == "":
+                    raw[hash_key] = None
+                else:
+                    if val.startswith("'"):
+                        val = val[1:]
+                    raw[hash_key] = val
 
         match_debaters = debaters_df[debaters_df["match_id"] == match_id]
         for _, d in match_debaters.iterrows():
@@ -490,7 +533,6 @@ def save_draft_to_db(match_id, judge_name, team_side, score_data):
 
 
 def load_draft_from_db(match_id, judge_name):
-    conn = get_connection()
     normalized_judge_name = normalize_judge_name(judge_name)
 
     exist_temp_data = query_params(
@@ -650,9 +692,9 @@ def load_markdown_asset(filename):
         return f"出現錯誤：{filename}無法存取。"
 
 
-def get_score_data():
+def get_score_data(match_id=None):
     try:
-        scores_df = query_params("""
+        base_sql = f"""
             SELECT s.match_id, s.judge_name,
                    s.pro_total_score,
                    s.con_total_score,
@@ -664,15 +706,21 @@ def get_score_data():
                    s.pro_coherence_score,
                    s.con_coherence_score,
                    m.pro_team, m.con_team
-            FROM {table_scores} s
-            LEFT JOIN {table_matches} m ON s.match_id = m.match_id
-        """.format(table_scores=TABLE_SCORES, table_matches=TABLE_MATCHES))
+            FROM {TABLE_SCORES} s
+            LEFT JOIN {TABLE_MATCHES} m ON s.match_id = m.match_id
+        """
+        params = {}
+        if match_id is not None:
+            base_sql += " WHERE s.match_id = :match_id"
+            params["match_id"] = match_id
+        scores_df = query_params(base_sql, params)
         if scores_df.empty:
             return scores_df
 
-        ds_df = query_params(
-            f"SELECT match_id, judge_name, side, position, debater_score FROM {TABLE_DEBATER_SCORES}"
-        )
+        ds_sql = f"SELECT match_id, judge_name, side, position, debater_score FROM {TABLE_DEBATER_SCORES}"
+        if match_id is not None:
+            ds_sql += " WHERE match_id = :match_id"
+        ds_df = query_params(ds_sql, params)
         if ds_df.empty:
             for col in ["pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m"]:
                 scores_df[col] = None
@@ -765,7 +813,10 @@ def return_rules():
 
 
 def is_maintenance_mode() -> bool:
-    return MAINTENANCE_MODE
+    val = get_system_config("maintenance_mode")
+    if val is None:
+        return False
+    return str(val).strip().lower() in ("true", "1", "yes", "on")
 
 
 def render_maintenance_notice():
@@ -883,11 +934,11 @@ def render_home_reference():
         manual_col, rules_col = st.columns(2)
 
         with manual_col:
-            if st.button("📖 閱讀使用手冊", use_container_width=True, key="home_show_manual"):
+            if st.button("📖 閱讀使用手冊", use_container_width=True, key="ref_show_manual"):
                 show_manual()
 
         with rules_col:
-            if st.button("📋 查看賽規", use_container_width=True, key="home_show_rules"):
+            if st.button("📋 查看賽規", use_container_width=True, key="ref_show_rules"):
                 show_rules()
 
 
@@ -914,12 +965,7 @@ def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
-def _verify_password(plain: str, stored: str) -> bool:
-    """Accept bcrypt hashes and legacy plaintext passwords during migration."""
-    try:
-        return bcrypt.checkpw(plain.encode(), stored.encode())
-    except Exception:
-        return plain == stored
+_verify_password = _verify_config_password
 
 
 def check_committee_login():
@@ -935,9 +981,10 @@ def check_committee_login():
             st.session_state["_committee_cookie_rerun_done"] = True
             st.rerun()
         cookie_manager.get_all(key="committee_cookies_get")
-        committee_cookie = get_cookie(cookie_manager, "committee_user")
-        if committee_cookie:
-            st.session_state["committee_user"] = committee_cookie
+        raw_cookie = get_cookie(cookie_manager, "committee_user")
+        verified_user = _verify_cookie(raw_cookie) if raw_cookie else None
+        if verified_user:
+            st.session_state["committee_user"] = verified_user
             st.rerun()
 
     if st.session_state["committee_user"]:
@@ -966,7 +1013,7 @@ def check_committee_login():
                 refresh_acc_type(uid.strip())
                 _log_login(uid.strip(), "committee")
                 st.session_state["committee_user"] = uid.strip()
-                set_cookie(cookie_manager, "committee_user", uid.strip(), expires_at=return_expire_day())
+                set_cookie(cookie_manager, "committee_user", _sign_cookie(uid.strip()), expires_at=return_expire_day())
                 st.success(f"歡迎，{uid.strip()}。")
                 st.rerun()
             else:

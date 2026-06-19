@@ -215,12 +215,18 @@ def _is_dangerous_no_where(sql: str) -> bool:
 
 
 def _touches_system_config(sql: str) -> bool:
-    """Return True if SQL tries to modify the system_config table."""
+    """Return True if SQL accesses system_config in any way (read or write)."""
     upper = sql.upper()
     if not re.search(r"\bSYSTEM_CONFIG\b", upper):
         return False
-    modifying_keywords = r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|SELECT)\b"
-    return bool(re.search(modifying_keywords, upper))
+    access_keywords = r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|SELECT)\b"
+    return bool(re.search(access_keywords, upper))
+
+
+def _is_ddl(sql: str) -> bool:
+    """Return True if SQL contains DDL statements (DROP, TRUNCATE, ALTER, CREATE)."""
+    upper = sql.upper()
+    return bool(re.search(r"\b(DROP|TRUNCATE|ALTER|CREATE)\b", upper))
 
 
 def _run_query(sql: str):
@@ -264,6 +270,8 @@ if run_clicked and sql_input.strip():
 
     if _touches_system_config(sql):
         st.error("🚫 不允許存取：此頁面不可讀取或修改 system_config。")
+    elif _is_ddl(sql):
+        st.error("🚫 不允許執行：此頁面不可執行 DDL 語句（DROP、TRUNCATE、ALTER、CREATE）。")
     elif _is_dangerous_no_where(sql):
         st.session_state["sql_pending_confirm"] = True
         st.session_state["sql_pending_query"] = sql

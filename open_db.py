@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from functions import get_connection
+from functions import get_connection, DIFFICULTY_OPTIONS
 from schema import TABLE_TOPICS, TABLE_TOPIC_VOTES
 st.header("查閱辯題庫")
 
@@ -19,12 +19,6 @@ if topics_df.empty:
     st.info("辯題庫目前為空。")
     st.stop()
 
-# 難度標準 mapping
-DIFFICULTY_OPTIONS = {
-    1: "Lv1 — 概念日常",
-    2: "Lv2 — 一般議題",
-    3: "Lv3 — 進階專業"
-}
 if "difficulty" in topics_df.columns:
     topics_df["difficulty_label"] = topics_df["difficulty"].map(DIFFICULTY_OPTIONS)
 

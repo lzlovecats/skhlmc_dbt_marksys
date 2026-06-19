@@ -121,13 +121,13 @@ A full-featured electronic scoring and management platform for school debate com
 - 即時統計多位評判的投票及得分
 - 自動計算最佳辯論員（依名次總和優先，次以平均分決定）
 - 隊伍查閱分紙（按評判逐張查看完整評分詳情）
-- 匯出指定評判的完整評分表 PDF（以 DOCX 評分表模板填入格仔後轉換）
+- 匯出指定評判的完整評分表 PDF（依 PDF template 填入資料）
 
 **English:**
 - Real-time aggregation of votes and scores across multiple judges
 - Automatic best debater calculation (rank-sum primary, average score secondary)
 - Teams can review detailed per-judge score breakdowns
-- Export a selected judge's complete score sheet as a PDF generated from the DOCX template
+- Export a selected judge's complete score sheet using the PDF template
 
 ---
 
@@ -152,7 +152,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 前端框架 / Frontend | [Streamlit](https://streamlit.io/) |
 | 數據庫 / Database | PostgreSQL (via `st.connection` + SQLAlchemy) |
 | 數據處理 / Data | Pandas, NumPy |
-| 文件輸出 / Document Export | python-docx + LibreOffice headless PDF conversion |
+| 文件輸出 / Document Export | ReportLab + pypdf PDF template overlay |
 | 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
 | 部署 / Deployment | Streamlit Community Cloud |
 
@@ -163,7 +163,6 @@ A full-featured electronic scoring and management platform for school debate com
 ### 環境要求 | Prerequisites
 - Python 3.12+
 - 一個運行中的 PostgreSQL 實例 / A running PostgreSQL instance
-- LibreOffice（用於將 DOCX 評分表轉換成 PDF）/ LibreOffice for DOCX-to-PDF export
 
 ### 安裝步驟 | Installation
 
@@ -172,9 +171,9 @@ A full-featured electronic scoring and management platform for school debate com
 pip install -r requirements.txt
 ```
 
-如部署至 Streamlit Community Cloud，`packages.txt` 會安裝 LibreOffice 及 CJK 字型。
+如部署至 Streamlit Community Cloud，`packages.txt` 只會安裝 CJK 字型，不再安裝 LibreOffice。
 
-On Streamlit Community Cloud, `packages.txt` installs LibreOffice and CJK fonts.
+On Streamlit Community Cloud, `packages.txt` only installs CJK fonts and no longer installs LibreOffice.
 
 **2. 設定資料庫憑證 / Configure database credentials**
 
@@ -248,13 +247,12 @@ streamlit run main.py
 ├── draw_match_schedule.py    # 抽籤賽程 / Draw schedule
 ├── functions.py              # 核心工具函數 / Core utilities
 ├── scoring.py                # 評分常數及欄位 / Scoring constants
-├── score_sheet_pdf.py        # DOCX 評分表填寫及 PDF 匯出 / DOCX score sheet PDF export
+├── score_sheet_pdf.py        # PDF template 填寫及匯出 / PDF template export
 ├── schema.py                 # 資料庫建表語句 + Python DB table constants / DB schema + Python DB identifiers
-├── packages.txt              # 系統套件（LibreOffice、CJK 字型）/ System packages
+├── packages.txt              # CJK 字型 / CJK fonts
 └── assets/
     ├── user_manual.md        # 使用手冊 / User manual
     ├── rules.md              # 賽規 / Competition rules
-    ├── pdf_templates/        # 評分表 DOCX 模板 / Score sheet DOCX template
     └── *_reminder.md         # AI 審題建議 / AI topic review guides
 ```
 

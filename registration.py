@@ -1,10 +1,13 @@
 import datetime
+import re
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from functions import execute_query, get_registration_status, query_params, render_page_guidance
 from schema import TABLE_COMPETITION_REGISTRATIONS
+
+CONTACT_WHATSAPP = "52698715"
 
 
 st.header("比賽報名")
@@ -34,7 +37,7 @@ registration_end = settings["registration_end"]
 with st.container(border=True):
     st.subheader(f"第 {edition} 屆比賽報名")
     st.write("報名流程：填寫隊伍資料 → 確認聯絡方法 → 提交報名")
-    st.write("請至側邊欄查閱賽規。如有疑問，請WhatsApp 52698715。")
+    st.write(f"請至側邊欄查閱賽規。如有疑問，請WhatsApp {CONTACT_WHATSAPP}。")
     st.caption(
         f"報名時間（香港時間／HKT）："
         f"{registration_start.strftime('%Y-%m-%d %H:%M')} 至 {registration_end.strftime('%Y-%m-%d %H:%M')}"
@@ -95,6 +98,10 @@ if submitted:
 
     if missing_fields:
         st.error("請填寫所有必填資料：" + "、".join(missing_fields))
+        st.stop()
+
+    if not re.fullmatch(r"\d{8}", form_data["contact_phone"]):
+        st.error("請輸入有效的8位電話號碼。")
         st.stop()
 
     latest_status = get_registration_status()

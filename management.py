@@ -63,17 +63,14 @@ else:
 if len(match_results) >= 3:
     st.divider()
     st.subheader("評分異常偵測")
+    found_anomaly = False
     for side, label in [("pro_total_score", "正方"), ("con_total_score", "反方")]:
         mean_val = match_results[side].mean()
         std_val = match_results[side].std()
         if std_val > 0:
             for _, row in match_results.iterrows():
                 if abs(row[side] - mean_val) > 2 * std_val:
+                    found_anomaly = True
                     st.warning(f"⚠️ {row['judge_name']} 的{label}評分 ({row[side]}) 偏離其他評判 (平均: {mean_val:.1f}, 標準差: {std_val:.1f})")
-    if not any(
-        abs(row[side] - match_results[side].mean()) > 2 * match_results[side].std()
-        for side in ["pro_total_score", "con_total_score"]
-        if match_results[side].std() > 0
-        for _, row in match_results.iterrows()
-    ):
+    if not found_anomaly:
         st.success("所有評判評分無明顯異常。")
