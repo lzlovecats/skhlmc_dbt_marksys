@@ -2,7 +2,7 @@ import streamlit as st
 import bcrypt
 import datetime
 from zoneinfo import ZoneInfo
-from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params
+from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until
 from schema import TABLE_ACCOUNTS, init_db
 
 st.header("開發者設定")
@@ -230,3 +230,43 @@ else:
         )
         st.success("維護模式已開啟。所有頁面將顯示維護中訊息。")
         st.rerun()
+
+st.divider()
+st.subheader("臨時開放提案")
+st.caption("開啟後，非活躍委員亦可提出新辯題及罷免動議，直至指定時間自動失效。")
+
+bypass_until = get_bypass_active_until()
+hk_now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+bypass_on = bypass_until is not None and hk_now < bypass_until
+
+if bypass_on:
+    st.info(f"目前狀態：**開啟中**（至 {bypass_until.strftime('%Y-%m-%d %H:%M')}）")
+    if st.button("立即關閉"):
+        updated_at = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+        execute_query(
+            "DELETE FROM system_config WHERE key = 'bypass_active_check_until'",
+        )
+        st.success("已關閉臨時開放提案。")
+        st.rerun()
+else:
+    st.info("目前狀態：**已關閉**")
+    col_date, col_time = st.columns(2)
+    with col_date:
+        bypass_date = st.date_input("到期日期", value=hk_now.date() + datetime.timedelta(days=7), min_value=hk_now.date())
+    with col_time:
+        bypass_time = st.time_input("到期時間", value=datetime.time(23, 59))
+    if st.button("啟用臨時開放提案"):
+        until_str = f"{bypass_date.strftime('%Y-%m-%d')} {bypass_time.strftime('%H:%M')}"
+        chosen_dt = datetime.datetime.strptime(until_str, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+        if chosen_dt <= hk_now:
+            st.error("到期時間必須在未來。")
+        else:
+            updated_at = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+            execute_query(
+                "INSERT INTO system_config (key, value, updated_at) "
+                "VALUES ('bypass_active_check_until', :value, :updated_at) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+                {"value": until_str, "updated_at": updated_at},
+            )
+            st.success(f"已啟用臨時開放提案，至 {until_str} 届滿自動失效。")
+            st.rerun()
