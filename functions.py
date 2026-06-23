@@ -819,6 +819,26 @@ def is_maintenance_mode() -> bool:
     return str(val).strip().lower() in ("true", "1", "yes", "on")
 
 
+def get_bypass_active_until():
+    val = get_system_config("bypass_active_check_until")
+    if not val:
+        return None
+    try:
+        return datetime.datetime.strptime(str(val).strip(), "%Y-%m-%d %H:%M").replace(
+            tzinfo=ZoneInfo("Asia/Hong_Kong")
+        )
+    except (ValueError, TypeError):
+        return None
+
+
+def is_bypass_active_check() -> bool:
+    deadline = get_bypass_active_until()
+    if deadline is None:
+        return False
+    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    return now < deadline
+
+
 def render_maintenance_notice():
     with st.container(border=True):
         st.warning("系統維護中")

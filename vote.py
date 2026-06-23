@@ -1,7 +1,7 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
@@ -337,13 +337,18 @@ st.caption("活躍成員標準：整體投票率達 40%，且最近十次投票�
 st.info(f"已登入帳戶：**{user_id}**")
 
 _active_count, active_user_list = get_active_user_count()
-is_active = user_id == "admin" or user_id in active_user_list
+_naturally_active = user_id == "admin" or user_id in active_user_list
+_bypass = is_bypass_active_check()
+is_active = _naturally_active or _bypass
 ENTRY_THRESHOLD = max(5, math.ceil(_active_count * 0.4))
 DEPOSE_THRESHOLD = max(6, math.ceil(_active_count * 0.5))
 
 if user_id != "admin":
-    if is_active:
+    if _naturally_active:
         st.success("帳戶狀態：活躍成員")
+    elif _bypass:
+        _bypass_until = get_bypass_active_until()
+        st.info(f"帳戶狀態：非活躍成員（提案限制已被臨時解除，至 {_bypass_until.strftime('%Y-%m-%d %H:%M')}）")
     else:
         st.warning("帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。")
 
