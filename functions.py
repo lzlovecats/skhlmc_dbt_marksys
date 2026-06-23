@@ -819,24 +819,62 @@ def is_maintenance_mode() -> bool:
     return str(val).strip().lower() in ("true", "1", "yes", "on")
 
 
-def get_bypass_active_until():
+def _parse_bypass_data() -> dict:
     val = get_system_config("bypass_active_check_until")
     if not val:
-        return None
+        return {}
     try:
-        return datetime.datetime.strptime(str(val).strip(), "%Y-%m-%d %H:%M").replace(
-            tzinfo=ZoneInfo("Asia/Hong_Kong")
-        )
-    except (ValueError, TypeError):
-        return None
+        data = json.loads(val)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
-def is_bypass_active_check() -> bool:
-    deadline = get_bypass_active_until()
-    if deadline is None:
-        return False
+def get_bypass_active_until(user_id: str = None):
+    data = _parse_bypass_data()
+    if user_id is not None:
+        val = data.get(user_id)
+        if not val:
+            return None
+        try:
+            return datetime.datetime.strptime(str(val).strip(), "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo("Asia/Hong_Kong")
+            )
+        except (ValueError, TypeError):
+            return None
     now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
-    return now < deadline
+    active_entries = {}
+    for uid, ts in data.items():
+        try:
+            dt = datetime.datetime.strptime(str(ts).strip(), "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo("Asia/Hong_Kong")
+            )
+            if dt > now:
+                active_entries[uid] = dt
+        except (ValueError, TypeError):
+            continue
+    return active_entries if active_entries else None
+
+
+def is_bypass_active_check(user_id: str = None) -> bool:
+    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    data = _parse_bypass_data()
+    if user_id is not None:
+        val = data.get(user_id)
+        if not val:
+            return False
+        try:
+            deadline = datetime.datetime.strptime(str(val).strip(), "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo("Asia/Hong_Kong")
+            )
+            return now < deadline
+        except (ValueError, TypeError):
+            return False
+    return any(
+        now < datetime.datetime.strptime(str(ts).strip(), "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+        for ts in data.values()
+        if ts
+    )
 
 
 def render_maintenance_notice():

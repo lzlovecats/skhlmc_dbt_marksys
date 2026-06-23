@@ -338,7 +338,7 @@ st.info(f"已登入帳戶：**{user_id}**")
 
 _active_count, active_user_list = get_active_user_count()
 _naturally_active = user_id == "admin" or user_id in active_user_list
-_bypass = is_bypass_active_check()
+_bypass = is_bypass_active_check(user_id)
 is_active = _naturally_active or _bypass
 ENTRY_THRESHOLD = max(5, math.ceil(_active_count * 0.4))
 DEPOSE_THRESHOLD = max(6, math.ceil(_active_count * 0.5))
@@ -347,7 +347,7 @@ if user_id != "admin":
     if _naturally_active:
         st.success("帳戶狀態：活躍成員")
     elif _bypass:
-        _bypass_until = get_bypass_active_until()
+        _bypass_until = get_bypass_active_until(user_id)
         st.info(f"帳戶狀態：非活躍成員（提案限制已被臨時解除，至 {_bypass_until.strftime('%Y-%m-%d %H:%M')}）")
     else:
         st.warning("帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。")

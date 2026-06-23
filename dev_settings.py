@@ -2,7 +2,8 @@ import streamlit as st
 import bcrypt
 import datetime
 from zoneinfo import ZoneInfo
-from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until
+import json
+from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data
 from schema import TABLE_ACCOUNTS, init_db
 
 st.header("開發者設定")
@@ -233,40 +234,75 @@ else:
 
 st.divider()
 st.subheader("臨時開放提案")
-st.caption("開啟後，非活躍委員亦可提出新辯題及罷免動議，直至指定時間自動失效。")
+st.caption("為指定的非活躍委員臨時開放提案權限，直至指定時間自動失效。")
 
-bypass_until = get_bypass_active_until()
 hk_now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
-bypass_on = bypass_until is not None and hk_now < bypass_until
+bypass_data = _parse_bypass_data()
 
-if bypass_on:
-    st.info(f"目前狀態：**開啟中**（至 {bypass_until.strftime('%Y-%m-%d %H:%M')}）")
-    if st.button("立即關閉"):
-        updated_at = hk_now.strftime("%Y-%m-%d %H:%M:%S")
-        execute_query(
-            "DELETE FROM system_config WHERE key = 'bypass_active_check_until'",
-        )
-        st.success("已關閉臨時開放提案。")
+active_bypasses = {}
+for uid, ts in bypass_data.items():
+    try:
+        dt = datetime.datetime.strptime(str(ts).strip(), "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+        if dt > hk_now:
+            active_bypasses[uid] = dt
+    except (ValueError, TypeError):
+        continue
+
+if active_bypasses:
+    st.write("**目前已開放的委員：**")
+    for uid, dt in active_bypasses.items():
+        col_info, col_btn = st.columns([3, 1])
+        with col_info:
+            st.write(f"• **{uid}**（至 {dt.strftime('%Y-%m-%d %H:%M')}）")
+        with col_btn:
+            if st.button("撤銷", key=f"revoke_{uid}"):
+                bypass_data.pop(uid, None)
+                updated_at = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+                execute_query(
+                    "INSERT INTO system_config (key, value, updated_at) "
+                    "VALUES ('bypass_active_check_until', :value, :updated_at) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+                    {"value": json.dumps(bypass_data, ensure_ascii=False), "updated_at": updated_at},
+                )
+                st.success(f"已撤銷「{uid}」的臨時提案權限。")
+                st.rerun()
+    if st.button("全部撤銷"):
+        execute_query("DELETE FROM system_config WHERE key = 'bypass_active_check_until'")
+        st.success("已撤銷所有臨時提案權限。")
         st.rerun()
 else:
-    st.info("目前狀態：**已關閉**")
+    st.info("目前沒有委員獲臨時提案權限。")
+
+st.write("**新增臨時提案權限：**")
+all_accounts = query_params(
+    f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE account_status = 'inactive' ORDER BY user_id"
+)
+if all_accounts.empty:
+    st.info("目前無非活躍委員帳戶。")
+else:
+    bypass_users = st.multiselect("選擇委員", options=all_accounts["user_id"].tolist(), key="bypass_user_select")
     col_date, col_time = st.columns(2)
     with col_date:
         bypass_date = st.date_input("到期日期", value=hk_now.date() + datetime.timedelta(days=7), min_value=hk_now.date())
     with col_time:
         bypass_time = st.time_input("到期時間", value=datetime.time(23, 59))
-    if st.button("啟用臨時開放提案"):
-        until_str = f"{bypass_date.strftime('%Y-%m-%d')} {bypass_time.strftime('%H:%M')}"
-        chosen_dt = datetime.datetime.strptime(until_str, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
-        if chosen_dt <= hk_now:
-            st.error("到期時間必須在未來。")
+    if st.button("啟用臨時提案權限"):
+        if not bypass_users:
+            st.warning("請選擇至少一位委員。")
         else:
-            updated_at = hk_now.strftime("%Y-%m-%d %H:%M:%S")
-            execute_query(
-                "INSERT INTO system_config (key, value, updated_at) "
-                "VALUES ('bypass_active_check_until', :value, :updated_at) "
-                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
-                {"value": until_str, "updated_at": updated_at},
-            )
-            st.success(f"已啟用臨時開放提案，至 {until_str} 届滿自動失效。")
-            st.rerun()
+            until_str = f"{bypass_date.strftime('%Y-%m-%d')} {bypass_time.strftime('%H:%M')}"
+            chosen_dt = datetime.datetime.strptime(until_str, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+            if chosen_dt <= hk_now:
+                st.error("到期時間必須在未來。")
+            else:
+                for uid in bypass_users:
+                    bypass_data[uid] = until_str
+                updated_at = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+                execute_query(
+                    "INSERT INTO system_config (key, value, updated_at) "
+                    "VALUES ('bypass_active_check_until', :value, :updated_at) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+                    {"value": json.dumps(bypass_data, ensure_ascii=False), "updated_at": updated_at},
+                )
+                st.success(f"已為 {', '.join(bypass_users)} 啟用臨時提案權限，至 {until_str} 届滿自動失效。")
+                st.rerun()
