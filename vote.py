@@ -500,6 +500,8 @@ if selected_tab == "proposal":
     with st.container(border=True):
         st.subheader("提出新辯題")
         st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
+        st.caption("甲乙辯題格式：（甲）XXX／（乙）YYY，請使用全形中文符號。")
+        st.caption("")
         new_topic = st.text_input("請輸入完整辯題")
         new_category = st.selectbox("辯題類別", options=CATEGORIES)
         st.caption("辯題難度標準：")
