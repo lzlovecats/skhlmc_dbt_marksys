@@ -120,10 +120,33 @@ def parse_deadline_row(row, key="deadline_date"):
 
 def clear_caches():
     get_vote_data.clear()
+    get_pending_vote_count.clear()
+    get_pending_depose_count.clear()
     from functions import get_active_user_count, get_member_participation_stats, _compute_all_user_stats
     get_active_user_count.clear()
     get_member_participation_stats.clear()
     _compute_all_user_stats.clear()
+
+
+def queue_toast(message, icon=None):
+    st.session_state["vote_action_toast"] = {"message": message, "icon": icon}
+
+
+def show_queued_toast():
+    toast = st.session_state.pop("vote_action_toast", None)
+    if toast:
+        st.toast(toast["message"], icon=toast.get("icon"))
+
+
+def _clear_vote_cache_only():
+    get_vote_data.clear()
+    get_pending_vote_count.clear()
+    get_pending_depose_count.clear()
+
+
+def _after_vote_light():
+    _clear_vote_cache_only()
+    st.rerun()
 
 
 def _after_vote():
@@ -192,19 +215,19 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
             if st.button("已同意 (點擊撤回)", key=f"{table}_f_done_{i}"):
                 with st.spinner("撤回投票中..."):
                     _ballot_delete(table, topic, user_id)
-                    st.toast("已撤回同意票！", icon="↩️")
+                    queue_toast("已撤回同意票！", icon="↩️")
                     after_vote_fn()
         elif user_id in against_list:
             if st.button("轉投同意", key=f"{table}_switch_to_f_{i}"):
                 with st.spinner("更改投票中..."):
                     _ballot_switch_agree(table, topic, user_id)
-                    st.toast(agree_switch_toast, icon="↪️️")
+                    queue_toast(agree_switch_toast, icon="↪️️")
                     after_vote_fn()
         else:
             if st.button(f"✅ {agree_label}", key=f"{table}_vote_f_{i}"):
                 with st.spinner("處理你的投票中，請稍等⋯"):
                     _ballot_upsert(table, topic, user_id, "agree")
-                    st.toast("已投下同意票！", icon="☑️")
+                    queue_toast("已投下同意票！", icon="☑️")
                     after_vote_fn()
 
     with col3:
@@ -212,7 +235,7 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
             if st.button("已反對 (點擊撤回)", key=f"{table}_a_done_{i}"):
                 with st.spinner("撤回投票中..."):
                     _ballot_delete(table, topic, user_id)
-                    st.toast("已撤回不同意票！", icon="↩️")
+                    queue_toast("已撤回不同意票！", icon="↩️")
                     after_vote_fn()
         elif user_id in agree_list:
             if st.button("轉投反對", key=f"{table}_switch_to_a_{i}"):
@@ -221,7 +244,7 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
                 else:
                     with st.spinner("更改投票中..."):
                         _ballot_upsert(table, topic, user_id, "against")
-                        st.toast("已轉投不同意票！", icon="↪️️")
+                        queue_toast("已轉投不同意票！", icon="↪️️")
                         after_vote_fn()
         else:
             if st.button(f"❌ {against_label}", key=f"{table}_vote_a_{i}"):
@@ -230,7 +253,7 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
                 else:
                     with st.spinner("處理你的投票中，請稍等⋯"):
                         _ballot_upsert(table, topic, user_id, "against")
-                        st.toast("已投下不同意票！", icon="☑️")
+                        queue_toast("已投下不同意票！", icon="☑️")
                         after_vote_fn()
 
 
@@ -316,8 +339,8 @@ def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False
                     " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'against', against_reasons = EXCLUDED.against_reasons",
                     {"topic_text": topic, "user_id": user_id, "reasons": dump_json(reasons)}
                 )
-                st.toast("已轉投不同意票！" if is_switch else "已投下不同意票！", icon="↪️️" if is_switch else "☑️")
-                clear_caches()
+                queue_toast("已轉投不同意票！" if is_switch else "已投下不同意票！", icon="↪️️" if is_switch else "☑️")
+                _clear_vote_cache_only()
                 st.rerun()
 
 if not check_committee_login():
@@ -333,6 +356,7 @@ if user_id == "admin":
         st.rerun()
     st.stop()
 show_noti_popup(user_id)
+show_queued_toast()
 st.caption("活躍成員標準：整體投票率達 40%，且最近十次投票至少參與三次。")
 st.info(f"已登入帳戶：**{user_id}**")
 
@@ -411,26 +435,68 @@ def get_vote_data():
 
     return pending, passed, rejected
 
+
+@st.cache_data(ttl=5)
+def get_pending_vote_count():
+    df = get_connection().query(
+        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'",
+        ttl=5,
+    )
+    return int(df.iloc[0]["cnt"]) if not df.empty else 0
+
+
+@st.cache_data(ttl=5)
+def get_pending_depose_count():
+    df = get_connection().query(
+        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
+        ttl=5,
+    )
+    return int(df.iloc[0]["cnt"]) if not df.empty else 0
+
+
 # Pre-fetch pending counts for tab badges
-_pending_vote_data, _, _ = get_vote_data()
-_pending_vote_count = len(_pending_vote_data) if _pending_vote_data else 0
-_pending_depose_count_df = get_connection().query(
-    f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
-    ttl=5,
-)
-_pending_depose_count = int(_pending_depose_count_df.iloc[0]["cnt"]) if not _pending_depose_count_df.empty else 0
+_pending_vote_count = get_pending_vote_count()
+_pending_depose_count = get_pending_depose_count()
 
-_tab2_label = f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
-_tab3_label = f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
-tab_proposal, tab_topic_vote, tab_depose_vote, tab_member_stats, tab_account = st.tabs([
-    "📝 提案",
-    _tab2_label,
-    _tab3_label,
-    "👥 參與率",
-    "🔐 帳戶",
-])
+_tab_options = ["proposal", "topic_vote", "depose_vote", "member_stats", "account"]
 
-with tab_proposal:
+
+def format_tab_label(tab_name):
+    if tab_name == "proposal":
+        return "📝 提案"
+    if tab_name == "topic_vote":
+        return f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
+    if tab_name == "depose_vote":
+        return f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
+    if tab_name == "member_stats":
+        return "👥 參與率"
+    return "🔐 帳戶"
+
+
+if hasattr(st, "segmented_control"):
+    selected_tab = st.segmented_control(
+        "頁面",
+        options=_tab_options,
+        default="proposal",
+        format_func=format_tab_label,
+        key="vote_selected_tab",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+else:
+    selected_tab = st.radio(
+        "頁面",
+        options=_tab_options,
+        format_func=format_tab_label,
+        key="vote_selected_tab",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+if selected_tab is None:
+    selected_tab = "proposal"
+
+if selected_tab == "proposal":
     with st.container(border=True):
         st.subheader("提出新辯題")
         st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
@@ -616,7 +682,7 @@ with tab_proposal:
                     st.warning("有辯題已存在於罷免動議區，該辯題將不會被重複提出。其他辯題已成功提出罷免動議。")
 
 
-with tab_topic_vote:
+elif selected_tab == "topic_vote":
     st.subheader("待表決辯題")
     st.caption("當同意票數達入庫門檻，且同意票多於不同意票時，系統會自動將辯題寫入辯題庫。")
     st.caption("當不同意票數達入庫門檻，且不同意票多於同意票時，系統會自動否決該辯題。")
@@ -680,7 +746,7 @@ with tab_topic_vote:
                 render_vote_buttons(
                     i, user_id, topic, agree_list, against_list, against_reason_map,
                     table=TABLE_TOPIC_VOTES, agree_label="同意", against_label="不同意",
-                    after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
+                    after_vote_fn=_after_vote_light, col2=btn_col1, col3=btn_col2,
                     against_dialog_fn=cast_against_vote_dialog
                 )
 
@@ -715,7 +781,7 @@ with tab_topic_vote:
             st.caption("暫無記錄")
 
 
-with tab_depose_vote:
+elif selected_tab == "depose_vote":
     st.subheader("罷免投票")
     st.caption("當同意罷免票數達罷免門檻，且同意票多於不同意票時，系統會自動刪除辯題。")
     st.caption("當不同意票數達罷免門檻，且不同意票多於同意票時，系統會自動否決罷免動議。")
@@ -819,7 +885,7 @@ with tab_depose_vote:
                 render_vote_buttons(
                     i, user_id, topic, agree_list, against_list, against_reason_map={},
                     table=TABLE_TOPIC_REMOVAL_VOTES, agree_label="同意罷免", against_label="不同意罷免",
-                    after_vote_fn=_after_vote, col2=btn_col1, col3=btn_col2,
+                    after_vote_fn=_after_vote_light, col2=btn_col1, col3=btn_col2,
                     agree_switch_toast="已轉投同意罷免票！"
                 )
 
@@ -832,7 +898,7 @@ with tab_depose_vote:
 
 
 
-with tab_member_stats:
+elif selected_tab == "member_stats":
     st.subheader("成員參與率")
     st.caption("計算辯題投票及罷免投票的整體參與情況。活躍成員標準：整體投票率 ≥ 40% 且 最近10次投票至少參與3次。")
 
@@ -865,7 +931,7 @@ with tab_member_stats:
         st.info("暫無成員資料。")
 
 
-with tab_account:
+elif selected_tab == "account":
     st.subheader("帳戶管理")
 
     with st.expander("更改密碼", expanded=False):
