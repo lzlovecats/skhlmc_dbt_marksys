@@ -29,6 +29,7 @@ from schema import (
     TABLE_NOTIFICATION_READS,
     TABLE_SCORE_DRAFTS,
     TABLE_SCORES,
+    TABLE_BEST_DEBATER_RANKINGS,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
     TABLE_TOPIC_REMOVAL_VOTES,
     TABLE_TOPIC_VOTE_BALLOTS,
@@ -782,11 +783,37 @@ def get_best_debater_results(match_id, match_results):
     if scores_only.isna().any().any():
         return None, None
 
-    all_ranks = []
-    for _, row in scores_only.iterrows():
-        all_ranks.append(row.rank(ascending=False, method='min'))
+    col_to_key = {
+        "pro1_m": ("pro", 1), "pro2_m": ("pro", 2), "pro3_m": ("pro", 3), "pro4_m": ("pro", 4),
+        "con1_m": ("con", 1), "con2_m": ("con", 2), "con3_m": ("con", 3), "con4_m": ("con", 4),
+    }
 
-    df_ranks = pd.DataFrame(all_ranks)
+    explicit_ranks_df = query_params(
+        f"SELECT judge_name, side, position, rank FROM {TABLE_BEST_DEBATER_RANKINGS} WHERE match_id = :match_id",
+        {"match_id": match_id}
+    )
+    judge_names_in_results = match_results["judge_name"].tolist()
+    has_explicit = (
+        not explicit_ranks_df.empty
+        and all(jn in explicit_ranks_df["judge_name"].values for jn in judge_names_in_results)
+    )
+
+    if has_explicit:
+        all_ranks = []
+        for jn in judge_names_in_results:
+            judge_rows = explicit_ranks_df[explicit_ranks_df["judge_name"] == jn]
+            rank_row = {}
+            for col_id, (side, pos) in col_to_key.items():
+                match_row = judge_rows[(judge_rows["side"] == side) & (judge_rows["position"] == pos)]
+                rank_row[col_id] = int(match_row["rank"].iloc[0]) if not match_row.empty else 0
+            all_ranks.append(rank_row)
+        df_ranks = pd.DataFrame(all_ranks)
+    else:
+        all_ranks = []
+        for _, row in scores_only.iterrows():
+            all_ranks.append(row.rank(ascending=False, method='min'))
+        df_ranks = pd.DataFrame(all_ranks)
+
     total_rank_sum = df_ranks.sum()
 
     best_debater_results = []
@@ -802,6 +829,38 @@ def get_best_debater_results(match_id, match_results):
         ascending=[True, False]
     )
     return df_final_best, df_final_best.iloc[0]
+
+
+def auto_derive_ranking_order(pro_scores, con_scores):
+    """Derive best-debater ranks 1–8 from individual speech scores (highest score = rank 1)."""
+    items = []
+    for i, score in enumerate(pro_scores):
+        items.append({"side": "pro", "position": i + 1, "score": int(score)})
+    for i, score in enumerate(con_scores):
+        items.append({"side": "con", "position": i + 1, "score": int(score)})
+    items.sort(key=lambda x: x["score"], reverse=True)
+    rankings = {}
+    for rank, item in enumerate(items, start=1):
+        rankings[(item["side"], item["position"])] = rank
+    return rankings
+
+
+def submit_best_debater_rankings(match_id, judge_name, rankings):
+    """Insert explicit best-debater rankings for a judge. rankings: list of {side, position, rank}."""
+    normalized = normalize_judge_name(judge_name)
+    conn = get_connection()
+    with conn.session as s:
+        s.execute(text(f"""
+            INSERT INTO {TABLE_BEST_DEBATER_RANKINGS} (match_id, judge_name, side, position, rank)
+            VALUES (:match_id, :judge_name, :side, :position, :rank)
+            ON CONFLICT (match_id, judge_name, side, position)
+            DO UPDATE SET rank = EXCLUDED.rank
+        """), [
+            {"match_id": match_id, "judge_name": normalized, "side": r["side"],
+             "position": r["position"], "rank": r["rank"]}
+            for r in rankings
+        ])
+        s.commit()
 
 
 def return_user_manual():

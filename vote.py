@@ -205,9 +205,45 @@ def _ballot_switch_agree(table, topic, user_id):
         )
 
 
+def _check_category_would_exceed(category):
+    """Check if adding one more topic of this category would push it past 20% of the bank."""
+    conn = get_connection()
+    all_topics_df = conn.query(f"SELECT category FROM {TABLE_TOPICS}", ttl=5)
+    if all_topics_df.empty:
+        return False, 0.0, 0, 0
+    total = len(all_topics_df)
+    cat_count = int((all_topics_df["category"] == category).sum())
+    new_ratio = (cat_count + 1) / (total + 1)
+    return new_ratio > 0.2, new_ratio, cat_count, total
+
+
+@st.dialog("類別佔比提醒")
+def _confirm_agree_category_warning(topic, user_id, category, ratio, cat_count, total, is_switch, table, after_vote_fn):
+    st.warning(
+        f"⚠️ 若此辯題通過，類別「{category}」將佔辯題庫 **{ratio*100:.1f}%**"
+        f"（現有 {total} 題中已有 {cat_count} 題同類）。\n\n"
+        "繼續投同意票可能令辯題庫失衡。是否確認？"
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ 確認投同意票", use_container_width=True):
+            with st.spinner("處理你的投票中，請稍等⋯"):
+                if is_switch:
+                    _ballot_switch_agree(table, topic, user_id)
+                    queue_toast("已轉投同意票！", icon="↪️️")
+                else:
+                    _ballot_upsert(table, topic, user_id, "agree")
+                    queue_toast("已投下同意票！", icon="☑️")
+                after_vote_fn()
+    with col2:
+        if st.button("❌ 取消", use_container_width=True):
+            st.rerun()
+
+
 def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_reason_map,
                         table, agree_label, against_label, after_vote_fn, col2, col3,
-                        against_dialog_fn=None, agree_switch_toast="已轉投同意票！"):
+                        against_dialog_fn=None, agree_switch_toast="已轉投同意票！",
+                        topic_category=None):
     """Renders the agree (col2) and against (col3) vote button columns."""
 
     with col2:
@@ -219,12 +255,26 @@ def render_vote_buttons(i, user_id, topic, agree_list, against_list, against_rea
                     after_vote_fn()
         elif user_id in against_list:
             if st.button("轉投同意", key=f"{table}_switch_to_f_{i}"):
+                if topic_category and table == TABLE_TOPIC_VOTES:
+                    exceeds, ratio, cat_count, total = _check_category_would_exceed(topic_category)
+                    if exceeds:
+                        _confirm_agree_category_warning(
+                            topic, user_id, topic_category, ratio, cat_count, total,
+                            is_switch=True, table=table, after_vote_fn=after_vote_fn)
+                        return
                 with st.spinner("更改投票中..."):
                     _ballot_switch_agree(table, topic, user_id)
                     queue_toast(agree_switch_toast, icon="↪️️")
                     after_vote_fn()
         else:
             if st.button(f"✅ {agree_label}", key=f"{table}_vote_f_{i}"):
+                if topic_category and table == TABLE_TOPIC_VOTES:
+                    exceeds, ratio, cat_count, total = _check_category_would_exceed(topic_category)
+                    if exceeds:
+                        _confirm_agree_category_warning(
+                            topic, user_id, topic_category, ratio, cat_count, total,
+                            is_switch=False, table=table, after_vote_fn=after_vote_fn)
+                        return
                 with st.spinner("處理你的投票中，請稍等⋯"):
                     _ballot_upsert(table, topic, user_id, "agree")
                     queue_toast("已投下同意票！", icon="☑️")
@@ -749,7 +799,8 @@ elif selected_tab == "topic_vote":
                     i, user_id, topic, agree_list, against_list, against_reason_map,
                     table=TABLE_TOPIC_VOTES, agree_label="同意", against_label="不同意",
                     after_vote_fn=_after_vote_light, col2=btn_col1, col3=btn_col2,
-                    against_dialog_fn=cast_against_vote_dialog
+                    against_dialog_fn=cast_against_vote_dialog,
+                    topic_category=row.get("category"),
                 )
 
             if against_reason_map:

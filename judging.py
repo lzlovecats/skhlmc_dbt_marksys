@@ -8,6 +8,8 @@ from functions import (
     has_final_submission,
     normalize_judge_name,
     submit_final_scores,
+    submit_best_debater_rankings,
+    auto_derive_ranking_order,
     _verify_config_password,
     render_page_guidance,
     render_password_gate,
@@ -54,16 +56,14 @@ def confirm_submit(pro, con, selected_match_id, judge_name):
                 st.session_state["temp_scores"] = {"正方": None, "反方": None}
                 _clear_side_input_state(selected_match_id)
                 st.session_state["submission_message"] = None
-                st.session_state["post_submit_receipt"] = {
+                st.session_state["pending_best_debater_ranking"] = {
                     "match_id": selected_match_id,
                     "judge_name": judge_name,
                     "pro_total": pro["final_total"],
-                    "con_total": con["final_total"]
+                    "con_total": con["final_total"],
+                    "pro_ind_scores": list(pro["ind_scores"]),
+                    "con_ind_scores": list(con["ind_scores"]),
                 }
-                st.session_state["last_judge_name"] = ""
-                st.session_state["last_judge_identity"] = ""
-                st.session_state["judge_authenticated"] = False
-                st.session_state["auth_match_id"] = None
                 st.session_state["last_auto_save"] = None
             st.rerun()
         except Exception as e:
@@ -235,6 +235,85 @@ def render_post_submit_receipt():
     st.stop()
 
 
+def _finish_ranking_and_show_receipt(pending):
+    st.session_state["pending_best_debater_ranking"] = None
+    st.session_state["post_submit_receipt"] = {
+        "match_id": pending["match_id"],
+        "judge_name": pending["judge_name"],
+        "pro_total": pending["pro_total"],
+        "con_total": pending["con_total"],
+    }
+    st.session_state["last_judge_name"] = ""
+    st.session_state["last_judge_identity"] = ""
+    st.session_state["judge_authenticated"] = False
+    st.session_state["auth_match_id"] = None
+    st.rerun()
+
+
+def render_best_debater_ranking_page():
+    pending = st.session_state.get("pending_best_debater_ranking")
+    if not pending:
+        return
+
+    st.success("評分已成功上傳至雲端。")
+    st.subheader("最佳辯論員排名")
+    st.caption("請為本場 8 位辯員排出名次（1 = 最佳，8 = 最低）。你亦可按「自動填入」根據個人發言分數排名，或按「略過」跳過此步驟。")
+
+    match_id = pending["match_id"]
+    DEBATER_SLOTS = [
+        ("pro", 1, "正方主辯"), ("pro", 2, "正方一副"), ("pro", 3, "正方二副"), ("pro", 4, "正方結辯"),
+        ("con", 1, "反方主辯"), ("con", 2, "反方一副"), ("con", 3, "反方二副"), ("con", 4, "反方結辯"),
+    ]
+
+    all_matches = load_matches_from_db()
+    match_data = all_matches.get(match_id, {})
+
+    debater_labels = []
+    for side, pos, role in DEBATER_SLOTS:
+        name = match_data.get(f"{side}_{pos}", "")
+        label = f"{role}（{name}）" if name else role
+        debater_labels.append(label)
+
+    rank_options = list(range(1, 9))
+
+    if st.button("📊 自動根據發言分數填入排名", use_container_width=True):
+        auto = auto_derive_ranking_order(pending["pro_ind_scores"], pending["con_ind_scores"])
+        for side, pos, _ in DEBATER_SLOTS:
+            st.session_state[f"_bdr_sel_{side}_{pos}"] = auto[(side, pos)]
+        st.rerun()
+
+    with st.container(border=True):
+        for idx, (side, pos, _) in enumerate(DEBATER_SLOTS):
+            st.selectbox(
+                debater_labels[idx],
+                options=rank_options,
+                key=f"_bdr_sel_{side}_{pos}",
+            )
+
+    col_submit, col_skip = st.columns(2)
+    with col_submit:
+        if st.button("提交排名", type="primary", use_container_width=True):
+            rankings = []
+            assigned_ranks = []
+            for side, pos, _ in DEBATER_SLOTS:
+                rank_val = st.session_state.get(f"_bdr_sel_{side}_{pos}", 0)
+                rankings.append({"side": side, "position": pos, "rank": rank_val})
+                assigned_ranks.append(rank_val)
+
+            if sorted(assigned_ranks) != list(range(1, 9)):
+                st.error("每個名次（1–8）必須恰好使用一次，請檢查是否有重複或遺漏。")
+            else:
+                with st.spinner("正在提交排名..."):
+                    submit_best_debater_rankings(match_id, pending["judge_name"], rankings)
+                _finish_ranking_and_show_receipt(pending)
+
+    with col_skip:
+        if st.button("略過", use_container_width=True):
+            _finish_ranking_and_show_receipt(pending)
+
+    st.stop()
+
+
 def get_team_context(current_match, team_side):
     if team_side == "正方":
         names = [current_match.get("pro_1", ""), current_match.get("pro_2", ""),
@@ -371,6 +450,7 @@ if st.session_state["active_match_id"] != selected_match_id:
 if st.session_state["auth_match_id"] != selected_match_id:
     st.session_state["judge_authenticated"] = False
 
+render_best_debater_ranking_page()
 render_post_submit_receipt()
 
 if not st.session_state["judge_authenticated"]:

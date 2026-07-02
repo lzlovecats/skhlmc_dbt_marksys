@@ -22,6 +22,7 @@ TABLE_NOTIFICATION_READS = "notification_reads"
 TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
 TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
 TABLE_MATCH_VIDEOS = "match_videos"
+TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -117,6 +118,24 @@ CREATE TABLE IF NOT EXISTS {TABLE_DEBATER_SCORES} (
     debater_score   INTEGER,
     PRIMARY KEY (match_id, judge_name, side, position),
     CONSTRAINT fk_debater_scores_score
+        FOREIGN KEY (match_id, judge_name) REFERENCES {TABLE_SCORES}(match_id, judge_name)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+);
+"""
+
+# Table: BEST_DEBATER_RANKINGS
+# Explicit best-debater rankings given by each judge (1 = best, 8 = worst).
+# Falls back to auto-derived rankings from debater_scores when absent.
+CREATE_BEST_DEBATER_RANKINGS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_BEST_DEBATER_RANKINGS} (
+    match_id    TEXT,
+    judge_name  TEXT,
+    side        TEXT    CHECK (side IN ('pro', 'con')),
+    position    INTEGER CHECK (position BETWEEN 1 AND 4),
+    rank        INTEGER CHECK (rank BETWEEN 1 AND 8),
+    PRIMARY KEY (match_id, judge_name, side, position),
+    CONSTRAINT fk_best_debater_rankings_score
         FOREIGN KEY (match_id, judge_name) REFERENCES {TABLE_SCORES}(match_id, judge_name)
         ON DELETE CASCADE
         ON UPDATE CASCADE
@@ -470,6 +489,7 @@ ALL_SCHEMAS = [
     CREATE_DEBATERS,            # → matches
     CREATE_SCORES,              # → matches
     CREATE_DEBATER_SCORES,      # → scores
+    CREATE_BEST_DEBATER_RANKINGS,  # → scores
     CREATE_SCORE_DRAFTS,        # → matches
     CREATE_TOPIC_VOTES,         # → accounts
     CREATE_TOPIC_VOTE_BALLOTS,  # → topic_votes, accounts
