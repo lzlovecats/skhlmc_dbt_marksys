@@ -2,10 +2,10 @@ import streamlit as st
 from functions import get_registration_status, is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
 
 # Set up basic structure of the webpage
-st.set_page_config(page_title="聖呂中辯電子分紙系統", layout="wide", page_icon="📑")
+st.set_page_config(page_title="聖呂中辯電子賽務系統", layout="wide", page_icon="📑")
 
 if is_maintenance_mode():
-    st.title("聖呂中辯電子分紙系統")
+    st.title("聖呂中辯電子賽務系統")
     render_maintenance_notice()
     st.stop()
 
@@ -24,6 +24,8 @@ page_registration = st.Page("registration.py", title="比賽報名", url_path="r
 page_open_db = st.Page("open_db.py", title="查閱辯題庫")
 page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免", url_path="vote")
 page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
+page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admin-hub")
+page_chairperson = st.Page("chairperson.py", title="主席主持易", url_path="chairperson")
 
 registration_status = get_registration_status()
 public_pages = [page_video_replay, page_open_db]
@@ -36,7 +38,7 @@ pg = st.navigation({
     "評判": [page_judging],
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
-    "賽會人員": [page_registration_admin, page_match_mgmt, page_video_admin, page_mgmt, page_db_mgmt, page_draw_schedule],
+    "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
     "內部委員會成員": [page_vote],
     "開發者": [page_dev_settings],
 })
@@ -60,7 +62,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：2.16.0")
+    st.caption("🛠️ 系統版本：3.0.0")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

@@ -4,6 +4,7 @@ import streamlit as st
 from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until
 from schema import (
     TABLE_ACCOUNTS,
+    TABLE_MOTION_COMMENTS,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
     TABLE_TOPIC_REMOVAL_VOTES,
     TABLE_TOPIC_VOTE_BALLOTS,
@@ -158,6 +159,48 @@ def render_refresh_button(key):
     if st.button("🔄 重新整理", key=key):
         clear_caches()
         st.rerun()
+
+
+def _get_comment_counts(motion_type):
+    df = query_params(
+        f"SELECT motion_key, COUNT(*) AS cnt FROM {TABLE_MOTION_COMMENTS} "
+        "WHERE motion_type = :type GROUP BY motion_key",
+        {"type": motion_type},
+    )
+    if df.empty:
+        return {}
+    return dict(zip(df["motion_key"], df["cnt"].astype(int)))
+
+
+def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
+    label = f"💬 討論區 ({comment_count})" if comment_count else "💬 討論區"
+    with st.expander(label, expanded=False):
+        comments = query_params(
+            f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
+            "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
+            {"type": motion_type, "key": motion_key},
+        )
+        if not comments.empty:
+            for _, c in comments.iterrows():
+                ts = c["created_at"]
+                ts_str = ts.strftime("%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts)[:16]
+                st.caption(f"**{c['user_id']}**　{ts_str}")
+                st.text(c["comment_text"])
+                st.divider()
+        else:
+            st.caption("暫時未有討論。")
+        new_comment = st.text_area("發表意見", key=f"comment_{motion_type}_{idx}", placeholder="就此議案發表你的看法⋯")
+        if st.button("發表", key=f"post_comment_{motion_type}_{idx}"):
+            if new_comment.strip():
+                hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+                execute_query(
+                    f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
+                    "VALUES (:type, :key, :uid, :text, :now)",
+                    {"type": motion_type, "key": motion_key, "uid": user_id, "text": new_comment.strip(), "now": hk_now},
+                )
+                st.rerun()
+            else:
+                st.warning("請輸入內容。")
 
 
 def _ballot_delete(table, topic, user_id):
@@ -751,7 +794,8 @@ elif selected_tab == "topic_vote":
     st.divider()
     
     vote_data, passed_list, rejected_list = get_vote_data()
-    
+    _tv_comment_counts = _get_comment_counts("topic_vote") if vote_data else {}
+
     if not vote_data:
         st.info("目前沒有待表決的辯題。")
     else:
@@ -806,6 +850,8 @@ elif selected_tab == "topic_vote":
             if against_reason_map:
                 with st.expander(f"查看「{topic}」不同意理由", expanded=False):
                     render_reason_lines(against_reason_map, "暫時未有已記錄的不同意理由。")
+
+            render_discussion("topic_vote", topic, user_id, i, _tv_comment_counts.get(topic, 0))
 
             check_vote_resolution(agree_count, against_count, row_threshold, topic, agree_list, against_list,
                                    mode="topic", author=author,
@@ -889,6 +935,8 @@ elif selected_tab == "depose_vote":
     topics_meta_df = conn.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}", ttl=5)
     topic_meta = {r["topic_text"]: (r.get("category"), r.get("difficulty")) for _, r in topics_meta_df.iterrows()}
 
+    _tr_comment_counts = _get_comment_counts("topic_removal") if vote_data else {}
+
     if not vote_data:
         st.info("目前沒有待罷免的辯題。")
     else:
@@ -945,6 +993,8 @@ elif selected_tab == "depose_vote":
             if proposal_reasons:
                 with st.expander(f"查看「{topic}」提出原因", expanded=False):
                     st.caption("；".join(proposal_reasons))
+
+            render_discussion("topic_removal", topic, user_id, i, _tr_comment_counts.get(topic, 0))
 
             check_vote_resolution(agree_count, against_count, row_depose_threshold, topic, agree_list, against_list,
                                    mode="depose")
