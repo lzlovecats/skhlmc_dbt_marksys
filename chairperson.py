@@ -1,3 +1,4 @@
+import base64
 import os
 from datetime import datetime
 
@@ -70,6 +71,145 @@ def _unique_names(names):
     return result
 
 
+@st.cache_data(show_spinner=False)
+def _load_bell_b64():
+    bell_path = os.path.join(ASSETS_DIR, "bell.mp3")
+    try:
+        with open(bell_path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except FileNotFoundError:
+        return ""
+
+
+def _render_manual_bell_bar(bell_b64):
+    bell_src = f"data:audio/mpeg;base64,{bell_b64}" if bell_b64 else ""
+    bell_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body {{
+    margin: 0; padding: 0; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: transparent;
+}}
+.bell-bar {{
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 8px 10px;
+    background: rgba(18, 18, 18, 0.94);
+    border: 1px solid #333;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}}
+.bell-select {{
+    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 8px;
+    padding: 10px 12px; font-size: 15px; cursor: pointer;
+}}
+.btn-bell {{
+    background: #ff4b4b; color: white; border: none; border-radius: 8px;
+    font-size: 18px; font-weight: 700; padding: 11px 32px;
+    cursor: pointer; transition: background 0.2s;
+}}
+.btn-bell:hover {{ background: #e03e3e; }}
+</style>
+</head>
+<body>
+<div class="bell-bar">
+    <select id="manual-bell-count" class="bell-select">
+        <option value="1">1 叮</option>
+        <option value="2">2 叮</option>
+        <option value="3">3 叮</option>
+        <option value="5">5 叮</option>
+    </select>
+    <button class="btn-bell" onclick="manualBell()">🔔 響叮</button>
+</div>
+<script>
+try {{
+    const frame = window.frameElement;
+    if (frame) {{
+        let el = frame;
+        while (el && el !== document.documentElement) {{
+            const ov = getComputedStyle(el).overflow;
+            if (ov !== "visible") el.style.overflow = "visible";
+            el = el.parentElement;
+        }}
+        const host = frame.closest('[data-testid="stElementContainer"]') || frame.parentElement;
+        if (host) {{
+            host.style.position = "sticky";
+            host.style.top = "0";
+            host.style.zIndex = "9999";
+        }}
+        frame.style.display = "block";
+    }}
+}} catch(e) {{}}
+
+const BELL_SRC = "{bell_src}";
+let bellBuffer = null;
+let bellLoading = null;
+let audioCtx = null;
+
+function getAudioCtx() {{
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+}}
+
+async function loadBell() {{
+    if (!BELL_SRC) return null;
+    if (!bellLoading) {{
+        bellLoading = fetch(BELL_SRC)
+            .then(resp => resp.arrayBuffer())
+            .then(arr => getAudioCtx().decodeAudioData(arr))
+            .then(buffer => {{ bellBuffer = buffer; return buffer; }})
+            .catch(() => null);
+    }}
+    return bellLoading;
+}}
+
+function playTone(count) {{
+    const ctx = getAudioCtx();
+    for (let i = 0; i < count; i++) {{
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = 850;
+        gain.gain.setValueAtTime(0.45, ctx.currentTime + i * 0.35);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.35 + 0.22);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.35);
+        osc.stop(ctx.currentTime + i * 0.35 + 0.22);
+    }}
+}}
+
+async function playBell(count) {{
+    getAudioCtx();
+    await loadBell();
+    if (!bellBuffer) {{
+        playTone(count);
+        return;
+    }}
+    const ctx = getAudioCtx();
+    for (let i = 0; i < count; i++) {{
+        const src = ctx.createBufferSource();
+        src.buffer = bellBuffer;
+        src.connect(ctx.destination);
+        src.start(ctx.currentTime + i * 0.8);
+    }}
+}}
+
+function manualBell() {{
+    const count = parseInt(document.getElementById("manual-bell-count").value);
+    playBell(count);
+}}
+</script>
+</body>
+</html>
+"""
+    components.html(bell_html, height=64, scrolling=False)
+
+
 positions = ["主辯", "一副", "二副", "結辯"]
 db_pro = [_clean_value(match_data.get(f"pro_{i}", "")) for i in range(1, 5)]
 db_con = [_clean_value(match_data.get(f"con_{i}", "")) for i in range(1, 5)]
@@ -126,6 +266,9 @@ with st.expander("📝 填寫資料"):
     for col, pos, default in zip([cc1, cc2, cc3, cc4], positions, db_con):
         with col:
             con_debaters.append(st.text_input(pos, value=default, key=f"cp_con_{selected_match}_{pos}_{default}"))
+
+bell_b64 = _load_bell_b64()
+_render_manual_bell_bar(bell_b64)
 
 tab = st.segmented_control(
     "功能",
@@ -248,11 +391,7 @@ elif tab == "結語":
     st.markdown(rendered)
 
 elif tab == "計時器":
-    import base64
-    bell_path = os.path.join(ASSETS_DIR, "bell.mp3")
-    with open(bell_path, "rb") as f:
-        bell_b64 = base64.b64encode(f.read()).decode()
-
+    bell_src = f"data:audio/mpeg;base64,{bell_b64}" if bell_b64 else ""
     timer_html = f"""
 <!DOCTYPE html>
 <html>
@@ -265,7 +404,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .timer-container {{ padding: 12px; }}
 
 .stage-selector {{
-    display: flex; gap: 0; margin-bottom: 20px;
+    display: flex; gap: 0; margin: 0 0 20px;
     border: 1px solid #444; border-radius: 8px; overflow: hidden;
 }}
 .stage-btn {{
@@ -302,18 +441,6 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .btn-pause:hover {{ background: #f57c00; }}
 .btn-reset {{ background: #555; color: #ddd; }}
 .btn-reset:hover {{ background: #666; }}
-.btn-test {{ background: #555; color: #ddd; font-size: 13px; padding: 8px 16px; }}
-.btn-test:hover {{ background: #666; }}
-
-.btn-bell {{ background: #ff4b4b; color: white; font-size: 18px; padding: 12px 32px; }}
-.btn-bell:hover {{ background: #e03e3e; }}
-
-.bell-control {{ display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 12px; }}
-.bell-select {{
-    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 8px;
-    padding: 10px 12px; font-size: 15px; cursor: pointer;
-}}
-
 .bell-schedule {{ margin-top: 16px; padding: 12px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px; }}
 .bell-schedule h4 {{ margin-bottom: 8px; font-size: 14px; color: #aaa; }}
 .bell-item {{ font-size: 13px; padding: 3px 0; color: #777; }}
@@ -330,17 +457,6 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
         <div class="stage-btn active" onclick="selectStage('main')" id="stage-main">主結辯</div>
         <div class="stage-btn" onclick="selectStage('deputy')" id="stage-deputy">一二副</div>
         <div class="stage-btn" onclick="selectStage('free')" id="stage-free">自由辯論</div>
-    </div>
-
-    <div class="bell-control">
-        <select id="bell-count" class="bell-select">
-            <option value="1">1 叮</option>
-            <option value="2">2 叮</option>
-            <option value="3">3 叮</option>
-            <option value="5">5 叮</option>
-        </select>
-        <button class="btn btn-bell" onclick="manualBell()">🔔 響叮</button>
-        <button class="btn btn-test" onclick="testBell()">測試</button>
     </div>
 
     <div id="single-timer" class="stopwatch-area">
@@ -377,7 +493,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 </div>
 
 <script>
-const BELL_SRC = "data:audio/mpeg;base64,{bell_b64}";
+const BELL_SRC = "{bell_src}";
 let bellBuffer = null;
 let audioCtx = null;
 
@@ -387,28 +503,46 @@ function getAudioCtx() {{
     return audioCtx;
 }}
 
-(async function loadBell() {{
+function playTone(count) {{
     const ctx = getAudioCtx();
-    const resp = await fetch(BELL_SRC);
-    const arr = await resp.arrayBuffer();
-    bellBuffer = await ctx.decodeAudioData(arr);
+    for (let i = 0; i < count; i++) {{
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = 850;
+        gain.gain.setValueAtTime(0.45, ctx.currentTime + i * 0.35);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.35 + 0.22);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.35);
+        osc.stop(ctx.currentTime + i * 0.35 + 0.22);
+    }}
+}}
+
+(async function loadBell() {{
+    if (!BELL_SRC) return;
+    const ctx = getAudioCtx();
+    try {{
+        const resp = await fetch(BELL_SRC);
+        const arr = await resp.arrayBuffer();
+        bellBuffer = await ctx.decodeAudioData(arr);
+    }} catch (e) {{
+        bellBuffer = null;
+    }}
 }})();
 
 function playBell(count) {{
     const ctx = getAudioCtx();
-    if (!bellBuffer) return;
+    if (!bellBuffer) {{
+        playTone(count);
+        return;
+    }}
     for (let i = 0; i < count; i++) {{
         const src = ctx.createBufferSource();
         src.buffer = bellBuffer;
         src.connect(ctx.destination);
         src.start(ctx.currentTime + i * 0.8);
     }}
-}}
-
-function testBell() {{ playBell(1); }}
-function manualBell() {{
-    const count = parseInt(document.getElementById("bell-count").value);
-    playBell(count);
 }}
 
 const BELL_SCHEDULES = {{
