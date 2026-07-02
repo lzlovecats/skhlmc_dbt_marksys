@@ -1009,7 +1009,7 @@ def render_rules_content(role_key: str):
         st.markdown(rules_body)
 
 
-@st.dialog("聖呂中辯電子分紙系統：用戶使用手冊", width="large")
+@st.dialog("聖呂中辯電子賽務系統：用戶使用手冊", width="large")
 def show_manual():
     render_user_manual_content("manual_dialog_role")
 

@@ -115,7 +115,7 @@ def _render_status_results(results: dict):
 
 # ─── Page header ──────────────────────────────────────────────────────────────
 
-st.title("聖呂中辯電子分紙系統")
+st.title("聖呂中辯電子賽務系統")
 st.caption("請根據你的身份選擇對應功能")
 if is_maintenance_mode():
     render_maintenance_notice()
@@ -159,13 +159,11 @@ with col_right:
 
     with st.container(border=True):
         st.markdown("### 🎛️ 賽會人員")
-        st.write("管理比賽報名、比賽場次、比賽片段、賽果、資料庫控制台及抽取賽程。")
-        st.page_link("registration_admin.py", label="比賽報名管理", icon="🗂️")
-        st.page_link("match_info.py", label="比賽場次管理", icon="📋")
-        st.page_link("video_admin.py", label="比賽片段管理", icon="🎬")
+        st.write("整合管理報名、場次、片段及賽程，並提供主席主持工具。")
+        st.page_link("admin_hub.py", label="賽務管理易", icon="🗂️")
+        st.page_link("chairperson.py", label="主席主持易", icon="🎤")
         st.page_link("management.py", label="查閱比賽結果", icon="📊")
         st.page_link("db_mgmt.py", label="資料庫管理控制台", icon="🖥️")
-        st.page_link("draw_match_schedule.py", label="抽取賽程", icon="🎲")
 
 with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
