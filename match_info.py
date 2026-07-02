@@ -1,6 +1,20 @@
 import streamlit as st
 from datetime import datetime, timedelta
-from functions import check_admin, get_connection, load_matches_from_db, save_match_to_db, draw_a_topic, draw_pro_con, execute_query, DIFFICULTY_OPTIONS, render_page_guidance
+from urllib.parse import urlencode, urlparse, urlunparse
+from functions import (
+    check_admin,
+    get_connection,
+    load_matches_from_db,
+    save_match_to_db,
+    draw_a_topic,
+    draw_pro_con,
+    execute_query,
+    DIFFICULTY_OPTIONS,
+    render_page_guidance,
+    ensure_match_roster_links,
+    regenerate_match_roster_link,
+    reopen_match_roster_link,
+)
 from schema import TABLE_MATCHES
 
 
@@ -9,6 +23,22 @@ def show_draw_result_dialog(pro_team, con_team):
     st.success(f"正方：{pro_team}")
     st.success(f"反方：{con_team}")
     st.info("抽籤結果已自動填入場次資料，請記得儲存！")
+
+
+def build_team_roster_url(token):
+    try:
+        parsed = urlparse(st.context.url)
+        query = urlencode({"token": token})
+        return urlunparse((parsed.scheme, parsed.netloc, "/team-roster", "", query, ""))
+    except Exception:
+        return f"/team-roster?{urlencode({'token': token})}"
+
+
+def has_roster_submitted(value):
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text not in ("", "nan", "nat", "none")
 
 
 def render_match_info():
@@ -83,6 +113,49 @@ def render_match_info():
         st.subheader("選擇場次")
         selected_match = st.selectbox("選擇比賽場次", options=match_options)
     current_data = st.session_state["all_matches"][selected_match]
+
+    roster_links = ensure_match_roster_links(selected_match)
+    with st.container(border=True):
+        st.subheader("隊伍自助填名連結")
+        st.caption("將以下專屬連結分別發給正反方。每個連結只可提交一次；如需要修改，可重開填寫或重新生成連結。")
+
+        roster_col1, roster_col2 = st.columns(2)
+        for side, side_label, col in [
+            ("pro", "正方", roster_col1),
+            ("con", "反方", roster_col2),
+        ]:
+            with col:
+                st.markdown(f"### {side_label}")
+                link_data = roster_links.get(side)
+                if not link_data:
+                    st.warning("未能建立連結，請稍後重試。")
+                    continue
+
+                submitted = has_roster_submitted(link_data.get("submitted_at"))
+                status_text = "已提交" if submitted else "未提交"
+                if submitted:
+                    st.success(f"狀態：{status_text}")
+                else:
+                    st.info(f"狀態：{status_text}")
+
+                link_url = build_team_roster_url(link_data["roster_token"])
+                st.text_input(
+                    f"{side_label}提交連結",
+                    value=link_url,
+                    key=f"roster_link_{selected_match}_{side}_{link_data['roster_token']}",
+                )
+
+                action_col1, action_col2 = st.columns(2)
+                with action_col1:
+                    if st.button("重開填寫", key=f"reopen_roster_{selected_match}_{side}", disabled=not submitted, use_container_width=True):
+                        reopen_match_roster_link(selected_match, side)
+                        st.session_state["match_action_message"] = {"type": "success", "content": f"已重開{side_label}填寫連結。"}
+                        st.rerun()
+                with action_col2:
+                    if st.button("重新生成連結", key=f"regen_roster_{selected_match}_{side}", use_container_width=True):
+                        regenerate_match_roster_link(selected_match, side)
+                        st.session_state["match_action_message"] = {"type": "warning", "content": f"已重新生成{side_label}填寫連結，舊連結將不能使用。"}
+                        st.rerun()
 
     with st.container(border=True):
         st.subheader("抽籤工具")
@@ -251,16 +324,17 @@ def render_match_info():
                     st.rerun()
 
 
-st.header("比賽場次管理")
-render_page_guidance(
-    [
-        "使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。",
-        "編輯場次時，請確認正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。",
-        "刪除場次會一併刪除該場次的正式評分與暫存資料，請再次確認相關紀錄不再需要。",
-    ],
-)
+if __name__ == "__main__":
+    st.header("比賽場次管理")
+    render_page_guidance(
+        [
+            "使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。",
+            "編輯場次時，請確認正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。",
+            "刪除場次會一併刪除該場次的正式評分與暫存資料，請再次確認相關紀錄不再需要。",
+        ],
+    )
 
-if not check_admin():
-    st.stop()
+    if not check_admin():
+        st.stop()
 
-render_match_info()
+    render_match_info()

@@ -18,6 +18,7 @@ tab = st.segmented_control(
     options=["報名管理", "場次管理", "片段管理", "抽取賽程"],
     default="場次管理",
     label_visibility="collapsed",
+    width="stretch",
 )
 
 if tab == "報名管理":

@@ -22,6 +22,7 @@ TABLE_NOTIFICATION_READS = "notification_reads"
 TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
 TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
 TABLE_MATCH_VIDEOS = "match_videos"
+TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
@@ -333,6 +334,22 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_VIDEOS} (
 );
 """
 
+# Table: MATCH_ROSTER_LINKS
+# Unguessable per-side links for teams to submit their own roster.
+CREATE_MATCH_ROSTER_LINKS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_MATCH_ROSTER_LINKS} (
+    match_id        TEXT,
+    side            TEXT        CHECK (side IN ('pro', 'con')),
+    roster_token    TEXT        NOT NULL UNIQUE,
+    submitted_at    TIMESTAMP,
+    created_at      TIMESTAMP   DEFAULT NOW(),
+    PRIMARY KEY (match_id, side),
+    CONSTRAINT fk_match_roster_links_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
+        ON DELETE CASCADE
+);
+"""
+
 # Table: MOTION_COMMENTS
 # Discussion comments on pending topic votes and removal motions.
 # motion_type: 'topic_vote' | 'topic_removal'
@@ -488,6 +505,8 @@ CREATE INDEX IF NOT EXISTS idx_match_videos_match_id
     ON {TABLE_MATCH_VIDEOS}(match_id);
 CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order
     ON {TABLE_MATCH_VIDEOS}(is_visible, display_order);
+CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
+    ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
     ON {TABLE_MOTION_COMMENTS}(motion_type, motion_key);
 """
@@ -521,6 +540,7 @@ ALL_SCHEMAS = [
     CREATE_COMPETITION_REGISTRATION_SETTINGS,  # no deps
     CREATE_COMPETITION_REGISTRATIONS,           # no deps
     CREATE_MATCH_VIDEOS,              # → matches
+    CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables

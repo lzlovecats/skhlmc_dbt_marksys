@@ -434,16 +434,17 @@ def render_video_admin():
                     st.rerun()
 
 
-st.header("比賽片段管理")
-render_page_guidance(
-    [
-        "使用賽會人員密碼登入後，可為每場比賽新增多條 YouTube 片段連結。",
-        "片段可連結現有場次；舊比賽未有場次資料時，可手動輸入比賽名稱、辯題及隊名。",
-        "只有標記為顯示的片段會出現在公開重溫頁，排序數字較小的片段會較先顯示。",
-    ],
-)
+if __name__ == "__main__":
+    st.header("比賽片段管理")
+    render_page_guidance(
+        [
+            "使用賽會人員密碼登入後，可為每場比賽新增多條 YouTube 片段連結。",
+            "片段可連結現有場次；舊比賽未有場次資料時，可手動輸入比賽名稱、辯題及隊名。",
+            "只有標記為顯示的片段會出現在公開重溫頁，排序數字較小的片段會較先顯示。",
+        ],
+    )
 
-if not check_admin():
-    st.stop()
+    if not check_admin():
+        st.stop()
 
-render_video_admin()
+    render_video_admin()
