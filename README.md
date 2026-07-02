@@ -119,13 +119,13 @@ A full-featured electronic scoring and management platform for school debate com
 ### 📊 賽果統計與查分 | Results & Score Review (`management.py`, `review.py`)
 **中文：**
 - 即時統計多位評判的投票及得分
-- 自動計算最佳辯論員（依名次總和優先，次以平均分決定）
+- 評判提交後可選擇手動排名最佳辯論員（亦可自動根據發言分數填入或略過）
 - 隊伍查閱分紙（按評判逐張查看完整評分詳情）
 - 匯出指定評判的完整評分表 PDF（依 PDF template 填入資料）
 
 **English:**
 - Real-time aggregation of votes and scores across multiple judges
-- Automatic best debater calculation (rank-sum primary, average score secondary)
+- Judges can optionally rank best debater after submission (auto-fill from scores or skip)
 - Teams can review detailed per-judge score breakdowns
 - Export a selected judge's complete score sheet using the PDF template
 
@@ -213,6 +213,7 @@ streamlit run main.py
 | `match_videos` | 比賽片段連結（可連結現有場次，亦可記錄舊比賽手動資料）|
 | `scores` | 正式提交的評判評分 |
 | `score_drafts` | 評判評分暫存（JSON 格式）|
+| `best_debater_rankings` | 評判手動提交的最佳辯論員排名 |
 | `topics` | 辯題庫 |
 | `topic_votes` | 待表決辯題投票紀錄 |
 | `topic_vote_ballots` | 辯題投票選票 |
