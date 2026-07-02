@@ -20,12 +20,14 @@ from schema import (
     CREATE_COMPETITION_REGISTRATION_SETTINGS,
     CREATE_COMPETITION_REGISTRATIONS,
     CREATE_MATCH_VIDEOS,
+    CREATE_MATCH_ROSTER_LINKS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_DEBATERS,
     TABLE_DEBATER_SCORES,
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
     TABLE_MATCH_VIDEOS,
+    TABLE_MATCH_ROSTER_LINKS,
     TABLE_NOTIFICATION_READS,
     TABLE_SCORE_DRAFTS,
     TABLE_SCORES,
@@ -216,6 +218,208 @@ def ensure_match_videos_table():
     except Exception as e:
         logger.warning("ensure_match_videos_table failed: %s", e)
         return False
+
+
+def ensure_match_roster_links_table():
+    if st.session_state.get("_match_roster_links_ready"):
+        return True
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_MATCH_ROSTER_LINKS))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_match_roster_links_token "
+                f"ON {TABLE_MATCH_ROSTER_LINKS}(roster_token)"
+            ))
+            s.commit()
+        st.session_state["_match_roster_links_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_match_roster_links_table failed: %s", e)
+        return False
+
+
+def ensure_match_roster_links(match_id):
+    if not ensure_match_roster_links_table():
+        return {}
+
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    conn = get_connection()
+    with conn.session as s:
+        s.execute(text(f"""
+            INSERT INTO {TABLE_MATCH_ROSTER_LINKS} (match_id, side, roster_token, created_at)
+            VALUES
+                (:match_id, 'pro', :pro_token, :created_at),
+                (:match_id, 'con', :con_token, :created_at)
+            ON CONFLICT (match_id, side) DO NOTHING
+        """), {
+            "match_id": match_id,
+            "pro_token": secrets.token_urlsafe(32),
+            "con_token": secrets.token_urlsafe(32),
+            "created_at": now_hk,
+        })
+        s.commit()
+
+    return get_match_roster_links(match_id)
+
+
+def get_match_roster_links(match_id):
+    if not ensure_match_roster_links_table():
+        return {}
+
+    rows = query_params(
+        f"""
+        SELECT match_id, side, roster_token, submitted_at, created_at
+        FROM {TABLE_MATCH_ROSTER_LINKS}
+        WHERE match_id = :match_id
+        ORDER BY side DESC
+        """,
+        {"match_id": match_id},
+    )
+    return {str(row["side"]).strip(): row.to_dict() for _, row in rows.iterrows()}
+
+
+def regenerate_match_roster_link(match_id, side):
+    if side not in ("pro", "con") or not ensure_match_roster_links_table():
+        return None
+
+    ensure_match_roster_links(match_id)
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    token = secrets.token_urlsafe(32)
+    execute_query(
+        f"""
+        UPDATE {TABLE_MATCH_ROSTER_LINKS}
+        SET roster_token = :token,
+            submitted_at = NULL,
+            created_at = :created_at
+        WHERE match_id = :match_id
+          AND side = :side
+        """,
+        {"match_id": match_id, "side": side, "token": token, "created_at": now_hk},
+    )
+    return token
+
+
+def reopen_match_roster_link(match_id, side):
+    if side not in ("pro", "con") or not ensure_match_roster_links_table():
+        return False
+
+    execute_query(
+        f"""
+        UPDATE {TABLE_MATCH_ROSTER_LINKS}
+        SET submitted_at = NULL
+        WHERE match_id = :match_id
+          AND side = :side
+        """,
+        {"match_id": match_id, "side": side},
+    )
+    return True
+
+
+def get_roster_link_by_token(token):
+    token = str(token or "").strip()
+    if not token or not ensure_match_roster_links_table():
+        return None
+
+    link_rows = query_params(
+        f"""
+        SELECT
+            l.match_id,
+            l.side,
+            l.roster_token,
+            l.submitted_at,
+            l.created_at,
+            m.match_date,
+            m.match_time,
+            m.topic_text,
+            m.pro_team,
+            m.con_team
+        FROM {TABLE_MATCH_ROSTER_LINKS} l
+        INNER JOIN {TABLE_MATCHES} m ON l.match_id = m.match_id
+        WHERE l.roster_token = :token
+        """,
+        {"token": token},
+    )
+    if link_rows.empty:
+        return None
+
+    link_data = link_rows.iloc[0].to_dict()
+    debater_rows = query_params(
+        f"""
+        SELECT position, debater_name
+        FROM {TABLE_DEBATERS}
+        WHERE match_id = :match_id
+          AND side = :side
+        """,
+        {"match_id": link_data["match_id"], "side": link_data["side"]},
+    )
+    for _, row in debater_rows.iterrows():
+        link_data[f"debater_{int(row['position'])}"] = str(row["debater_name"]).strip() if row["debater_name"] else ""
+    return link_data
+
+
+def save_team_roster_by_token(token, roster_data):
+    token = str(token or "").strip()
+    if not token or not ensure_match_roster_links_table():
+        return {"ok": False, "reason": "invalid"}
+
+    conn = get_connection()
+    with conn.session as s:
+        link_row = s.execute(text(f"""
+            SELECT match_id, side, submitted_at
+            FROM {TABLE_MATCH_ROSTER_LINKS}
+            WHERE roster_token = :token
+            FOR UPDATE
+        """), {"token": token}).fetchone()
+
+        if link_row is None:
+            return {"ok": False, "reason": "invalid"}
+
+        link = link_row._mapping
+        submitted_at = link["submitted_at"]
+        if submitted_at is not None and not pd.isna(submitted_at):
+            return {"ok": False, "reason": "submitted"}
+
+        match_id = str(link["match_id"])
+        side = str(link["side"]).strip()
+        team_col = "pro_team" if side == "pro" else "con_team"
+
+        s.execute(text(f"""
+            UPDATE {TABLE_MATCHES}
+            SET {team_col} = :team_name
+            WHERE match_id = :match_id
+        """), {
+            "match_id": match_id,
+            "team_name": roster_data["team_name"],
+        })
+
+        debater_params = [
+            {
+                "match_id": match_id,
+                "side": side,
+                "position": pos,
+                "name": roster_data.get(f"debater_{pos}", "") or "",
+            }
+            for pos in (1, 2, 3, 4)
+        ]
+        s.execute(text(f"""
+            INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name)
+            VALUES (:match_id, :side, :position, :name)
+            ON CONFLICT (match_id, side, position) DO UPDATE SET debater_name = EXCLUDED.debater_name
+        """), debater_params)
+
+        s.execute(text(f"""
+            UPDATE {TABLE_MATCH_ROSTER_LINKS}
+            SET submitted_at = :submitted_at
+            WHERE roster_token = :token
+        """), {
+            "token": token,
+            "submitted_at": datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None),
+        })
+        s.commit()
+
+    return {"ok": True, "match_id": match_id, "side": side}
 
 
 def _coerce_db_datetime(value):

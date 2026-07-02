@@ -1,4 +1,5 @@
 import streamlit as st
+from urllib.parse import urlparse
 from functions import get_registration_status, is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
 
 # Set up basic structure of the webpage
@@ -26,6 +27,21 @@ page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免", url_path=
 page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
 page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admin-hub")
 page_chairperson = st.Page("chairperson.py", title="主席主持易", url_path="chairperson")
+page_team_roster = st.Page("team_roster.py", title="提交隊伍名單", url_path="team-roster")
+
+
+def is_team_roster_page():
+    try:
+        path = urlparse(st.context.url).path.rstrip("/")
+    except Exception:
+        return False
+    return path.endswith("/team-roster")
+
+
+if is_team_roster_page():
+    pg = st.navigation([page_team_roster], position="hidden")
+    pg.run()
+    st.stop()
 
 registration_status = get_registration_status()
 public_pages = [page_video_replay, page_open_db]
@@ -62,7 +78,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.0.1")
+    st.caption("🛠️ 系統版本：3.0.2")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

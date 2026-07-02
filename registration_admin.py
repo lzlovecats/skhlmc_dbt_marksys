@@ -220,16 +220,17 @@ def render_registration_admin():
         st.rerun()
 
 
-st.header("比賽報名管理")
-render_page_guidance(
-    [
-        "先設定第幾屆比賽及報名開始、截止時間，公開報名入口只會在開放時間顯示。",
-        "可按屆數及狀態查看報名資料，並將報名狀態標記為已聯絡、已確認或已退出。",
-        "如需保存名單，可使用 CSV 匯出；此頁不會直接修改隊伍及聯絡人資料。",
-    ],
-)
+if __name__ == "__main__":
+    st.header("比賽報名管理")
+    render_page_guidance(
+        [
+            "先設定第幾屆比賽及報名開始、截止時間，公開報名入口只會在開放時間顯示。",
+            "可按屆數及狀態查看報名資料，並將報名狀態標記為已聯絡、已確認或已退出。",
+            "如需保存名單，可使用 CSV 匯出；此頁不會直接修改隊伍及聯絡人資料。",
+        ],
+    )
 
-if not check_admin():
-    st.stop()
+    if not check_admin():
+        st.stop()
 
-render_registration_admin()
+    render_registration_admin()

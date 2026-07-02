@@ -2,9 +2,9 @@
 
 > 聖呂中辯電子分紙系統
 
-一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、評判電子分紙、比賽片段重溫及成績統計。
+一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、隊伍自助提交名單、評判電子分紙、比賽片段重溫及成績統計。
 
-A full-featured electronic scoring and management platform for school debate competitions, covering topic voting, match management, live judge scoring, match video replay, and automated result aggregation.
+A full-featured electronic scoring and management platform for school debate competitions, covering topic voting, match management, team roster self-submission, live judge scoring, match video replay, and automated result aggregation.
 
 ---
 
@@ -59,6 +59,8 @@ A full-featured electronic scoring and management platform for school debate com
 ### 📋 場次管理 | Match Management (`match_info.py`)
 **中文：**
 - 建立及編輯比賽場次（日期、時間、辯題、隊伍、辯員）
+- 為正反方產生隨機專屬名單提交連結，讓隊伍自行填寫隊名及辯員姓名
+- 可查看各方提交狀態，並按需要重開填寫或重新生成連結
 - 從辯題庫隨機抽取辯題
 - 隨機抽籤決定正反方站位
 - 設定評判入場密碼（Access Code）
@@ -66,6 +68,8 @@ A full-featured electronic scoring and management platform for school debate com
 
 **English:**
 - Create and edit debate matches (date, time, motion, teams, debaters)
+- Generate random per-side roster links so teams can submit their own team and debater names
+- View each side's submission status, reopen a submitted link, or regenerate leaked links
 - Draw random topics from the topic bank
 - Randomly assign pro/con sides via draw
 - Set judge access codes per match
@@ -138,7 +142,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 評判 / Judge | 電子分紙 | 賽會提供入場密碼 |
 | 賽會人員 / Organiser | 報名管理、場次管理、比賽片段管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
 | 準參賽隊伍 / Prospective Teams | 比賽報名 | 無需登入（只限報名時間內） |
-| 參賽隊伍 / Teams | 查閱分紙 | 查閱分紙密碼 |
+| 參賽隊伍 / Teams | 提交比賽名單、查閱分紙 | 隨機專屬名單連結、查閱分紙密碼 |
 | 一般人員 / Public | 比賽片段重溫、查閱辯題庫 | 無需登入 |
 | 委員會成員 / Committee | 辯題徵集、投票及罷免 | 個人帳戶（用戶名稱 + 密碼） |
 | Developer | 開發者設定 | 開發者密碼（存於 DB） |
@@ -211,6 +215,7 @@ streamlit run main.py
 |---|---|
 | `matches` | 場次資料（隊伍、辯題、密碼等）|
 | `match_videos` | 比賽片段連結（可連結現有場次，亦可記錄舊比賽手動資料）|
+| `match_roster_links` | 正反方自助提交名單的隨機 token、提交狀態及建立時間 |
 | `scores` | 正式提交的評判評分 |
 | `score_drafts` | 評判評分暫存（JSON 格式）|
 | `best_debater_rankings` | 評判手動提交的最佳辯論員排名 |
@@ -235,6 +240,7 @@ streamlit run main.py
 ├── home.py                   # 主頁 / Landing page with role-based navigation
 ├── judging.py                # 電子分紙 / Judge scoring interface
 ├── match_info.py             # 場次管理 / Match management
+├── team_roster.py            # 隱藏隊伍名單提交頁 / Hidden team roster submission page
 ├── video_admin.py            # 比賽片段管理 / Match video management
 ├── video_replay.py           # 比賽片段重溫 / Public match video replay
 ├── management.py             # 賽果統計 / Results dashboard
@@ -267,6 +273,8 @@ streamlit run main.py
 - Session state and cookies handle credentials, avoiding plaintext transmission
 - 賽會人員密碼及開發者密碼以 bcrypt 加密存放於資料庫 `system_config` 表，不寫入設定檔
 - Organiser and developer passwords are bcrypt-hashed and stored in the `system_config` DB table, not in config files
+- 隊伍名單提交頁不會顯示於公開導航，只能透過資料庫儲存的隨機 token 連結進入；重新生成連結後舊 token 會失效
+- Team roster submission pages are hidden from public navigation and require random DB-backed token links; regenerated links invalidate old tokens
 - 數據庫管理控制台設有保護：禁止修改 `system_config` 表，無 WHERE 條件的危險操作須二次確認
 - The SQL console blocks modifications to `system_config` and requires explicit re-confirmation for UPDATE/DELETE without WHERE
 

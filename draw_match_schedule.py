@@ -338,16 +338,17 @@ def render_draw_schedule():
         )
 
 
-st.header("抽取賽程")
-render_page_guidance(
-    [
-        "使用賽會人員密碼登入後，每行輸入一隊參賽隊伍名稱，再按「抽取賽程」。",
-        "如隊伍名單有變更，舊抽籤結果會自動失效，請重新抽取。",
-        "此頁面提供賽程預覽與總表，方便稍後抄錄到「比賽場次管理」。",
-    ],
-)
+if __name__ == "__main__":
+    st.header("抽取賽程")
+    render_page_guidance(
+        [
+            "使用賽會人員密碼登入後，每行輸入一隊參賽隊伍名稱，再按「抽取賽程」。",
+            "如隊伍名單有變更，舊抽籤結果會自動失效，請重新抽取。",
+            "此頁面提供賽程預覽與總表，方便稍後抄錄到「比賽場次管理」。",
+        ],
+    )
 
-if not check_admin():
-    st.stop()
+    if not check_admin():
+        st.stop()
 
-render_draw_schedule()
+    render_draw_schedule()
