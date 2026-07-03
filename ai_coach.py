@@ -55,7 +55,9 @@ def _format_hkd_4dp(amount) -> str:
 def _format_ai_estimate(feature: str, model_label: str, has_audio: bool = False) -> str:
     usage = estimate_ai_feature_usage(feature, model_label, has_audio=has_audio)
     search_note = "，按 1 次搜尋工具估算" if usage["search_calls"] else ""
-    return f"估算成本：{_format_hkd_4dp(usage['estimated_cost_hkd'])} / 次{search_note}。實際帳單會因 token、搜尋及供應商計法而變。"
+    usd = usage.get("estimated_cost_usd", 0)
+    hkd = usage["estimated_cost_hkd"]
+    return f"估算成本：US${usd:.4f} ≈ {_format_hkd_4dp(hkd)} / 次{search_note}。"
 
 
 def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, has_audio: bool = False):
@@ -143,8 +145,8 @@ render_page_guidance(
         "使用「主線策劃」模式，AI 可根據辯題及立場生成論點及應對策略。",
         "使用「上網搵料」模式，AI 會即時搜尋網上資料並附上來源。",
         "使用「Fact check易」模式，AI 會搜尋來源並核查陳述真偽。",
-        "可選擇 Gemini 或 OpenAI 模型；錄音分析目前只支援 Gemini 模型。",
-        "請節約使用高級或收費模型；一般草擬及練習可先使用 Flash 模型。",
+        "所有模型經 OpenRouter 統一呼叫；錄音分析需選擇支援錄音嘅模型。",
+        "請節約使用高級模型；日常練習可先使用低成本 Flash 模型。",
         "可選擇從系統場次載入比賽資料，或手動輸入外部比賽嘅辯題。",
         "此功能使用 AI 生成，僅供參考，不代表評判觀點。",
     ],
@@ -176,13 +178,13 @@ model_config = AI_MODEL_OPTIONS[model_label]
 st.caption(f"收費狀態：{model_config['pricing_label']}。{model_config['pricing_note']}")
 with st.expander("模型限額及成本估算", expanded=True):
     st.markdown(format_ai_model_usage_note(model_label))
-st.info("預算有限，請節約使用收費模型。\n\n日常練習請使用 Gemini Flash 模型，複雜策略或重要稿件先用 Gemini Pro / GPT 模型。")
+st.info("預算有限，請節約使用收費模型。\n\n日常練習請使用低成本 Flash 模型，複雜策略或重要稿件先用高級模型。")
 if model_config.get("is_premium"):
     st.warning("你正在使用高級模型。請確認今次任務需要較高成本模型後再提交。")
 if model_config["api_key"] not in st.secrets:
     st.warning(f"未設定 {model_config['api_key']}，此模型暫時無法使用。")
 if not model_config["supports_audio"]:
-    st.caption("此模型只會分析文字稿；如需錄音分析，請選擇 Gemini 模型。")
+    st.caption("此模型不支援錄音分析；如需錄音分析，請選擇支援錄音嘅模型。")
 
 fund_summary_preview = get_ai_fund_summary() if ensure_ai_fund_tables() else {}
 if (
@@ -254,6 +256,7 @@ with tab_review:
     review_mode = "台上發言"
     qa_warning = None
     qa_text_lines = []
+    opposite_side = "反方" if review_side == "正方" else "正方"
 
     if is_manual_review:
         review_mode = st.radio(
@@ -272,6 +275,7 @@ with tab_review:
             )
             qa_text_lines.append("## 台下發問練習")
             qa_text_lines.append(f"模式：{floor_mode}")
+            qa_text_lines.append(f"你嘅角色係{opposite_side}辯員，請以{opposite_side}立場參與問答。")
 
             if floor_mode == "我問，AI 答":
                 floor_question = st.text_area(
@@ -282,7 +286,7 @@ with tab_review:
                 )
                 if floor_question:
                     qa_text_lines.append(f"我嘅問題：{floor_question}")
-                    qa_text_lines.append("請先回答呢條問題，再評估問題是否清晰、尖銳、有追問空間。")
+                    qa_text_lines.append("請以對方辯員身分回答呢條問題，再評估問題是否清晰、尖銳、有追問空間。")
                 else:
                     qa_warning = "請輸入你想問 AI 嘅問題。"
             else:
@@ -306,7 +310,7 @@ with tab_review:
                 elif floor_ai_question:
                     qa_text_lines.append("我未提供回答；請重申呢條問題，提示我可以由咩方向作答，暫時毋須評分。")
                 else:
-                    qa_text_lines.append("我未提供回答；請根據辯題同立場，先向我提出一條台下發問問題，暫時毋須評分。")
+                    qa_text_lines.append(f"我未提供回答；請以{opposite_side}辯員身分，根據辯題向我提出一條台下發問問題，暫時毋須評分。")
 
         elif review_mode == "交互答問":
             exchange_order = st.radio(
@@ -317,6 +321,7 @@ with tab_review:
             )
             qa_text_lines.append("## 交互答問練習")
             qa_text_lines.append(f"交互次序：{exchange_order}")
+            qa_text_lines.append(f"你嘅角色係{opposite_side}辯員，請以{opposite_side}立場參與問答。")
 
             if exchange_order == "我問，AI 答＋問，我再答":
                 exchange_user_question = st.text_area(
@@ -333,7 +338,7 @@ with tab_review:
                 )
                 if exchange_user_question:
                     qa_text_lines.append(f"我嘅問題：{exchange_user_question}")
-                    qa_text_lines.append("請先回答我嘅問題，然後追問我一條相關問題。")
+                    qa_text_lines.append("請以對方辯員身分回答我嘅問題，然後追問我一條相關問題。")
                 else:
                     qa_warning = "請輸入你想先問 AI 嘅問題。"
                 if exchange_user_final_answer:
@@ -365,9 +370,11 @@ with tab_review:
                 if exchange_user_follow_up:
                     qa_text_lines.append(f"我嘅追問：{exchange_user_follow_up}")
                 if exchange_user_answer and exchange_user_follow_up:
-                    qa_text_lines.append("請回答我嘅追問，並評估我嘅回答同追問質素。")
+                    qa_text_lines.append("請以對方辯員身分回答我嘅追問，並評估我嘅回答同追問質素。")
+                elif exchange_ai_question and not exchange_user_answer:
+                    qa_warning = "已有對方問題，請輸入你嘅回答。"
                 else:
-                    qa_text_lines.append("我未完成回答及追問；請根據辯題同立場，先向我提出一條交互答問問題，暫時毋須評分。")
+                    qa_text_lines.append(f"我未完成回答及追問；請以{opposite_side}辯員身分，根據辯題向我提出一條交互答問問題，暫時毋須評分。")
 
     st.divider()
 
@@ -601,28 +608,14 @@ with tab_fund:
         col3.metric("本月 AI 估算用量", _format_hkd_4dp(fund_summary["monthly_usage_hkd"]))
         col4.metric("本月 provider 支出", _format_hkd(fund_summary["monthly_provider_topup_hkd"]))
 
-        usage_by_provider = fund_summary["monthly_usage_by_provider"]
-        topup_by_provider = fund_summary["monthly_provider_topup_by_provider"]
-        st.markdown("#### Gemini / GPT 分開計數")
-        provider_col1, provider_col2, provider_col3, provider_col4 = st.columns(4)
-        provider_col1.metric("Gemini 本月估算用量", _format_hkd_4dp(usage_by_provider["gemini"]))
-        provider_col2.metric("GPT 本月估算用量", _format_hkd_4dp(usage_by_provider["openai"]))
-        provider_col3.metric("Gemini 本月 provider 支出", _format_hkd(topup_by_provider["gemini"]))
-        provider_col4.metric("GPT 本月 provider 支出", _format_hkd(topup_by_provider["openai"]))
-        if usage_by_provider["other"] or topup_by_provider["other"]:
-            st.caption(
-                f"其他 / 未分類：估算用量 {_format_hkd_4dp(usage_by_provider['other'])}；"
-                f"provider 支出 {_format_hkd(topup_by_provider['other'])}"
-            )
-
         if fund_summary["balance_hkd"] < fund_summary["low_balance_hkd"]:
             st.warning(
-                f"餘額低於警戒線 {_format_hkd(fund_summary['low_balance_hkd'])}，建議安排補款。"
+                f"餘額低於警戒線 {_format_hkd(fund_summary['low_balance_hkd'])}，建議補充資金。"
             )
 
         st.info(
             f"目標金額：{_format_hkd(fund_summary['target_hkd'])}｜"
-            f"建議補款總額：{_format_hkd(fund_summary['suggested_total_hkd'])}｜"
+            f"建議補充資金：{_format_hkd(fund_summary['suggested_total_hkd'])}｜"
             f"按 {fund_summary['member_count']} 名成員計，每人約 "
             f"{_format_hkd(fund_summary['suggested_per_member_hkd'])}"
         )
@@ -631,7 +624,7 @@ with tab_fund:
             st.text(fund_settings["payment_instruction"])
 
         st.caption(
-            "上網搵料及 Fact check 的估算包括 1 次搜尋工具費；若仍在供應商免費 grounding quota 內，實際帳單可能較低。"
+            "上網搵料及 Fact check 的估算包括 1 次搜尋工具費（US$0.005/次）。"
         )
 
         if is_treasurer:
@@ -764,7 +757,7 @@ with tab_fund:
                     )
                     treasurer_provider = st.selectbox(
                         "Provider / 分類",
-                        ["gemini", "openai", "other"],
+                        ["openrouter", "other"],
                         format_func=lambda x: AI_PROVIDER_LABELS.get(x, x),
                     )
                     treasurer_amount = st.number_input(
@@ -774,7 +767,7 @@ with tab_fund:
                         format="%.2f",
                         help="充值 / 支出及退款請輸入正數；手動調整可輸入正數或負數。",
                     )
-                    treasurer_method = st.text_input("付款方式 / Provider", placeholder="例如：OpenAI、Gemini、FPS")
+                    treasurer_method = st.text_input("付款方式 / Provider", placeholder="例如：OpenRouter、FPS")
                     treasurer_ref = st.text_input("Reference / 帳單編號（如有）")
                     treasurer_note = st.text_area("原因 / 備註", height=100)
                     submit_treasurer_tx = st.form_submit_button("新增已確認交易", type="primary")
