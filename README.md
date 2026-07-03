@@ -29,6 +29,27 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
+### ✨ AI 辯論易 | AI Debate Coach (`ai_coach.py`)
+**中文：**
+- 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini 或 OpenAI 模型
+- **發言檢查**：輸入文字稿或粵語錄音（錄音分析需選 Gemini 模型），AI 根據正式評分標準（內容、辭鋒、組織、風度）提供詳細反饋及預估分數
+- **主線策劃**：根據辯題及立場生成完整比賽策略（論點、反駁、自由辯論策略、辯員分工）
+- 支援 Gemini 3.5 Flash、Gemini 2.5 Flash、Gemini 2.5 Pro、Gemini 3.1 Pro Preview、GPT-5.4 mini 及 GPT-5.4
+- 會標示模型收費狀態，並提醒委員節約使用高級或收費模型
+- 可從系統場次載入比賽資料，或手動輸入外部比賽辯題
+- 策略建議可下載為 Markdown 文件
+
+**English:**
+- Committee-only AI debate coach with selectable Gemini or OpenAI models
+- **Speech Review**: submit text or Cantonese audio recordings (audio review requires a Gemini model); AI provides detailed feedback and estimated scores based on the official scoring rubric (Content, Eloquence, Organisation, Manner)
+- **Strategy Planning**: generates full match strategy (arguments, counter-arguments, free debate tactics, role assignments) from a given motion and side
+- Supports Gemini 3.5 Flash, Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 3.1 Pro Preview, GPT-5.4 mini, and GPT-5.4
+- Shows model cost status and reminds committee members to conserve premium or paid model usage
+- Can load match data from the system or accept manually entered external match topics
+- Strategy output downloadable as Markdown
+
+---
+
 ### 🏠 主頁導航 | Home Page (`home.py`)
 **中文：**
 - 以身份分區（評判、賽會人員、參賽隊伍、一般人員、內部委員會成員）展示所有入口
@@ -144,7 +165,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 準參賽隊伍 / Prospective Teams | 比賽報名 | 無需登入（只限報名時間內） |
 | 參賽隊伍 / Teams | 提交比賽名單、查閱分紙 | 隨機專屬名單連結、查閱分紙密碼 |
 | 一般人員 / Public | 比賽片段重溫、查閱辯題庫 | 無需登入 |
-| 委員會成員 / Committee | 辯題徵集、投票及罷免 | 個人帳戶（用戶名稱 + 密碼） |
+| 委員會成員 / Committee | 辯題徵集、投票及罷免、✨AI 辯論易 | 個人帳戶（用戶名稱 + 密碼） |
 | Developer | 開發者設定 | 開發者密碼（存於 DB） |
 
 ---
@@ -157,6 +178,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 數據庫 / Database | PostgreSQL (via `st.connection` + SQLAlchemy) |
 | 數據處理 / Data | Pandas, NumPy |
 | 文件輸出 / Document Export | ReportLab + pypdf PDF template overlay |
+| AI 整合 / AI | Google Gemini (`google-genai`) + OpenAI GPT (`openai`) |
 | 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
 | 部署 / Deployment | Streamlit Community Cloud |
 
@@ -183,6 +205,9 @@ On Streamlit Community Cloud, `packages.txt` only installs CJK fonts and no long
 
 在專案根目錄建立 `.streamlit/secrets.toml` / Create `.streamlit/secrets.toml`:
 ```toml
+GEMINI_API_KEY = "your_gemini_api_key"
+OPENAI_API_KEY = "your_openai_api_key"
+
 [connections.postgresql]
 dialect = "postgresql"
 host = "your_host"
@@ -191,6 +216,8 @@ database = "your_db"
 username = "your_user"
 password = "your_password"
 ```
+
+`GEMINI_API_KEY` 用於 Gemini 模型；`OPENAI_API_KEY` 用於 GPT-5.4 mini / GPT-5.4。
 
 **3. 初始化系統密碼 / Seed initial passwords**
 
@@ -252,6 +279,8 @@ streamlit run main.py
 ├── db_mgmt.py                # 數據庫管理控制台 / SQL console (admin)
 ├── dev_settings.py           # 開發者設定 / Developer settings (password management)
 ├── draw_match_schedule.py    # 抽籤賽程 / Draw schedule
+├── ai_coach.py               # ✨AI 辯論易 / AI debate coach page
+├── ai_coach_helpers.py       # AI API 調用及 prompt 組裝 / AI API helpers
 ├── functions.py              # 核心工具函數 / Core utilities
 ├── scoring.py                # 評分常數及欄位 / Scoring constants
 ├── score_sheet_pdf.py        # PDF template 填寫及匯出 / PDF template export
