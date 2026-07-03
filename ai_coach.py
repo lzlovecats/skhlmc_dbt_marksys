@@ -12,11 +12,128 @@ from schema import TABLE_TOPICS
 from ai_coach_helpers import (
     review_speech,
     brainstorm_strategy,
+    research_web,
+    fact_check_claim,
+    ensure_ai_fund_tables,
+    estimate_ai_feature_usage,
+    log_ai_fund_usage,
+    is_successful_ai_result,
+    get_ai_fund_settings,
+    save_ai_fund_public_settings,
+    is_ai_fund_treasurer,
+    get_ai_fund_summary,
+    create_ai_fund_transaction,
+    update_ai_fund_transaction_status,
+    get_ai_fund_transactions,
+    get_ai_fund_usage_logs,
+    get_ai_fund_usage_summary,
     POSITION_LABELS,
     AI_MODEL_OPTIONS,
     DEFAULT_AI_MODEL,
+    AI_FEATURE_LABELS,
+    AI_FUND_TRANSACTION_LABELS,
+    AI_PROVIDER_LABELS,
     format_ai_model_label,
+    format_ai_model_usage_note,
 )
+
+
+def _format_hkd(amount) -> str:
+    try:
+        return f"HKD {float(amount):,.2f}"
+    except (TypeError, ValueError):
+        return "HKD 0.00"
+
+
+def _format_hkd_4dp(amount) -> str:
+    try:
+        return f"HKD {float(amount):,.4f}"
+    except (TypeError, ValueError):
+        return "HKD 0.0000"
+
+
+def _format_ai_estimate(feature: str, model_label: str, has_audio: bool = False) -> str:
+    usage = estimate_ai_feature_usage(feature, model_label, has_audio=has_audio)
+    search_note = "，按 1 次搜尋工具估算" if usage["search_calls"] else ""
+    return f"估算成本：{_format_hkd_4dp(usage['estimated_cost_hkd'])} / 次{search_note}。實際帳單會因 token、搜尋及供應商計法而變。"
+
+
+def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, has_audio: bool = False):
+    success = is_successful_ai_result(result)
+    try:
+        log_ai_fund_usage(
+            user_id=user_id,
+            feature=feature,
+            model_label=model_label,
+            success=success,
+            has_audio=has_audio,
+            error_message="" if success else result,
+        )
+    except Exception as e:
+        st.caption(f"AI 用量記錄未能寫入：{e}")
+
+
+def _prepare_transaction_display(df):
+    if df.empty:
+        return df
+    display_df = df.copy()
+    display_df["transaction_type"] = display_df["transaction_type"].map(
+        lambda x: AI_FUND_TRANSACTION_LABELS.get(x, x)
+    )
+    if "provider" in display_df.columns:
+        display_df["provider"] = display_df["provider"].map(
+            lambda x: AI_PROVIDER_LABELS.get(x, x)
+        )
+    display_df["status"] = display_df["status"].map(
+        {"pending": "待確認", "confirmed": "已確認", "rejected": "已拒絕"}
+    ).fillna(display_df["status"])
+    return display_df.rename(columns={
+        "id": "編號",
+        "transaction_type": "類型",
+        "status": "狀態",
+        "provider": "Provider",
+        "amount_hkd": "金額(HKD)",
+        "payment_method": "付款方式",
+        "reference_no": "Reference",
+        "note": "備註",
+        "created_by": "提交者",
+        "created_at": "提交時間",
+        "confirmed_by": "確認者",
+        "confirmed_at": "確認時間",
+        "rejected_by": "拒絕者",
+        "rejected_at": "拒絕時間",
+        "status_note": "狀態備註",
+    })
+
+
+def _prepare_usage_display(df):
+    if df.empty:
+        return df
+    display_df = df.copy()
+    display_df["feature"] = display_df["feature"].map(
+        lambda x: AI_FEATURE_LABELS.get(x, x)
+    )
+    display_df["provider"] = display_df["provider"].map(
+        lambda x: AI_PROVIDER_LABELS.get(x, x)
+    )
+    display_df["status"] = display_df["status"].map(
+        {"success": "成功", "failed": "失敗"}
+    ).fillna(display_df["status"])
+    return display_df.rename(columns={
+        "id": "編號",
+        "user_id": "用戶",
+        "feature": "功能",
+        "model_label": "模型",
+        "provider": "Provider",
+        "estimated_cost_hkd": "估算成本(HKD)",
+        "input_tokens": "Input tokens",
+        "output_tokens": "Output tokens",
+        "audio_tokens": "Audio tokens",
+        "search_calls": "搜尋次數",
+        "status": "狀態",
+        "error_message": "錯誤訊息",
+        "created_at": "時間",
+    })
 
 st.header("✨AI 辯論易")
 
@@ -24,6 +141,8 @@ render_page_guidance(
     [
         "使用「發言檢查」模式輸入文字稿或錄音，AI 會按照正式評分標準提供反饋。",
         "使用「主線策劃」模式，AI 可根據辯題及立場生成論點及應對策略。",
+        "使用「上網搵料」模式，AI 會即時搜尋網上資料並附上來源。",
+        "使用「Fact check易」模式，AI 會搜尋來源並核查陳述真偽。",
         "可選擇 Gemini 或 OpenAI 模型；錄音分析目前只支援 Gemini 模型。",
         "請節約使用高級或收費模型；一般草擬及練習可先使用 Flash 模型。",
         "可選擇從系統場次載入比賽資料，或手動輸入外部比賽嘅辯題。",
@@ -55,7 +174,9 @@ model_label = st.selectbox(
 )
 model_config = AI_MODEL_OPTIONS[model_label]
 st.caption(f"收費狀態：{model_config['pricing_label']}。{model_config['pricing_note']}")
-st.info("請節約使用高級或收費模型；一般草擬及練習建議先用 Flash 模型，複雜策略或重要稿件先用 Pro / GPT 模型。")
+with st.expander("模型限額及成本估算", expanded=True):
+    st.markdown(format_ai_model_usage_note(model_label))
+st.info("預算有限，請節約使用收費模型。\n\n日常練習請使用 Gemini Flash 模型，複雜策略或重要稿件先用 Gemini Pro / GPT 模型。")
 if model_config.get("is_premium"):
     st.warning("你正在使用高級模型。請確認今次任務需要較高成本模型後再提交。")
 if model_config["api_key"] not in st.secrets:
@@ -63,7 +184,20 @@ if model_config["api_key"] not in st.secrets:
 if not model_config["supports_audio"]:
     st.caption("此模型只會分析文字稿；如需錄音分析，請選擇 Gemini 模型。")
 
-tab_review, tab_strategy = st.tabs(["📝 發言檢查", "💡 主線策劃"])
+fund_summary_preview = get_ai_fund_summary() if ensure_ai_fund_tables() else {}
+if (
+    fund_summary_preview
+    and fund_summary_preview["balance_hkd"] < fund_summary_preview["low_balance_hkd"]
+):
+    st.warning(
+        "AI基金餘額偏低："
+        f"{_format_hkd(fund_summary_preview['balance_hkd'])}。"
+        "建議新增資金。"
+    )
+
+tab_review, tab_strategy, tab_research, tab_fact_check, tab_fund = st.tabs(
+    ["📝 發言檢查", "💡 主線策劃", "🌐 上網搵料", "✅ Fact check易", "💲AI基金"]
+)
 
 # ─── Tab 1: 發言檢查 ───────────────────────────────────────────────
 
@@ -108,25 +242,155 @@ with tab_review:
             "立場", ["正方", "反方"], horizontal=True, key="review_side_manual"
         )
 
+    is_manual_review = source == "手動輸入（外部比賽）"
+    position_options = [1, 2, 3, 4, 5] if is_manual_review else [1, 2, 3, 4]
     position = st.selectbox(
         "辯位",
-        options=[1, 2, 3, 4],
+        options=position_options,
         format_func=lambda x: POSITION_LABELS[x],
-        key="review_position",
+        key="review_position_manual" if is_manual_review else "review_position",
     )
+
+    review_mode = "台上發言"
+    qa_warning = None
+    qa_text_lines = []
+
+    if is_manual_review:
+        review_mode = st.radio(
+            "檢查類型",
+            ["台上發言", "台下發問", "交互答問"],
+            horizontal=True,
+            key="review_manual_mode",
+        )
+
+        if review_mode == "台下發問":
+            floor_mode = st.radio(
+                "台下發問模式",
+                ["我問，AI 答", "AI 問一條問題，我答"],
+                horizontal=True,
+                key="floor_question_mode",
+            )
+            qa_text_lines.append("## 台下發問練習")
+            qa_text_lines.append(f"模式：{floor_mode}")
+
+            if floor_mode == "我問，AI 答":
+                floor_question = st.text_area(
+                    "我嘅問題",
+                    height=120,
+                    placeholder="輸入你想向對方或 AI 提出嘅問題...",
+                    key="floor_user_question",
+                )
+                if floor_question:
+                    qa_text_lines.append(f"我嘅問題：{floor_question}")
+                    qa_text_lines.append("請先回答呢條問題，再評估問題是否清晰、尖銳、有追問空間。")
+                else:
+                    qa_warning = "請輸入你想問 AI 嘅問題。"
+            else:
+                floor_ai_question = st.text_area(
+                    "AI / 對方問題（可留空，AI 會先問）",
+                    height=100,
+                    placeholder="如已有題目，可貼上問題；如留空，AI 會根據辯題先問一條問題。",
+                    key="floor_ai_question",
+                )
+                floor_user_answer = st.text_area(
+                    "我嘅回答（如想 AI 先問，可留空）",
+                    height=140,
+                    placeholder="輸入你對問題嘅回答...",
+                    key="floor_user_answer",
+                )
+                if floor_ai_question:
+                    qa_text_lines.append(f"AI / 對方問題：{floor_ai_question}")
+                if floor_user_answer:
+                    qa_text_lines.append(f"我嘅回答：{floor_user_answer}")
+                    qa_text_lines.append("請評估我嘅回答，並指出如何答得更直接、更有防守力。")
+                elif floor_ai_question:
+                    qa_text_lines.append("我未提供回答；請重申呢條問題，提示我可以由咩方向作答，暫時毋須評分。")
+                else:
+                    qa_text_lines.append("我未提供回答；請根據辯題同立場，先向我提出一條台下發問問題，暫時毋須評分。")
+
+        elif review_mode == "交互答問":
+            exchange_order = st.radio(
+                "交互次序",
+                ["我問，AI 答＋問，我再答", "AI 問，我答＋問，AI 再答"],
+                horizontal=True,
+                key="exchange_order",
+            )
+            qa_text_lines.append("## 交互答問練習")
+            qa_text_lines.append(f"交互次序：{exchange_order}")
+
+            if exchange_order == "我問，AI 答＋問，我再答":
+                exchange_user_question = st.text_area(
+                    "我嘅問題",
+                    height=110,
+                    placeholder="輸入你想先問嘅問題...",
+                    key="exchange_user_question",
+                )
+                exchange_user_final_answer = st.text_area(
+                    "我對 AI 追問嘅回答（可留空，AI 會先答＋追問）",
+                    height=130,
+                    placeholder="如你已經想練埋第二輪回答，可在此輸入。",
+                    key="exchange_user_final_answer",
+                )
+                if exchange_user_question:
+                    qa_text_lines.append(f"我嘅問題：{exchange_user_question}")
+                    qa_text_lines.append("請先回答我嘅問題，然後追問我一條相關問題。")
+                else:
+                    qa_warning = "請輸入你想先問 AI 嘅問題。"
+                if exchange_user_final_answer:
+                    qa_text_lines.append(f"我對追問嘅回答：{exchange_user_final_answer}")
+                    qa_text_lines.append("請同時評估我嘅提問同回答。")
+            else:
+                exchange_ai_question = st.text_area(
+                    "AI / 對方問題（可留空，AI 會先問）",
+                    height=100,
+                    placeholder="如已有問題，可貼上；如留空，AI 會先問一條問題。",
+                    key="exchange_ai_question",
+                )
+                exchange_user_answer = st.text_area(
+                    "我嘅回答",
+                    height=120,
+                    placeholder="輸入你對第一條問題嘅回答...",
+                    key="exchange_user_answer",
+                )
+                exchange_user_follow_up = st.text_area(
+                    "我嘅追問",
+                    height=100,
+                    placeholder="輸入你回答後想反問 AI / 對方嘅問題...",
+                    key="exchange_user_follow_up",
+                )
+                if exchange_ai_question:
+                    qa_text_lines.append(f"AI / 對方問題：{exchange_ai_question}")
+                if exchange_user_answer:
+                    qa_text_lines.append(f"我嘅回答：{exchange_user_answer}")
+                if exchange_user_follow_up:
+                    qa_text_lines.append(f"我嘅追問：{exchange_user_follow_up}")
+                if exchange_user_answer and exchange_user_follow_up:
+                    qa_text_lines.append("請回答我嘅追問，並評估我嘅回答同追問質素。")
+                else:
+                    qa_text_lines.append("我未完成回答及追問；請根據辯題同立場，先向我提出一條交互答問問題，暫時毋須評分。")
 
     st.divider()
 
     speech_text = st.text_area(
-        "輸入文字稿",
+        "輸入文字稿" if review_mode == "台上發言" else "補充文字稿（可選）",
         height=200,
         placeholder="輸入內容...",
         key="review_text",
     )
-    audio_data = st.audio_input("錄音）", key="review_audio")
+    audio_data = st.audio_input("錄音", key="review_audio")
+    st.caption(_format_ai_estimate("speech_review", model_label, has_audio=audio_data is not None))
+
+    review_text_parts = []
+    if speech_text:
+        review_text_parts.append(speech_text)
+    if qa_text_lines:
+        review_text_parts.append("\n".join(qa_text_lines))
+    review_text_for_ai = "\n\n".join(review_text_parts)
 
     if st.button("分析發言", type="primary", use_container_width=True, key="review_submit"):
-        if not speech_text and audio_data is None:
+        if qa_warning:
+            st.warning(qa_warning)
+        elif not review_text_for_ai and audio_data is None:
             st.warning("請輸入文字稿或錄音。")
         elif not review_side:
             st.warning("請選擇立場。")
@@ -142,13 +406,20 @@ with tab_review:
 
             with st.spinner("AI 分析中..."):
                 result = review_speech(
-                    text=speech_text or None,
+                    text=review_text_for_ai or None,
                     audio_bytes=audio_bytes,
                     side=review_side,
                     position=position,
                     match_id=selected_match_id,
                     manual_topic=manual_topic,
                     model_label=model_label,
+                )
+                _record_ai_usage(
+                    user_id,
+                    "speech_review",
+                    model_label,
+                    result,
+                    has_audio=audio_bytes is not None,
                 )
 
             st.divider()
@@ -202,6 +473,7 @@ with tab_strategy:
     strategy_side = st.radio(
         "立場", ["正方", "反方"], horizontal=True, key="strategy_side"
     )
+    st.caption(_format_ai_estimate("strategy", model_label))
 
     if st.button("生成主線", type="primary", use_container_width=True, key="strategy_submit"):
         if not topic_text:
@@ -213,6 +485,7 @@ with tab_strategy:
                     side=strategy_side,
                     model_label=model_label,
                 )
+                _record_ai_usage(user_id, "strategy", model_label, result)
 
             st.divider()
             st.subheader("策略建議")
@@ -225,3 +498,367 @@ with tab_strategy:
                 mime="text/plain",
                 use_container_width=True,
             )
+
+# ─── Tab 3: 上網搵料 ───────────────────────────────────────────────
+
+with tab_research:
+    research_topic = st.text_input("辯題", key="research_topic")
+    research_need = st.text_area(
+        "想搵咩資料",
+        height=160,
+        placeholder="例如：香港青年精神健康近年數據、其他地區政策例子、支持正方嘅研究證據...",
+        key="research_need",
+    )
+    st.caption(_format_ai_estimate("web_research", model_label))
+
+    if st.button("上網搵料", type="primary", use_container_width=True, key="research_submit"):
+        if not research_topic:
+            st.warning("請輸入辯題。")
+        elif not research_need:
+            st.warning("請簡單描述想搵咩資料。")
+        else:
+            with st.spinner("AI 上網搵料中..."):
+                result = research_web(
+                    topic=research_topic,
+                    research_need=research_need,
+                    model_label=model_label,
+                )
+                _record_ai_usage(user_id, "web_research", model_label, result)
+
+            st.divider()
+            st.subheader("搵料結果")
+            st.markdown(result)
+
+            st.download_button(
+                "下載搵料結果",
+                data=result,
+                file_name="搵料結果.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+# ─── Tab 4: Fact check易 ────────────────────────────────────────────
+
+with tab_fact_check:
+    statement = st.text_area(
+        "輸入要核查嘅陳述",
+        height=180,
+        placeholder="例如：香港中學生每日平均睡眠時間少於 7 小時。",
+        key="fact_check_statement",
+    )
+    st.caption(_format_ai_estimate("fact_check", model_label))
+
+    if st.button("Fact check", type="primary", use_container_width=True, key="fact_check_submit"):
+        if not statement:
+            st.warning("請輸入要核查嘅陳述。")
+        else:
+            with st.spinner("AI fact check 中..."):
+                result = fact_check_claim(
+                    statement=statement,
+                    model_label=model_label,
+                )
+                _record_ai_usage(user_id, "fact_check", model_label, result)
+
+            st.divider()
+            st.subheader("Fact check 結果")
+            st.markdown(result)
+
+            st.download_button(
+                "下載 Fact check 結果",
+                data=result,
+                file_name="fact_check結果.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+# ─── Tab 5: AI基金 ─────────────────────────────────────────────────
+
+with tab_fund:
+    st.subheader("AI基金")
+    st.caption("正式現金帳以AI基金管理員確認的入數及 AI provider 付款紀錄為準；AI 用量成本只作估算。")
+
+    if not ensure_ai_fund_tables():
+        st.error("AI基金資料表尚未就緒，請聯絡開發者執行資料庫初始化。")
+        st.stop()
+
+    fund_settings = get_ai_fund_settings()
+    is_treasurer = is_ai_fund_treasurer(user_id)
+    fund_summary = get_ai_fund_summary()
+
+    if not fund_settings["treasurers"]:
+        st.warning("尚未設定AI基金管理員。請先到開發者設定指定AI基金管理員。")
+    elif is_treasurer:
+        st.success("你是 AI基金管理員，可確認入數、記錄支出及更新AI基金設定。")
+
+    fund_overview_tab, fund_deposit_tab, fund_usage_tab = st.tabs(
+        ["總覽", "入數 / 交易", "AI 用量"]
+    )
+
+    with fund_overview_tab:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("已確認現金餘額", _format_hkd(fund_summary["balance_hkd"]))
+        col2.metric("待確認入數", _format_hkd(fund_summary["pending_deposits_hkd"]))
+        col3.metric("本月 AI 估算用量", _format_hkd_4dp(fund_summary["monthly_usage_hkd"]))
+        col4.metric("本月 provider 支出", _format_hkd(fund_summary["monthly_provider_topup_hkd"]))
+
+        usage_by_provider = fund_summary["monthly_usage_by_provider"]
+        topup_by_provider = fund_summary["monthly_provider_topup_by_provider"]
+        st.markdown("#### Gemini / GPT 分開計數")
+        provider_col1, provider_col2, provider_col3, provider_col4 = st.columns(4)
+        provider_col1.metric("Gemini 本月估算用量", _format_hkd_4dp(usage_by_provider["gemini"]))
+        provider_col2.metric("GPT 本月估算用量", _format_hkd_4dp(usage_by_provider["openai"]))
+        provider_col3.metric("Gemini 本月 provider 支出", _format_hkd(topup_by_provider["gemini"]))
+        provider_col4.metric("GPT 本月 provider 支出", _format_hkd(topup_by_provider["openai"]))
+        if usage_by_provider["other"] or topup_by_provider["other"]:
+            st.caption(
+                f"其他 / 未分類：估算用量 {_format_hkd_4dp(usage_by_provider['other'])}；"
+                f"provider 支出 {_format_hkd(topup_by_provider['other'])}"
+            )
+
+        if fund_summary["balance_hkd"] < fund_summary["low_balance_hkd"]:
+            st.warning(
+                f"餘額低於警戒線 {_format_hkd(fund_summary['low_balance_hkd'])}，建議安排補款。"
+            )
+
+        st.info(
+            f"目標金額：{_format_hkd(fund_summary['target_hkd'])}｜"
+            f"建議補款總額：{_format_hkd(fund_summary['suggested_total_hkd'])}｜"
+            f"按 {fund_summary['member_count']} 名成員計，每人約 "
+            f"{_format_hkd(fund_summary['suggested_per_member_hkd'])}"
+        )
+
+        with st.expander("付款指示", expanded=True):
+            st.text(fund_settings["payment_instruction"])
+
+        st.caption(
+            "上網搵料及 Fact check 的估算包括 1 次搜尋工具費；若仍在供應商免費 grounding quota 內，實際帳單可能較低。"
+        )
+
+        if is_treasurer:
+            with st.expander("AI基金管理員設定", expanded=False):
+                with st.form("ai_fund_settings_form"):
+                    target_hkd = st.number_input(
+                        "目標金額（HKD）",
+                        min_value=0.0,
+                        value=float(fund_settings["target_hkd"]),
+                        step=10.0,
+                        format="%.2f",
+                    )
+                    low_balance_hkd = st.number_input(
+                        "低餘額警戒線（HKD）",
+                        min_value=0.0,
+                        value=float(fund_settings["low_balance_hkd"]),
+                        step=5.0,
+                        format="%.2f",
+                    )
+                    payment_instruction = st.text_area(
+                        "付款指示",
+                        value=fund_settings["payment_instruction"],
+                        height=120,
+                    )
+                    save_settings = st.form_submit_button("更新設定", type="primary")
+
+                if save_settings:
+                    save_ai_fund_public_settings(
+                        target_hkd=target_hkd,
+                        low_balance_hkd=low_balance_hkd,
+                        payment_instruction=payment_instruction,
+                    )
+                    st.success("AI基金設定已更新。")
+                    st.rerun()
+
+    with fund_deposit_tab:
+        st.markdown("#### 成員入數")
+        with st.form("ai_fund_deposit_form"):
+            deposit_amount = st.number_input(
+                "入數金額（HKD）",
+                min_value=0.0,
+                step=10.0,
+                format="%.2f",
+                key="ai_fund_deposit_amount",
+            )
+            payment_method = st.selectbox(
+                "付款方式",
+                ["FPS", "現金", "Alipay", "PayMe", "其他"],
+                key="ai_fund_deposit_method",
+            )
+            reference_no = st.text_input("Reference / 交易編號（如有）", key="ai_fund_deposit_ref")
+            deposit_note = st.text_area("備註（如有）", height=80, key="ai_fund_deposit_note")
+            submit_deposit = st.form_submit_button("提交入數紀錄", type="primary")
+
+        if submit_deposit:
+            if deposit_amount <= 0:
+                st.warning("請輸入大於 0 的入數金額。")
+            else:
+                create_ai_fund_transaction(
+                    user_id=user_id,
+                    transaction_type="member_deposit",
+                    amount_hkd=deposit_amount,
+                    provider="general",
+                    payment_method=payment_method,
+                    reference_no=reference_no,
+                    note=deposit_note,
+                    status="pending",
+                )
+                st.success("入數紀錄已提交，待AI基金管理員確認後會計入AI基金。")
+                st.rerun()
+
+        if is_treasurer:
+            st.divider()
+            st.markdown("#### AI基金管理員操作")
+            tx_df_for_pending = get_ai_fund_transactions(user_id=user_id, treasurer=True, limit=200)
+            pending_df = tx_df_for_pending[
+                (tx_df_for_pending["status"] == "pending")
+                & (tx_df_for_pending["transaction_type"] == "member_deposit")
+            ] if not tx_df_for_pending.empty else tx_df_for_pending
+
+            with st.expander(f"待確認入數（{0 if pending_df.empty else len(pending_df)}）", expanded=True):
+                if pending_df.empty:
+                    st.caption("目前沒有待確認入數。")
+                else:
+                    for _, row in pending_df.iterrows():
+                        tx_id = int(row["id"])
+                        with st.container(border=True):
+                            st.markdown(
+                                f"**#{tx_id}**｜{row['created_by']}｜"
+                                f"{_format_hkd(row['amount_hkd'])}｜{row.get('payment_method') or '—'}"
+                            )
+                            st.caption(
+                                f"Reference：{row.get('reference_no') or '—'}｜"
+                                f"提交時間：{row.get('created_at')}"
+                            )
+                            if row.get("note"):
+                                st.caption(f"備註：{row['note']}")
+                            status_note = st.text_input(
+                                "確認 / 拒絕備註（可選）",
+                                key=f"ai_fund_status_note_{tx_id}",
+                            )
+                            btn_col1, btn_col2 = st.columns(2)
+                            with btn_col1:
+                                if st.button("確認入數", key=f"confirm_ai_fund_{tx_id}", use_container_width=True):
+                                    updated = update_ai_fund_transaction_status(
+                                        tx_id,
+                                        "confirmed",
+                                        user_id,
+                                        status_note=status_note,
+                                    )
+                                    st.success("已確認入數。" if updated else "此入數已被處理。")
+                                    st.rerun()
+                            with btn_col2:
+                                if st.button("拒絕入數", key=f"reject_ai_fund_{tx_id}", use_container_width=True):
+                                    updated = update_ai_fund_transaction_status(
+                                        tx_id,
+                                        "rejected",
+                                        user_id,
+                                        status_note=status_note,
+                                    )
+                                    st.warning("已拒絕入數。" if updated else "此入數已被處理。")
+                                    st.rerun()
+
+            with st.expander("記錄 provider 支出 / 退款 / 調整", expanded=False):
+                with st.form("ai_fund_treasurer_tx_form"):
+                    treasurer_tx_type = st.selectbox(
+                        "交易類型",
+                        ["provider_topup", "refund", "adjustment"],
+                        format_func=lambda x: AI_FUND_TRANSACTION_LABELS.get(x, x),
+                    )
+                    treasurer_provider = st.selectbox(
+                        "Provider / 分類",
+                        ["gemini", "openai", "other"],
+                        format_func=lambda x: AI_PROVIDER_LABELS.get(x, x),
+                    )
+                    treasurer_amount = st.number_input(
+                        "金額（HKD）",
+                        value=0.0,
+                        step=10.0,
+                        format="%.2f",
+                        help="充值 / 支出及退款請輸入正數；手動調整可輸入正數或負數。",
+                    )
+                    treasurer_method = st.text_input("付款方式 / Provider", placeholder="例如：OpenAI、Gemini、FPS")
+                    treasurer_ref = st.text_input("Reference / 帳單編號（如有）")
+                    treasurer_note = st.text_area("原因 / 備註", height=100)
+                    submit_treasurer_tx = st.form_submit_button("新增已確認交易", type="primary")
+
+                if submit_treasurer_tx:
+                    if treasurer_tx_type != "adjustment" and treasurer_amount <= 0:
+                        st.warning("充值 / 支出及退款金額必須大於 0。")
+                    elif treasurer_tx_type == "adjustment" and treasurer_amount == 0:
+                        st.warning("手動調整金額不能為 0。")
+                    elif not treasurer_note.strip():
+                        st.warning("請填寫原因 / 備註。")
+                    else:
+                        create_ai_fund_transaction(
+                            user_id=user_id,
+                            transaction_type=treasurer_tx_type,
+                            amount_hkd=treasurer_amount,
+                            provider=treasurer_provider,
+                            payment_method=treasurer_method,
+                            reference_no=treasurer_ref,
+                            note=treasurer_note,
+                            status="confirmed",
+                        )
+                        st.success("已新增交易紀錄。")
+                        st.rerun()
+
+        st.divider()
+        st.markdown("#### 交易紀錄" if is_treasurer else "#### 我的入數紀錄")
+        tx_df = get_ai_fund_transactions(user_id=user_id, treasurer=is_treasurer, limit=80)
+        if tx_df.empty:
+            st.info("暫無交易紀錄。")
+        else:
+            tx_display = _prepare_transaction_display(tx_df)
+            st.dataframe(tx_display, use_container_width=True, hide_index=True)
+            st.download_button(
+                "下載交易紀錄 CSV",
+                data=tx_display.to_csv(index=False).encode("utf-8-sig"),
+                file_name="ai基金交易紀錄.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    with fund_usage_tab:
+        st.markdown("#### AI 用量估算")
+        usage_df = get_ai_fund_usage_logs(user_id=user_id, treasurer=is_treasurer, limit=50)
+        if usage_df.empty:
+            st.info("暫無 AI 用量紀錄。")
+        else:
+            usage_display = _prepare_usage_display(usage_df)
+            st.dataframe(usage_display, use_container_width=True, hide_index=True)
+            st.download_button(
+                "下載最近用量 CSV",
+                data=usage_display.to_csv(index=False).encode("utf-8-sig"),
+                file_name="ai用量估算紀錄.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        usage_summary_df = get_ai_fund_usage_summary()
+        if not usage_summary_df.empty:
+            if not is_treasurer:
+                usage_summary_df = usage_summary_df[usage_summary_df["user_id"] == user_id]
+            if not usage_summary_df.empty:
+                usage_summary_display = usage_summary_df.copy()
+                usage_summary_display["provider"] = usage_summary_display["provider"].map(
+                    lambda x: AI_PROVIDER_LABELS.get(x, x)
+                )
+                usage_summary_display["feature"] = usage_summary_display["feature"].map(
+                    lambda x: AI_FEATURE_LABELS.get(x, x)
+                )
+                usage_summary_display = usage_summary_display.rename(columns={
+                    "month": "月份",
+                    "user_id": "用戶",
+                    "provider": "Provider",
+                    "feature": "功能",
+                    "model_label": "模型",
+                    "uses": "使用次數",
+                    "estimated_cost_hkd": "估算成本(HKD)",
+                })
+                st.markdown("#### 按月 / 用戶 / 功能統計")
+                st.dataframe(usage_summary_display, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "下載用量統計 CSV",
+                    data=usage_summary_display.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="ai用量統計.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )

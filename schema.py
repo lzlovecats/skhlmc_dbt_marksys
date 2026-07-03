@@ -25,6 +25,8 @@ TABLE_MATCH_VIDEOS = "match_videos"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
+TABLE_AI_FUND_TRANSACTIONS = "ai_fund_transactions"
+TABLE_AI_FUND_USAGE_LOGS = "ai_fund_usage_logs"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -368,6 +370,66 @@ CREATE TABLE IF NOT EXISTS {TABLE_MOTION_COMMENTS} (
 );
 """
 
+# Table: AI_FUND_TRANSACTIONS
+# Internal ledger for the AI funding pool.
+# transaction_type: 'member_deposit' | 'provider_topup' | 'refund' | 'adjustment'
+# status: 'pending' | 'confirmed' | 'rejected'
+CREATE_AI_FUND_TRANSACTIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
+    id                  SERIAL      PRIMARY KEY,
+    transaction_type    TEXT        NOT NULL
+                                CHECK (transaction_type IN ('member_deposit', 'provider_topup', 'refund', 'adjustment')),
+    status              TEXT        DEFAULT 'pending'
+                                CHECK (status IN ('pending', 'confirmed', 'rejected')),
+    provider            TEXT,
+    amount_hkd          NUMERIC(10, 2) NOT NULL,
+    payment_method      TEXT,
+    reference_no        TEXT,
+    note                TEXT,
+    created_by          TEXT,
+    created_at          TIMESTAMP   DEFAULT NOW(),
+    confirmed_by        TEXT,
+    confirmed_at        TIMESTAMP,
+    rejected_by         TEXT,
+    rejected_at         TIMESTAMP,
+    status_note         TEXT,
+    CONSTRAINT fk_ai_fund_tx_created_by
+        FOREIGN KEY (created_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_ai_fund_tx_confirmed_by
+        FOREIGN KEY (confirmed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_ai_fund_tx_rejected_by
+        FOREIGN KEY (rejected_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+# Table: AI_FUND_USAGE_LOGS
+# Estimated AI usage costs for transparency and monthly review.
+CREATE_AI_FUND_USAGE_LOGS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
+    id                  SERIAL      PRIMARY KEY,
+    user_id             TEXT,
+    feature             TEXT        NOT NULL
+                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check')),
+    model_label         TEXT        NOT NULL,
+    provider            TEXT,
+    estimated_cost_hkd  NUMERIC(10, 4) DEFAULT 0,
+    input_tokens        INTEGER     DEFAULT 0,
+    output_tokens       INTEGER     DEFAULT 0,
+    audio_tokens        INTEGER     DEFAULT 0,
+    search_calls        INTEGER     DEFAULT 0,
+    status              TEXT        DEFAULT 'success'
+                                CHECK (status IN ('success', 'failed')),
+    error_message       TEXT,
+    created_at          TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_ai_fund_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
 # View: COMMITTEE_VOTE_ACTIVITY
 # Canonical source for committee participation metrics used by Streamlit.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
@@ -509,6 +571,14 @@ CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
     ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
     ON {TABLE_MOTION_COMMENTS}(motion_type, motion_key);
+CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
+    ON {TABLE_AI_FUND_TRANSACTIONS}(status);
+CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_created_at
+    ON {TABLE_AI_FUND_TRANSACTIONS}(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at
+    ON {TABLE_AI_FUND_USAGE_LOGS}(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_user_id
+    ON {TABLE_AI_FUND_USAGE_LOGS}(user_id);
 """
 
 # System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
@@ -542,6 +612,8 @@ ALL_SCHEMAS = [
     CREATE_MATCH_VIDEOS,              # → matches
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
+    CREATE_AI_FUND_TRANSACTIONS,      # → accounts
+    CREATE_AI_FUND_USAGE_LOGS,        # → accounts
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables

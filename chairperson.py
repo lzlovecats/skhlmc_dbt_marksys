@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 from datetime import datetime
 
@@ -395,6 +396,114 @@ elif tab == "結尾完結易":
     st.markdown(rendered)
 
 elif tab == "叮叮易":
+    debate_format = st.selectbox("賽制", options=["校園隨想", "聯中", "星島"], key="cp_timer_format")
+    free_debate_minutes = 5
+    if debate_format == "聯中":
+        free_debate_minutes = st.number_input(
+            "自由辯論時間（每邊，分鐘）",
+            min_value=2,
+            max_value=10,
+            value=5,
+            step=1,
+            key="cp_lz_free_minutes",
+        )
+
+    if debate_format == "星島":
+        timer_stages = [
+            ("main", "主辯一二副"),
+            ("deputy", "結辯"),
+            ("prep", "交互準備"),
+            ("question", "交互問"),
+            ("answer", "交互答"),
+        ]
+        bell_schedules = {
+            "main": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": 120, "rings": 1, "label": "2:00 — 1 叮"},
+                {"t": 150, "rings": 2, "label": "2:30 — 2 叮"},
+            ],
+            "deputy": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": 180, "rings": 1, "label": "3:00 — 1 叮"},
+                {"t": 210, "rings": 2, "label": "3:30 — 2 叮"},
+            ],
+            "prep": [
+                {"t": 0, "rings": 1, "label": "準備開始 — 1 叮"},
+                {"t": 15, "rings": 2, "label": "0:15 — 2 叮"},
+            ],
+            "question": [
+                {"t": 0, "rings": 1, "label": "問開始 — 1 叮"},
+                {"t": 20, "rings": 2, "label": "0:20 — 2 叮"},
+            ],
+            "answer": [
+                {"t": 0, "rings": 1, "label": "答開始 — 1 叮"},
+                {"t": 40, "rings": 2, "label": "0:40 — 2 叮"},
+            ],
+        }
+        warning_times = {"main": 120, "deputy": 180, "prep": None, "question": None, "answer": None}
+        overtime_times = {"main": 150, "deputy": 210, "prep": 15, "question": 20, "answer": 40}
+    elif debate_format == "聯中":
+        timer_stages = [("main", "主結辯"), ("deputy", "一二副"), ("free", "自由辯論")]
+        free_warning_time = int(free_debate_minutes) * 60 - 30
+        free_overtime = int(free_debate_minutes) * 60
+        bell_schedules = {
+            "main": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": 270, "rings": 1, "label": "4:30 — 1 叮"},
+                {"t": 300, "rings": 2, "label": "5:00 — 2 叮"},
+                {"t": 315, "rings": 3, "label": "5:15 — 3 叮"},
+                {"t": 340, "rings": 5, "label": "5:40 — 5 叮"},
+            ],
+            "deputy": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": 210, "rings": 1, "label": "3:30 — 1 叮"},
+                {"t": 240, "rings": 2, "label": "4:00 — 2 叮"},
+                {"t": 255, "rings": 3, "label": "4:15 — 3 叮"},
+                {"t": 280, "rings": 5, "label": "4:40 — 5 叮"},
+            ],
+            "free": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": free_warning_time, "rings": 1, "label": "完結前 30 秒 — 1 叮"},
+                {"t": free_overtime, "rings": 2, "label": "時間到 — 2 叮"},
+            ],
+        }
+        warning_times = {"main": 270, "deputy": 210, "free": free_warning_time}
+        overtime_times = {"main": 300, "deputy": 240, "free": free_overtime}
+    else:
+        timer_stages = [("main", "主結辯"), ("deputy", "一二副"), ("free", "自由辯論")]
+        bell_schedules = {
+            "main": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": 210, "rings": 1, "label": "3:30 — 1 叮"},
+                {"t": 240, "rings": 2, "label": "4:00 — 2 叮"},
+                {"t": 255, "rings": 3, "label": "4:15 — 3 叮"},
+                {"t": 280, "rings": 5, "label": "4:40 — 5 叮"},
+            ],
+            "deputy": [
+                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+                {"t": 150, "rings": 1, "label": "2:30 — 1 叮"},
+                {"t": 180, "rings": 2, "label": "3:00 — 2 叮"},
+                {"t": 195, "rings": 3, "label": "3:15 — 3 叮"},
+                {"t": 220, "rings": 5, "label": "3:40 — 5 叮"},
+            ],
+            "free": [
+                {"t": 120, "rings": 1, "label": "2:00 — 1 叮"},
+                {"t": 150, "rings": 2, "label": "2:30 — 2 叮"},
+            ],
+        }
+        warning_times = {"main": 210, "deputy": 150, "free": 120}
+        overtime_times = {"main": 240, "deputy": 180, "free": 150}
+
+    stage_buttons_html = "\n".join(
+        f"""        <div class="stage-btn{' active' if idx == 0 else ''}" onclick="selectStage('{stage_id}')" id="stage-{stage_id}">{stage_label}</div>"""
+        for idx, (stage_id, stage_label) in enumerate(timer_stages)
+    )
+    stage_labels = {stage_id: stage_label for stage_id, stage_label in timer_stages}
+    main_stage_label = stage_labels["main"]
+    stage_labels_json = json.dumps(stage_labels, ensure_ascii=False)
+    bell_schedules_json = json.dumps(bell_schedules, ensure_ascii=False)
+    warning_times_json = json.dumps(warning_times, ensure_ascii=False)
+    overtime_times_json = json.dumps(overtime_times, ensure_ascii=False)
     bell_src = f"data:audio/mpeg;base64,{bell_b64}" if bell_b64 else ""
     timer_html = f"""
 <!DOCTYPE html>
@@ -458,13 +567,11 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 <body>
 <div class="timer-container">
     <div class="stage-selector">
-        <div class="stage-btn active" onclick="selectStage('main')" id="stage-main">主結辯</div>
-        <div class="stage-btn" onclick="selectStage('deputy')" id="stage-deputy">一二副</div>
-        <div class="stage-btn" onclick="selectStage('free')" id="stage-free">自由辯論</div>
+{stage_buttons_html}
     </div>
 
     <div id="single-timer" class="stopwatch-area">
-        <div class="sw-label" id="single-label">主結辯計時</div>
+        <div class="sw-label" id="single-label">{main_stage_label}計時</div>
         <div class="sw-display normal" id="single-display">0:00:00</div>
         <div class="btn-row">
             <button class="btn btn-start" id="single-start" onclick="toggleSingle()">開始</button>
@@ -553,29 +660,10 @@ function playBell(count) {{
     }}
 }}
 
-const BELL_SCHEDULES = {{
-    main: [
-        {{ t: 0, rings: 1, label: "開始 — 1 叮" }},
-        {{ t: 210, rings: 1, label: "3:30 — 1 叮" }},
-        {{ t: 240, rings: 2, label: "4:00 — 2 叮" }},
-        {{ t: 255, rings: 3, label: "4:15 — 3 叮" }},
-        {{ t: 280, rings: 5, label: "4:40 — 5 叮" }},
-    ],
-    deputy: [
-        {{ t: 0, rings: 1, label: "開始 — 1 叮" }},
-        {{ t: 150, rings: 1, label: "2:30 — 1 叮" }},
-        {{ t: 180, rings: 2, label: "3:00 — 2 叮" }},
-        {{ t: 195, rings: 3, label: "3:15 — 3 叮" }},
-        {{ t: 220, rings: 5, label: "3:40 — 5 叮" }},
-    ],
-    free: [
-        {{ t: 120, rings: 1, label: "2:00 — 1 叮" }},
-        {{ t: 150, rings: 2, label: "2:30 — 2 叮" }},
-    ],
-}};
-
-const WARNING_TIMES = {{ main: 210, deputy: 150, free: 120 }};
-const OVERTIME_TIMES = {{ main: 240, deputy: 180, free: 150 }};
+const BELL_SCHEDULES = {bell_schedules_json};
+const STAGE_LABELS = {stage_labels_json};
+const WARNING_TIMES = {warning_times_json};
+const OVERTIME_TIMES = {overtime_times_json};
 
 let currentStage = "main";
 let sRunning = false, sElapsed = 0, sStartTs = 0, sFired = new Set(), sRaf = 0;
@@ -597,7 +685,7 @@ function selectStage(stage) {{
     }} else {{
         document.getElementById("single-timer").style.display = "block";
         document.getElementById("free-timer").style.display = "none";
-        document.getElementById("single-label").textContent = stage === "main" ? "主結辯計時" : "一二副計時";
+        document.getElementById("single-label").textContent = (STAGE_LABELS[stage] || "") + "計時";
         renderSingleBells();
     }}
 }}
@@ -611,8 +699,8 @@ function fmtTime(sec) {{
 
 function getDisplayClass(sec, stage) {{
     const w = WARNING_TIMES[stage], o = OVERTIME_TIMES[stage];
-    if (sec >= o) return "overtime";
-    if (sec >= w) return "warning";
+    if (o !== null && o !== undefined && sec >= o) return "overtime";
+    if (w !== null && w !== undefined && sec >= w) return "warning";
     return "normal";
 }}
 
@@ -676,7 +764,7 @@ function resetSingle() {{
 }}
 
 function renderFreeBells() {{
-    const sched = BELL_SCHEDULES.free;
+    const sched = BELL_SCHEDULES.free || [];
     const el = document.getElementById("free-bells");
     el.innerHTML = "<h4>鈴聲時間表（每邊）</h4>" + sched.map((b, i) =>
         '<div class="bell-item" id="fb-pro-' + i + '">正方 ' + b.label + '</div>' +
@@ -740,6 +828,7 @@ function toggleFree(side) {{
 }}
 
 function resetFree(side) {{
+    if (!BELL_SCHEDULES.free) return;
     const s = fState[side];
     s.running = false;
     cancelAnimationFrame(s.raf);
