@@ -273,7 +273,7 @@ _render_manual_bell_bar(bell_b64)
 tab = st.segmented_control(
     "功能",
     options=["開場讀稿易", "結尾完結易", "叮叮易"],
-    default="開場白",
+    default="開場讀稿易",
     key="cp_selected_tab",
     label_visibility="collapsed",
     width="stretch",
