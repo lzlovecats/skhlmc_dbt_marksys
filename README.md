@@ -31,20 +31,22 @@ A full-featured electronic scoring and management platform for school debate com
 
 ### ✨ AI 辯論易 | AI Debate Coach (`ai_coach.py`)
 **中文：**
-- 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini 或 OpenAI 模型
+- 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini、DeepSeek 或 GPT 模型
 - **發言檢查**：輸入文字稿或粵語錄音（錄音分析需選 Gemini 模型），AI 根據正式評分標準（內容、辭鋒、組織、風度）提供詳細反饋及預估分數
 - **主線策劃**：根據辯題及立場生成完整比賽策略（論點、反駁、自由辯論策略、辯員分工）
-- 支援 Gemini 3.5 Flash、Gemini 2.5 Flash、Gemini 2.5 Pro、Gemini 3.1 Pro Preview、GPT-5.4 mini 及 GPT-5.4
+- 支援 Gemini 2.5 Flash、Gemini 3.5 Flash、Gemini 3.1 Pro Preview、DeepSeek V4 Pro 及 GPT-5.4
 - 會標示模型收費狀態，並提醒委員節約使用高級或收費模型
+- 開發者可在開發者設定啟用 / 停用 AI Provider 及設定預設模型
 - 可從系統場次載入比賽資料，或手動輸入外部比賽辯題
 - 策略建議可下載為 TXT 文件
 
 **English:**
-- Committee-only AI debate coach with selectable Gemini or OpenAI models
+- Committee-only AI debate coach with selectable Gemini, DeepSeek, or GPT models
 - **Speech Review**: submit text or Cantonese audio recordings (audio review requires a Gemini model); AI provides detailed feedback and estimated scores based on the official scoring rubric (Content, Eloquence, Organisation, Manner)
 - **Strategy Planning**: generates full match strategy (arguments, counter-arguments, free debate tactics, role assignments) from a given motion and side
-- Supports Gemini 3.5 Flash, Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 3.1 Pro Preview, GPT-5.4 mini, and GPT-5.4
+- Supports Gemini 2.5 Flash, Gemini 3.5 Flash, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, and GPT-5.4
 - Shows model cost status and reminds committee members to conserve premium or paid model usage
+- Developers can enable / disable AI providers and set the default model from Developer settings
 - Can load match data from the system or accept manually entered external match topics
 - Strategy output downloadable as TXT
 
@@ -178,7 +180,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 數據庫 / Database | PostgreSQL (via `st.connection` + SQLAlchemy) |
 | 數據處理 / Data | Pandas, NumPy |
 | 文件輸出 / Document Export | ReportLab + pypdf PDF template overlay |
-| AI 整合 / AI | Google Gemini (`google-genai`) + OpenAI GPT (`openai`) |
+| AI 整合 / AI | Google Gemini (`google-genai`) + OpenRouter (`openai` SDK) |
 | 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
 | 部署 / Deployment | Streamlit Community Cloud |
 
@@ -206,7 +208,7 @@ On Streamlit Community Cloud, `packages.txt` only installs CJK fonts and no long
 在專案根目錄建立 `.streamlit/secrets.toml` / Create `.streamlit/secrets.toml`:
 ```toml
 GEMINI_API_KEY = "your_gemini_api_key"
-OPENAI_API_KEY = "your_openai_api_key"
+OPENROUTER_API_KEY = "your_openrouter_api_key"
 
 [connections.postgresql]
 dialect = "postgresql"
@@ -217,7 +219,7 @@ username = "your_user"
 password = "your_password"
 ```
 
-`GEMINI_API_KEY` 用於 Gemini 模型；`OPENAI_API_KEY` 用於 GPT-5.4 mini / GPT-5.4。
+`GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
 
 **3. 初始化系統密碼 / Seed initial passwords**
 

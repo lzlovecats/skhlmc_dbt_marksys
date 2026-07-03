@@ -28,11 +28,10 @@ from ai_coach_helpers import (
     get_ai_fund_usage_logs,
     get_ai_fund_usage_summary,
     POSITION_LABELS,
-    AI_MODEL_OPTIONS,
-    DEFAULT_AI_MODEL,
     AI_FEATURE_LABELS,
     AI_FUND_TRANSACTION_LABELS,
     AI_PROVIDER_LABELS,
+    get_ai_model_settings,
     format_ai_model_label,
     format_ai_model_usage_note,
 )
@@ -145,8 +144,8 @@ render_page_guidance(
         "使用「主線策劃」模式，AI 可根據辯題及立場生成論點及應對策略。",
         "使用「上網搵料」模式，AI 會即時搜尋網上資料並附上來源。",
         "使用「Fact check易」模式，AI 會搜尋來源並核查陳述真偽。",
-        "所有模型經 OpenRouter 統一呼叫；錄音分析需選擇支援錄音嘅模型。",
-        "有免費模型可用；日常練習用免費模型，重要稿件先選收費模型。",
+        "Gemini 模型經 Gemini API 直連；DeepSeek 及 GPT 模型經 OpenRouter 呼叫。",
+        "日常練習建議使用 Gemini 2.5 Flash；重要稿件先選高級或跨廠模型。",
         "可選擇從系統場次載入比賽資料，或手動輸入外部比賽嘅辯題。",
         "此功能使用 AI 生成，僅供參考，不代表評判觀點。",
     ],
@@ -166,21 +165,26 @@ if user_id == "admin":
         st.rerun()
     st.stop()
 
-model_options = list(AI_MODEL_OPTIONS.keys())
+ai_model_settings = get_ai_model_settings()
+model_options = list(ai_model_settings["model_options"].keys())
+if not model_options:
+    st.error("未有可用 AI 模型，請聯絡開發人員檢查 AI Provider 設定。")
+    st.stop()
+default_model = ai_model_settings["default_model"]
 model_label = st.selectbox(
     "AI 模型",
     options=model_options,
-    index=model_options.index(DEFAULT_AI_MODEL),
+    index=model_options.index(default_model),
     format_func=format_ai_model_label,
     key="ai_model",
 )
-model_config = AI_MODEL_OPTIONS[model_label]
+model_config = ai_model_settings["model_options"][model_label]
 st.caption(f"收費狀態：{model_config['pricing_label']}。{model_config['pricing_note']}")
 with st.expander("模型限額及成本估算", expanded=True):
     st.markdown(format_ai_model_usage_note(model_label))
-st.info("日常練習可使用免費模型（Gemma 4 31B / GPT-OSS-120B），複雜策略或重要稿件先用收費模型。")
+st.info("日常練習建議使用 Gemini 2.5 Flash（支援錄音及上網搜尋）。複雜策略或重要稿件可用 Gemini 3.1 Pro Preview、DeepSeek V4 Pro 或 GPT-5.4。")
 if model_config.get("is_premium"):
-    st.warning("你正在使用高級模型。請確認今次任務需要較高成本模型後再提交。")
+    st.warning("你正在使用高級模型。請確保不要濫用，避免資金用盡。")
 
 if model_config["api_key"] not in st.secrets:
     st.warning(f"未設定 {model_config['api_key']}，此模型暫時無法使用。")
@@ -762,7 +766,7 @@ with tab_fund:
                     )
                     treasurer_provider = st.selectbox(
                         "Provider / 分類",
-                        ["openrouter", "other"],
+                        ["gemini", "openrouter", "other"],
                         format_func=lambda x: AI_PROVIDER_LABELS.get(x, x),
                     )
                     treasurer_amount = st.number_input(
