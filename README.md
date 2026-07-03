@@ -37,7 +37,7 @@ A full-featured electronic scoring and management platform for school debate com
 - 支援 Gemini 3.5 Flash、Gemini 2.5 Flash、Gemini 2.5 Pro、Gemini 3.1 Pro Preview、GPT-5.4 mini 及 GPT-5.4
 - 會標示模型收費狀態，並提醒委員節約使用高級或收費模型
 - 可從系統場次載入比賽資料，或手動輸入外部比賽辯題
-- 策略建議可下載為 Markdown 文件
+- 策略建議可下載為 TXT 文件
 
 **English:**
 - Committee-only AI debate coach with selectable Gemini or OpenAI models
@@ -46,7 +46,7 @@ A full-featured electronic scoring and management platform for school debate com
 - Supports Gemini 3.5 Flash, Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 3.1 Pro Preview, GPT-5.4 mini, and GPT-5.4
 - Shows model cost status and reminds committee members to conserve premium or paid model usage
 - Can load match data from the system or accept manually entered external match topics
-- Strategy output downloadable as Markdown
+- Strategy output downloadable as TXT
 
 ---
 
