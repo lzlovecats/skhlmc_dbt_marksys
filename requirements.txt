@@ -9,3 +9,5 @@ psycopg2-binary
 bcrypt
 reportlab
 pypdf
+google-genai
+openai

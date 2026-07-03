@@ -28,6 +28,7 @@ page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
 page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admin-hub")
 page_chairperson = st.Page("chairperson.py", title="主席主持易", url_path="chairperson")
 page_team_roster = st.Page("team_roster.py", title="提交隊伍名單", url_path="team-roster")
+page_ai_coach = st.Page("ai_coach.py", title="AI 辯論易", url_path="ai-coach")
 
 
 def is_team_roster_page():
@@ -55,7 +56,7 @@ pg = st.navigation({
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_vote],
+    "內部委員會成員": [page_vote, page_ai_coach],
     "開發者": [page_dev_settings],
 })
 
@@ -78,7 +79,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.0.2")
+    st.caption("🛠️ 系統版本：3.1.0")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

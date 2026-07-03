@@ -167,8 +167,9 @@ with col_right:
 
 with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
-    st.write("提出辯題、參與投票、提出罷免動議及管理個人帳戶。")
+    st.write("提出辯題、參與投票、提出罷免動議、使用 AI 辯論教練及管理個人帳戶。")
     st.page_link("vote.py", label="辯題徵集、投票及罷免", icon="🗳️")
+    st.page_link("ai_coach.py", label="AI 辯論易", icon="✨")
 
 st.divider()
 with st.container(border=True):
