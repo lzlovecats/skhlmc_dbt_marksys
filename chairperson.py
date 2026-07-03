@@ -145,6 +145,7 @@ try {{
 }} catch(e) {{}}
 
 const BELL_SRC = "{bell_src}";
+const BELL_VOLUME = 5.0;
 let bellBuffer = null;
 let bellLoading = null;
 let audioCtx = null;
@@ -193,8 +194,11 @@ async function playBell(count) {{
     const ctx = getAudioCtx();
     for (let i = 0; i < count; i++) {{
         const src = ctx.createBufferSource();
+        const gain = ctx.createGain();
         src.buffer = bellBuffer;
-        src.connect(ctx.destination);
+        gain.gain.value = BELL_VOLUME;
+        src.connect(gain);
+        gain.connect(ctx.destination);
         src.start(ctx.currentTime + i * 0.8);
     }}
 }}
@@ -494,6 +498,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 
 <script>
 const BELL_SRC = "{bell_src}";
+const BELL_VOLUME = 5.0;
 let bellBuffer = null;
 let audioCtx = null;
 
@@ -539,8 +544,11 @@ function playBell(count) {{
     }}
     for (let i = 0; i < count; i++) {{
         const src = ctx.createBufferSource();
+        const gain = ctx.createGain();
         src.buffer = bellBuffer;
-        src.connect(ctx.destination);
+        gain.gain.value = BELL_VOLUME;
+        src.connect(gain);
+        gain.connect(ctx.destination);
         src.start(ctx.currentTime + i * 0.8);
     }}
 }}
