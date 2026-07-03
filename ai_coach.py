@@ -221,7 +221,7 @@ with tab_strategy:
             st.download_button(
                 "下載策略建議",
                 data=result,
-                file_name="策略建議.md",
-                mime="text/markdown",
+                file_name="策略建議.txt",
+                mime="text/plain",
                 use_container_width=True,
             )
