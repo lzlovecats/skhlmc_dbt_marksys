@@ -6,8 +6,13 @@ import json
 from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data
 from schema import TABLE_ACCOUNTS, init_db
 from ai_coach_helpers import (
+    AI_MODEL_OPTIONS,
+    AI_PROVIDER_LABELS,
+    format_ai_model_label,
     get_ai_fund_account_options,
     get_ai_fund_settings,
+    get_ai_model_settings,
+    save_ai_model_settings,
     save_ai_fund_treasurers,
 )
 
@@ -124,6 +129,66 @@ st.divider()
 st.subheader("更改 SQL 存取密碼")
 st.caption("此密碼用於資料庫管理控制台的二次驗證。")
 _update_system_password("sql_password", "SQL 存取")
+
+st.divider()
+st.subheader("AI Provider / Model 設定")
+st.caption("控制 AI 辯論易可選 Provider 及預設模型。API Key 仍需在 Streamlit secrets 設定，不會存入資料庫。")
+
+ai_model_settings = get_ai_model_settings()
+provider_options = ai_model_settings["provider_options"]
+provider_key_names = {}
+for model_config in AI_MODEL_OPTIONS.values():
+    provider_key_names.setdefault(model_config.get("provider", ""), model_config.get("api_key", ""))
+
+if not provider_options:
+    st.info("目前未有可設定的 AI Provider。")
+else:
+    selected_ai_providers = st.multiselect(
+        "啟用 Provider",
+        options=provider_options,
+        default=ai_model_settings["enabled_providers"],
+        format_func=lambda x: AI_PROVIDER_LABELS.get(x, x),
+        key="ai_enabled_provider_select",
+    )
+    provider_model_options = [
+        model_label
+        for model_label, model_config in AI_MODEL_OPTIONS.items()
+        if model_config.get("provider") in selected_ai_providers
+    ]
+    if not provider_model_options:
+        st.warning("請至少啟用一個有模型的 Provider。")
+        selected_default_model = ""
+    else:
+        current_default_model = ai_model_settings["default_model"]
+        default_index = (
+            provider_model_options.index(current_default_model)
+            if current_default_model in provider_model_options
+            else 0
+        )
+        selected_default_model = st.selectbox(
+            "預設模型",
+            options=provider_model_options,
+            index=default_index,
+            format_func=format_ai_model_label,
+            key="ai_default_model_select",
+        )
+
+    st.write("**API Key 狀態**")
+    for provider in provider_options:
+        key_name = provider_key_names.get(provider, "")
+        key_status = "已設定" if key_name and key_name in st.secrets else "未設定"
+        st.caption(
+            f"{AI_PROVIDER_LABELS.get(provider, provider)}："
+            f"{key_name or '未指定 key'}（{key_status}）"
+        )
+
+    if st.button("更新 AI Provider 設定", type="primary"):
+        try:
+            save_ai_model_settings(selected_ai_providers, selected_default_model)
+            st.success("AI Provider 設定已更新。")
+            st.rerun()
+        except Exception as e:
+            st.error(f"更新失敗：{e}")
 
 st.divider()
 st.subheader("委員會帳戶管理")

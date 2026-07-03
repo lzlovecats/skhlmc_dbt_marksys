@@ -47,7 +47,6 @@ STRATEGY_OUTPUT_TOKENS = 2500
 HKD_PER_USD = 7.80
 WEB_RESEARCH_INPUT_TOKENS = 1500
 WEB_RESEARCH_OUTPUT_TOKENS = 2500
-OPENROUTER_WEB_SEARCH_USD_PER_CALL = 0.005
 
 AI_FUND_TARGET_HKD_DEFAULT = 100.0
 AI_FUND_LOW_BALANCE_HKD_DEFAULT = 20.0
@@ -69,111 +68,79 @@ AI_FUND_TRANSACTION_LABELS = {
 
 AI_PROVIDER_LABELS = {
     "general": "整體AI基金",
+    "gemini": "Gemini",
     "openrouter": "OpenRouter",
-    "gemini": "Gemini（舊）",
-    "openai": "GPT / OpenAI（舊）",
+    "openai": "GPT",
     "other": "其他",
 }
 
-DEFAULT_AI_MODEL = "Gemma 4 31B"
+DEFAULT_AI_MODEL = "Gemini 2.5 Flash"
+AI_ENABLED_PROVIDERS_CONFIG_KEY = "ai_enabled_providers"
+AI_DEFAULT_MODEL_CONFIG_KEY = "ai_default_model"
 AI_MODEL_OPTIONS = {
-    "Gemma 4 31B": {
-        "provider": "openrouter",
-        "model": "google/gemma-4-31b-it:free",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": False,
-        "supports_web_search": False,
-        "pricing_label": "免費",
-        "pricing_note": "OpenRouter 免費模型，無需扣基金。⚠️ 免費模型可能會將輸入內容用於訓練。",
-        "paid_rate_note": "免費。",
-        "input_price_per_million": 0,
-        "audio_input_price_per_million": None,
-        "output_price_per_million": 0,
-        "is_premium": False,
-    },
-    "GPT-OSS-120B": {
-        "provider": "openrouter",
-        "model": "openai/gpt-oss-120b:free",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": False,
-        "supports_web_search": False,
-        "pricing_label": "免費",
-        "pricing_note": "OpenRouter 免費模型，無需扣基金。⚠️ 免費模型可能會將輸入內容用於訓練。",
-        "paid_rate_note": "免費。",
-        "input_price_per_million": 0,
-        "audio_input_price_per_million": None,
-        "output_price_per_million": 0,
-        "is_premium": False,
-    },
     "Gemini 2.5 Flash": {
-        "provider": "openrouter",
-        "model": "google/gemini-2.5-flash",
-        "api_key": "OPENROUTER_API_KEY",
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "api_key": "GEMINI_API_KEY",
         "supports_audio": True,
         "supports_web_search": True,
-        "pricing_label": "收費",
-        "pricing_note": "經 OpenRouter 按 token 計費，最低成本收費模型。",
-        "paid_rate_note": "Input US$0.30 / 1M tokens，output US$2.50 / 1M tokens。",
+        "pricing_label": "免費額度 / 收費",
+        "selection_label": "日常練習",
+        "pricing_note": "Gemini API 直連；有免費額度，超額按 Google 收費，支援錄音及上網搜尋。",
+        "paid_rate_note": "Input US$0.30 / 1M tokens（audio US$1.00 / 1M tokens），output US$2.50 / 1M tokens；Google Search 超額約 US$35 / 1,000 grounded prompts。",
         "input_price_per_million": 0.30,
         "audio_input_price_per_million": 1.00,
         "output_price_per_million": 2.50,
+        "web_search_price_per_call": 0.035,
         "is_premium": False,
     },
-    "GPT-5.4 mini": {
+    "Gemini 3.5 Flash": {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash",
+        "api_key": "GEMINI_API_KEY",
+        "supports_audio": True,
+        "supports_web_search": True,
+        "pricing_label": "免費額度 / 收費",
+        "selection_label": "細緻工作",
+        "pricing_note": "Gemini API 直連；較高質 Flash 模型，有免費額度，支援錄音及上網搜尋。",
+        "paid_rate_note": "Input US$1.50 / 1M tokens，output US$9.00 / 1M tokens；Google Search 超額約 US$14 / 1,000 search queries。",
+        "input_price_per_million": 1.50,
+        "audio_input_price_per_million": 1.50,
+        "output_price_per_million": 9.00,
+        "web_search_price_per_call": 0.014,
+        "is_premium": False,
+    },
+    "Gemini 3.1 Pro Preview": {
+        "provider": "gemini",
+        "model": "gemini-3.1-pro-preview",
+        "api_key": "GEMINI_API_KEY",
+        "supports_audio": True,
+        "supports_web_search": True,
+        "pricing_label": "高級收費",
+        "selection_label": "推理工作",
+        "pricing_note": "Gemini API 直連；Preview 高級模型，適合重要稿件或複雜策略。",
+        "paid_rate_note": "Input US$2.00 / 1M tokens，output US$12.00 / 1M tokens；Google Search 超額約 US$14 / 1,000 search queries。",
+        "input_price_per_million": 2.00,
+        "audio_input_price_per_million": 2.00,
+        "output_price_per_million": 12.00,
+        "web_search_price_per_call": 0.014,
+        "is_premium": True,
+    },
+    "DeepSeek V4 Pro": {
         "provider": "openrouter",
-        "model": "openai/gpt-5.4-mini",
+        "model": "deepseek/deepseek-v4-pro",
         "api_key": "OPENROUTER_API_KEY",
         "supports_audio": False,
         "supports_web_search": True,
         "pricing_label": "收費",
-        "pricing_note": "經 OpenRouter 按 token 計費。",
-        "paid_rate_note": "Input US$0.75 / 1M tokens，output US$4.50 / 1M tokens。",
-        "input_price_per_million": 0.75,
+        "selection_label": "第二意見",
+        "pricing_note": "經 OpenRouter 按 token 計費；高性價比長文及推理模型。",
+        "paid_rate_note": "Input US$0.435 / 1M tokens，output US$0.87 / 1M tokens；OpenRouter fallback web search 約 US$0.005 / 次。",
+        "input_price_per_million": 0.435,
         "audio_input_price_per_million": None,
-        "output_price_per_million": 4.50,
+        "output_price_per_million": 0.87,
+        "web_search_price_per_call": 0.005,
         "is_premium": False,
-    },
-    "Gemini 2.5 Pro": {
-        "provider": "openrouter",
-        "model": "google/gemini-2.5-pro",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": True,
-        "pricing_label": "收費",
-        "pricing_note": "經 OpenRouter 按 token 計費。",
-        "paid_rate_note": "Input US$1.25 / 1M tokens，output US$10.00 / 1M tokens。",
-        "input_price_per_million": 1.25,
-        "audio_input_price_per_million": 1.25,
-        "output_price_per_million": 10.00,
-        "is_premium": True,
-    },
-    "Gemini 3.5 Flash": {
-        "provider": "openrouter",
-        "model": "google/gemini-3.5-flash",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": True,
-        "pricing_label": "收費",
-        "pricing_note": "經 OpenRouter 按 token 計費。",
-        "paid_rate_note": "Input US$1.50 / 1M tokens，output US$9.00 / 1M tokens。",
-        "input_price_per_million": 1.50,
-        "audio_input_price_per_million": 1.50,
-        "output_price_per_million": 9.00,
-        "is_premium": False,
-    },
-    "Gemini 3.1 Pro Preview": {
-        "provider": "openrouter",
-        "model": "google/gemini-3.1-pro-preview",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": True,
-        "pricing_label": "收費",
-        "pricing_note": "經 OpenRouter 按 token 計費。",
-        "paid_rate_note": "Input US$2.00 / 1M tokens，output US$12.00 / 1M tokens。",
-        "input_price_per_million": 2.00,
-        "audio_input_price_per_million": 2.00,
-        "output_price_per_million": 12.00,
-        "is_premium": True,
     },
     "GPT-5.4": {
         "provider": "openrouter",
@@ -182,11 +149,13 @@ AI_MODEL_OPTIONS = {
         "supports_audio": False,
         "supports_web_search": True,
         "pricing_label": "收費",
+        "selection_label": "交叉驗證",
         "pricing_note": "經 OpenRouter 按 token 計費。",
         "paid_rate_note": "Input US$2.50 / 1M tokens，output US$15.00 / 1M tokens。",
         "input_price_per_million": 2.50,
         "audio_input_price_per_million": None,
         "output_price_per_million": 15.00,
+        "web_search_price_per_call": 0.005,
         "is_premium": True,
     },
 }
@@ -312,7 +281,7 @@ def _get_model_config(model_label: str | None):
 
 def format_ai_model_label(model_label: str) -> str:
     model_config = _get_model_config(model_label)
-    return f"{model_label}（{model_config['pricing_label']}）"
+    return f"{model_label}（{model_config.get('selection_label', model_config['pricing_label'])}）"
 
 
 def _format_usd(amount: float) -> str:
@@ -365,6 +334,57 @@ def _append_source_list(text: str, sources: list[tuple[str, str]]) -> str:
     return text.rstrip() + "\n\n## 可核查來源\n" + "\n".join(source_lines)
 
 
+def _format_gemini_grounded_response(response) -> str:
+    text = response.text or "AI 未能生成回覆，請再試一次。"
+    sources_by_index = {}
+
+    candidates = _read_attr(response, "candidates") or []
+    if not candidates:
+        return text
+
+    metadata = _read_attr(candidates[0], "grounding_metadata", "groundingMetadata")
+    chunks = _read_attr(metadata, "grounding_chunks", "groundingChunks") or []
+    supports = _read_attr(metadata, "grounding_supports", "groundingSupports") or []
+
+    sorted_supports = sorted(
+        supports,
+        key=lambda s: _read_attr(_read_attr(s, "segment"), "end_index", "endIndex") or 0,
+        reverse=True,
+    )
+    for support in sorted_supports:
+        segment = _read_attr(support, "segment")
+        end_index = _read_attr(segment, "end_index", "endIndex")
+        chunk_indices = _read_attr(
+            support, "grounding_chunk_indices", "groundingChunkIndices"
+        ) or []
+        if end_index is None or not chunk_indices or end_index > len(text):
+            continue
+
+        citation_links = []
+        for chunk_index in chunk_indices:
+            if chunk_index >= len(chunks):
+                continue
+            web = _read_attr(chunks[chunk_index], "web")
+            url = _read_attr(web, "uri")
+            title = _read_attr(web, "title") or f"來源 {chunk_index + 1}"
+            if not url:
+                continue
+            citation_links.append(f"[{chunk_index + 1}]({url})")
+            sources_by_index[chunk_index] = (title, url)
+        if citation_links:
+            text = (
+                text[:end_index]
+                + " "
+                + ", ".join(citation_links)
+                + text[end_index:]
+            )
+
+    return _append_source_list(
+        text,
+        [sources_by_index[i] for i in sorted(sources_by_index)],
+    )
+
+
 def _estimate_usage_cost(
     model_config,
     input_tokens: int,
@@ -408,7 +428,10 @@ def format_ai_model_usage_note(model_label: str) -> str:
         lines.append(
             f"**錄音估算**：4 分鐘錄音檢查約 {_format_usd(speech_audio_cost)} / 次；音訊 tokens 只作粗略估算。"
         )
-    lines.append("所有模型經 OpenRouter 統一計費（USD）。估算未必準確，實際用量會因回覆長度而變。")
+    if model_config["provider"] == "gemini":
+        lines.append("Gemini 模型經 Google Gemini API 直連；估算按 paid tier / 超額價格，免費額度及實際用量可能不同。")
+    else:
+        lines.append("OpenRouter 模型經 OpenRouter 計費（USD）；搜尋工具可能另收 OpenRouter 或原生 provider 搜尋費。估算未必準確，實際用量會因回覆長度而變。")
     return "\n\n".join(lines)
 
 
@@ -451,6 +474,15 @@ def _parse_json_list(raw_value) -> list[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
+def get_ai_provider_options() -> list[str]:
+    providers = []
+    for model_config in AI_MODEL_OPTIONS.values():
+        provider = model_config.get("provider", "")
+        if provider and provider not in providers:
+            providers.append(provider)
+    return providers
+
+
 def normalize_ai_provider(provider: str | None) -> str:
     text = str(provider or "").strip().lower()
     if text == "openrouter":
@@ -471,6 +503,64 @@ def _save_system_config_value(config_key: str, value: str) -> None:
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
         {"key": config_key, "value": value, "updated_at": _now_hk_timestamp()},
     )
+
+
+def get_ai_model_settings() -> dict:
+    provider_options = get_ai_provider_options()
+    enabled_providers = [
+        provider for provider in _parse_json_list(get_system_config(AI_ENABLED_PROVIDERS_CONFIG_KEY))
+        if provider in provider_options
+    ]
+    if not enabled_providers:
+        enabled_providers = provider_options
+
+    model_options = {
+        label: config
+        for label, config in AI_MODEL_OPTIONS.items()
+        if config.get("provider") in enabled_providers
+    }
+    if not model_options:
+        enabled_providers = provider_options
+        model_options = AI_MODEL_OPTIONS.copy()
+
+    default_model = str(get_system_config(AI_DEFAULT_MODEL_CONFIG_KEY) or DEFAULT_AI_MODEL).strip()
+    if default_model not in model_options:
+        default_model = DEFAULT_AI_MODEL if DEFAULT_AI_MODEL in model_options else next(iter(model_options))
+
+    return {
+        "provider_options": provider_options,
+        "enabled_providers": enabled_providers,
+        "model_options": model_options,
+        "default_model": default_model,
+    }
+
+
+def save_ai_model_settings(enabled_providers: list[str], default_model: str) -> None:
+    provider_options = get_ai_provider_options()
+    cleaned_providers = []
+    for provider in enabled_providers:
+        provider = str(provider).strip()
+        if provider in provider_options and provider not in cleaned_providers:
+            cleaned_providers.append(provider)
+    if not cleaned_providers:
+        raise ValueError("請至少啟用一個 AI Provider。")
+
+    model_options = {
+        label: config
+        for label, config in AI_MODEL_OPTIONS.items()
+        if config.get("provider") in cleaned_providers
+    }
+    if not model_options:
+        raise ValueError("所選 Provider 沒有可用模型。")
+    resolved_default_model = str(default_model or "").strip()
+    if resolved_default_model not in model_options:
+        resolved_default_model = next(iter(model_options))
+
+    _save_system_config_value(
+        AI_ENABLED_PROVIDERS_CONFIG_KEY,
+        json.dumps(cleaned_providers, ensure_ascii=False),
+    )
+    _save_system_config_value(AI_DEFAULT_MODEL_CONFIG_KEY, resolved_default_model)
 
 
 def get_ai_fund_settings() -> dict:
@@ -876,9 +966,10 @@ def estimate_ai_feature_usage(
         output_tokens = WEB_RESEARCH_OUTPUT_TOKENS
         audio_tokens = 0
         search_calls = 1
+        web_search_usd = model_config.get("web_search_price_per_call") or 0
         usd = (
             _estimate_usage_cost(model_config, input_tokens, output_tokens)
-            + OPENROUTER_WEB_SEARCH_USD_PER_CALL
+            + web_search_usd
         )
     else:
         input_tokens = output_tokens = audio_tokens = search_calls = 0
@@ -946,6 +1037,28 @@ def log_ai_fund_usage(
     )
 
 
+def _get_gemini_modules():
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return None, None, "❌ Gemini SDK 尚未安裝，請先更新 requirements.txt 並重新部署。"
+    return genai, types, None
+
+
+def _get_gemini_client():
+    if "GEMINI_API_KEY" not in st.secrets:
+        return None, "❌ 未設定 Gemini API Key，請聯絡開發人員。"
+    genai, _, error = _get_gemini_modules()
+    if error:
+        return None, error
+    if "_gemini_client" not in st.session_state:
+        st.session_state["_gemini_client"] = genai.Client(
+            api_key=st.secrets["GEMINI_API_KEY"]
+        )
+    return st.session_state["_gemini_client"], None
+
+
 def _get_openrouter_client():
     if "OPENROUTER_API_KEY" not in st.secrets:
         return None, "❌ 未設定 OpenRouter API Key，請聯絡開發人員。"
@@ -974,6 +1087,33 @@ def _format_ai_error(provider: str, error: Exception) -> str:
 
 
 def _generate_response(model_config, system_prompt: str, user_text: str) -> str:
+    if model_config["provider"] == "gemini":
+        return _generate_gemini_text(model_config, system_prompt, user_text)
+    return _generate_openrouter_text(model_config, system_prompt, user_text)
+
+
+def _generate_gemini_text(model_config, system_prompt: str, user_text: str) -> str:
+    client, error = _get_gemini_client()
+    if error:
+        return error
+    _, types, error = _get_gemini_modules()
+    if error:
+        return error
+    try:
+        response = client.models.generate_content(
+            model=model_config["model"],
+            contents=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+            ),
+        )
+        return response.text or "AI 未能生成回覆，請再試一次。"
+    except Exception as e:
+        return _format_ai_error("Gemini", e)
+
+
+def _generate_openrouter_text(model_config, system_prompt: str, user_text: str) -> str:
     client, error = _get_openrouter_client()
     if error:
         return error
@@ -992,18 +1132,49 @@ def _generate_response(model_config, system_prompt: str, user_text: str) -> str:
 
 
 def _generate_audio_response(model_config, system_prompt: str, user_text: str, audio_bytes: bytes) -> str:
+    if model_config["provider"] == "gemini":
+        return _generate_gemini_audio(model_config, system_prompt, user_text, audio_bytes)
+    return _generate_openrouter_audio(model_config, system_prompt, user_text, audio_bytes)
+
+
+def _generate_gemini_audio(model_config, system_prompt: str, user_text: str, audio_bytes: bytes) -> str:
+    client, error = _get_gemini_client()
+    if error:
+        return error
+    _, types, error = _get_gemini_modules()
+    if error:
+        return error
+    try:
+        user_parts = [types.Part.from_text(text=user_text)]
+        user_parts.append(types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"))
+        response = client.models.generate_content(
+            model=model_config["model"],
+            contents=[types.Content(role="user", parts=user_parts)],
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+            ),
+        )
+        return response.text or "AI 未能生成回覆，請再試一次。"
+    except Exception as e:
+        return _format_ai_error("Gemini", e)
+
+
+def _generate_openrouter_audio(model_config, system_prompt: str, user_text: str, audio_bytes: bytes) -> str:
     client, error = _get_openrouter_client()
     if error:
         return error
     try:
-        content = [{"type": "text", "text": user_text}]
-        content.append({
-            "type": "input_audio",
-            "input_audio": {
-                "data": base64.b64encode(audio_bytes).decode(),
-                "format": "wav",
+        content = [
+            {"type": "text", "text": user_text},
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": base64.b64encode(audio_bytes).decode(),
+                    "format": "wav",
+                },
             },
-        })
+        ]
         response = client.chat.completions.create(
             model=model_config["model"],
             messages=[
@@ -1017,7 +1188,36 @@ def _generate_audio_response(model_config, system_prompt: str, user_text: str, a
         return _format_ai_error("OpenRouter", e)
 
 
-def _format_web_search_response(response) -> str:
+def _generate_web_response(model_config, system_prompt: str, user_text: str) -> str:
+    if model_config["provider"] == "gemini":
+        return _generate_gemini_web(model_config, system_prompt, user_text)
+    return _generate_openrouter_web(model_config, system_prompt, user_text)
+
+
+def _generate_gemini_web(model_config, system_prompt: str, user_text: str) -> str:
+    client, error = _get_gemini_client()
+    if error:
+        return error
+    _, types, error = _get_gemini_modules()
+    if error:
+        return error
+    try:
+        grounding_tool = types.Tool(google_search=types.GoogleSearch())
+        response = client.models.generate_content(
+            model=model_config["model"],
+            contents=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.3,
+                tools=[grounding_tool],
+            ),
+        )
+        return _format_gemini_grounded_response(response)
+    except Exception as e:
+        return _format_ai_error("Gemini", e)
+
+
+def _format_openrouter_web_response(response) -> str:
     text = response.choices[0].message.content or "AI 未能生成回覆，請再試一次。"
     annotations = []
     message = response.choices[0].message
@@ -1050,7 +1250,7 @@ def _format_web_search_response(response) -> str:
     return _append_source_list(text, list(sources_by_url.values()))
 
 
-def _generate_web_response(model_config, system_prompt: str, user_text: str) -> str:
+def _generate_openrouter_web(model_config, system_prompt: str, user_text: str) -> str:
     client, error = _get_openrouter_client()
     if error:
         return error
@@ -1067,7 +1267,7 @@ def _generate_web_response(model_config, system_prompt: str, user_text: str) -> 
             }],
             temperature=0.3,
         )
-        return _format_web_search_response(response)
+        return _format_openrouter_web_response(response)
     except Exception as e:
         return _format_ai_error("OpenRouter", e)
 
