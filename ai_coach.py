@@ -181,8 +181,7 @@ with st.expander("模型限額及成本估算", expanded=True):
 st.info("日常練習可使用免費模型（Gemma 4 31B / GPT-OSS-120B），複雜策略或重要稿件先用收費模型。")
 if model_config.get("is_premium"):
     st.warning("你正在使用高級模型。請確認今次任務需要較高成本模型後再提交。")
-if model_config.get("input_price_per_million", 0) == 0 and model_config.get("output_price_per_million", 0) == 0:
-    st.warning("⚠️ 免費模型可能會將你嘅輸入內容用於模型訓練。請勿輸入敏感或私隱資料。")
+
 if model_config["api_key"] not in st.secrets:
     st.warning(f"未設定 {model_config['api_key']}，此模型暫時無法使用。")
 if not model_config["supports_audio"]:
@@ -519,6 +518,8 @@ with tab_research:
         key="research_need",
     )
     st.caption(_format_ai_estimate("web_research", model_label))
+    if not model_config.get("supports_web_search"):
+        st.warning("此模型不支援上網搜尋。請選擇收費模型以使用此功能。")
 
     if st.button("上網搵料", type="primary", use_container_width=True, key="research_submit"):
         if not research_topic:
@@ -556,6 +557,8 @@ with tab_fact_check:
         key="fact_check_statement",
     )
     st.caption(_format_ai_estimate("fact_check", model_label))
+    if not model_config.get("supports_web_search"):
+        st.warning("此模型不支援上網搜尋。請選擇收費模型以使用此功能。")
 
     if st.button("Fact check", type="primary", use_container_width=True, key="fact_check_submit"):
         if not statement:
