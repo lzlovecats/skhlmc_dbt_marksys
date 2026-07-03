@@ -498,7 +498,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 
 <script>
 const BELL_SRC = "{bell_src}";
-const BELL_VOLUME = 5.0;
+const BELL_VOLUME = 10.0;
 let bellBuffer = null;
 let audioCtx = null;
 
