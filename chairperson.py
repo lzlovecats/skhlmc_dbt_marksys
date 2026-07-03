@@ -272,7 +272,7 @@ _render_manual_bell_bar(bell_b64)
 
 tab = st.segmented_control(
     "功能",
-    options=["開場白", "結語", "計時器"],
+    options=["開場讀稿易", "結尾完結易", "叮叮易"],
     default="開場白",
     key="cp_selected_tab",
     label_visibility="collapsed",
@@ -298,7 +298,7 @@ con_debater_lines = "\n".join(
 )
 first_speaker = f"正方主辯 {pro_debaters[0]}" if pro_debaters[0] else "正方主辯"
 
-if tab == "開場白":
+if tab == "開場讀稿易":
     template_path = os.path.join(ASSETS_DIR, "chairperson_welcome.md")
     try:
         with open(template_path, "r", encoding="utf-8") as f:
@@ -328,7 +328,7 @@ if tab == "開場白":
 
     st.markdown(rendered)
 
-elif tab == "結語":
+elif tab == "結尾完結易":
     if st.button("🔄 重新整理"):
         st.rerun()
 
@@ -390,7 +390,7 @@ elif tab == "結語":
         rendered = rendered.replace("{" + key + "}", str(value))
     st.markdown(rendered)
 
-elif tab == "計時器":
+elif tab == "叮叮易":
     bell_src = f"data:audio/mpeg;base64,{bell_b64}" if bell_b64 else ""
     timer_html = f"""
 <!DOCTYPE html>
