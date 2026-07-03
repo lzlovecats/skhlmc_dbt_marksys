@@ -1,6 +1,7 @@
 import streamlit as st
 import logging
 import json
+import base64
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -46,10 +47,7 @@ STRATEGY_OUTPUT_TOKENS = 2500
 HKD_PER_USD = 7.80
 WEB_RESEARCH_INPUT_TOKENS = 1500
 WEB_RESEARCH_OUTPUT_TOKENS = 2500
-OPENAI_WEB_SEARCH_CONTENT_TOKENS = 8000
-OPENAI_WEB_SEARCH_USD_PER_CALL = 10 / 1000
-GEMINI_25_SEARCH_USD_PER_CALL = 35 / 1000
-GEMINI_3_SEARCH_USD_PER_CALL = 14 / 1000
+OPENROUTER_WEB_SEARCH_USD_PER_CALL = 0.005
 
 AI_FUND_TARGET_HKD_DEFAULT = 100.0
 AI_FUND_LOW_BALANCE_HKD_DEFAULT = 20.0
@@ -71,92 +69,87 @@ AI_FUND_TRANSACTION_LABELS = {
 
 AI_PROVIDER_LABELS = {
     "general": "整體AI基金",
-    "gemini": "Gemini",
-    "openai": "GPT / OpenAI",
+    "openrouter": "OpenRouter",
+    "gemini": "Gemini（舊）",
+    "openai": "GPT / OpenAI（舊）",
     "other": "其他",
 }
 
 DEFAULT_AI_MODEL = "Gemini 2.5 Flash"
 AI_MODEL_OPTIONS = {
     "Gemini 3.5 Flash": {
-        "provider": "gemini",
-        "model": "gemini-3.5-flash",
-        "api_key": "GEMINI_API_KEY",
+        "provider": "openrouter",
+        "model": "google/gemini-3.5-flash",
+        "api_key": "OPENROUTER_API_KEY",
         "supports_audio": True,
-        "pricing_label": "有免費額度",
-        "pricing_note": "Free Tier 有免費 input/output tokens。",
-        "free_limit_note": "有免費 input/output tokens。但因欠缺固定數字，因此無法準確推算每小時可用次數。",
-        "paid_rate_note": "Paid Tier Standard：input US$1.50 / 1M tokens，output US$9.00 / 1M tokens。",
+        "pricing_label": "收費",
+        "pricing_note": "經 OpenRouter 按 token 計費。",
+        "paid_rate_note": "Input US$1.50 / 1M tokens，output US$9.00 / 1M tokens。",
         "input_price_per_million": 1.50,
         "audio_input_price_per_million": 1.50,
         "output_price_per_million": 9.00,
         "is_premium": False,
     },
     "Gemini 2.5 Flash": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "api_key": "GEMINI_API_KEY",
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash",
+        "api_key": "OPENROUTER_API_KEY",
         "supports_audio": True,
-        "pricing_label": "有免費額度",
-        "pricing_note": "Free Tier 有免費 input/output tokens；實際 RPM/TPM/RPD 以 AI Studio project 顯示為準。",
-        "free_limit_note": "有免費 input/output tokens；每分鐘、每日可用次數由 AI Studio project 顯示，官方未保證固定數字，所以系統無法保證每小時固定可用幾多次。",
-        "paid_rate_note": "Paid Tier Standard：text input US$0.30 / 1M tokens、audio input US$1.00 / 1M tokens，output US$2.50 / 1M tokens。",
+        "pricing_label": "收費",
+        "pricing_note": "經 OpenRouter 按 token 計費，最低成本模型。",
+        "paid_rate_note": "Input US$0.30 / 1M tokens，output US$2.50 / 1M tokens。",
         "input_price_per_million": 0.30,
         "audio_input_price_per_million": 1.00,
         "output_price_per_million": 2.50,
         "is_premium": False,
     },
     "Gemini 2.5 Pro": {
-        "provider": "gemini",
-        "model": "gemini-2.5-pro",
-        "api_key": "GEMINI_API_KEY",
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-pro",
+        "api_key": "OPENROUTER_API_KEY",
         "supports_audio": True,
-        "pricing_label": "有免費額度",
-        "pricing_note": "Free Tier 有免費 input/output tokens；實際 RPM/TPM/RPD 以 AI Studio project 顯示為準。",
-        "free_limit_note": "有免費 input/output tokens；每分鐘、每日可用次數由 AI Studio project 顯示，官方未保證固定數字，所以系統無法保證每小時固定可用幾多次。",
-        "paid_rate_note": "Paid Tier Standard（prompt <= 200k tokens）：input US$1.25 / 1M tokens，output US$10.00 / 1M tokens。",
+        "pricing_label": "收費",
+        "pricing_note": "經 OpenRouter 按 token 計費。",
+        "paid_rate_note": "Input US$1.25 / 1M tokens，output US$10.00 / 1M tokens。",
         "input_price_per_million": 1.25,
         "audio_input_price_per_million": 1.25,
         "output_price_per_million": 10.00,
         "is_premium": True,
     },
     "Gemini 3.1 Pro Preview": {
-        "provider": "gemini",
-        "model": "gemini-3.1-pro-preview",
-        "api_key": "GEMINI_API_KEY",
+        "provider": "openrouter",
+        "model": "google/gemini-3.1-pro-preview",
+        "api_key": "OPENROUTER_API_KEY",
         "supports_audio": True,
         "pricing_label": "收費",
-        "pricing_note": "Free Tier 不適用，需使用 paid tier。",
-        "free_limit_note": "無免費額度（官方定價表列為 Not available）；每次使用都按 paid tier 收費。",
-        "paid_rate_note": "Paid Tier Standard（prompt <= 200k tokens）：input US$2.00 / 1M tokens，output US$12.00 / 1M tokens。",
+        "pricing_note": "經 OpenRouter 按 token 計費。",
+        "paid_rate_note": "Input US$2.00 / 1M tokens，output US$12.00 / 1M tokens。",
         "input_price_per_million": 2.00,
         "audio_input_price_per_million": 2.00,
         "output_price_per_million": 12.00,
         "is_premium": True,
     },
     "GPT-5.4 mini": {
-        "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "api_key": "OPENAI_API_KEY",
+        "provider": "openrouter",
+        "model": "openai/gpt-5.4-mini",
+        "api_key": "OPENROUTER_API_KEY",
         "supports_audio": False,
         "pricing_label": "收費",
-        "pricing_note": "OpenAI API 按 token 計費，需可用 credits / budget。",
-        "free_limit_note": "OpenAI API 此模型無免費 tokens；帳戶 tier 只限制每月/每分鐘用量，不代表免費。",
-        "paid_rate_note": "Standard short-context：input US$0.75 / 1M tokens，output US$4.50 / 1M tokens。",
+        "pricing_note": "經 OpenRouter 按 token 計費。",
+        "paid_rate_note": "Input US$0.75 / 1M tokens，output US$4.50 / 1M tokens。",
         "input_price_per_million": 0.75,
         "audio_input_price_per_million": None,
         "output_price_per_million": 4.50,
         "is_premium": False,
     },
     "GPT-5.4": {
-        "provider": "openai",
-        "model": "gpt-5.4",
-        "api_key": "OPENAI_API_KEY",
+        "provider": "openrouter",
+        "model": "openai/gpt-5.4",
+        "api_key": "OPENROUTER_API_KEY",
         "supports_audio": False,
         "pricing_label": "收費",
-        "pricing_note": "OpenAI API 按 token 計費，需可用 credits / budget。",
-        "free_limit_note": "OpenAI API 此模型無免費 tokens；帳戶 tier 只限制每月/每分鐘用量，不代表免費。",
-        "paid_rate_note": "Standard short-context：input US$2.50 / 1M tokens，output US$15.00 / 1M tokens。",
+        "pricing_note": "經 OpenRouter 按 token 計費。",
+        "paid_rate_note": "Input US$2.50 / 1M tokens，output US$15.00 / 1M tokens。",
         "input_price_per_million": 2.50,
         "audio_input_price_per_million": None,
         "output_price_per_million": 15.00,
@@ -192,22 +185,45 @@ SPEECH_REVIEW_SYSTEM_PROMPT = f"""你係聖呂中辯嘅辯論教練 AI。你嘅�
 3. 需改善之處（具體、可操作嘅建議）
 4. 整體評語
 
-用繁體中文回覆。語氣要鼓勵但誠實。如果輸入係錄音，請同時評估語速、語調、停頓等辭鋒表現。"""
+用繁體中文回覆。語氣要鼓勵但誠實。如果輸入係錄音，請同時評估語速、語調、停頓等辭鋒表現。
+部分賽制設有三副辯員（第五位），負責額外補充論證或專責反駁。"""
 
-SPEECH_REVIEW_SYSTEM_PROMPT += """
+QA_REVIEW_SYSTEM_PROMPT = """你係聖呂中辯嘅辯論教練 AI。你嘅工作係幫學生練習辯論問答環節（台下發問或交互答問）。
 
-## 問答環節補充
-如果輸入內容係「台下發問練習」或「交互答問練習」：
-- 按輸入指定嘅次序扮演對方或 AI 回答 / 追問。
-- 如果用戶只要求你先提出問題或先作答，先完成該步，暫時毋須評分。
-- 如果用戶已提供回答，請評估回答是否直接、具防守力、能否扣回辯題及本方立場。
-- 對提問亦要評估是否清晰、尖銳、有追問空間，以及是否容易畀對方避開。
-- 回覆要清楚分開「AI 示範回應 / 追問」同「對用戶表現嘅評語」。"""
+## 辯論賽制背景
+- 每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）
+- 部分賽制設有三副辯員（第五位），負責額外補充論證或專責反駁
+- 台下發問：一方向另一方提問，對方即時回應
+- 交互答問：雙方輪流問答，考驗即時反應同邏輯能力
+
+## 你嘅任務
+按輸入指定嘅次序扮演對方辯員回答或追問。回覆要清楚分開「AI 示範回應 / 追問」同「對用戶表現嘅評語」兩部分。
+
+如果用戶只要求你先提出問題或先作答，先完成該步，暫時毋須評分。
+
+如果用戶已提供內容，請根據以下維度評估：
+
+### 對提問嘅評估
+- 清晰度：問題是否明確、對方能否理解
+- 尖銳度：能否直指對方論點弱點
+- 追問空間：無論對方點答都有得追問
+- 防避難度：對方是否容易避開或轉移話題
+
+### 對回答嘅評估
+- 直接程度：有冇正面回應問題，定係顧左右而言他
+- 防守力：能否守住本方立場、化解對方攻擊
+- 扣題能力：回答能否扣回辯題同本方主線
+- 反擊意識：有冇喺回答中反守為攻
+
+畀出整體表現評語同具體改善建議，唔需要逐項打分。
+
+用繁體中文回覆。語氣要鼓勵但誠實。"""
 
 STRATEGY_SYSTEM_PROMPT = f"""你係聖呂中辯嘅辯論策略顧問 AI。你嘅工作係幫隊伍策劃比賽主線。
 
 ## 辯論賽制
 - 每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）
+- 部分賽制設有三副辯員（第五位），負責額外補充論證或專責反駁
 - 自由辯論環節：雙方交替發言
 - 評判根據內容、辭鋒、組織、風度評分
 
@@ -315,92 +331,6 @@ def _append_source_list(text: str, sources: list[tuple[str, str]]) -> str:
     return text.rstrip() + "\n\n## 可核查來源\n" + "\n".join(source_lines)
 
 
-def _format_gemini_grounded_response(response) -> str:
-    text = response.text or "AI 未能生成回覆，請再試一次。"
-    sources_by_index = {}
-
-    candidates = _read_attr(response, "candidates") or []
-    if not candidates:
-        return text
-
-    metadata = _read_attr(candidates[0], "grounding_metadata", "groundingMetadata")
-    chunks = _read_attr(metadata, "grounding_chunks", "groundingChunks") or []
-    supports = _read_attr(metadata, "grounding_supports", "groundingSupports") or []
-
-    sorted_supports = sorted(
-        supports,
-        key=lambda s: _read_attr(_read_attr(s, "segment"), "end_index", "endIndex") or 0,
-        reverse=True,
-    )
-    for support in sorted_supports:
-        segment = _read_attr(support, "segment")
-        end_index = _read_attr(segment, "end_index", "endIndex")
-        chunk_indices = _read_attr(
-            support, "grounding_chunk_indices", "groundingChunkIndices"
-        ) or []
-        if end_index is None or not chunk_indices or end_index > len(text):
-            continue
-
-        citation_links = []
-        for chunk_index in chunk_indices:
-            if chunk_index >= len(chunks):
-                continue
-            web = _read_attr(chunks[chunk_index], "web")
-            url = _read_attr(web, "uri")
-            title = _read_attr(web, "title") or f"來源 {chunk_index + 1}"
-            if not url:
-                continue
-            citation_links.append(f"[{chunk_index + 1}]({url})")
-            sources_by_index[chunk_index] = (title, url)
-        if citation_links:
-            text = (
-                text[:end_index]
-                + " "
-                + ", ".join(citation_links)
-                + text[end_index:]
-            )
-
-    return _append_source_list(
-        text,
-        [sources_by_index[i] for i in sorted(sources_by_index)],
-    )
-
-
-def _format_openai_grounded_response(response) -> str:
-    text = response.output_text or "AI 未能生成回覆，請再試一次。"
-    annotations = []
-
-    for item in _read_attr(response, "output") or []:
-        if _read_attr(item, "type") != "message":
-            continue
-        for content in _read_attr(item, "content") or []:
-            content_text = _read_attr(content, "text")
-            if content_text:
-                text = content_text
-            annotations.extend(_read_attr(content, "annotations") or [])
-
-    sources_by_url = {}
-    sorted_annotations = sorted(
-        annotations,
-        key=lambda a: _read_attr(a, "end_index", "endIndex") or 0,
-        reverse=True,
-    )
-    for annotation in sorted_annotations:
-        if _read_attr(annotation, "type") != "url_citation":
-            continue
-        url = _read_attr(annotation, "url")
-        title = _read_attr(annotation, "title") or url
-        end_index = _read_attr(annotation, "end_index", "endIndex")
-        if not url:
-            continue
-        sources_by_url[url] = (title, url)
-        if end_index is not None and end_index <= len(text):
-            source_no = list(sources_by_url).index(url) + 1
-            text = text[:end_index] + f" [{source_no}]({url})" + text[end_index:]
-
-    return _append_source_list(text, list(sources_by_url.values()))
-
-
 def _estimate_usage_cost(
     model_config,
     input_tokens: int,
@@ -435,22 +365,16 @@ def format_ai_model_usage_note(model_label: str) -> str:
         STRATEGY_INPUT_TOKENS,
         STRATEGY_OUTPUT_TOKENS,
     )
-    cost_context = (
-        "Paid tier / 超出免費額度後"
-        if model_config["pricing_label"] == "有免費額度"
-        else "收費使用"
-    )
 
     lines = [
-        f"**免費限額**：{model_config['free_limit_note']}",
         f"**收費單價**：{_escape_markdown_dollars(model_config['paid_rate_note'])}",
-        f"**每次估算**：{cost_context}，文字稿發言檢查（{SPEECH_UNIT_MINUTES} 分鐘、約 {SPEECH_UNIT_WORDS} 字）約 {_format_usd(speech_text_cost)} / 次；主線策劃約 {_format_usd(strategy_cost)} / 次。",
+        f"**每次估算**：文字稿發言檢查（{SPEECH_UNIT_MINUTES} 分鐘、約 {SPEECH_UNIT_WORDS} 字）約 {_format_usd(speech_text_cost)} / 次；主線策劃約 {_format_usd(strategy_cost)} / 次。",
     ]
     if model_config["supports_audio"]:
         lines.append(
             f"**錄音估算**：4 分鐘錄音檢查約 {_format_usd(speech_audio_cost)} / 次；音訊 tokens 只作粗略估算。"
         )
-    lines.append("估算未必準確，實際用量會因辯題資料、回覆長度同供應商計法而變。")
+    lines.append("所有模型經 OpenRouter 統一計費（USD）。估算未必準確，實際用量會因回覆長度而變。")
     return "\n\n".join(lines)
 
 
@@ -495,6 +419,8 @@ def _parse_json_list(raw_value) -> list[str]:
 
 def normalize_ai_provider(provider: str | None) -> str:
     text = str(provider or "").strip().lower()
+    if text == "openrouter":
+        return "openrouter"
     if text in ("gemini", "google"):
         return "gemini"
     if text in ("openai", "gpt", "chatgpt"):
@@ -589,7 +515,8 @@ def _confirmed_balance_sql() -> str:
 def _transaction_provider_case_sql() -> str:
     return """
         CASE
-            WHEN provider IN ('gemini', 'openai', 'general', 'other') THEN provider
+            WHEN provider IN ('openrouter', 'gemini', 'openai', 'general', 'other') THEN provider
+            WHEN LOWER(COALESCE(payment_method, '')) LIKE '%openrouter%' THEN 'openrouter'
             WHEN LOWER(COALESCE(payment_method, '')) LIKE '%gemini%'
               OR LOWER(COALESCE(payment_method, '')) LIKE '%google%' THEN 'gemini'
             WHEN LOWER(COALESCE(payment_method, '')) LIKE '%openai%'
@@ -601,7 +528,7 @@ def _transaction_provider_case_sql() -> str:
 
 
 def _provider_amount_map(df) -> dict:
-    amounts = {"gemini": 0.0, "openai": 0.0, "other": 0.0}
+    amounts = {"openrouter": 0.0, "gemini": 0.0, "openai": 0.0, "other": 0.0}
     if df.empty:
         return amounts
     for _, row in df.iterrows():
@@ -892,13 +819,6 @@ def get_ai_fund_usage_summary():
     )
 
 
-def _gemini_search_fee_usd(model_config) -> float:
-    model_name = str(model_config.get("model", ""))
-    if model_name.startswith("gemini-3"):
-        return GEMINI_3_SEARCH_USD_PER_CALL
-    return GEMINI_25_SEARCH_USD_PER_CALL
-
-
 def estimate_ai_feature_usage(
     feature: str,
     model_label: str | None,
@@ -922,17 +842,10 @@ def estimate_ai_feature_usage(
         output_tokens = WEB_RESEARCH_OUTPUT_TOKENS
         audio_tokens = 0
         search_calls = 1
-        if model_config["provider"] == "openai":
-            input_tokens += OPENAI_WEB_SEARCH_CONTENT_TOKENS
-            usd = (
-                _estimate_usage_cost(model_config, input_tokens, output_tokens)
-                + OPENAI_WEB_SEARCH_USD_PER_CALL
-            )
-        else:
-            usd = (
-                _estimate_usage_cost(model_config, input_tokens, output_tokens)
-                + _gemini_search_fee_usd(model_config)
-            )
+        usd = (
+            _estimate_usage_cost(model_config, input_tokens, output_tokens)
+            + OPENROUTER_WEB_SEARCH_USD_PER_CALL
+        )
     else:
         input_tokens = output_tokens = audio_tokens = search_calls = 0
         usd = 0.0
@@ -945,6 +858,7 @@ def estimate_ai_feature_usage(
         "output_tokens": output_tokens,
         "audio_tokens": audio_tokens,
         "search_calls": search_calls,
+        "estimated_cost_usd": round(usd, 4),
         "estimated_cost_hkd": round(usd * HKD_PER_USD, 4),
     }
 
@@ -998,40 +912,19 @@ def log_ai_fund_usage(
     )
 
 
-def _get_gemini_modules():
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError:
-        return None, None, "❌ Gemini SDK 尚未安裝，請先更新 requirements.txt 並重新部署。"
-    return genai, types, None
-
-
-def _get_gemini_client():
-    if "GEMINI_API_KEY" not in st.secrets:
-        return None, "❌ AI 功能尚未設定，請聯絡開發人員設定 Gemini API Key。"
-    genai, _, error = _get_gemini_modules()
-    if error:
-        return None, error
-    if "_gemini_client" not in st.session_state:
-        st.session_state["_gemini_client"] = genai.Client(
-            api_key=st.secrets["GEMINI_API_KEY"]
-        )
-    return st.session_state["_gemini_client"], None
-
-
-def _get_openai_client():
-    if "OPENAI_API_KEY" not in st.secrets:
-        return None, "❌ AI 功能尚未設定，請聯絡開發人員設定 OpenAI API Key。"
+def _get_openrouter_client():
+    if "OPENROUTER_API_KEY" not in st.secrets:
+        return None, "❌ 未設定 OpenRouter API Key，請聯絡開發人員。"
     try:
         from openai import OpenAI
     except ImportError:
         return None, "❌ OpenAI SDK 尚未安裝，請先更新 requirements.txt 並重新部署。"
-    if "_openai_client" not in st.session_state:
-        st.session_state["_openai_client"] = OpenAI(
-            api_key=st.secrets["OPENAI_API_KEY"]
+    if "_openrouter_client" not in st.session_state:
+        st.session_state["_openrouter_client"] = OpenAI(
+            api_key=st.secrets["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
         )
-    return st.session_state["_openai_client"], None
+    return st.session_state["_openrouter_client"], None
 
 
 def _format_ai_error(provider: str, error: Exception) -> str:
@@ -1046,92 +939,103 @@ def _format_ai_error(provider: str, error: Exception) -> str:
     return f"❌ AI 服務暫時無法使用：{error}"
 
 
-def _generate_gemini_response(model_config, system_prompt: str, user_parts) -> str:
-    client, error = _get_gemini_client()
-    if error:
-        return error
-    _, types, error = _get_gemini_modules()
+def _generate_response(model_config, system_prompt: str, user_text: str) -> str:
+    client, error = _get_openrouter_client()
     if error:
         return error
     try:
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=model_config["model"],
-            contents=[types.Content(role="user", parts=user_parts)],
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.7,
-            ),
-        )
-        return response.text or "AI 未能生成回覆，請再試一次。"
-    except Exception as e:
-        return _format_ai_error("Gemini", e)
-
-
-def _generate_openai_response(model_config, system_prompt: str, user_text: str) -> str:
-    client, error = _get_openai_client()
-    if error:
-        return error
-    try:
-        response = client.responses.create(
-            model=model_config["model"],
-            instructions=system_prompt,
-            input=user_text,
-        )
-        return response.output_text or "AI 未能生成回覆，請再試一次。"
-    except Exception as e:
-        return _format_ai_error("OpenAI", e)
-
-
-def _generate_gemini_web_response(model_config, system_prompt: str, user_text: str) -> str:
-    client, error = _get_gemini_client()
-    if error:
-        return error
-    _, types, error = _get_gemini_modules()
-    if error:
-        return error
-    try:
-        grounding_tool = types.Tool(google_search=types.GoogleSearch())
-        response = client.models.generate_content(
-            model=model_config["model"],
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=user_text)],
-                )
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
             ],
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.3,
-                tools=[grounding_tool],
-            ),
+            temperature=0.7,
         )
-        return _format_gemini_grounded_response(response)
+        return response.choices[0].message.content or "AI 未能生成回覆，請再試一次。"
     except Exception as e:
-        return _format_ai_error("Gemini", e)
+        return _format_ai_error("OpenRouter", e)
 
 
-def _generate_openai_web_response(model_config, system_prompt: str, user_text: str) -> str:
-    client, error = _get_openai_client()
+def _generate_audio_response(model_config, system_prompt: str, user_text: str, audio_bytes: bytes) -> str:
+    client, error = _get_openrouter_client()
     if error:
         return error
     try:
-        response = client.responses.create(
+        content = [{"type": "text", "text": user_text}]
+        content.append({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64.b64encode(audio_bytes).decode(),
+                "format": "wav",
+            },
+        })
+        response = client.chat.completions.create(
             model=model_config["model"],
-            instructions=system_prompt,
-            input=user_text,
-            tools=[{"type": "web_search"}],
-            tool_choice="required",
-            include=["web_search_call.action.sources"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+            temperature=0.7,
         )
-        return _format_openai_grounded_response(response)
+        return response.choices[0].message.content or "AI 未能生成回覆，請再試一次。"
     except Exception as e:
-        return _format_ai_error("OpenAI", e)
+        return _format_ai_error("OpenRouter", e)
+
+
+def _format_web_search_response(response) -> str:
+    text = response.choices[0].message.content or "AI 未能生成回覆，請再試一次。"
+    annotations = []
+    message = response.choices[0].message
+    if hasattr(message, "annotations") and message.annotations:
+        annotations = message.annotations
+    elif hasattr(message, "content") and isinstance(message.content, list):
+        for part in message.content:
+            if hasattr(part, "annotations"):
+                annotations.extend(part.annotations or [])
+
+    sources_by_url = {}
+    sorted_annotations = sorted(
+        annotations,
+        key=lambda a: _read_attr(a, "end_index", "endIndex") or 0,
+        reverse=True,
+    )
+    for annotation in sorted_annotations:
+        if _read_attr(annotation, "type") != "url_citation":
+            continue
+        url = _read_attr(annotation, "url")
+        title = _read_attr(annotation, "title") or url
+        end_index = _read_attr(annotation, "end_index", "endIndex")
+        if not url:
+            continue
+        sources_by_url[url] = (title, url)
+        if end_index is not None and end_index <= len(text):
+            source_no = list(sources_by_url).index(url) + 1
+            text = text[:end_index] + f" [{source_no}]({url})" + text[end_index:]
+
+    return _append_source_list(text, list(sources_by_url.values()))
 
 
 def _generate_web_response(model_config, system_prompt: str, user_text: str) -> str:
-    if model_config["provider"] == "openai":
-        return _generate_openai_web_response(model_config, system_prompt, user_text)
-    return _generate_gemini_web_response(model_config, system_prompt, user_text)
+    client, error = _get_openrouter_client()
+    if error:
+        return error
+    try:
+        response = client.chat.completions.create(
+            model=model_config["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            tools=[{
+                "type": "openrouter:web_search",
+                "parameters": {"search_context_size": "medium"},
+            }],
+            temperature=0.3,
+        )
+        return _format_web_search_response(response)
+    except Exception as e:
+        return _format_ai_error("OpenRouter", e)
 
 
 def _build_match_context(match_id: str) -> str:
@@ -1205,10 +1109,9 @@ def review_speech(
 ) -> str:
     model_config = _get_model_config(model_label)
     if audio_bytes and not model_config["supports_audio"]:
-        return "⚠️ 錄音分析目前只支援 Gemini 模型。請改用 Gemini 模型，或貼上文字稿後再使用 OpenAI 模型。"
+        return "⚠️ 此模型不支援錄音分析。請選擇支援錄音嘅模型，或貼上文字稿再試。"
 
     position_label = POSITION_LABELS.get(position, "")
-    user_parts = []
     user_text_lines = [f"我嘅辯位：{side}{position_label}"]
 
     if match_id:
@@ -1222,33 +1125,17 @@ def review_speech(
     if text:
         user_text_lines.append(f"\n## 我嘅演辭內容\n{text}")
 
-    if model_config["provider"] == "openai":
-        return _generate_openai_response(
-            model_config,
-            SPEECH_REVIEW_SYSTEM_PROMPT,
-            "\n".join(user_text_lines),
-        )
+    is_qa_mode = text and ("## 台下發問練習" in text or "## 交互答問練習" in text)
+    system_prompt = QA_REVIEW_SYSTEM_PROMPT if is_qa_mode else SPEECH_REVIEW_SYSTEM_PROMPT
 
-    _, types, error = _get_gemini_modules()
-    if error:
-        return error
-
-    user_parts.append(types.Part.from_text(text="\n".join(user_text_lines)))
+    user_text = "\n".join(user_text_lines)
 
     if audio_bytes:
         if not text:
-            user_parts[0] = types.Part.from_text(
-                text="\n".join(user_text_lines) + "\n\n以下係我嘅演辭錄音，請分析："
-            )
-        user_parts.append(
-            types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
-        )
+            user_text += "\n\n以下係我嘅演辭錄音，請分析："
+        return _generate_audio_response(model_config, system_prompt, user_text, audio_bytes)
 
-    return _generate_gemini_response(
-        model_config,
-        SPEECH_REVIEW_SYSTEM_PROMPT,
-        user_parts,
-    )
+    return _generate_response(model_config, system_prompt, user_text)
 
 
 def brainstorm_strategy(
@@ -1264,20 +1151,7 @@ def brainstorm_strategy(
         user_lines.append(topic_ctx)
     user_lines.append("\n請為以上辯題和立場提供完整的比賽策略。")
 
-    if model_config["provider"] == "openai":
-        return _generate_openai_response(
-            model_config,
-            STRATEGY_SYSTEM_PROMPT,
-            "\n".join(user_lines),
-        )
-    _, types, error = _get_gemini_modules()
-    if error:
-        return error
-    return _generate_gemini_response(
-        model_config,
-        STRATEGY_SYSTEM_PROMPT,
-        [types.Part.from_text(text="\n".join(user_lines))],
-    )
+    return _generate_response(model_config, STRATEGY_SYSTEM_PROMPT, "\n".join(user_lines))
 
 
 def research_web(
