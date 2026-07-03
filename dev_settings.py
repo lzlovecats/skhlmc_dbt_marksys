@@ -5,6 +5,11 @@ from zoneinfo import ZoneInfo
 import json
 from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data
 from schema import TABLE_ACCOUNTS, init_db
+from ai_coach_helpers import (
+    get_ai_fund_account_options,
+    get_ai_fund_settings,
+    save_ai_fund_treasurers,
+)
 
 st.header("開發者設定")
 
@@ -191,6 +196,29 @@ with st.expander("刪除帳戶", expanded=False):
                 st.rerun()
             except Exception as e:
                 st.error(f"刪除帳戶失敗：{e}")
+
+st.divider()
+st.subheader("AI基金管理員設定")
+st.caption("AI基金管理員可在 AI 辯論易的「💲AI基金」分頁確認入數、記錄 provider 支出及更新AI基金設定。")
+
+with st.expander("指定AI基金管理員", expanded=False):
+    account_options = get_ai_fund_account_options()
+    current_treasurers = [
+        user_id for user_id in get_ai_fund_settings()["treasurers"]
+        if user_id in account_options
+    ]
+    if not account_options:
+        st.info("目前未有可選委員帳戶。")
+    else:
+        selected_treasurers = st.multiselect(
+            "選擇AI基金管理員帳戶",
+            options=account_options,
+            default=current_treasurers,
+        )
+        if st.button("更新AI基金管理員名單", type="primary"):
+            save_ai_fund_treasurers(selected_treasurers)
+            st.success("AI基金管理員名單已更新。")
+            st.rerun()
 
 st.divider()
 st.subheader("資料庫結構初始化")
