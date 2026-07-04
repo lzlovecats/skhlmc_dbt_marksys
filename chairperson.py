@@ -157,6 +157,12 @@ function getAudioCtx() {{
     return audioCtx;
 }}
 
+async function prepareBell() {{
+    const ctx = getAudioCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+    return ctx;
+}}
+
 async function loadBell() {{
     if (!BELL_SRC) return null;
     if (!bellLoading) {{
@@ -186,13 +192,12 @@ function playTone(count) {{
 }}
 
 async function playBell(count) {{
-    getAudioCtx();
+    const ctx = await prepareBell();
     await loadBell();
     if (!bellBuffer) {{
         playTone(count);
         return;
     }}
-    const ctx = getAudioCtx();
     for (let i = 0; i < count; i++) {{
         const src = ctx.createBufferSource();
         const gain = ctx.createGain();
@@ -554,6 +559,8 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .btn-pause:hover {{ background: #f57c00; }}
 .btn-reset {{ background: #555; color: #ddd; }}
 .btn-reset:hover {{ background: #666; }}
+.btn-test {{ background: #2563eb; color: white; }}
+.btn-test:hover {{ background: #1d4ed8; }}
 .bell-schedule {{ margin-top: 16px; padding: 12px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px; }}
 .bell-schedule h4 {{ margin-bottom: 8px; font-size: 14px; color: #aaa; }}
 .bell-item {{ font-size: 13px; padding: 3px 0; color: #777; }}
@@ -575,6 +582,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
         <div class="sw-display normal" id="single-display">0:00:00</div>
         <div class="btn-row">
             <button class="btn btn-start" id="single-start" onclick="toggleSingle()">開始</button>
+            <button class="btn btn-test" onclick="testBell()">測試聲音</button>
             <button class="btn btn-reset" onclick="resetSingle()">重置</button>
         </div>
         <div class="bell-schedule" id="single-bells"></div>
@@ -599,6 +607,9 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
                 </div>
             </div>
         </div>
+        <div class="btn-row">
+            <button class="btn btn-test" onclick="testBell()">測試聲音</button>
+        </div>
         <div class="bell-schedule" id="free-bells"></div>
     </div>
 </div>
@@ -607,12 +618,20 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 const BELL_SRC = "{bell_src}";
 const BELL_VOLUME = 10.0;
 let bellBuffer = null;
+let bellLoading = null;
 let audioCtx = null;
 
 function getAudioCtx() {{
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
     return audioCtx;
+}}
+
+async function prepareBell() {{
+    const ctx = getAudioCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+    loadBell();
+    return ctx;
 }}
 
 function playTone(count) {{
@@ -631,20 +650,22 @@ function playTone(count) {{
     }}
 }}
 
-(async function loadBell() {{
-    if (!BELL_SRC) return;
-    const ctx = getAudioCtx();
-    try {{
-        const resp = await fetch(BELL_SRC);
-        const arr = await resp.arrayBuffer();
-        bellBuffer = await ctx.decodeAudioData(arr);
-    }} catch (e) {{
-        bellBuffer = null;
+async function loadBell() {{
+    if (!BELL_SRC) return null;
+    if (!bellLoading) {{
+        bellLoading = fetch(BELL_SRC)
+            .then(resp => resp.arrayBuffer())
+            .then(arr => getAudioCtx().decodeAudioData(arr))
+            .then(buffer => {{ bellBuffer = buffer; return buffer; }})
+            .catch(() => null);
     }}
-}})();
+    return bellLoading;
+}}
 
-function playBell(count) {{
+async function playBell(count) {{
     const ctx = getAudioCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+    if (!bellBuffer) await loadBell();
     if (!bellBuffer) {{
         playTone(count);
         return;
@@ -658,6 +679,11 @@ function playBell(count) {{
         gain.connect(ctx.destination);
         src.start(ctx.currentTime + i * 0.8);
     }}
+}}
+
+async function testBell() {{
+    await prepareBell();
+    await playBell(1);
 }}
 
 const BELL_SCHEDULES = {bell_schedules_json};
@@ -743,7 +769,7 @@ function toggleSingle() {{
         btn.textContent = "繼續";
         btn.className = "btn btn-start";
     }} else {{
-        getAudioCtx();
+        prepareBell();
         sRunning = true;
         sStartTs = performance.now() - sElapsed * 1000;
         btn.textContent = "暫停";
@@ -818,7 +844,7 @@ function toggleFree(side) {{
             obtn.textContent = "繼續";
             obtn.className = "btn btn-start";
         }}
-        getAudioCtx();
+        prepareBell();
         s.running = true;
         s.startTs = performance.now() - s.elapsed * 1000;
         btn.textContent = "暫停";
