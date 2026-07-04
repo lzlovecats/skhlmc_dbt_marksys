@@ -14,7 +14,20 @@ body {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 12px; border-bottom: 1px solid #333; background: #202020;
 }
-.status { font-size: 13px; color: #aaa; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-wrap { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.status-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.badge {
+    flex: 0 0 auto; min-width: 58px; text-align: center;
+    border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 800;
+    background: #3f3f46; color: #f4f4f5;
+}
+.badge.ready { background: #14532d; color: #dcfce7; }
+.badge.listen { background: #1d4ed8; color: #dbeafe; }
+.badge.wait { background: #854d0e; color: #fef3c7; }
+.badge.reply { background: #7c2d12; color: #ffedd5; }
+.badge.error { background: #7f1d1d; color: #fee2e2; }
+.status { font-size: 14px; color: #e5e7eb; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.substatus { font-size: 12px; color: #aaa; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .buttons { display: flex; gap: 8px; flex-shrink: 0; }
 button {
     border: none; border-radius: 8px; padding: 9px 14px; font-weight: 700;
@@ -22,35 +35,103 @@ button {
 }
 button.primary { background: #16a34a; }
 button.danger { background: #dc2626; }
+button.secondary { background: #52525b; }
 button:disabled { opacity: .45; cursor: not-allowed; }
-.meter { height: 6px; background: #2b2b2b; }
+.session-panel {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px;
+    padding: 12px; border-bottom: 1px solid #333; background: #18181b;
+}
+.talk-area { min-width: 0; }
+.talk-btn {
+    width: 100%; min-height: 86px; border-radius: 8px;
+    font-size: 22px; letter-spacing: 0; background: #2563eb;
+    touch-action: none; user-select: none;
+}
+.talk-btn.recording { background: #dc2626; }
+.talk-btn.waiting { background: #854d0e; }
+.talk-hint { margin-top: 8px; color: #aaa; font-size: 13px; min-height: 18px; }
+.timer-box {
+    width: 150px; border: 1px solid #3f3f46; border-radius: 8px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 10px; background: #111;
+}
+.timer-label { color: #aaa; font-size: 12px; }
+.timer-value { margin-top: 4px; font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.meter { height: 8px; background: #2b2b2b; }
 .meter-fill { height: 100%; width: 0%; background: #22c55e; transition: width .08s linear; }
-.log { height: 480px; overflow-y: auto; padding: 12px; background: #101010; }
+.log { height: 430px; overflow-y: auto; padding: 12px; background: #101010; }
 .line { margin: 0 0 10px; line-height: 1.45; font-size: 15px; }
+.line.pending { color: #d4d4d8; }
 .who { font-weight: 800; color: #fca5a5; }
 .who.user { color: #93c5fd; }
-.hint { color: #888; font-size: 13px; padding: 10px 12px; border-top: 1px solid #333; }
+.who.system { color: #c4b5fd; }
+.hint {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    color: #888; font-size: 13px; padding: 10px 12px; border-top: 1px solid #333;
+}
+.retry { display: none; flex-shrink: 0; }
+.retry.show { display: inline-block; }
+.busy {
+    display: none; width: 10px; height: 10px; border-radius: 50%;
+    border: 2px solid #71717a; border-top-color: #facc15;
+    animation: spin .8s linear infinite; flex: 0 0 auto;
+}
+.busy.show { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) {
+    .topbar { align-items: stretch; flex-direction: column; }
+    .buttons { width: 100%; }
+    .buttons button { flex: 1; }
+    .session-panel { grid-template-columns: 1fr; }
+    .timer-box { width: 100%; }
+    .status { white-space: normal; }
+    .substatus { white-space: normal; }
+}
 </style>
 </head>
 <body>
 <div class="live-wrap">
     <div class="topbar">
-        <div class="status" id="status">未連線。按「開始」後瀏覽器會要求麥克風權限。</div>
+        <div class="status-wrap">
+            <div class="status-row">
+                <span class="badge" id="badge">未連線</span>
+                <span class="status" id="status">按「開始自由辯論」連線並允許麥克風權限。</span>
+                <span class="busy" id="busy"></span>
+            </div>
+            <div class="substatus" id="substatus">開始後按下「開始錄音」，完成發言後再按下送出交給 AI。</div>
+        </div>
         <div class="buttons">
-            <button class="primary" id="startBtn">開始</button>
+            <button class="primary" id="startBtn">開始自由辯論</button>
             <button class="danger" id="stopBtn" disabled>停止</button>
+        </div>
+    </div>
+    <div class="session-panel">
+        <div class="talk-area">
+            <button class="talk-btn" id="talkBtn" disabled>開始錄音</button>
+            <div class="talk-hint" id="talkHint">自由辯論準備好後可以開始。</div>
+        </div>
+        <div class="timer-box">
+            <div class="timer-label">已用發言時間</div>
+            <div class="timer-value" id="remaining">--:--</div>
         </div>
     </div>
     <div class="meter"><div class="meter-fill" id="meter"></div></div>
     <div class="log" id="log">
-        <p class="line"><span class="who">AI：</span>準備好之後按開始，然後直接發言。</p>
+        <p class="line"><span class="who system">系統：</span>開始自由辯論後，按下藍色按鈕開始錄音，完成發言後再按下送出。</p>
     </div>
-    <div class="hint">Live API 屬 preview；如果無聲或連線失敗，先停止再重新建立 session。</div>
+    <div class="hint">
+        <span id="hintText">Gemini Live API 屬 preview；如果連線失敗，請停止並重新建立自由辯論。</span>
+        <button class="secondary retry" id="retryBtn">重試本輪</button>
+    </div>
 </div>
 <script>
 const LIVE_TOKEN = __LIVE_TOKEN__;
 const MODEL = __LIVE_MODEL__;
 const SYSTEM_PROMPT = __LIVE_PROMPT__;
+const SESSION_MINUTES = __LIVE_MINUTES__;
+const BELL_SRC = __BELL_SRC__;
+const BELL_VOLUME = 5.0;
+const SPEECH_SECONDS = Math.max(1, Math.round(Number(SESSION_MINUTES || 2.5) * 60));
 const WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=" + encodeURIComponent(LIVE_TOKEN);
 
 let ws = null;
@@ -60,27 +141,240 @@ let outputCtx = null;
 let sourceNode = null;
 let processor = null;
 let playAt = 0;
-let micStarted = false;
+let micReady = false;
+let isRecording = false;
+let isWaiting = false;
+let manualStopping = false;
+let closeStatusLocked = false;
+let recordStartedAt = null;
+let recordTimer = null;
+let waitTimer = null;
+let speechTimer = null;
+let speechElapsed = 0;
+let speechStartedAt = 0;
+let speechRunning = false;
+let speechEnded = false;
+let firedBells = new Set();
+let userLine = null;
+let aiLine = null;
+let bellBuffer = null;
+let bellLoading = null;
+let bellCtx = null;
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const talkBtn = document.getElementById("talkBtn");
+const retryBtn = document.getElementById("retryBtn");
 const statusEl = document.getElementById("status");
+const substatusEl = document.getElementById("substatus");
+const badgeEl = document.getElementById("badge");
+const busyEl = document.getElementById("busy");
 const logEl = document.getElementById("log");
 const meterEl = document.getElementById("meter");
+const remainingEl = document.getElementById("remaining");
+const talkHintEl = document.getElementById("talkHint");
+const hintTextEl = document.getElementById("hintText");
 
-function setStatus(text) { statusEl.textContent = text; }
+function setState(label, detail, kind, busy) {
+    badgeEl.textContent = label;
+    badgeEl.className = "badge" + (kind ? " " + kind : "");
+    statusEl.textContent = detail;
+    busyEl.className = "busy" + (busy ? " show" : "");
+}
 
-function addLine(who, text, isUser) {
-    if (!text) return;
+function setSubstatus(text) { substatusEl.textContent = text; }
+function setHint(text) { hintTextEl.textContent = text; }
+
+function setTalkEnabled(enabled) {
+    talkBtn.disabled = !enabled;
+    talkBtn.className = "talk-btn";
+    talkBtn.textContent = "開始錄音";
+    if (enabled) {
+        talkHintEl.textContent = "按下開始錄音，完成發言後再按下送出。亦可按 Space。";
+    } else {
+        talkHintEl.textContent = "自由辯論準備好後可以開始。";
+    }
+}
+
+function showRetry(show) {
+    retryBtn.className = "secondary retry" + (show ? " show" : "");
+}
+
+function addLine(who, text, isUser, className) {
+    if (!text) return null;
     const p = document.createElement("p");
-    p.className = "line";
+    p.className = "line" + (className ? " " + className : "");
     const span = document.createElement("span");
-    span.className = "who" + (isUser ? " user" : "");
+    span.className = "who" + (isUser ? " user" : who === "系統" ? " system" : "");
     span.textContent = who + "：";
+    const node = document.createTextNode(text);
     p.appendChild(span);
-    p.appendChild(document.createTextNode(text));
+    p.appendChild(node);
     logEl.appendChild(p);
     logEl.scrollTop = logEl.scrollHeight;
+    return { el: p, textNode: node };
+}
+
+function setLineText(line, text) {
+    if (!line) return;
+    line.textNode.textContent = text;
+    line.el.className = "line";
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function appendLineText(line, text) {
+    if (!line || !text) return;
+    const current = line.textNode.textContent;
+    if (!current || current === "正在回覆..." || current === "正在轉錄...") {
+        setLineText(line, text);
+    } else {
+        line.textNode.textContent = current + text;
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+}
+
+function formatTime(seconds) {
+    const mins = Math.max(0, Math.floor(seconds / 60));
+    const secs = Math.max(0, seconds % 60);
+    return String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
+}
+
+function getBellCtx() {
+    if (!bellCtx) bellCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (bellCtx.state === "suspended") bellCtx.resume();
+    return bellCtx;
+}
+
+async function prepareBell() {
+    const ctx = getBellCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+    return ctx;
+}
+
+async function loadBell() {
+    if (!BELL_SRC) return null;
+    if (!bellLoading) {
+        bellLoading = fetch(BELL_SRC)
+            .then(resp => resp.arrayBuffer())
+            .then(arr => getBellCtx().decodeAudioData(arr))
+            .then(buffer => { bellBuffer = buffer; return buffer; })
+            .catch(() => null);
+    }
+    return bellLoading;
+}
+
+function playTone(count) {
+    const ctx = getBellCtx();
+    for (let i = 0; i < count; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.8);
+        gain.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + i * 0.8 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.8 + 0.28);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.8);
+        osc.stop(ctx.currentTime + i * 0.8 + 0.3);
+    }
+}
+
+async function playBell(count) {
+    const ctx = getBellCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+    if (!bellBuffer) await loadBell();
+    if (!bellBuffer) {
+        playTone(count);
+        return;
+    }
+    for (let i = 0; i < count; i++) {
+        const src = ctx.createBufferSource();
+        const gain = ctx.createGain();
+        src.buffer = bellBuffer;
+        gain.gain.value = BELL_VOLUME;
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        src.start(ctx.currentTime + i * 0.8);
+    }
+}
+
+function getSpeechElapsed() {
+    if (!speechRunning) return speechElapsed;
+    return speechElapsed + (Date.now() - speechStartedAt) / 1000;
+}
+
+function fireBellOnce(key, rings) {
+    if (firedBells.has(key)) return;
+    firedBells.add(key);
+    playBell(rings);
+}
+
+function updateSpeechTimer() {
+    const elapsed = Math.min(getSpeechElapsed(), SPEECH_SECONDS);
+    remainingEl.textContent = formatTime(Math.floor(elapsed));
+    if (elapsed >= 0) fireBellOnce("start", 1);
+    if (SPEECH_SECONDS > 30 && elapsed >= SPEECH_SECONDS - 30) {
+        fireBellOnce("warning", 1);
+    }
+    if (elapsed >= SPEECH_SECONDS && !speechEnded) {
+        speechEnded = true;
+        speechElapsed = SPEECH_SECONDS;
+        pauseSpeechTimer();
+        fireBellOnce("end", 2);
+        addLine("系統", "自由辯論發言時間已到，請重新開始自由辯論。", false);
+        stopLive(true, "自由辯論發言時間已到。");
+    }
+}
+
+function startSpeechTimer() {
+    speechElapsed = 0;
+    speechStartedAt = Date.now();
+    speechRunning = true;
+    speechEnded = false;
+    firedBells.clear();
+    updateSpeechTimer();
+    speechTimer = setInterval(updateSpeechTimer, 250);
+}
+
+function pauseSpeechTimer() {
+    if (speechRunning) {
+        speechElapsed = Math.min(getSpeechElapsed(), SPEECH_SECONDS);
+    }
+    speechRunning = false;
+    updateSpeechTimer();
+}
+
+function resumeSpeechTimer() {
+    if (speechEnded || speechElapsed >= SPEECH_SECONDS) return;
+    speechStartedAt = Date.now();
+    speechRunning = true;
+    updateSpeechTimer();
+}
+
+function clearTimers() {
+    if (recordTimer) clearInterval(recordTimer);
+    if (waitTimer) clearTimeout(waitTimer);
+    if (speechTimer) clearInterval(speechTimer);
+    recordTimer = null;
+    waitTimer = null;
+    speechTimer = null;
+    speechRunning = false;
+}
+
+function startWaitTimer() {
+    if (waitTimer) clearTimeout(waitTimer);
+    waitTimer = setTimeout(() => {
+        if (!isWaiting) return;
+        setState("等待 AI", "仍在等待 Gemini 回覆，可重試本輪或停止自由辯論。", "wait", true);
+        setSubstatus("如果長時間沒有反應，可以重試本輪。");
+        setHint("上一輪未收到 AI 回覆；你可以重試本輪，或停止自由辯論後重新建立。");
+        showRetry(true);
+    }, 10000);
+}
+
+function clearWaitTimer() {
+    if (waitTimer) clearTimeout(waitTimer);
+    waitTimer = null;
 }
 
 function downsampleBuffer(buffer, inputRate, outputRate) {
@@ -140,6 +434,9 @@ function playPcm(base64, mimeType) {
 }
 
 async function startMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("此瀏覽器不支援麥克風錄音。");
+    }
     stream = await navigator.mediaDevices.getUserMedia({
         audio: {
             channelCount: 1,
@@ -153,6 +450,7 @@ async function startMic() {
     sourceNode = inputCtx.createMediaStreamSource(stream);
     processor = inputCtx.createScriptProcessor(4096, 1, 1);
     processor.onaudioprocess = (event) => {
+        if (!isRecording) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         const raw = event.inputBuffer.getChannelData(0);
         let peak = 0;
@@ -187,99 +485,314 @@ function sendSetup() {
     }));
 }
 
-async function startMicAfterSetup() {
-    if (micStarted) return;
-    micStarted = true;
-    setStatus("已連線，啟動麥克風中...");
+async function prepareMicAfterSetup() {
+    if (micReady) return;
+    setState("連線中", "已連線，正在啟動麥克風...", "wait", true);
+    setSubstatus("請允許瀏覽器使用麥克風。");
     try {
         await startMic();
-        setStatus("Live 自由辯論進行中。");
+        micReady = true;
+        startSpeechTimer();
+        setState("準備好", "自由辯論已準備好，輪到你發言。", "ready", false);
+        setSubstatus("按下開始錄音，完成發言後再按下送出。");
+        setTalkEnabled(true);
+        addLine("系統", "自由辯論已開始。按下開始錄音，完成發言後再按下送出交給 AI。", false);
     } catch (e) {
-        setStatus("無法取得麥克風權限：" + e.message);
-        stopLive();
+        setState("錯誤", "無法取得麥克風權限：" + e.message, "error", false);
+        setSubstatus("請檢查瀏覽器權限，然後重新開始自由辯論。");
+        closeStatusLocked = true;
+        cleanupMedia(true);
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        setTalkEnabled(false);
+        showRetry(false);
     }
 }
 
 async function startLive() {
+    if (!window.WebSocket) {
+        setState("錯誤", "此瀏覽器不支援 WebSocket。", "error", false);
+        return;
+    }
+    if (!window.AudioContext && !window.webkitAudioContext) {
+        setState("錯誤", "此瀏覽器不支援音訊播放。", "error", false);
+        return;
+    }
+    manualStopping = false;
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    setStatus("連線中...");
+    setTalkEnabled(false);
+    showRetry(false);
+    setState("連線中", "正在連接 Gemini Live...", "wait", true);
+    setSubstatus("連線完成後會要求麥克風權限。");
     outputCtx = new (window.AudioContext || window.webkitAudioContext)();
     await outputCtx.resume();
+    await prepareBell();
     ws = new WebSocket(WS_URL);
-    ws.onopen = async () => {
+    ws.onopen = () => {
         sendSetup();
-        setStatus("已連線，等待 Live setup...");
+        setState("連線中", "已連線，等待 Gemini Live 設定...", "wait", true);
     };
     ws.onmessage = async (event) => {
         let data = event.data;
         if (data instanceof Blob) data = await data.text();
         if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data);
-        const msg = JSON.parse(data);
-        if (msg.setupComplete) startMicAfterSetup();
+        let msg = null;
+        try {
+            msg = JSON.parse(data);
+        } catch (e) {
+            console.error("[Live] JSON parse error:", e, data);
+            return;
+        }
+        if (msg.setupComplete) prepareMicAfterSetup();
         const sc = msg.serverContent;
-        if (sc) {
-            if (sc.inputTranscription && sc.inputTranscription.text) addLine("你", sc.inputTranscription.text, true);
-            if (sc.outputTranscription && sc.outputTranscription.text) addLine("AI", sc.outputTranscription.text, false);
-            if (sc.interrupted) playAt = outputCtx ? outputCtx.currentTime : 0;
-            if (sc.modelTurn && sc.modelTurn.parts) {
-                sc.modelTurn.parts.forEach((part) => {
-                    if (part.inlineData && part.inlineData.data) {
-                        playPcm(part.inlineData.data, part.inlineData.mimeType);
-                    }
-                    if (part.text) addLine("AI", part.text, false);
-                });
-            }
+        if (!sc) return;
+        if (sc.inputTranscription && sc.inputTranscription.text) {
+            if (!userLine) userLine = addLine("你", "正在轉錄...", true, "pending");
+            appendLineText(userLine, sc.inputTranscription.text);
+        }
+        if (sc.interrupted) playAt = outputCtx ? outputCtx.currentTime : 0;
+        if (sc.outputTranscription && sc.outputTranscription.text) {
+            beginAiResponse();
+            appendLineText(aiLine, sc.outputTranscription.text);
+        }
+        if (sc.modelTurn && sc.modelTurn.parts) {
+            beginAiResponse();
+            sc.modelTurn.parts.forEach((part) => {
+                if (part.inlineData && part.inlineData.data) {
+                    playPcm(part.inlineData.data, part.inlineData.mimeType);
+                }
+                if (part.text) appendLineText(aiLine, part.text);
+            });
+        }
+        if (sc.generationComplete) {
+            isWaiting = false;
+            pauseSpeechTimer();
+            clearWaitTimer();
+            showRetry(false);
+            setState("AI 回覆中", "AI 已生成回覆，正在播放。", "reply", true);
+        }
+        if (sc.turnComplete) {
+            clearWaitTimer();
+            showRetry(false);
+            finishTurnAfterPlayback();
         }
     };
     ws.onerror = (ev) => {
         console.error("WS error:", ev);
-        setStatus("Live WebSocket 發生錯誤。");
+        setState("錯誤", "Live WebSocket 發生錯誤，請檢查網絡或重新開始自由辯論。", "error", false);
+        setSubstatus("如果已經完成發言但沒有回應，請停止後重新開始自由辯論。");
     };
     ws.onclose = (ev) => {
-        const reason = ev.reason || "(no reason)";
-        console.log("WS close: code=" + ev.code + " reason=" + reason);
-        setStatus("Live session 已結束（code " + ev.code + "：" + reason + "）。");
+        const message = formatCloseMessage(ev);
+        if (closeStatusLocked) {
+            closeStatusLocked = false;
+            cleanupMedia(false);
+            return;
+        }
         startBtn.disabled = false;
         stopBtn.disabled = true;
+        setTalkEnabled(false);
+        showRetry(false);
+        if (manualStopping) {
+            setState("完成", "自由辯論已停止。", "", false);
+            setSubstatus("如要繼續，請重新開始自由辯論。");
+        } else {
+            setState("錯誤", message, "error", false);
+            setSubstatus("請重新開始自由辯論。");
+        }
+        cleanupMedia(false);
     };
 }
 
-function stopLive() {
-    if (processor) processor.disconnect();
-    if (sourceNode) sourceNode.disconnect();
-    if (stream) stream.getTracks().forEach((track) => track.stop());
-    if (inputCtx) inputCtx.close();
-    micStarted = false;
+function formatCloseMessage(ev) {
+    const reason = ev.reason || "";
+    if (reason.toLowerCase().includes("token") || ev.code === 1008) {
+        return "Live token 可能已過期或無效，請重新開始自由辯論。";
+    }
+    if (ev.code === 1006) {
+        return "Live 連線中斷，請檢查網絡後重新開始自由辯論。";
+    }
+    return "自由辯論已結束（code " + ev.code + (reason ? "：" + reason : "") + "）。";
+}
+
+function beginTurn() {
+    if (!micReady || isRecording || isWaiting) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setState("錯誤", "Live 連線未開啟，請重新開始自由辯論。", "error", false);
+        return;
+    }
+    if (inputCtx && inputCtx.state === "suspended") inputCtx.resume();
+    if (outputCtx && outputCtx.state === "suspended") outputCtx.resume();
+    isRecording = true;
+    userLine = null;
+    aiLine = null;
+    recordStartedAt = Date.now();
+    talkBtn.className = "talk-btn recording";
+    talkBtn.textContent = "完成並送出";
+    setState("正在聽", "正在收音，完成發言後按下送出。", "listen", false);
+    setSubstatus("請保持一句短發言，適合自由辯論節奏。");
+    talkHintEl.textContent = "錄音中 00:00｜按下送出";
+    recordTimer = setInterval(() => {
+        const seconds = Math.floor((Date.now() - recordStartedAt) / 1000);
+        talkHintEl.textContent = "錄音中 " + formatTime(seconds) + "｜按下送出";
+    }, 200);
+}
+
+function endTurn() {
+    if (!isRecording) return;
+    isRecording = false;
+    if (recordTimer) clearInterval(recordTimer);
+    recordTimer = null;
     meterEl.style.width = "0%";
+    isWaiting = true;
+    pauseSpeechTimer();
+    talkBtn.disabled = true;
+    talkBtn.className = "talk-btn waiting";
+    talkBtn.textContent = "等待 AI...";
+    talkHintEl.textContent = "已送出，等待 AI 回覆。";
+    setState("等待 AI", "已送出，等待 Gemini 轉錄及回覆。", "wait", true);
+    setSubstatus("收到 AI 回覆後會自動輪到你。");
+    if (!userLine) userLine = addLine("你", "正在轉錄...", true, "pending");
     try {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
-            ws.close();
         }
-    } catch (e) {}
+    } catch (e) {
+        setState("錯誤", "送出音訊失敗：" + e.message, "error", false);
+        isWaiting = false;
+        setTalkEnabled(true);
+        resumeSpeechTimer();
+        return;
+    }
+    startWaitTimer();
+}
+
+function toggleTurn() {
+    if (talkBtn.disabled) return;
+    if (isRecording) {
+        endTurn();
+    } else {
+        beginTurn();
+    }
+}
+
+function beginAiResponse() {
+    isWaiting = false;
+    pauseSpeechTimer();
+    clearWaitTimer();
+    showRetry(false);
+    setState("AI 回覆中", "AI 正在回覆。", "reply", true);
+    setSubstatus("請聽完 AI 回覆，再開始下一輪。");
+    talkBtn.disabled = true;
+    talkBtn.className = "talk-btn waiting";
+    talkBtn.textContent = "AI 回覆中...";
+    talkHintEl.textContent = "AI 回覆完成後會自動解鎖。";
+    if (!aiLine) aiLine = addLine("AI", "正在回覆...", false, "pending");
+}
+
+function finishTurnAfterPlayback() {
+    const delay = outputCtx && playAt > outputCtx.currentTime
+        ? Math.ceil((playAt - outputCtx.currentTime) * 1000) + 200
+        : 200;
+    setTimeout(() => {
+        if (!micReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+        isWaiting = false;
+        isRecording = false;
+        userLine = null;
+        aiLine = null;
+        setState("準備好", "輪到你。", "ready", false);
+        setSubstatus("按下開始錄音，完成發言後再按下送出。");
+        setTalkEnabled(true);
+        resumeSpeechTimer();
+    }, delay);
+}
+
+function cleanupMedia(closeSocket) {
+    clearTimers();
+    isRecording = false;
+    isWaiting = false;
+    micReady = false;
+    recordStartedAt = null;
+    meterEl.style.width = "0%";
+    try { if (processor) processor.disconnect(); } catch (e) {}
+    try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
+    try { if (stream) stream.getTracks().forEach((track) => track.stop()); } catch (e) {}
+    try { if (inputCtx) inputCtx.close(); } catch (e) {}
+    try { if (outputCtx) outputCtx.close(); } catch (e) {}
+    processor = null;
+    sourceNode = null;
+    stream = null;
+    inputCtx = null;
+    outputCtx = null;
+    playAt = 0;
+    speechElapsed = 0;
+    speechStartedAt = 0;
+    speechRunning = false;
+    speechEnded = false;
+    firedBells.clear();
+    remainingEl.textContent = "--:--";
+    if (closeSocket && ws) {
+        try {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+                ws.close();
+            } else if (ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
+            }
+        } catch (e) {}
+    }
+}
+
+function stopLive(markManual, finalText) {
+    manualStopping = Boolean(markManual);
+    cleanupMedia(true);
     startBtn.disabled = false;
     stopBtn.disabled = true;
+    setTalkEnabled(false);
+    showRetry(false);
+    if (finalText) {
+        setState("完成", finalText, "", false);
+        setSubstatus("如要繼續，請重新開始自由辯論。");
+    }
 }
 
 try {
-    console.log("[Live] init: token length=" + LIVE_TOKEN.length + " model=" + MODEL);
-    console.log("[Live] startBtn=", startBtn, "stopBtn=", stopBtn);
     startBtn.addEventListener("click", () => {
-        console.log("[Live] start clicked");
         startLive().catch(e => {
             console.error("[Live] startLive error:", e);
-            setStatus("啟動失敗：" + e.message);
+            setState("錯誤", "啟動失敗：" + e.message, "error", false);
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
         });
     });
-    stopBtn.addEventListener("click", () => {
-        console.log("[Live] stop clicked");
-        stopLive();
+    stopBtn.addEventListener("click", () => stopLive(true, "自由辯論已停止。"));
+    retryBtn.addEventListener("click", () => {
+        isWaiting = false;
+        clearWaitTimer();
+        showRetry(false);
+        addLine("系統", "上一輪未收到 AI 回覆，可以再次發言。", false);
+        setState("準備好", "輪到你。", "ready", false);
+        setSubstatus("按下開始錄音，完成發言後再按下送出。");
+        setTalkEnabled(true);
+        resumeSpeechTimer();
     });
-    console.log("[Live] event listeners attached OK");
+    talkBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        // Keyboard-synthesized clicks (detail 0) are handled by the keydown
+        // listener below; only act on real pointer clicks here to avoid double toggle.
+        if (e.detail === 0) return;
+        toggleTurn();
+    });
+    talkBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+    document.addEventListener("keydown", (e) => {
+        if (e.code !== "Space" || e.repeat || talkBtn.disabled) return;
+        e.preventDefault();
+        toggleTurn();
+    });
 } catch (e) {
     console.error("[Live] init error:", e);
-    document.getElementById("status").textContent = "初始化失敗：" + e.message;
+    setState("錯誤", "初始化失敗：" + e.message, "error", false);
 }
 </script>
 </body>

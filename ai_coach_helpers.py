@@ -2,6 +2,7 @@ import streamlit as st
 import logging
 import json
 import base64
+import math
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1373,25 +1374,27 @@ def build_free_debate_live_prompt(topic: str, user_side: str) -> str:
 規則：
 - 用自然香港粵語口語回應，保留必要辯論術語。
 - 每次回應要短、尖銳、適合自由辯論節奏，通常 1 至 3 句。
+- 用戶會用「按一下開始錄音，完成發言後再按一下送出」的短回合練習；每次收到一輪發言後先回應，不要假設用戶未完成發言。
 - 優先做追問、反駁、迫對方界定概念、指出因果漏洞或要求舉證。
 - 唔好長篇教學；練習期間先保持攻防節奏。
 - 如果用戶講「暫停評語」或「總結」，先用粵語畀簡短表現評語同下一步改善建議。
 - 如果用戶離題，直接拉返辯題同主線。"""
 
 
-def create_gemini_live_ephemeral_token(duration_minutes: int = 10) -> dict:
+def create_gemini_live_ephemeral_token(duration_minutes: float = 10) -> dict:
     if "GEMINI_API_KEY" not in st.secrets:
-        return {"ok": False, "message": "❌ 未設定 Gemini API Key，未能建立 Live session。"}
+        return {"ok": False, "message": "❌ 未設定 Gemini API Key，未能開始自由辯論。"}
     genai, _, error = _get_gemini_modules()
     if error:
         return {"ok": False, "message": error}
     try:
+        token_minutes = max(3, math.ceil(float(duration_minutes)))
         client = genai.Client(
             api_key=st.secrets["GEMINI_API_KEY"],
             http_options={"api_version": "v1alpha"},
         )
         now = datetime.now(timezone.utc)
-        expire = now + timedelta(minutes=int(duration_minutes) + 2)
+        expire = now + timedelta(minutes=token_minutes + 2)
         token = client.auth_tokens.create(
             config={
                 "uses": 1,
@@ -1408,7 +1411,7 @@ def create_gemini_live_ephemeral_token(duration_minutes: int = 10) -> dict:
             "token": token_name,
             "model": FREE_DEBATE_LIVE_MODEL,
             "model_label": FREE_DEBATE_LIVE_MODEL_LABEL,
-            "duration_minutes": int(duration_minutes),
+            "duration_minutes": token_minutes,
             "created_at": _now_hk_timestamp(),
         }
     except Exception as e:
