@@ -34,6 +34,7 @@ A full-featured electronic scoring and management platform for school debate com
 - 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini、DeepSeek 或 GPT 模型
 - **發言檢查**：輸入文字稿或粵語錄音（錄音分析需選 Gemini 模型），AI 根據正式評分標準（內容、辭鋒、組織、風度）提供詳細反饋及預估分數
 - **主線策劃**：根據辯題及立場生成完整比賽策略（論點、反駁、自由辯論策略、辯員分工）
+- **Gemini Live 自由辯論**：可手動輸入辯題或從辯題庫選擇，設定每邊發言時間，由 AI 扮演相反立場；使用者按下「開始錄音」，完成發言後再送出，AI 會即時轉錄及回應，系統會以 stopwatch 方式累計使用者發言時間並按賽制響叮提示
 - 支援 Gemini 2.5 Flash、Gemini 3.5 Flash、Gemini 3.1 Pro Preview、DeepSeek V4 Pro 及 GPT-5.4
 - 會標示模型收費狀態，並提醒委員節約使用高級或收費模型
 - 開發者可在開發者設定啟用 / 停用 AI Provider 及設定預設模型
@@ -44,6 +45,7 @@ A full-featured electronic scoring and management platform for school debate com
 - Committee-only AI debate coach with selectable Gemini, DeepSeek, or GPT models
 - **Speech Review**: submit text or Cantonese audio recordings (audio review requires a Gemini model); AI provides detailed feedback and estimated scores based on the official scoring rubric (Content, Eloquence, Organisation, Manner)
 - **Strategy Planning**: generates full match strategy (arguments, counter-arguments, free debate tactics, role assignments) from a given motion and side
+- **Gemini Live Free Debate**: starts a timed live practice where AI plays the opposing side; users click to record, click again to submit, then receive transcription and AI response
 - Supports Gemini 2.5 Flash, Gemini 3.5 Flash, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, and GPT-5.4
 - Shows model cost status and reminds committee members to conserve premium or paid model usage
 - Developers can enable / disable AI providers and set the default model from Developer settings
@@ -57,11 +59,13 @@ A full-featured electronic scoring and management platform for school debate com
 - 以身份分區（評判、賽會人員、參賽隊伍、一般人員、內部委員會成員）展示所有入口
 - 每個區塊提供一鍵跳轉對應頁面的快捷連結
 - 報名時間開放時，主頁標題下方會顯示下一屆比賽報名提示及報名連結
+- 支援手機版捷徑，可透過瀏覽器將系統加入手機主畫面；使用 `?install=1` 可顯示安裝指引
 
 **English:**
 - Identity-based card layout (Judge, Organiser, Teams, Public, Committee) with direct page links
 - One-click navigation to all system functions from a single landing page
 - When registration is open, a homepage banner appears below the title with the signup steps and registration link
+- Supports mobile home-screen shortcuts; open the homepage with `?install=1` to show installation guidance
 
 ---
 
@@ -182,6 +186,7 @@ A full-featured electronic scoring and management platform for school debate com
 | 文件輸出 / Document Export | ReportLab + pypdf PDF template overlay |
 | AI 整合 / AI | Google Gemini (`google-genai`) + OpenRouter (`openai` SDK) |
 | 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
+| 手機捷徑 / Mobile Shortcut | Streamlit static serving + web app manifest |
 | 部署 / Deployment | Streamlit Community Cloud |
 
 ---
@@ -220,6 +225,8 @@ password = "your_password"
 ```
 
 `GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
+
+Gemini Live 自由辯論會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
 
 **3. 初始化系統密碼 / Seed initial passwords**
 

@@ -1,9 +1,95 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from urllib.parse import urlparse
 from functions import get_registration_status, is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子賽務系統", layout="wide", page_icon="📑")
+
+
+def render_pwa_metadata():
+    components.html(
+        """
+        <script>
+        (function () {
+            const win = window.parent;
+            const doc = win.document;
+            const appName = "聖呂中辯";
+
+            function upsert(selector, tagName, attrs) {
+                let el = doc.head.querySelector(selector);
+                if (!el) {
+                    el = doc.createElement(tagName);
+                    doc.head.appendChild(el);
+                }
+                Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
+            }
+
+            upsert('link[rel="manifest"]', "link", {
+                rel: "manifest",
+                href: "/app/static/manifest.json"
+            });
+            upsert('link[rel="apple-touch-icon"]', "link", {
+                rel: "apple-touch-icon",
+                href: "/app/static/app-icon-180.png"
+            });
+            upsert('meta[name="theme-color"]', "meta", {
+                name: "theme-color",
+                content: "#111827"
+            });
+            upsert('meta[name="apple-mobile-web-app-capable"]', "meta", {
+                name: "apple-mobile-web-app-capable",
+                content: "yes"
+            });
+            upsert('meta[name="apple-mobile-web-app-title"]', "meta", {
+                name: "apple-mobile-web-app-title",
+                content: appName
+            });
+            upsert('meta[name="apple-mobile-web-app-status-bar-style"]', "meta", {
+                name: "apple-mobile-web-app-status-bar-style",
+                content: "black-translucent"
+            });
+
+            if (!win.__skhPwaInstallListenerReady) {
+                win.__skhPwaInstallListenerReady = true;
+                win.__skhPwaDeferredPrompt = null;
+                win.__skhPwaInstalled = (
+                    win.matchMedia("(display-mode: standalone)").matches ||
+                    win.navigator.standalone === true
+                );
+
+                win.addEventListener("beforeinstallprompt", function (event) {
+                    event.preventDefault();
+                    win.__skhPwaDeferredPrompt = event;
+                    win.dispatchEvent(new Event("skh-pwa-install-ready"));
+                });
+
+                win.addEventListener("appinstalled", function () {
+                    win.__skhPwaInstalled = true;
+                    win.__skhPwaDeferredPrompt = null;
+                    win.dispatchEvent(new Event("skh-pwa-installed"));
+                });
+
+                win.__skhPromptPwaInstall = async function () {
+                    if (!win.__skhPwaDeferredPrompt) {
+                        return { available: false };
+                    }
+                    const promptEvent = win.__skhPwaDeferredPrompt;
+                    win.__skhPwaDeferredPrompt = null;
+                    promptEvent.prompt();
+                    const choice = await promptEvent.userChoice;
+                    return { available: true, outcome: choice && choice.outcome };
+                };
+            }
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+render_pwa_metadata()
 
 if is_maintenance_mode():
     st.title("聖呂中辯電子賽務系統")

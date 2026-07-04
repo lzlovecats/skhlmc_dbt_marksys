@@ -1,5 +1,6 @@
 import streamlit as st
 import json
+import math
 import streamlit.components.v1 as components
 from functions import (
     check_committee_login,
@@ -89,14 +90,23 @@ def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, 
         st.caption(f"AI 用量記錄未能寫入：{e}")
 
 
-def _render_live_debate_component(token: str, model: str, system_prompt: str):
+def _render_live_debate_component(token: str, model: str, system_prompt: str, duration_minutes: float = 2.5):
     from pathlib import Path
+    import base64
     template_path = Path(__file__).parent / "templates" / "live_debate.html"
     live_html = template_path.read_text(encoding="utf-8")
+    bell_src = ""
+    try:
+        bell_path = Path(__file__).parent / "assets" / "bell.mp3"
+        bell_src = "data:audio/mpeg;base64," + base64.b64encode(bell_path.read_bytes()).decode()
+    except FileNotFoundError:
+        bell_src = ""
     live_html = live_html.replace("__LIVE_TOKEN__", json.dumps(token))
     live_html = live_html.replace("__LIVE_MODEL__", json.dumps(model))
     live_html = live_html.replace("__LIVE_PROMPT__", json.dumps(system_prompt, ensure_ascii=False))
-    components.html(live_html, height=640, scrolling=False)
+    live_html = live_html.replace("__LIVE_MINUTES__", json.dumps(float(duration_minutes or 2.5)))
+    live_html = live_html.replace("__BELL_SRC__", json.dumps(bell_src))
+    components.html(live_html, height=720, scrolling=False)
 
 
 def _prepare_transaction_display(df):
@@ -617,14 +627,52 @@ with tab_fact_check:
 # ─── Tab 5: 自由辯論 Live ─────────────────────────────────────────
 
 with tab_free_debate:
-    st.subheader("Gemini Live自由辯論")
+    st.subheader("Gemini Live 自由辯論")
     if model_config.get("provider") != "gemini":
         st.warning(
             f"目前模型為 {model_label}，不支援自由辯論功能，"
-            f"建立 session 時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
+            f"開始自由辯論時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
         )
 
-    free_topic = st.text_input("辯題", key="free_debate_live_topic")
+    free_topic_source = st.radio(
+        "辯題來源",
+        ["手動輸入", "從辯題庫選擇"],
+        horizontal=True,
+        key="free_debate_topic_source",
+    )
+    free_topic = ""
+    if free_topic_source == "從辯題庫選擇":
+        try:
+            conn = get_connection()
+            topics_df = conn.query(
+                f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}",
+                ttl=120,
+            )
+        except Exception as e:
+            st.error(f"無法讀取辯題庫：{e}")
+            topics_df = None
+
+        if topics_df is not None and not topics_df.empty:
+            topics_df["display"] = topics_df.apply(
+                lambda r: f"[{r.get('category', '')}] {r['topic_text']}", axis=1
+            )
+            selected_display = st.selectbox(
+                "選擇辯題",
+                topics_df["display"].tolist(),
+                key="free_debate_topic_select",
+            )
+            idx = topics_df["display"].tolist().index(selected_display)
+            free_topic = topics_df.iloc[idx]["topic_text"]
+            diff = topics_df.iloc[idx].get("difficulty")
+            if diff and diff in DIFFICULTY_OPTIONS:
+                st.caption(f"難度：{DIFFICULTY_OPTIONS[diff]}")
+        else:
+            st.info("辯題庫為空，請手動輸入辯題。")
+            free_topic_source = "手動輸入"
+
+    if free_topic_source == "手動輸入":
+        free_topic = st.text_input("辯題", key="free_debate_live_topic")
+
     free_side = st.radio(
         "立場",
         ["正方", "反方"],
@@ -632,46 +680,50 @@ with tab_free_debate:
         key="free_debate_live_side",
     )
     live_minutes = st.number_input(
-        "Session 時長上限（分鐘）",
-        min_value=3,
-        max_value=20,
-        value=10,
-        step=1,
+        "每邊發言時間（分鐘）",
+        min_value=0.5,
+        max_value=10.0,
+        value=2.5,
+        step=0.5,
         key="free_debate_live_minutes",
     )
+    live_token_minutes = max(3, math.ceil(float(live_minutes) * 2 + 2))
     st.caption(
         _format_ai_estimate(
             "free_debate_live",
             FREE_DEBATE_LIVE_MODEL_LABEL,
-            duration_minutes=live_minutes,
+            duration_minutes=live_token_minutes,
         )
     )
 
     if "GEMINI_API_KEY" not in st.secrets:
-        st.warning("未設定 GEMINI_API_KEY，暫時不能建立 Live session。")
+        st.warning("未設定 GEMINI_API_KEY，暫時不能開始自由辯論。")
 
-    if st.button("建立 Live session", type="primary", use_container_width=True, key="free_debate_live_create"):
+    if st.button("開始自由辯論", type="primary", use_container_width=True, key="free_debate_live_create"):
         if not free_topic.strip():
             st.warning("請先輸入辯題。")
         elif "GEMINI_API_KEY" not in st.secrets:
-            st.error("未設定 GEMINI_API_KEY，未能建立 Live session。")
+            st.error("未設定 GEMINI_API_KEY，未能開始自由辯論。")
         else:
-            token_result = create_gemini_live_ephemeral_token(int(live_minutes))
+            token_result = create_gemini_live_ephemeral_token(live_token_minutes)
             if not token_result.get("ok"):
-                st.error(token_result.get("message", "Live session 建立失敗。"))
+                st.error(token_result.get("message", "開始自由辯論失敗。"))
             else:
                 live_prompt = build_free_debate_live_prompt(free_topic.strip(), free_side)
+                ai_side = "反方" if free_side == "正方" else "正方"
                 st.session_state["free_debate_live_session"] = {
                     **token_result,
                     "topic": free_topic.strip(),
                     "side": free_side,
+                    "ai_side": ai_side,
+                    "duration_minutes": float(live_minutes),
                     "prompt": live_prompt,
                 }
                 try:
                     live_usage = estimate_ai_feature_usage(
                         "free_debate_live",
                         FREE_DEBATE_LIVE_MODEL_LABEL,
-                        duration_minutes=live_minutes,
+                        duration_minutes=live_token_minutes,
                     )
                     log_ai_fund_usage(
                         user_id=user_id,
@@ -682,20 +734,22 @@ with tab_free_debate:
                     )
                 except Exception as e:
                     st.caption(f"Live 用量估算未能寫入：{e}")
-                st.success("Live session 已建立。請按下方「開始」並允許麥克風權限。")
+                st.success("請按下方「開始自由辯論」連線並允許麥克風權限。")
 
     live_session = st.session_state.get("free_debate_live_session")
     if live_session:
         st.info(
             f"辯題：{live_session['topic']}｜我方：{live_session['side']}｜"
+            f"AI 方：{live_session.get('ai_side', '反方' if live_session['side'] == '正方' else '正方')}｜"
             f"模型：{live_session['model_label']}｜建立時間：{live_session['created_at']}"
         )
         _render_live_debate_component(
             live_session["token"],
             live_session["model"],
             live_session["prompt"],
+            live_session.get("duration_minutes", 10),
         )
-        if st.button("結束 Live session", key="free_debate_live_end"):
+        if st.button("結束自由辯論", key="free_debate_live_end"):
             del st.session_state["free_debate_live_session"]
             st.rerun()
 
