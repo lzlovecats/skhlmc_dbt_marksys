@@ -1,4 +1,6 @@
 import streamlit as st
+import json
+import streamlit.components.v1 as components
 from functions import (
     check_committee_login,
     committee_cookie_manager,
@@ -34,6 +36,13 @@ from ai_coach_helpers import (
     get_ai_model_settings,
     format_ai_model_label,
     format_ai_model_usage_note,
+    get_openrouter_credit_balance,
+    get_google_ai_studio_balance,
+    save_google_ai_studio_balance,
+    reset_ai_fund_usage_logs,
+    build_free_debate_live_prompt,
+    create_gemini_live_ephemeral_token,
+    FREE_DEBATE_LIVE_MODEL_LABEL,
 )
 
 
@@ -51,15 +60,20 @@ def _format_hkd_4dp(amount) -> str:
         return "HKD 0.0000"
 
 
-def _format_ai_estimate(feature: str, model_label: str, has_audio: bool = False) -> str:
-    usage = estimate_ai_feature_usage(feature, model_label, has_audio=has_audio)
+def _format_ai_estimate(feature: str, model_label: str, has_audio: bool = False, duration_minutes: float | None = None) -> str:
+    usage = estimate_ai_feature_usage(
+        feature,
+        model_label,
+        has_audio=has_audio,
+        duration_minutes=duration_minutes,
+    )
     search_note = "，按 1 次搜尋工具估算" if usage["search_calls"] else ""
     usd = usage.get("estimated_cost_usd", 0)
     hkd = usage["estimated_cost_hkd"]
     return f"估算成本：US${usd:.4f} ≈ {_format_hkd_4dp(hkd)} / 次{search_note}。"
 
 
-def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, has_audio: bool = False):
+def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, has_audio: bool = False, usage: dict | None = None):
     success = is_successful_ai_result(result)
     try:
         log_ai_fund_usage(
@@ -69,9 +83,20 @@ def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, 
             success=success,
             has_audio=has_audio,
             error_message="" if success else result,
+            usage_override=usage if success else None,
         )
     except Exception as e:
         st.caption(f"AI 用量記錄未能寫入：{e}")
+
+
+def _render_live_debate_component(token: str, model: str, system_prompt: str):
+    from pathlib import Path
+    template_path = Path(__file__).parent / "templates" / "live_debate.html"
+    live_html = template_path.read_text(encoding="utf-8")
+    live_html = live_html.replace("__LIVE_TOKEN__", json.dumps(token))
+    live_html = live_html.replace("__LIVE_MODEL__", json.dumps(model))
+    live_html = live_html.replace("__LIVE_PROMPT__", json.dumps(system_prompt, ensure_ascii=False))
+    components.html(live_html, height=640, scrolling=False)
 
 
 def _prepare_transaction_display(df):
@@ -126,11 +151,13 @@ def _prepare_usage_display(df):
         "feature": "功能",
         "model_label": "模型",
         "provider": "Provider",
+        "estimated_cost_usd": "估算成本(USD)",
         "estimated_cost_hkd": "估算成本(HKD)",
         "input_tokens": "Input tokens",
         "output_tokens": "Output tokens",
         "audio_tokens": "Audio tokens",
         "search_calls": "搜尋次數",
+        "cost_source": "成本來源",
         "status": "狀態",
         "error_message": "錯誤訊息",
         "created_at": "時間",
@@ -144,10 +171,6 @@ render_page_guidance(
         "使用「主線策劃」模式，AI 可根據辯題及立場生成論點及應對策略。",
         "使用「上網搵料」模式，AI 會即時搜尋網上資料並附上來源。",
         "使用「Fact check易」模式，AI 會搜尋來源並核查陳述真偽。",
-        "Gemini 模型經 Gemini API 直連；DeepSeek 及 GPT 模型經 OpenRouter 呼叫。",
-        "日常練習建議使用 Gemini 2.5 Flash；重要稿件先選高級或跨廠模型。",
-        "可選擇從系統場次載入比賽資料，或手動輸入外部比賽嘅辯題。",
-        "此功能使用 AI 生成，僅供參考，不代表評判觀點。",
     ],
     title="首次使用指南",
 )
@@ -171,6 +194,8 @@ if not model_options:
     st.error("未有可用 AI 模型，請聯絡開發人員檢查 AI Provider 設定。")
     st.stop()
 default_model = ai_model_settings["default_model"]
+if st.session_state.get("ai_model") not in model_options:
+    st.session_state["ai_model"] = default_model
 model_label = st.selectbox(
     "AI 模型",
     options=model_options,
@@ -182,14 +207,12 @@ model_config = ai_model_settings["model_options"][model_label]
 st.caption(f"收費狀態：{model_config['pricing_label']}。{model_config['pricing_note']}")
 with st.expander("模型限額及成本估算", expanded=True):
     st.markdown(format_ai_model_usage_note(model_label))
-st.info("日常練習建議使用 Gemini 2.5 Flash（支援錄音及上網搜尋）。複雜策略或重要稿件可用 Gemini 3.1 Pro Preview、DeepSeek V4 Pro 或 GPT-5.4。")
+st.info("日常練習請用 Gemini 2.5 Flash，深入分析用 Gemini 3.1 Pro。重要稿件先用GPT-5.4 Mini。")
 if model_config.get("is_premium"):
     st.warning("你正在使用高級模型。請確保不要濫用，避免資金用盡。")
 
 if model_config["api_key"] not in st.secrets:
     st.warning(f"未設定 {model_config['api_key']}，此模型暫時無法使用。")
-if not model_config["supports_audio"]:
-    st.warning("此模型不支援錄音分析。如需錄音分析，請選擇支援錄音嘅模型（如 Gemini 系列）。")
 
 fund_summary_preview = get_ai_fund_summary() if ensure_ai_fund_tables() else {}
 if (
@@ -202,13 +225,16 @@ if (
         "建議新增資金。"
     )
 
-tab_review, tab_strategy, tab_research, tab_fact_check, tab_fund = st.tabs(
-    ["📝 發言檢查", "💡 主線策劃", "🌐 上網搵料", "✅ Fact check易", "💲AI基金"]
+tab_review, tab_strategy, tab_research, tab_fact_check, tab_free_debate, tab_fund = st.tabs(
+    ["📝 發言檢查", "💡 主線策劃", "🌐 上網搵料", "✅ Fact check易", "🎙️ 自由辯論", "💲AI基金"]
 )
 
 # ─── Tab 1: 發言檢查 ───────────────────────────────────────────────
 
 with tab_review:
+    if not model_config["supports_audio"]:
+        st.warning("此模型不支援錄音分析。如需錄音分析，請選擇支援錄音嘅模型（如 Gemini 系列）。")
+
     source = st.radio(
         "比賽資料來源",
         ["從系統場次載入", "手動輸入（外部比賽）"],
@@ -417,7 +443,7 @@ with tab_review:
                     st.stop()
 
             with st.spinner("AI 分析中..."):
-                result = review_speech(
+                result, actual_usage = review_speech(
                     text=review_text_for_ai or None,
                     audio_bytes=audio_bytes,
                     side=review_side,
@@ -432,6 +458,7 @@ with tab_review:
                     model_label,
                     result,
                     has_audio=audio_bytes is not None,
+                    usage=actual_usage,
                 )
 
             st.divider()
@@ -492,12 +519,12 @@ with tab_strategy:
             st.warning("請輸入或選擇辯題。")
         else:
             with st.spinner("AI 策劃中..."):
-                result = brainstorm_strategy(
+                result, actual_usage = brainstorm_strategy(
                     topic=topic_text,
                     side=strategy_side,
                     model_label=model_label,
                 )
-                _record_ai_usage(user_id, "strategy", model_label, result)
+                _record_ai_usage(user_id, "strategy", model_label, result, usage=actual_usage)
 
             st.divider()
             st.subheader("策略建議")
@@ -532,12 +559,12 @@ with tab_research:
             st.warning("請簡單描述想搵咩資料。")
         else:
             with st.spinner("AI 上網搵料中..."):
-                result = research_web(
+                result, actual_usage = research_web(
                     topic=research_topic,
                     research_need=research_need,
                     model_label=model_label,
                 )
-                _record_ai_usage(user_id, "web_research", model_label, result)
+                _record_ai_usage(user_id, "web_research", model_label, result, usage=actual_usage)
 
             st.divider()
             st.subheader("搵料結果")
@@ -569,11 +596,11 @@ with tab_fact_check:
             st.warning("請輸入要核查嘅陳述。")
         else:
             with st.spinner("AI fact check 中..."):
-                result = fact_check_claim(
+                result, actual_usage = fact_check_claim(
                     statement=statement,
                     model_label=model_label,
                 )
-                _record_ai_usage(user_id, "fact_check", model_label, result)
+                _record_ai_usage(user_id, "fact_check", model_label, result, usage=actual_usage)
 
             st.divider()
             st.subheader("Fact check 結果")
@@ -587,7 +614,92 @@ with tab_fact_check:
                 use_container_width=True,
             )
 
-# ─── Tab 5: AI基金 ─────────────────────────────────────────────────
+# ─── Tab 5: 自由辯論 Live ─────────────────────────────────────────
+
+with tab_free_debate:
+    st.subheader("Gemini Live自由辯論")
+    if model_config.get("provider") != "gemini":
+        st.warning(
+            f"目前模型為 {model_label}，不支援自由辯論功能，"
+            f"建立 session 時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
+        )
+
+    free_topic = st.text_input("辯題", key="free_debate_live_topic")
+    free_side = st.radio(
+        "立場",
+        ["正方", "反方"],
+        horizontal=True,
+        key="free_debate_live_side",
+    )
+    live_minutes = st.number_input(
+        "Session 時長上限（分鐘）",
+        min_value=3,
+        max_value=20,
+        value=10,
+        step=1,
+        key="free_debate_live_minutes",
+    )
+    st.caption(
+        _format_ai_estimate(
+            "free_debate_live",
+            FREE_DEBATE_LIVE_MODEL_LABEL,
+            duration_minutes=live_minutes,
+        )
+    )
+
+    if "GEMINI_API_KEY" not in st.secrets:
+        st.warning("未設定 GEMINI_API_KEY，暫時不能建立 Live session。")
+
+    if st.button("建立 Live session", type="primary", use_container_width=True, key="free_debate_live_create"):
+        if not free_topic.strip():
+            st.warning("請先輸入辯題。")
+        elif "GEMINI_API_KEY" not in st.secrets:
+            st.error("未設定 GEMINI_API_KEY，未能建立 Live session。")
+        else:
+            token_result = create_gemini_live_ephemeral_token(int(live_minutes))
+            if not token_result.get("ok"):
+                st.error(token_result.get("message", "Live session 建立失敗。"))
+            else:
+                live_prompt = build_free_debate_live_prompt(free_topic.strip(), free_side)
+                st.session_state["free_debate_live_session"] = {
+                    **token_result,
+                    "topic": free_topic.strip(),
+                    "side": free_side,
+                    "prompt": live_prompt,
+                }
+                try:
+                    live_usage = estimate_ai_feature_usage(
+                        "free_debate_live",
+                        FREE_DEBATE_LIVE_MODEL_LABEL,
+                        duration_minutes=live_minutes,
+                    )
+                    log_ai_fund_usage(
+                        user_id=user_id,
+                        feature="free_debate_live",
+                        model_label=FREE_DEBATE_LIVE_MODEL_LABEL,
+                        success=True,
+                        usage_override=live_usage,
+                    )
+                except Exception as e:
+                    st.caption(f"Live 用量估算未能寫入：{e}")
+                st.success("Live session 已建立。請按下方「開始」並允許麥克風權限。")
+
+    live_session = st.session_state.get("free_debate_live_session")
+    if live_session:
+        st.info(
+            f"辯題：{live_session['topic']}｜我方：{live_session['side']}｜"
+            f"模型：{live_session['model_label']}｜建立時間：{live_session['created_at']}"
+        )
+        _render_live_debate_component(
+            live_session["token"],
+            live_session["model"],
+            live_session["prompt"],
+        )
+        if st.button("結束 Live session", key="free_debate_live_end"):
+            del st.session_state["free_debate_live_session"]
+            st.rerun()
+
+# ─── Tab 6: AI基金 ─────────────────────────────────────────────────
 
 with tab_fund:
     st.subheader("AI基金")
@@ -611,33 +723,81 @@ with tab_fund:
     )
 
     with fund_overview_tab:
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3 = st.columns(3)
         col1.metric("已確認現金餘額", _format_hkd(fund_summary["balance_hkd"]))
         col2.metric("待確認入數", _format_hkd(fund_summary["pending_deposits_hkd"]))
-        col3.metric("本月 AI 估算用量", _format_hkd_4dp(fund_summary["monthly_usage_hkd"]))
-        col4.metric("本月 provider 支出", _format_hkd(fund_summary["monthly_provider_topup_hkd"]))
+        col3.metric("最近 30 日 AI 用量", _format_hkd_4dp(fund_summary["recent_usage_hkd"]))
 
         if fund_summary["balance_hkd"] < fund_summary["low_balance_hkd"]:
             st.warning(
                 f"餘額低於警戒線 {_format_hkd(fund_summary['low_balance_hkd'])}，建議補充資金。"
             )
 
-        st.info(
+        st.caption(
             f"目標金額：{_format_hkd(fund_summary['target_hkd'])}｜"
-            f"建議補充資金：{_format_hkd(fund_summary['suggested_total_hkd'])}｜"
-            f"按 {fund_summary['member_count']} 名成員計，每人約 "
+            f"建議補充：{_format_hkd(fund_summary['suggested_total_hkd'])}｜"
+            f"按 {fund_summary['member_count']} 人計每人約 "
             f"{_format_hkd(fund_summary['suggested_per_member_hkd'])}"
         )
 
-        with st.expander("付款指示", expanded=True):
+        with st.expander("Provider 餘額", expanded=True):
+            google_ai_studio_balance = get_google_ai_studio_balance()
+            provider_col1, provider_col2 = st.columns(2)
+            with provider_col1:
+                openrouter_balance = get_openrouter_credit_balance()
+                if openrouter_balance.get("ok"):
+                    st.metric(
+                        "OpenRouter 剩餘 credits",
+                        f"US${openrouter_balance['remaining_credits_usd']:,.2f}",
+                        help="由 OpenRouter credits API 即時讀取。",
+                    )
+                    st.caption(
+                        f"Purchased：US${openrouter_balance['total_credits_usd']:,.2f}｜"
+                        f"Used：US${openrouter_balance['total_usage_usd']:,.2f}｜"
+                        f"約 {_format_hkd(openrouter_balance['remaining_credits_usd'] * 7.8)}"
+                    )
+                else:
+                    st.metric("OpenRouter 剩餘 credits", "未能讀取")
+                    st.caption(openrouter_balance.get("message", "OpenRouter credits 讀取失敗。"))
+            with provider_col2:
+                if google_ai_studio_balance["balance_usd"] is None:
+                    st.metric("Google AI Studio 手動餘額", "未設定")
+                    st.caption("由 AI基金管理員從 AI Studio Billing 手動更新。")
+                else:
+                    st.metric(
+                        "Google AI Studio 手動餘額",
+                        f"US${google_ai_studio_balance['balance_usd']:,.2f}",
+                        help="手動輸入值，並非 Google API 即時回傳。",
+                    )
+                    st.caption(
+                        f"約 {_format_hkd(google_ai_studio_balance['balance_hkd'])}｜"
+                        f"更新：{google_ai_studio_balance['updated_at'] or '—'}｜"
+                        f"{google_ai_studio_balance['updated_by'] or '—'}"
+                    )
+                if is_treasurer:
+                    with st.form("google_ai_studio_balance_form"):
+                        balance_default = google_ai_studio_balance["balance_usd"]
+                        google_balance_usd = st.number_input(
+                            "更新 Google AI Studio 餘額（USD）",
+                            min_value=0.0,
+                            value=float(balance_default or 0.0),
+                            step=1.0,
+                            format="%.4f",
+                        )
+                        submit_google_balance = st.form_submit_button("更新餘額")
+                    if submit_google_balance:
+                        try:
+                            save_google_ai_studio_balance(google_balance_usd, user_id)
+                            st.success("Google AI Studio 餘額已更新。")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Google AI Studio 餘額更新失敗：{e}")
+
+        with st.expander("付款指示"):
             st.text(fund_settings["payment_instruction"])
 
-        st.caption(
-            "上網搵料及 Fact check 的估算包括 1 次搜尋工具費（US$0.005/次）。"
-        )
-
         if is_treasurer:
-            with st.expander("AI基金管理員設定", expanded=False):
+            with st.expander("AI基金管理員設定"):
                 with st.form("ai_fund_settings_form"):
                     target_hkd = st.number_input(
                         "目標金額（HKD）",
@@ -668,6 +828,18 @@ with tab_fund:
                     )
                     st.success("AI基金設定已更新。")
                     st.rerun()
+
+                st.divider()
+                st.markdown("##### 重置 AI 用量紀錄")
+                st.caption("刪除所有 AI 用量估算紀錄。此操作不可復原，不影響現金帳交易。")
+                reset_confirm = st.checkbox("我確認要重置所有 AI 用量紀錄", key="reset_usage_confirm")
+                if st.button("重置用量紀錄", disabled=not reset_confirm, key="reset_usage_btn"):
+                    try:
+                        deleted = reset_ai_fund_usage_logs()
+                        st.success(f"已刪除 {deleted} 筆用量紀錄。")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"重置失敗：{e}")
 
     with fund_deposit_tab:
         st.markdown("#### 成員入數")

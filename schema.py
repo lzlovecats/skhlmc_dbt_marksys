@@ -412,14 +412,16 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
+    estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
     estimated_cost_hkd  NUMERIC(10, 4) DEFAULT 0,
     input_tokens        INTEGER     DEFAULT 0,
     output_tokens       INTEGER     DEFAULT 0,
     audio_tokens        INTEGER     DEFAULT 0,
     search_calls        INTEGER     DEFAULT 0,
+    cost_source         TEXT        DEFAULT 'estimate',
     status              TEXT        DEFAULT 'success'
                                 CHECK (status IN ('success', 'failed')),
     error_message       TEXT,
