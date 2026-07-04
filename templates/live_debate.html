@@ -71,6 +71,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 .retry { display: none; flex-shrink: 0; }
 .retry.show { display: inline-block; }
+.feedback { display: none; flex-shrink: 0; }
+.feedback.show { display: inline-block; background: #2563eb; }
 .busy {
     display: none; width: 10px; height: 10px; border-radius: 50%;
     border: 2px solid #71717a; border-top-color: #facc15;
@@ -121,6 +123,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     </div>
     <div class="hint">
         <span id="hintText">Gemini Live API 屬 preview；如果連線失敗，請停止並重新建立自由辯論。</span>
+        <button class="secondary feedback" id="feedbackBtn">要求 AI 評價</button>
         <button class="secondary retry" id="retryBtn">重試本輪</button>
     </div>
 </div>
@@ -157,6 +160,8 @@ let speechEnded = false;
 let firedBells = new Set();
 let userLine = null;
 let aiLine = null;
+let finalFeedbackRequested = false;
+let finalFeedbackComplete = false;
 let bellBuffer = null;
 let bellLoading = null;
 let bellCtx = null;
@@ -165,6 +170,7 @@ const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const talkBtn = document.getElementById("talkBtn");
 const retryBtn = document.getElementById("retryBtn");
+const feedbackBtn = document.getElementById("feedbackBtn");
 const statusEl = document.getElementById("status");
 const substatusEl = document.getElementById("substatus");
 const badgeEl = document.getElementById("badge");
@@ -198,6 +204,10 @@ function setTalkEnabled(enabled) {
 
 function showRetry(show) {
     retryBtn.className = "secondary retry" + (show ? " show" : "");
+}
+
+function showFeedbackButton(show) {
+    feedbackBtn.className = "secondary feedback" + (show ? " show" : "");
 }
 
 function addLine(who, text, isUser, className) {
@@ -321,8 +331,7 @@ function updateSpeechTimer() {
         speechElapsed = SPEECH_SECONDS;
         pauseSpeechTimer();
         fireBellOnce("end", 2);
-        addLine("系統", "自由辯論發言時間已到，請重新開始自由辯論。", false);
-        stopLive(true, "自由辯論發言時間已到。");
+        prepareFinalFeedback("自由辯論發言時間已到。");
     }
 }
 
@@ -375,6 +384,15 @@ function startWaitTimer() {
 function clearWaitTimer() {
     if (waitTimer) clearTimeout(waitTimer);
     waitTimer = null;
+}
+
+function startFinalFeedbackWaitTimer() {
+    if (waitTimer) clearTimeout(waitTimer);
+    waitTimer = setTimeout(() => {
+        if (!finalFeedbackRequested || finalFeedbackComplete) return;
+        setState("等待評價", "仍在等待 AI 總結評價。", "wait", true);
+        setSubstatus("如長時間沒有回應，請停止後重新開始自由辯論。");
+    }, 10000);
 }
 
 function downsampleBuffer(buffer, inputRate, outputRate) {
@@ -677,6 +695,77 @@ function toggleTurn() {
     }
 }
 
+function sendTextTurn(text) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        throw new Error("Live 連線未開啟。");
+    }
+    ws.send(JSON.stringify({
+        clientContent: {
+            turns: [{
+                role: "user",
+                parts: [{ text }]
+            }],
+            turnComplete: true
+        }
+    }));
+}
+
+function stopActiveRecording() {
+    if (!isRecording) return;
+    isRecording = false;
+    if (recordTimer) clearInterval(recordTimer);
+    recordTimer = null;
+    meterEl.style.width = "0%";
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+    }
+}
+
+function prepareFinalFeedback(reason) {
+    if (finalFeedbackRequested || finalFeedbackComplete) return;
+    pauseSpeechTimer();
+    showRetry(false);
+    setTalkEnabled(false);
+    showFeedbackButton(true);
+    stopActiveRecording();
+    isWaiting = false;
+    isRecording = false;
+    talkBtn.textContent = "等待評價";
+    talkHintEl.textContent = "請按「要求 AI 評價」取得總結評語。";
+    setState("等待評價", reason + " 請按「要求 AI 評價」。", "wait", false);
+    setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
+    setHint("自由辯論已停止；如要完成練習，請先要求 AI 評價。");
+    addLine("系統", reason + " 請按「要求 AI 評價」取得總結評語。", false);
+}
+
+function requestFinalFeedback() {
+    if (finalFeedbackRequested) return;
+    finalFeedbackRequested = true;
+    finalFeedbackComplete = false;
+    pauseSpeechTimer();
+    showRetry(false);
+    showFeedbackButton(false);
+    setTalkEnabled(false);
+    talkBtn.textContent = "等待評價";
+    talkHintEl.textContent = "自由辯論時間已到，正在等待 AI 總結評價。";
+    setState("總結評價", "正在請 AI 給予評價。", "reply", true);
+    setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
+    setHint("正在等待 AI 總結評價。");
+    addLine("系統", "正在請 AI 給予總結評價。", false);
+    aiLine = addLine("AI", "正在整理評價...", false, "pending");
+
+    try {
+        stopActiveRecording();
+        sendTextTurn(
+            "自由辯論已停止。請停止攻防，根據剛才整場自由辯論，用粵語給我一段總結評價。請包括：1. 我方最有效的攻防；2. 最大漏洞；3. 追問及回應技巧建議；4. 下一次練習的具體改善目標。請直接給評價，不要再提出新攻防問題。"
+        );
+        startFinalFeedbackWaitTimer();
+    } catch (e) {
+        setState("錯誤", "未能要求 AI 給予評價：" + e.message, "error", false);
+        setSubstatus("請停止後重新開始自由辯論。");
+    }
+}
+
 function beginAiResponse() {
     isWaiting = false;
     pauseSpeechTimer();
@@ -697,6 +786,21 @@ function finishTurnAfterPlayback() {
         : 200;
     setTimeout(() => {
         if (!micReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (finalFeedbackRequested) {
+            finalFeedbackComplete = true;
+            clearWaitTimer();
+            isWaiting = false;
+            isRecording = false;
+            userLine = null;
+            aiLine = null;
+            setState("評價完成", "AI 已完成總結評價。", "ready", false);
+            setSubstatus("如要重新練習，請結束後重新開始自由辯論。");
+            setHint("AI 評價已完成。");
+            setTalkEnabled(false);
+            talkBtn.textContent = "評價完成";
+            talkHintEl.textContent = "自由辯論已完成。";
+            return;
+        }
         isWaiting = false;
         isRecording = false;
         userLine = null;
@@ -730,6 +834,8 @@ function cleanupMedia(closeSocket) {
     speechStartedAt = 0;
     speechRunning = false;
     speechEnded = false;
+    finalFeedbackRequested = false;
+    finalFeedbackComplete = false;
     firedBells.clear();
     remainingEl.textContent = "--:--";
     if (closeSocket && ws) {
@@ -751,6 +857,7 @@ function stopLive(markManual, finalText) {
     stopBtn.disabled = true;
     setTalkEnabled(false);
     showRetry(false);
+    showFeedbackButton(false);
     if (finalText) {
         setState("完成", finalText, "", false);
         setSubstatus("如要繼續，請重新開始自由辯論。");
@@ -766,7 +873,8 @@ try {
             stopBtn.disabled = true;
         });
     });
-    stopBtn.addEventListener("click", () => stopLive(true, "自由辯論已停止。"));
+    stopBtn.addEventListener("click", () => prepareFinalFeedback("自由辯論已停止。"));
+    feedbackBtn.addEventListener("click", () => requestFinalFeedback());
     retryBtn.addEventListener("click", () => {
         isWaiting = false;
         clearWaitTimer();
