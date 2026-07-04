@@ -1391,11 +1391,12 @@ def create_gemini_live_ephemeral_token(duration_minutes: int = 10) -> dict:
             http_options={"api_version": "v1alpha"},
         )
         now = datetime.now(timezone.utc)
+        expire = now + timedelta(minutes=int(duration_minutes) + 2)
         token = client.auth_tokens.create(
             config={
                 "uses": 1,
-                "expire_time": now + timedelta(minutes=int(duration_minutes) + 2),
-                "new_session_expire_time": now + timedelta(minutes=1),
+                "expire_time": expire,
+                "new_session_expire_time": expire,
                 "http_options": {"api_version": "v1alpha"},
             }
         )

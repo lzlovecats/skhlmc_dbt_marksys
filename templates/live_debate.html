@@ -177,7 +177,9 @@ function sendSetup() {
     ws.send(JSON.stringify({
         setup: {
             model: "models/" + MODEL,
-            responseModalities: ["AUDIO"],
+            generationConfig: {
+                responseModalities: ["AUDIO"]
+            },
             systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
             inputAudioTranscription: {},
             outputAudioTranscription: {}
@@ -209,8 +211,11 @@ async function startLive() {
         sendSetup();
         setStatus("已連線，等待 Live setup...");
     };
-    ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
+    ws.onmessage = async (event) => {
+        let data = event.data;
+        if (data instanceof Blob) data = await data.text();
+        if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data);
+        const msg = JSON.parse(data);
         if (msg.setupComplete) startMicAfterSetup();
         const sc = msg.serverContent;
         if (sc) {
@@ -227,9 +232,14 @@ async function startLive() {
             }
         }
     };
-    ws.onerror = () => setStatus("Live WebSocket 發生錯誤。");
-    ws.onclose = () => {
-        setStatus("Live session 已結束。");
+    ws.onerror = (ev) => {
+        console.error("WS error:", ev);
+        setStatus("Live WebSocket 發生錯誤。");
+    };
+    ws.onclose = (ev) => {
+        const reason = ev.reason || "(no reason)";
+        console.log("WS close: code=" + ev.code + " reason=" + reason);
+        setStatus("Live session 已結束（code " + ev.code + "：" + reason + "）。");
         startBtn.disabled = false;
         stopBtn.disabled = true;
     };
@@ -252,8 +262,25 @@ function stopLive() {
     stopBtn.disabled = true;
 }
 
-startBtn.addEventListener("click", startLive);
-stopBtn.addEventListener("click", stopLive);
+try {
+    console.log("[Live] init: token length=" + LIVE_TOKEN.length + " model=" + MODEL);
+    console.log("[Live] startBtn=", startBtn, "stopBtn=", stopBtn);
+    startBtn.addEventListener("click", () => {
+        console.log("[Live] start clicked");
+        startLive().catch(e => {
+            console.error("[Live] startLive error:", e);
+            setStatus("啟動失敗：" + e.message);
+        });
+    });
+    stopBtn.addEventListener("click", () => {
+        console.log("[Live] stop clicked");
+        stopLive();
+    });
+    console.log("[Live] event listeners attached OK");
+} catch (e) {
+    console.error("[Live] init error:", e);
+    document.getElementById("status").textContent = "初始化失敗：" + e.message;
+}
 </script>
 </body>
 </html>
