@@ -36,6 +36,7 @@ from schema import (
     TABLE_TOPICS,
     TABLE_DEBATERS,
 )
+from debate_timing import get_debate_timer_config, get_full_mock_sequence
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +60,22 @@ FREE_DEBATE_LIVE_AI_REPLY_RATIO = 0.5
 FREE_DEBATE_LIVE_TEXT_INPUT_PRICE_PER_MILLION = 0.50
 FREE_DEBATE_LIVE_AUDIO_INPUT_PRICE_PER_MILLION = 3.00
 FREE_DEBATE_LIVE_AUDIO_OUTPUT_PRICE_PER_MILLION = 12.00
+# 完整 Mock：一次開波預先 log 嘅 billed 時長上限（分鐘）。ephemeral token 仍按全長，唔受此限。
+# 一個 Gemini Live session 實際跑唔到成場 Mock，所以封頂避免一開波就記幾十分鐘。
+# 待 session 分段完成後，改為按每個 session 實際時長 log。
+FULL_MOCK_LIVE_BILLED_MINUTES_CAP = 15.0
 
 AI_FUND_TARGET_HKD_DEFAULT = 100.0
 AI_FUND_LOW_BALANCE_HKD_DEFAULT = 20.0
 AI_FUND_PAYMENT_INSTRUCTION_DEFAULT = "請向AI基金管理員查詢 FPS / 現金 / 轉賬安排，付款後在此提交入數紀錄。"
 
 AI_FEATURE_LABELS = {
-    "speech_review": "發言檢查",
+    "speech_review": "練習發言",
     "strategy": "主線策劃",
-    "web_research": "上網搵料",
-    "fact_check": "Fact check易",
-    "free_debate_live": "自由辯論 Live",
+    "web_research": "搵料易",
+    "fact_check": "Fact Check易",
+    "free_debate_live": "打Free De",
+    "full_mock_live": "打完整Mock",
 }
 
 AI_FUND_TRANSACTION_LABELS = {
@@ -215,7 +221,7 @@ SPEECH_REVIEW_SYSTEM_PROMPT = f"""你係聖呂中辯嘅辯論教練 AI。你嘅�
 
 ## 你嘅任務
 分析用戶嘅發言，針對上述各維度畀出：
-1. 各維度嘅預估分數範圍（例如「內容：7-8/10」）
+1. 各維度嘅預估分數（例如「內容：7/10」）
 2. 優點（具體引用發言內容）
 3. 需改善之處（具體、可操作嘅建議）
 4. 整體評語
@@ -254,22 +260,38 @@ QA_REVIEW_SYSTEM_PROMPT = """你係聖呂中辯嘅辯論教練 AI。你嘅工作
 
 用自然香港粵語／書面粵語回覆，保留正式辯論術語。語氣要鼓勵但誠實。"""
 
-STRATEGY_SYSTEM_PROMPT = f"""你係聖呂中辯嘅辯論策略顧問 AI。你嘅工作係幫隊伍策劃比賽主線。
+def build_strategy_prompt(debate_format: str) -> str:
+    debate_format = str(debate_format or "校園隨想").strip() or "校園隨想"
+    if debate_format == "聯中":
+        roster = "每隊五位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、三副（額外補充論證或專責反駁）、結辯（總結陳詞）"
+        interaction = "台下問答、自由辯論（雙方交替發言）"
+        interaction_point = "**互動環節策略建議**：台下問答同自由辯論嘅提問方向、防守要點"
+        format_note = ""
+    elif debate_format == "星島":
+        roster = "每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）"
+        interaction = "交互答問（雙方輪流問答，考驗即時反應同邏輯；此賽制無自由辯論）"
+        interaction_point = "**交互答問策略建議**：提問方向、準備發問／準備回答嘅節奏、防守同反擊要點"
+        format_note = "\n- 注意：星島賽制以交互答問取代自由辯論；評分沿用同一標準（自由辯論部分）。"
+    else:  # 校園隨想
+        roster = "每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）"
+        interaction = "自由辯論（雙方交替發言）"
+        interaction_point = "**自由辯論策略建議**：建議嘅提問方向和防守要點"
+        format_note = ""
+    return f"""你係聖呂中辯嘅辯論策略顧問 AI。你嘅工作係幫隊伍策劃比賽主線。
 
-## 辯論賽制
-- 每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）
-- 部分賽制設有三副辯員（第五位），負責額外補充論證或專責反駁
-- 自由辯論環節：雙方交替發言
-- 評判根據內容、辭鋒、組織、風度評分
+## 賽制（{debate_format}）
+- {roster}
+- 互動環節：{interaction}
+- 評判根據內容、辭鋒、組織、風度評分{format_note}
 
 {_SCORING_RUBRIC}
 
 ## 你嘅任務
 根據辯題同立場，提供：
 1. **比賽主線**：一句話概括全隊嘅核心立場
-2. **主要論點**（3-4 個），每個包含：論點陳述、支持論據、預期反駁及應對
+2. **主要論點**（2-3 個），每個包含：論點陳述、支持論據、預期反駁及應對
 3. **對方可能論點預判** + 反駁策略
-4. **自由辯論策略建議**：建議嘅提問方向和防守要點
+4. {interaction_point}
 5. **各辯員分工建議**
 
 用自然香港粵語／書面粵語回覆，保留正式辯論術語。"""
@@ -326,6 +348,21 @@ def _format_usd(amount: float) -> str:
 
 def _escape_markdown_dollars(text: str) -> str:
     return text.replace("$", r"\$")
+
+
+def format_usd_money(amount, decimals: int = 2, escape_markdown: bool = False) -> str:
+    try:
+        text = f"US${float(amount):,.{decimals}f}"
+    except (TypeError, ValueError):
+        text = f"US${0:,.{decimals}f}"
+    return _escape_markdown_dollars(text) if escape_markdown else text
+
+
+def format_hkd_money(amount, decimals: int = 2) -> str:
+    try:
+        return f"HKD {float(amount):,.{decimals}f}"
+    except (TypeError, ValueError):
+        return f"HKD {0:,.{decimals}f}"
 
 
 def _today_hk() -> str:
@@ -614,7 +651,7 @@ def format_ai_model_usage_note(model_label: str) -> str:
 
     lines = [
         f"**收費單價**：{_escape_markdown_dollars(model_config['paid_rate_note'])}",
-        f"**每次估算**：文字稿發言檢查（{SPEECH_UNIT_MINUTES} 分鐘、約 {SPEECH_UNIT_WORDS} 字）約 {_format_usd(speech_text_cost)} / 次；主線策劃約 {_format_usd(strategy_cost)} / 次。",
+        f"**每次估算**：文字稿練習發言（{SPEECH_UNIT_MINUTES} 分鐘、約 {SPEECH_UNIT_WORDS} 字）約 {_format_usd(speech_text_cost)} / 次；主線策劃約 {_format_usd(strategy_cost)} / 次。",
     ]
     if model_config["supports_audio"]:
         lines.append(
@@ -641,7 +678,7 @@ def _now_hk_timestamp() -> str:
 
 
 def ensure_ai_fund_tables() -> bool:
-    if st.session_state.get("_ai_fund_tables_ready") == "usage_actual_v2":
+    if st.session_state.get("_ai_fund_tables_ready") == "usage_actual_v3":
         return True
     try:
         execute_query(CREATE_AI_FUND_TRANSACTIONS)
@@ -655,10 +692,10 @@ def ensure_ai_fund_tables() -> bool:
             f"""
             ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS}
             ADD CONSTRAINT chk_ai_fund_usage_feature
-            CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live'))
+            CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live'))
             """
         )
-        st.session_state["_ai_fund_tables_ready"] = "usage_actual_v2"
+        st.session_state["_ai_fund_tables_ready"] = "usage_actual_v3"
         return True
     except Exception as e:
         logger.warning("ensure_ai_fund_tables failed: %s", e)
@@ -1190,7 +1227,7 @@ def estimate_ai_feature_usage(
             _estimate_usage_cost(model_config, input_tokens, output_tokens)
             + web_search_usd
         )
-    elif feature == "free_debate_live":
+    elif feature in ("free_debate_live", "full_mock_live"):
         minutes = float(duration_minutes or FREE_DEBATE_LIVE_DEFAULT_MINUTES)
         input_tokens = 0
         audio_tokens = int(minutes * 60 * FREE_DEBATE_LIVE_AUDIO_TOKENS_PER_SECOND)
@@ -1381,9 +1418,38 @@ def build_free_debate_live_prompt(topic: str, user_side: str) -> str:
 - 如果用戶離題，直接拉返辯題同主線。"""
 
 
+def build_full_mock_live_prompt(topic: str, user_side: str, debate_format: str, free_debate_minutes=None) -> str:
+    user_side = str(user_side or "").strip() or "正方"
+    ai_side = "反方" if user_side == "正方" else "正方"
+    debate_format = str(debate_format or "校園隨想").strip() or "校園隨想"
+    segments = get_full_mock_sequence(debate_format, free_debate_minutes=free_debate_minutes)
+    stage_lines = "\n".join(
+        f"{idx}. {seg['label']}"
+        for idx, seg in enumerate(segments, start=1)
+    )
+    return f"""你係聖呂中辯嘅完整 Mock 陪練 AI。你要扮演{ai_side}辯員，同用戶（{user_side}）按「{debate_format}」賽制打一場完整 Mock。
+
+辯題：{topic}
+用戶立場：{user_side}
+你嘅立場：{ai_side}
+賽制：{debate_format}
+
+完整流程（必須按此次序，逐段進行）：
+{stage_lines}
+
+規則：
+- 用自然香港粵語口語回應，保留正式辯論術語。
+- 嚴格按上面次序進行。系統會喺每段開始時提示「而家輪到 X」，你就按嗰段身分進行。
+- 台上發言段落：只喺屬於你（{ai_side}）嘅段落以該身分發言；輪到用戶（{user_side}）嘅台上段落，你只作簡短即場回應或等用戶，唔好搶答。
+- 自由辯論、台下問答、交互答問呢啲互動段落，你要正常參與、保持攻防節奏。
+- 台上發言以短評加下一步提示為主。
+- 如果用戶講「暫停評語」、「總結」或「完場」，請用粵語畀整場表現評語、主要漏洞同下一次練習建議。
+- 如果用戶離題，直接拉返辯題同主線。"""
+
+
 def create_gemini_live_ephemeral_token(duration_minutes: float = 10) -> dict:
     if "GEMINI_API_KEY" not in st.secrets:
-        return {"ok": False, "message": "❌ 未設定 Gemini API Key，未能開始自由辯論。"}
+        return {"ok": False, "message": "❌ 未設定 Gemini API Key，未能開始即時練習。"}
     genai, _, error = _get_gemini_modules()
     if error:
         return {"ok": False, "message": error}
@@ -1412,6 +1478,51 @@ def create_gemini_live_ephemeral_token(duration_minutes: float = 10) -> dict:
             "model": FREE_DEBATE_LIVE_MODEL,
             "model_label": FREE_DEBATE_LIVE_MODEL_LABEL,
             "duration_minutes": token_minutes,
+            "created_at": _now_hk_timestamp(),
+        }
+    except Exception as e:
+        return {"ok": False, "message": _format_ai_error("Gemini Live", e)}
+
+
+def create_gemini_live_ephemeral_tokens(count: int, total_minutes: float) -> dict:
+    """一次過 mint 多粒 ephemeral token，畀完整 Mock 逐節接力用。
+
+    每粒 uses:1；expiry 覆蓋成場 Mock（＋緩衝），令最後一節嘅 token 都仲有效。
+    任何一粒失敗即整體 fail，唔開殘缺 Mock。
+    """
+    if "GEMINI_API_KEY" not in st.secrets:
+        return {"ok": False, "message": "❌ 未設定 Gemini API Key，未能開始即時練習。"}
+    genai, _, error = _get_gemini_modules()
+    if error:
+        return {"ok": False, "message": error}
+    try:
+        count = max(1, int(count))
+        expire_minutes = max(3, math.ceil(float(total_minutes))) + 5
+        client = genai.Client(
+            api_key=st.secrets["GEMINI_API_KEY"],
+            http_options={"api_version": "v1alpha"},
+        )
+        now = datetime.now(timezone.utc)
+        expire = now + timedelta(minutes=expire_minutes)
+        tokens = []
+        for _ in range(count):
+            token = client.auth_tokens.create(
+                config={
+                    "uses": 1,
+                    "expire_time": expire,
+                    "new_session_expire_time": expire,
+                    "http_options": {"api_version": "v1alpha"},
+                }
+            )
+            token_name = _read_attr(token, "name")
+            if not token_name:
+                return {"ok": False, "message": "❌ Gemini 未有回傳 ephemeral token。"}
+            tokens.append(token_name)
+        return {
+            "ok": True,
+            "tokens": tokens,
+            "model": FREE_DEBATE_LIVE_MODEL,
+            "model_label": FREE_DEBATE_LIVE_MODEL_LABEL,
             "created_at": _now_hk_timestamp(),
         }
     except Exception as e:
@@ -1697,7 +1808,7 @@ def review_speech(
 ) -> tuple[str, dict | None]:
     model_config = _get_model_config(model_label)
     if audio_bytes and not model_config["supports_audio"]:
-        return "⚠️ 此模型不支援錄音分析。請選擇支援錄音嘅模型，或貼上文字稿再試。", None
+        return "⚠️ 呢個模型不支援錄音分析。請選擇支援錄音嘅模型，或貼上文字稿再試。", None
 
     position_label = POSITION_LABELS.get(position, "")
     user_text_lines = [f"我嘅辯位：{side}{position_label}"]
@@ -1729,17 +1840,18 @@ def review_speech(
 def brainstorm_strategy(
     topic: str,
     side: str,
+    debate_format: str = "校園隨想",
     model_label: str | None = None,
 ) -> tuple[str, dict | None]:
     model_config = _get_model_config(model_label)
 
-    user_lines = [f"辯題：{topic}", f"立場：{side}"]
+    user_lines = [f"辯題：{topic}", f"立場：{side}", f"賽制：{debate_format}"]
     topic_ctx = _build_topic_context(topic)
     if topic_ctx:
         user_lines.append(topic_ctx)
     user_lines.append("\n請為以上辯題和立場提供完整的比賽策略。")
 
-    return _generate_response(model_config, STRATEGY_SYSTEM_PROMPT, "\n".join(user_lines))
+    return _generate_response(model_config, build_strategy_prompt(debate_format), "\n".join(user_lines))
 
 
 def research_web(

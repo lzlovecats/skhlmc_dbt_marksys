@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 
 from functions import check_admin, get_score_data, get_best_debater_results, load_matches_from_db, query_params, render_page_guidance
 from schema import TABLE_SCORE_DRAFTS
+from debate_timing import DEBATE_FORMATS, get_debate_timer_config
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
@@ -401,103 +402,34 @@ elif tab == "結尾完結易":
     st.markdown(rendered)
 
 elif tab == "叮叮易":
-    debate_format = st.selectbox("賽制", options=["校園隨想", "聯中", "星島"], key="cp_timer_format")
-    free_debate_minutes = 5
+    debate_format = st.selectbox("賽制", options=DEBATE_FORMATS, key="cp_timer_format")
+    free_debate_minutes = 5.0
     if debate_format == "聯中":
         free_debate_minutes = st.number_input(
             "自由辯論時間（每邊，分鐘）",
-            min_value=2,
-            max_value=10,
-            value=5,
-            step=1,
+            min_value=2.0,
+            max_value=10.0,
+            value=5.0,
+            step=0.5,
             key="cp_lz_free_minutes",
         )
-
-    if debate_format == "星島":
-        timer_stages = [
-            ("main", "主辯一二副"),
-            ("deputy", "結辯"),
-            ("prep", "交互準備"),
-            ("question", "交互問"),
-            ("answer", "交互答"),
-        ]
-        bell_schedules = {
-            "main": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": 120, "rings": 1, "label": "2:00 — 1 叮"},
-                {"t": 150, "rings": 2, "label": "2:30 — 2 叮"},
-            ],
-            "deputy": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": 180, "rings": 1, "label": "3:00 — 1 叮"},
-                {"t": 210, "rings": 2, "label": "3:30 — 2 叮"},
-            ],
-            "prep": [
-                {"t": 0, "rings": 1, "label": "準備開始 — 1 叮"},
-                {"t": 15, "rings": 2, "label": "0:15 — 2 叮"},
-            ],
-            "question": [
-                {"t": 0, "rings": 1, "label": "問開始 — 1 叮"},
-                {"t": 20, "rings": 2, "label": "0:20 — 2 叮"},
-            ],
-            "answer": [
-                {"t": 0, "rings": 1, "label": "答開始 — 1 叮"},
-                {"t": 40, "rings": 2, "label": "0:40 — 2 叮"},
-            ],
-        }
-        warning_times = {"main": 120, "deputy": 180, "prep": None, "question": None, "answer": None}
-        overtime_times = {"main": 150, "deputy": 210, "prep": 15, "question": 20, "answer": 40}
-    elif debate_format == "聯中":
-        timer_stages = [("main", "主結辯"), ("deputy", "一二副"), ("free", "自由辯論")]
-        free_warning_time = int(free_debate_minutes) * 60 - 30
-        free_overtime = int(free_debate_minutes) * 60
-        bell_schedules = {
-            "main": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": 270, "rings": 1, "label": "4:30 — 1 叮"},
-                {"t": 300, "rings": 2, "label": "5:00 — 2 叮"},
-                {"t": 315, "rings": 3, "label": "5:15 — 3 叮"},
-                {"t": 340, "rings": 5, "label": "5:40 — 5 叮"},
-            ],
-            "deputy": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": 210, "rings": 1, "label": "3:30 — 1 叮"},
-                {"t": 240, "rings": 2, "label": "4:00 — 2 叮"},
-                {"t": 255, "rings": 3, "label": "4:15 — 3 叮"},
-                {"t": 280, "rings": 5, "label": "4:40 — 5 叮"},
-            ],
-            "free": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": free_warning_time, "rings": 1, "label": "完結前 30 秒 — 1 叮"},
-                {"t": free_overtime, "rings": 2, "label": "時間到 — 2 叮"},
-            ],
-        }
-        warning_times = {"main": 270, "deputy": 210, "free": free_warning_time}
-        overtime_times = {"main": 300, "deputy": 240, "free": free_overtime}
-    else:
-        timer_stages = [("main", "主結辯"), ("deputy", "一二副"), ("free", "自由辯論")]
-        bell_schedules = {
-            "main": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": 210, "rings": 1, "label": "3:30 — 1 叮"},
-                {"t": 240, "rings": 2, "label": "4:00 — 2 叮"},
-                {"t": 255, "rings": 3, "label": "4:15 — 3 叮"},
-                {"t": 280, "rings": 5, "label": "4:40 — 5 叮"},
-            ],
-            "deputy": [
-                {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
-                {"t": 150, "rings": 1, "label": "2:30 — 1 叮"},
-                {"t": 180, "rings": 2, "label": "3:00 — 2 叮"},
-                {"t": 195, "rings": 3, "label": "3:15 — 3 叮"},
-                {"t": 220, "rings": 5, "label": "3:40 — 5 叮"},
-            ],
-            "free": [
-                {"t": 120, "rings": 1, "label": "2:00 — 1 叮"},
-                {"t": 150, "rings": 2, "label": "2:30 — 2 叮"},
-            ],
-        }
-        warning_times = {"main": 210, "deputy": 150, "free": 120}
-        overtime_times = {"main": 240, "deputy": 180, "free": 150}
+    closing_prep_minutes = st.number_input(
+        "結辯準備時間（分鐘）",
+        min_value=0.5,
+        max_value=10.0,
+        value=2.0,
+        step=0.5,
+        key="cp_closing_prep_minutes",
+    )
+    timer_config = get_debate_timer_config(
+        debate_format,
+        free_debate_minutes=free_debate_minutes,
+        closing_prep_minutes=closing_prep_minutes,
+    )
+    timer_stages = timer_config["timer_stages"]
+    bell_schedules = timer_config["bell_schedules"]
+    warning_times = timer_config["warning_times"]
+    overtime_times = timer_config["overtime_times"]
 
     stage_buttons_html = "\n".join(
         f"""        <div class="stage-btn{' active' if idx == 0 else ''}" onclick="selectStage('{stage_id}')" id="stage-{stage_id}">{stage_label}</div>"""
@@ -522,11 +454,11 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .timer-container {{ padding: 12px; }}
 
 .stage-selector {{
-    display: flex; gap: 0; margin: 0 0 20px;
+    display: flex; flex-wrap: wrap; gap: 0; margin: 0 0 20px;
     border: 1px solid #444; border-radius: 8px; overflow: hidden;
 }}
 .stage-btn {{
-    flex: 1; padding: 12px 0; border: none;
+    flex: 1 1 120px; padding: 12px 0; border: none;
     background: #2a2a2a; cursor: pointer; font-size: 15px; font-weight: 600;
     text-align: center; transition: all 0.2s; color: #aaa;
     border-right: 1px solid #444;
