@@ -60,6 +60,7 @@ from debate_timing import (
     full_mock_total_seconds,
     split_mock_into_sessions,
 )
+from prompts import LIVE_RUNTIME_PROMPTS
 
 
 def _format_hkd(amount) -> str:
@@ -99,6 +100,36 @@ def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, 
         st.caption(f"AI 用量記錄未能寫入：{e}")
 
 
+def _trim_live_research(text: str, max_chars: int = 4500) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit("\n", 1)[0] + "\n（賽前資料摘要已截短）"
+
+
+def _prepare_live_research(topic: str, user_side: str, ai_side: str, debate_format: str, mode_label: str, model_label: str, user_id: str) -> str:
+    research_need = f"""請為{mode_label}陪練準備可直接用於即場反駁的資料。
+AI 立場：{ai_side}
+用戶立場：{user_side}
+賽制：{debate_format}
+
+請重點搜尋：
+1. {ai_side}可用的最新數據、案例、政策或研究；
+2. 可攻擊{user_side}主線的反例、代價、執行漏洞；
+3. 可在自由辯論追問的尖銳問題；
+4. 來源年份、地區和限制。"""
+    result, actual_usage = research_web(
+        topic=topic,
+        research_need=research_need,
+        model_label=model_label,
+    )
+    _record_ai_usage(user_id, "web_research", model_label, result, usage=actual_usage)
+    if is_successful_ai_result(result):
+        return _trim_live_research(result)
+    st.caption(f"賽前搵料未能加入，會用辯題常識繼續：{result}")
+    return ""
+
+
 def _load_bell_src() -> str:
     try:
         bell_path = Path(__file__).parent / "assets" / "bell.mp3"
@@ -117,6 +148,7 @@ def _render_live_debate_component(
     segments=None,
     tokens=None,
     session_labels=None,
+    ai_starts: bool = False,
 ):
     template_path = Path(__file__).parent / "templates" / "live_debate.html"
     live_html = template_path.read_text(encoding="utf-8")
@@ -132,8 +164,11 @@ def _render_live_debate_component(
     live_html = live_html.replace("__MOCK_SEGMENTS__", json.dumps(segments or [], ensure_ascii=False))
     live_html = live_html.replace("__MOCK_TOKENS__", json.dumps(tokens or [], ensure_ascii=False))
     live_html = live_html.replace("__MOCK_SESSION_LABELS__", json.dumps(session_labels or [], ensure_ascii=False))
-    height = 820 if segments else 720
-    components.html(live_html, height=height, scrolling=False)
+    live_html = live_html.replace("__AI_STARTS__", json.dumps(bool(ai_starts)))
+    # 注入喺「自由辯論→session_label」替換之後，令 runtime prompt 唔會被該替換污染。
+    live_html = live_html.replace("__LIVE_PROMPTS__", json.dumps(LIVE_RUNTIME_PROMPTS, ensure_ascii=False))
+    height = 980 if segments else 860
+    components.html(live_html, height=height, scrolling=True)
 
 
 def _render_speech_recorder(key: str, bell_schedule=None):
@@ -285,7 +320,7 @@ def format_ai_coach_tab(tab_name):
     if tab_name == "free_debate":
         return "🎙️ 打Free De"
     if tab_name == "full_mock":
-        return "🏟️ 打完整Mock"
+        return "🏟️ 打Mock"
     return "💲AI基金"
 
 
@@ -662,9 +697,9 @@ if selected_tab == "strategy":
 if selected_tab == "research":
     research_topic = st.text_input("辯題", key="research_topic")
     research_need = st.text_area(
-        "想搵咩資料",
+        "輸入要尋找的資料",
         height=160,
-        placeholder="例如：香港青年精神健康近年數據、其他地區政策例子、支持正方嘅研究證據...",
+        placeholder="例如：香港青年精神健康近年數據、其他地區政策例子、有利正方的研究證據...",
         key="research_need",
     )
     st.caption(_format_ai_estimate("web_research", model_label))
@@ -675,7 +710,7 @@ if selected_tab == "research":
         if not research_topic:
             st.warning("請輸入辯題。")
         elif not research_need:
-            st.warning("請簡單描述想搵咩資料。")
+            st.warning("請簡輸入要尋找的資料。")
         else:
             with st.spinner("AI 搵料中..."):
                 result, actual_usage = research_web(
@@ -701,7 +736,7 @@ if selected_tab == "research":
 
 if selected_tab == "fact_check":
     statement = st.text_area(
-        "輸入要核查嘅陳述",
+        "輸入要核查的陳述",
         height=180,
         placeholder="例如：香港中學生每日平均睡眠時間少於 7 小時。",
         key="fact_check_statement",
@@ -712,7 +747,7 @@ if selected_tab == "fact_check":
 
     if st.button("Fact Check", type="primary", use_container_width=True, key="fact_check_submit"):
         if not statement:
-            st.warning("請輸入要核查嘅陳述。")
+            st.warning("請輸入要核查的陳述。")
         else:
             with st.spinner("AI Fact Check 中..."):
                 result, actual_usage = fact_check_claim(
@@ -740,7 +775,7 @@ if selected_tab == "free_debate":
     if model_config.get("provider") != "gemini":
         st.warning(
             f"而家模型為 {model_label}，不支援打Free De，"
-            f"開始打Free De 時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
+            f"開始Free De 時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
         )
 
     free_topic_source = st.radio(
@@ -821,20 +856,30 @@ if selected_tab == "free_debate":
     )
 
     if "GEMINI_API_KEY" not in st.secrets:
-        st.warning("未設定 GEMINI_API_KEY，暫時不能開始打Free De。")
+        st.warning("未設定 GEMINI_API_KEY，未能使用此功能。")
 
-    if st.button("開始打Free De", type="primary", use_container_width=True, key="free_debate_live_create"):
+    if st.button("開始Free De", type="primary", use_container_width=True, key="free_debate_live_create"):
         if not free_topic.strip():
             st.warning("請先輸入辯題。")
         elif "GEMINI_API_KEY" not in st.secrets:
-            st.error("未設定 GEMINI_API_KEY，未能開始打Free De。")
+            st.error("未設定 GEMINI_API_KEY，未能使用此功能。")
         else:
             token_result = create_gemini_live_ephemeral_token(live_token_minutes)
             if not token_result.get("ok"):
-                st.error(token_result.get("message", "開始打Free De 失敗。"))
+                st.error(token_result.get("message", "開始Free De 失敗。"))
             else:
-                live_prompt = build_free_debate_live_prompt(free_topic.strip(), free_side)
                 ai_side = "反方" if free_side == "正方" else "正方"
+                with st.spinner("AI 正在賽前搵料，準備攻防..."):
+                    live_research = _prepare_live_research(
+                        free_topic.strip(),
+                        free_side,
+                        ai_side,
+                        free_debate_format,
+                        "Free De",
+                        model_label,
+                        user_id,
+                    )
+                live_prompt = build_free_debate_live_prompt(free_topic.strip(), free_side, live_research)
                 st.session_state["free_debate_live_session"] = {
                     **token_result,
                     "topic": free_topic.strip(),
@@ -860,7 +905,7 @@ if selected_tab == "free_debate":
                     )
                 except Exception as e:
                     st.caption(f"Live 用量估算未能寫入：{e}")
-                st.success("請按下方「開始打Free De」連線並允許麥克風權限。")
+                st.success("請按下方「開始自由辯論」連線並允許麥克風權限。")
 
     live_session = st.session_state.get("free_debate_live_session")
     if live_session:
@@ -876,18 +921,19 @@ if selected_tab == "free_debate":
             live_session["prompt"],
             live_session.get("duration_minutes", 10),
             live_session.get("bell_schedule"),
+            ai_starts=live_session["side"] == "反方",
         )
         if st.button("結束打Free De", key="free_debate_live_end"):
             del st.session_state["free_debate_live_session"]
             st.rerun()
 
-# ─── Tab 6: 打完整Mock ─────────────────────────────────────────────
+# ─── Tab 6: 打Mock ─────────────────────────────────────────────
 
 if selected_tab == "full_mock":
-    st.subheader("Gemini Live完整Mock練習")
+    st.subheader("Gemini Live Mock練習")
     if model_config.get("provider") != "gemini":
         st.warning(
-            f"而家模型為 {model_label}，不支援打完整Mock，"
+            f"目前模型為 {model_label}，不支援打Mock功能，"
             f"開始時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
         )
 
@@ -973,25 +1019,36 @@ if selected_tab == "full_mock":
     )
 
     if "GEMINI_API_KEY" not in st.secrets:
-        st.warning("未設定 GEMINI_API_KEY，暫時不能開始打完整Mock。")
+        st.warning("未設定 GEMINI_API_KEY，未能使用此功能。")
 
-    if st.button("開始打完整Mock", type="primary", use_container_width=True, key="full_mock_live_create"):
+    if st.button("開始打Mock", type="primary", use_container_width=True, key="full_mock_live_create"):
         if not mock_topic.strip():
             st.warning("請先輸入辯題。")
         elif "GEMINI_API_KEY" not in st.secrets:
-            st.error("未設定 GEMINI_API_KEY，未能開始打完整Mock。")
+            st.error("未設定 GEMINI_API_KEY，未能使用此功能。")
         else:
             token_result = create_gemini_live_ephemeral_tokens(len(mock_sessions), mock_total_minutes)
             if not token_result.get("ok"):
-                st.error(token_result.get("message", "開始打完整Mock 失敗。"))
+                st.error(token_result.get("message", "開始失敗"))
             else:
+                ai_side = "反方" if mock_side == "正方" else "正方"
+                with st.spinner("AI 正在賽前搵料，準備攻防..."):
+                    mock_research = _prepare_live_research(
+                        mock_topic.strip(),
+                        mock_side,
+                        ai_side,
+                        mock_debate_format,
+                        "Mock",
+                        model_label,
+                        user_id,
+                    )
                 mock_prompt = build_full_mock_live_prompt(
                     mock_topic.strip(),
                     mock_side,
                     mock_debate_format,
                     free_debate_minutes=mock_free_minutes,
+                    research_brief=mock_research,
                 )
-                ai_side = "反方" if mock_side == "正方" else "正方"
                 # 展平段落並標記所屬 session index，畀 component 逐節換 WS 用。
                 flat_segments = []
                 for si, sess in enumerate(mock_sessions):
@@ -1027,7 +1084,7 @@ if selected_tab == "full_mock":
                     except Exception as e:
                         st.caption(f"Mock 用量估算未能寫入：{e}")
                         break
-                st.success("請按下方「開始完整Mock」連線並允許麥克風權限。")
+                st.success("請按下方「開始Mock」連線並允許麥克風權限。")
 
     mock_session = st.session_state.get("full_mock_live_session")
     if mock_session:
@@ -1043,12 +1100,12 @@ if selected_tab == "full_mock":
             mock_session["model"],
             mock_session["prompt"],
             mock_session.get("duration_minutes", 25),
-            session_label="完整Mock",
+            session_label="Mock",
             segments=mock_session.get("segments"),
             tokens=mock_tokens,
             session_labels=mock_session.get("session_labels"),
         )
-        if st.button("結束打完整Mock", key="full_mock_live_end"):
+        if st.button("結束打Mock", key="full_mock_live_end"):
             del st.session_state["full_mock_live_session"]
             st.rerun()
 

@@ -59,9 +59,14 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .timer-value { margin-top: 4px; font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .meter { height: 8px; background: #2b2b2b; }
 .meter-fill { height: 100%; width: 0%; background: #22c55e; transition: width .08s linear; }
-.log { height: 430px; overflow-y: auto; padding: 12px; background: #101010; }
+.log { height: 430px; overflow-y: auto; padding: 12px 12px 24px; background: #101010; scroll-behavior: smooth; }
 .line { margin: 0 0 10px; line-height: 1.45; font-size: 15px; }
 .line.pending { color: #d4d4d8; }
+.line.ai-active {
+    margin-left: -4px; margin-right: -4px; padding: 8px 10px;
+    border-left: 3px solid #f59e0b; border-radius: 6px;
+    background: #29200f; color: #fff7ed;
+}
 .who { font-weight: 800; color: #fca5a5; }
 .who.user { color: #93c5fd; }
 .who.system { color: #c4b5fd; }
@@ -103,6 +108,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     .buttons button { flex: 1; }
     .session-panel { grid-template-columns: 1fr; }
     .timer-box { width: 100%; }
+    .talk-btn { min-height: 76px; font-size: 20px; }
+    .log { height: 360px; }
+    .hint { align-items: stretch; flex-direction: column; }
+    .hint button { width: 100%; }
+    .mock-btns { flex-wrap: wrap; }
+    .mock-btns button { min-width: 30%; max-width: none; }
     .status { white-space: normal; }
     .substatus { white-space: normal; }
 }
@@ -174,6 +185,11 @@ const MOCK_SEGMENTS = (__MOCK_SEGMENTS__ || []);
 const MOCK_MODE = MOCK_SEGMENTS.length > 0;
 const MOCK_TOKENS = (__MOCK_TOKENS__ || []);
 const MOCK_SESSION_LABELS = (__MOCK_SESSION_LABELS__ || []);
+const AI_STARTS = __AI_STARTS__;
+const LIVE_PROMPTS = (__LIVE_PROMPTS__ || {});
+function fillTemplate(tpl, map) {
+    return String(tpl || "").replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
+}
 const WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 function buildWsUrl(token) { return WS_BASE + "?access_token=" + encodeURIComponent(token); }
 
@@ -200,6 +216,7 @@ let speechEnded = false;
 let firedBells = new Set();
 let userLine = null;
 let aiLine = null;
+let activeAiLine = null;
 let finalFeedbackRequested = false;
 let finalFeedbackComplete = false;
 let bellBuffer = null;
@@ -250,6 +267,14 @@ function showFeedbackButton(show) {
     feedbackBtn.className = "secondary feedback" + (show ? " show" : "");
 }
 
+function scrollLogToBottom() {
+    requestAnimationFrame(() => {
+        const last = logEl.lastElementChild;
+        if (last) last.scrollIntoView({ block: "end" });
+        logEl.scrollTop = logEl.scrollHeight;
+    });
+}
+
 function addLine(who, text, isUser, className) {
     if (!text) return null;
     const p = document.createElement("p");
@@ -261,15 +286,15 @@ function addLine(who, text, isUser, className) {
     p.appendChild(span);
     p.appendChild(node);
     logEl.appendChild(p);
-    logEl.scrollTop = logEl.scrollHeight;
+    scrollLogToBottom();
     return { el: p, textNode: node };
 }
 
 function setLineText(line, text) {
     if (!line) return;
     line.textNode.textContent = text;
-    line.el.className = "line";
-    logEl.scrollTop = logEl.scrollHeight;
+    line.el.classList.remove("pending");
+    scrollLogToBottom();
 }
 
 function appendLineText(line, text) {
@@ -279,8 +304,20 @@ function appendLineText(line, text) {
         setLineText(line, text);
     } else {
         line.textNode.textContent = current + text;
-        logEl.scrollTop = logEl.scrollHeight;
+        scrollLogToBottom();
     }
+}
+
+function setActiveAiLine(line) {
+    if (activeAiLine && activeAiLine.el) activeAiLine.el.classList.remove("ai-active");
+    activeAiLine = line || null;
+    if (activeAiLine && activeAiLine.el) activeAiLine.el.classList.add("ai-active");
+    scrollLogToBottom();
+}
+
+function clearActiveAiLine() {
+    if (activeAiLine && activeAiLine.el) activeAiLine.el.classList.remove("ai-active");
+    activeAiLine = null;
 }
 
 function formatTime(seconds) {
@@ -520,10 +557,21 @@ function announceSegmentToAi(seg) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (isRecording || isWaiting || finalFeedbackRequested) return;
     try {
-        sendTextTurn("【環節提示】而家輪到「" + (seg.label || "") +
-            "」。如果呢段屬於你（" + (seg.side || "") +
-            "），請以呢個身分發言；如果係我方（用戶）發言，請簡短示意後等我發言，唔好搶答。");
-    } catch (e) {}
+        isWaiting = true;
+        setTalkEnabled(false);
+        setState("等待 AI", "已提示 AI 進入目前環節。", "wait", true);
+        setSubstatus("如屬 AI 段落，請聽完 AI 發言；如屬你方段落，AI 示意後會解鎖錄音。");
+        startWaitTimer();
+        const segSecs = Number(seg.seconds || 0);
+        const minSecs = Math.round(segSecs * 0.7);
+        sendTextTurn(fillTemplate(LIVE_PROMPTS.segment_announce, {
+            label: seg.label || "", side: seg.side || "", secs: segSecs, min_secs: minSecs
+        }));
+    } catch (e) {
+        isWaiting = false;
+        clearWaitTimer();
+        setTalkEnabled(true);
+    }
 }
 
 function applyMockSegment(index, autostart) {
@@ -550,7 +598,7 @@ function mockNext() {
         stopMockTicking();
         mockRunning = false;
         mockNextBtn.disabled = true;
-        prepareFinalFeedback("完整Mock 全部環節已完成。");
+        prepareFinalFeedback("Mock 全部環節已完成。");
         return;
     }
     const nextIdx = mockIndex + 1;
@@ -706,6 +754,7 @@ function pcmBase64ToFloat32(base64) {
 
 function playPcm(base64, mimeType) {
     if (!outputCtx) outputCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (outputCtx.state === "suspended") outputCtx.resume();
     const sampleRateMatch = String(mimeType || "").match(/rate=(\d+)/);
     const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 24000;
     const samples = pcmBase64ToFloat32(base64);
@@ -785,11 +834,36 @@ async function prepareMicAfterSetup() {
     try {
         await startMic();
         micReady = true;
-        if (MOCK_MODE) startMockSequence(); else startSpeechTimer();
-        setState("準備好", "自由辯論已準備好，輪到你發言。", "ready", false);
-        setSubstatus("按下開始錄音，完成發言後再按下送出。");
-        setTalkEnabled(true);
-        addLine("系統", "自由辯論已開始。按下開始錄音，完成發言後再按下送出交給 AI。", false);
+        if (MOCK_MODE) {
+            setState("準備好", "Mock 已準備好。", "ready", false);
+            setSubstatus("按下開始錄音，完成發言後再按下送出。");
+            setTalkEnabled(true);
+            addLine("系統", "Mock 已開始。按下開始錄音，完成發言後再按下送出交給 AI。", false);
+            startMockSequence();
+        } else {
+            startSpeechTimer();
+            addLine("系統", "自由辯論已開始。按下開始錄音，完成發言後再按下送出交給 AI。", false);
+            if (AI_STARTS) {
+                try {
+                    isWaiting = true;
+                    setTalkEnabled(false);
+                    setState("等待 AI", "AI 先發言，請聽完再回應。", "wait", true);
+                    setSubstatus("AI 會先代表正方開局。");
+                    sendTextTurn(LIVE_PROMPTS.ai_opening_reverse);
+                    startWaitTimer();
+                } catch (e) {
+                    isWaiting = false;
+                    clearWaitTimer();
+                    setState("準備好", "AI 未能自動開局，輪到你先發言。", "ready", false);
+                    setSubstatus("按下開始錄音，完成發言後再按下送出。");
+                    setTalkEnabled(true);
+                }
+            } else {
+                setState("準備好", "自由辯論已準備好，輪到你發言。", "ready", false);
+                setSubstatus("按下開始錄音，完成發言後再按下送出。");
+                setTalkEnabled(true);
+            }
+        }
     } catch (e) {
         setState("錯誤", "無法取得麥克風權限：" + e.message, "error", false);
         setSubstatus("請檢查瀏覽器權限，然後重新開始自由辯論。");
@@ -891,7 +965,7 @@ function openSessionWs() {
     ws.onerror = (ev) => {
         console.error("WS error:", ev);
         if (switchingSession) return;
-        setState("錯誤", "Live WebSocket 發生錯誤，請檢查網絡或重新開始自由辯論。", "error", false);
+        setState("錯誤", "連線發生錯誤。請開啟 VPN 轉換IP後重試，或檢查網絡後重新開始。", "error", false);
         setSubstatus("如果已經完成發言但沒有回應，請停止後重新開始自由辯論。");
     };
     ws.onclose = (ev) => {
@@ -923,11 +997,15 @@ function openSessionWs() {
 
 function formatCloseMessage(ev) {
     const reason = ev.reason || "";
-    if (reason.toLowerCase().includes("token") || ev.code === 1008) {
+    const lower = reason.toLowerCase();
+    if (lower.includes("location") || lower.includes("not supported") || lower.includes("unsupported")) {
+        return "Gemini Live 暫時不支援你所在地區（例如香港）。請開啟 VPN 連去受支援地區（例如台灣、日本、美國）後再重新開始。";
+    }
+    if (lower.includes("token") || ev.code === 1008) {
         return "Live token 可能已過期或無效，請重新開始自由辯論。";
     }
     if (ev.code === 1006) {
-        return "Live 連線中斷，請檢查網絡後重新開始自由辯論。";
+        return "Live 連線中斷。如你身處香港等不支援地區，請開啟 VPN 連去受支援地區（例如台灣、日本、美國）後重試；否則請檢查網絡後重新開始。";
     }
     return "自由辯論已結束（code " + ev.code + (reason ? "：" + reason : "") + "）。";
 }
@@ -1038,6 +1116,16 @@ function prepareFinalFeedback(reason) {
     addLine("系統", reason + " 請按「要求 AI 評價」取得總結評語。", false);
 }
 
+function buildFeedbackPrompt() {
+    if (MOCK_MODE) {
+        let p = LIVE_PROMPTS.feedback_mock || "";
+        const ctx = buildTranscriptContext();
+        if (ctx) p += (LIVE_PROMPTS.feedback_mock_context_header || "\n") + ctx;
+        return p;
+    }
+    return LIVE_PROMPTS.feedback_free || "";
+}
+
 function requestFinalFeedback() {
     if (finalFeedbackRequested) return;
     finalFeedbackRequested = true;
@@ -1056,9 +1144,7 @@ function requestFinalFeedback() {
 
     try {
         stopActiveRecording();
-        sendTextTurn(
-            "自由辯論已停止。請停止攻防，根據剛才整場自由辯論，用粵語給我一段總結評價。請包括：1. 我方最有效的攻防；2. 最大漏洞；3. 追問及回應技巧建議；4. 下一次練習的具體改善目標。請直接給評價，不要再提出新攻防問題。"
-        );
+        sendTextTurn(buildFeedbackPrompt());
         startFinalFeedbackWaitTimer();
     } catch (e) {
         setState("錯誤", "未能要求 AI 給予評價：" + e.message, "error", false);
@@ -1078,6 +1164,7 @@ function beginAiResponse() {
     talkBtn.textContent = "AI 回覆中...";
     talkHintEl.textContent = "AI 回覆完成後會自動解鎖。";
     if (!aiLine) aiLine = addLine("AI", "正在回覆...", false, "pending");
+    setActiveAiLine(aiLine);
 }
 
 function finishTurnAfterPlayback() {
@@ -1093,6 +1180,7 @@ function finishTurnAfterPlayback() {
             isRecording = false;
             userLine = null;
             aiLine = null;
+            clearActiveAiLine();
             setState("評價完成", "AI 已完成總結評價。", "ready", false);
             setSubstatus("如要重新練習，請結束後重新開始自由辯論。");
             setHint("AI 評價已完成。");
@@ -1105,6 +1193,7 @@ function finishTurnAfterPlayback() {
         isRecording = false;
         userLine = null;
         aiLine = null;
+        clearActiveAiLine();
         setState("準備好", "輪到你。", "ready", false);
         setSubstatus("按下開始錄音，完成發言後再按下送出。");
         setTalkEnabled(true);
@@ -1136,6 +1225,7 @@ function cleanupMedia(closeSocket) {
     speechEnded = false;
     finalFeedbackRequested = false;
     finalFeedbackComplete = false;
+    clearActiveAiLine();
     firedBells.clear();
     currentSessionIdx = 0;
     switchingSession = false;
