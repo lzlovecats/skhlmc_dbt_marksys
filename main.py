@@ -7,48 +7,12 @@ from functions import get_registration_status, is_maintenance_mode, render_maint
 st.set_page_config(page_title="聖呂中辯電子賽務系統", layout="wide", page_icon="📑")
 
 
-def render_pwa_metadata():
+def render_pwa_install_listener():
     components.html(
         """
         <script>
         (function () {
             const win = window.parent;
-            const doc = win.document;
-            const appName = "聖呂中辯";
-
-            function upsert(selector, tagName, attrs) {
-                let el = doc.head.querySelector(selector);
-                if (!el) {
-                    el = doc.createElement(tagName);
-                    doc.head.appendChild(el);
-                }
-                Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
-            }
-
-            upsert('link[rel="manifest"]', "link", {
-                rel: "manifest",
-                href: "/app/static/manifest.json"
-            });
-            upsert('link[rel="apple-touch-icon"]', "link", {
-                rel: "apple-touch-icon",
-                href: "/app/static/app-icon-180.png"
-            });
-            upsert('meta[name="theme-color"]', "meta", {
-                name: "theme-color",
-                content: "#111827"
-            });
-            upsert('meta[name="apple-mobile-web-app-capable"]', "meta", {
-                name: "apple-mobile-web-app-capable",
-                content: "yes"
-            });
-            upsert('meta[name="apple-mobile-web-app-title"]', "meta", {
-                name: "apple-mobile-web-app-title",
-                content: appName
-            });
-            upsert('meta[name="apple-mobile-web-app-status-bar-style"]', "meta", {
-                name: "apple-mobile-web-app-status-bar-style",
-                content: "black-translucent"
-            });
 
             if (!win.__skhPwaInstallListenerReady) {
                 win.__skhPwaInstallListenerReady = true;
@@ -89,7 +53,7 @@ def render_pwa_metadata():
     )
 
 
-render_pwa_metadata()
+render_pwa_install_listener()
 
 if is_maintenance_mode():
     st.title("聖呂中辯電子賽務系統")
@@ -165,7 +129,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.5.1")
+    st.caption("🛠️ 系統版本：3.5.2")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

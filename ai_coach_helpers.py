@@ -1367,7 +1367,7 @@ def _format_ai_error(provider: str, error: Exception) -> str:
     if "503" in error_str or "UNAVAILABLE" in error_str or "high demand" in error_str:
         return "⚠️ AI 服務暫時繁忙，請稍後再試。"
     if "location is not supported" in error_str.lower() or "unsupported user location" in error_str.lower():
-        return "❌ IP被封鎖。請開啟 VPN 轉換IP後再重試。"
+        return "❌ Gemini Live 地區限制：你目前所在地區暫時不支援 Live API。請開啟 VPN 轉換到受支援地區後再重試。"
     if "401" in error_str or "403" in error_str or "API key" in error_str:
         return f"❌ {provider} API Key 無效或權限不足，請聯絡開發人員檢查設定。"
     logger.warning("%s API error: %s", provider, error)

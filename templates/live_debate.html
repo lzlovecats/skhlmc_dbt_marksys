@@ -811,9 +811,17 @@ function sendSetup() {
         setup: {
             model: "models/" + MODEL,
             generationConfig: {
-                responseModalities: ["AUDIO"]
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: "Kore" }
+                    }
+                }
             },
             systemInstruction: { parts: [{ text: buildSystemInstruction() }] },
+            realtimeInputConfig: {
+                automaticActivityDetection: { disabled: true }
+            },
             inputAudioTranscription: {},
             outputAudioTranscription: {}
         }
@@ -965,7 +973,7 @@ function openSessionWs() {
     ws.onerror = (ev) => {
         console.error("WS error:", ev);
         if (switchingSession) return;
-        setState("錯誤", "連線發生錯誤。請開啟 VPN 轉換IP後重試，或檢查網絡後重新開始。", "error", false);
+        setState("錯誤", "Gemini Live 連線發生錯誤。請開啟 VPN 轉換IP或檢查網絡後重新開始。", "error", false);
         setSubstatus("如果已經完成發言但沒有回應，請停止後重新開始自由辯論。");
     };
     ws.onclose = (ev) => {
@@ -999,7 +1007,7 @@ function formatCloseMessage(ev) {
     const reason = ev.reason || "";
     const lower = reason.toLowerCase();
     if (lower.includes("location") || lower.includes("not supported") || lower.includes("unsupported")) {
-        return "Gemini Live 暫時不支援你所在地區（例如香港）。請開啟 VPN 連去受支援地區（例如台灣、日本、美國）後再重新開始。";
+        return "Gemini Live 地區限制：暫時不支援你所在地區。請開啟 VPN 連去受支援地區後再重新開始。";
     }
     if (lower.includes("token") || ev.code === 1008) {
         return "Live token 可能已過期或無效，請重新開始自由辯論。";
@@ -1018,6 +1026,7 @@ function beginTurn() {
     }
     if (inputCtx && inputCtx.state === "suspended") inputCtx.resume();
     if (outputCtx && outputCtx.state === "suspended") outputCtx.resume();
+    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
     isRecording = true;
     userLine = null;
     aiLine = null;
@@ -1050,7 +1059,7 @@ function endTurn() {
     if (!userLine) userLine = addLine("你", "正在轉錄...", true, "pending");
     try {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+            ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
         }
     } catch (e) {
         setState("錯誤", "送出音訊失敗：" + e.message, "error", false);
@@ -1076,13 +1085,7 @@ function sendTextTurn(text) {
         throw new Error("Live 連線未開啟。");
     }
     ws.send(JSON.stringify({
-        clientContent: {
-            turns: [{
-                role: "user",
-                parts: [{ text }]
-            }],
-            turnComplete: true
-        }
+        realtimeInput: { text }
     }));
 }
 
@@ -1093,7 +1096,7 @@ function stopActiveRecording() {
     recordTimer = null;
     meterEl.style.width = "0%";
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+        ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
     }
 }
 
