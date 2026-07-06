@@ -17,11 +17,13 @@ self.addEventListener("push", function (event) {
         }
     }
 
-    const title = data.title || "聖呂電子系統";
+    const title = data.title || "聖呂中辯";
     const options = {
         body: data.body || "",
         icon: "/app-icon-192.png",
         badge: "/app-icon-192.png",
+        tag: data.tag || undefined,
+        renotify: Boolean(data.tag),
         data: {
             url: data.url || "/",
         },

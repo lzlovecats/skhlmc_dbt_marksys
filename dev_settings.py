@@ -3,8 +3,8 @@ import bcrypt
 import datetime
 from zoneinfo import ZoneInfo
 import json
-from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data
-from schema import TABLE_ACCOUNTS, init_db
+from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data, ensure_push_subscriptions_table, get_vapid_public_key, notify_committee_vote_event
+from schema import TABLE_ACCOUNTS, TABLE_PUSH_SUBSCRIPTIONS, init_db
 from ai_coach_helpers import (
     AI_MODEL_OPTIONS,
     AI_PROVIDER_LABELS,
@@ -129,6 +129,68 @@ st.divider()
 st.subheader("更改 SQL 存取密碼")
 st.caption("此密碼用於資料庫管理控制台的二次驗證。")
 _update_system_password("sql_password", "SQL 存取")
+
+st.divider()
+st.subheader("手動推送通知")
+st.caption("向已在辯題投票頁啟用通知的委員發送 PWA 背景通知。")
+
+if not get_vapid_public_key():
+    st.warning("尚未設定 VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY，未能發送 Web Push 通知。")
+elif not ensure_push_subscriptions_table():
+    st.warning("未能確認 push_subscriptions 資料表，請先檢查資料庫連線。")
+else:
+    active_subs = query_params(
+        f"SELECT user_id, COUNT(*) AS device_count FROM {TABLE_PUSH_SUBSCRIPTIONS} "
+        "WHERE is_active = TRUE GROUP BY user_id ORDER BY user_id"
+    )
+    subscribed_users = active_subs["user_id"].tolist() if not active_subs.empty else []
+    if active_subs.empty:
+        st.info("目前未有委員啟用通知。")
+    else:
+        total_devices = int(active_subs["device_count"].sum())
+        st.caption(f"目前可推送：{len(subscribed_users)} 位委員，{total_devices} 個裝置。")
+
+    target_mode = st.radio(
+        "推送對象",
+        options=["所有已訂閱委員", "指定委員"],
+        horizontal=True,
+    )
+    target_user = None
+    if target_mode == "指定委員":
+        if subscribed_users:
+            target_user = st.selectbox("選擇委員", options=subscribed_users)
+        else:
+            st.info("目前沒有可選委員。")
+
+    with st.form("manual_push_notification_form"):
+        push_title = st.text_input("通知標題", value="聖呂中辯")
+        push_body = st.text_area("通知內容", placeholder="請輸入要推送的內容。")
+        push_url = st.text_input("點擊後開啟路徑", value="/vote")
+        confirm_push = st.checkbox("我確認要立即發送此通知")
+        send_push = st.form_submit_button("發送推送通知", type="primary")
+
+    if send_push:
+        if not push_title.strip():
+            st.warning("請輸入通知標題。")
+        elif not push_body.strip():
+            st.warning("請輸入通知內容。")
+        elif target_mode == "指定委員" and not target_user:
+            st.warning("請選擇委員。")
+        elif not confirm_push:
+            st.warning("請先確認要立即發送。")
+        else:
+            tag = f"manual-push-{datetime.datetime.now(ZoneInfo('Asia/Hong_Kong')).strftime('%Y%m%d%H%M%S')}"
+            sent = notify_committee_vote_event(
+                push_title.strip(),
+                push_body.strip(),
+                target_user=target_user if target_mode == "指定委員" else None,
+                tag=tag,
+                url=push_url.strip() or "/vote",
+            )
+            if sent:
+                st.success(f"已發送通知至 {sent} 個裝置。")
+            else:
+                st.warning("未有通知成功發送。請確認目標委員已啟用通知，並檢查 VAPID 設定。")
 
 st.divider()
 st.subheader("AI Provider / Model 設定")

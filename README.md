@@ -214,6 +214,9 @@ On Streamlit Community Cloud, `packages.txt` only installs CJK fonts and no long
 ```toml
 GEMINI_API_KEY = "your_gemini_api_key"
 OPENROUTER_API_KEY = "your_openrouter_api_key"
+VAPID_PUBLIC_KEY = "your_vapid_public_key"
+VAPID_PRIVATE_KEY = "your_vapid_private_key"
+VAPID_SUBJECT = "https://skhlmc-dbt-marksys.onrender.com"
 
 [connections.postgresql]
 dialect = "postgresql"
@@ -227,6 +230,8 @@ password = "your_password"
 `GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
 
 Gemini Live 自由辯論會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
+
+`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` 用於 PWA Web Push 通知；如未設定，辯題投票頁仍可正常使用，但不會啟用背景推送通知。
 
 **3. 初始化系統密碼 / Seed initial passwords**
 

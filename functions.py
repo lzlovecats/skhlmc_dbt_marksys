@@ -29,6 +29,7 @@ from schema import (
     TABLE_MATCH_VIDEOS,
     TABLE_MATCH_ROSTER_LINKS,
     TABLE_NOTIFICATION_READS,
+    TABLE_PUSH_SUBSCRIPTIONS,
     TABLE_SCORE_DRAFTS,
     TABLE_SCORES,
     TABLE_BEST_DEBATER_RANKINGS,
@@ -38,6 +39,7 @@ from schema import (
     TABLE_TOPIC_VOTES,
     TABLE_TOPICS,
     VIEW_COMMITTEE_VOTE_ACTIVITY,
+    CREATE_PUSH_SUBSCRIPTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,6 +240,130 @@ def ensure_match_roster_links_table():
     except Exception as e:
         logger.warning("ensure_match_roster_links_table failed: %s", e)
         return False
+
+
+def ensure_push_subscriptions_table():
+    if st.session_state.get("_push_subscriptions_ready"):
+        return True
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_PUSH_SUBSCRIPTIONS))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active "
+                f"ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active)"
+            ))
+            s.commit()
+        st.session_state["_push_subscriptions_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_push_subscriptions_table failed: %s", e)
+        return False
+
+
+def _get_vapid_config():
+    public_key = st.secrets.get("VAPID_PUBLIC_KEY", "")
+    private_key = st.secrets.get("VAPID_PRIVATE_KEY", "")
+    subject = st.secrets.get("VAPID_SUBJECT", "https://skhlmc-dbt-marksys.onrender.com")
+    if not public_key or not private_key:
+        return None
+    return {
+        "public_key": str(public_key),
+        "private_key": str(private_key),
+        "subject": str(subject),
+    }
+
+
+def get_vapid_public_key():
+    config = _get_vapid_config()
+    return config["public_key"] if config else ""
+
+
+def send_push_notification(subscription, title, body, url="/vote", tag=None):
+    config = _get_vapid_config()
+    if not config:
+        return False, "VAPID keys are not configured"
+
+    try:
+        from pywebpush import WebPushException, webpush
+    except Exception as e:
+        return False, f"pywebpush unavailable: {e}"
+
+    payload = {
+        "title": title,
+        "body": body,
+        "url": url,
+    }
+    if tag:
+        payload["tag"] = tag
+
+    try:
+        webpush(
+            subscription_info=subscription,
+            data=json.dumps(payload, ensure_ascii=False),
+            vapid_private_key=config["private_key"],
+            vapid_claims={"sub": config["subject"]},
+            ttl=60 * 60 * 24,
+            timeout=(5, 10),
+        )
+        return True, ""
+    except WebPushException as e:
+        status_code = getattr(getattr(e, "response", None), "status_code", None)
+        return False, f"{status_code or ''} {e}".strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def notify_committee_vote_event(title, body, exclude_user=None, target_user=None, tag=None, url="/vote"):
+    if not ensure_push_subscriptions_table() or not _get_vapid_config():
+        return 0
+
+    params = {}
+    where = "WHERE is_active = TRUE"
+    if exclude_user:
+        where += " AND user_id != :exclude_user"
+        params["exclude_user"] = exclude_user
+    if target_user:
+        where += " AND user_id = :target_user"
+        params["target_user"] = target_user
+
+    rows = query_params(
+        f"SELECT endpoint, user_id, subscription_json FROM {TABLE_PUSH_SUBSCRIPTIONS} {where}",
+        params,
+    )
+    if rows.empty:
+        return 0
+
+    sent = 0
+    for _, row in rows.iterrows():
+        endpoint = row["endpoint"]
+        try:
+            subscription = json.loads(row["subscription_json"])
+        except Exception as e:
+            execute_query(
+                f"UPDATE {TABLE_PUSH_SUBSCRIPTIONS} SET is_active = FALSE, last_error = :error WHERE endpoint = :endpoint",
+                {"endpoint": endpoint, "error": f"Invalid subscription JSON: {e}"},
+            )
+            continue
+
+        ok, error = send_push_notification(subscription, title, body, url=url, tag=tag)
+        if ok:
+            sent += 1
+            execute_query(
+                f"UPDATE {TABLE_PUSH_SUBSCRIPTIONS} SET last_error = NULL WHERE endpoint = :endpoint",
+                {"endpoint": endpoint},
+            )
+        else:
+            should_disable = error.startswith("404") or error.startswith("410")
+            execute_query(
+                f"UPDATE {TABLE_PUSH_SUBSCRIPTIONS} "
+                "SET is_active = CASE WHEN :disable THEN FALSE ELSE is_active END, last_error = :error "
+                "WHERE endpoint = :endpoint",
+                {"endpoint": endpoint, "disable": should_disable, "error": error[:1000]},
+            )
+
+    return sent
 
 
 def ensure_match_roster_links(match_id):

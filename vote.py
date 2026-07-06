@@ -1,7 +1,8 @@
 import json
 import math
 import streamlit as st
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until
+import streamlit.components.v1 as components
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_MOTION_COMMENTS,
@@ -20,6 +21,7 @@ render_page_guidance(
         "請先使用內部委員會成員帳戶登入，再按需要切換至提出辯題、辯題投票、罷免投票或帳戶管理分頁。",
         "活躍成員可提出新辯題或罷免動議；所有成員均可參與投票。",
         "每項動議均設 7 日截止日期，達門檻且票數過半時會自動更新狀態。",
+        "可在「帳戶管理」分頁啟用背景通知，新辯題及投票結果會推送到你的裝置（iPhone / iPad 需先加入主畫面）。",
     ],
 )
 
@@ -137,6 +139,152 @@ def show_queued_toast():
     toast = st.session_state.pop("vote_action_toast", None)
     if toast:
         st.toast(toast["message"], icon=toast.get("icon"))
+
+
+def notify_vote_event(title, body, exclude_user=None, tag=None):
+    try:
+        notify_committee_vote_event(title, body, exclude_user=exclude_user, tag=tag, url="/vote")
+    except Exception:
+        pass
+
+
+def render_push_notification_settings():
+    vapid_public_key = get_vapid_public_key()
+    if not vapid_public_key:
+        st.info("尚未設定 Web Push 金鑰，暫時未能啟用背景通知。")
+        return
+
+    html = """
+    <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button id="enablePush" style="border:1px solid #d1d5db; border-radius:6px; padding:8px 12px; background:#111827; color:white; cursor:pointer;">啟用通知</button>
+            <button id="disablePush" style="border:1px solid #d1d5db; border-radius:6px; padding:8px 12px; background:white; color:#111827; cursor:pointer;">取消通知</button>
+        </div>
+        <div id="pushStatus" style="margin-top:8px; color:#4b5563; font-size:14px;">正在檢查通知狀態...</div>
+    </div>
+    <script>
+    (function () {
+        const win = window.parent;
+        const doc = document;
+        const statusEl = doc.getElementById("pushStatus");
+        const enableBtn = doc.getElementById("enablePush");
+        const disableBtn = doc.getElementById("disablePush");
+        const publicKey = __VAPID_PUBLIC_KEY__;
+
+        function setStatus(message) {
+            statusEl.textContent = message;
+        }
+
+        function urlBase64ToUint8Array(base64String) {
+            const padding = "=".repeat((4 - base64String.length % 4) % 4);
+            const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+            const rawData = win.atob(base64);
+            const outputArray = new Uint8Array(rawData.length);
+            for (let i = 0; i < rawData.length; ++i) {
+                outputArray[i] = rawData.charCodeAt(i);
+            }
+            return outputArray;
+        }
+
+        async function getRegistration() {
+            if (!("serviceWorker" in win.navigator)) {
+                throw new Error("此瀏覽器不支援 Service Worker。");
+            }
+            await win.navigator.serviceWorker.register("/sw.js");
+            return await win.navigator.serviceWorker.ready;
+        }
+
+        async function refreshStatus() {
+            if (!("Notification" in win) || !("PushManager" in win)) {
+                setStatus("此瀏覽器不支援 Web Push 通知。");
+                enableBtn.disabled = true;
+                disableBtn.disabled = true;
+                return;
+            }
+            if (!win.isSecureContext) {
+                setStatus("Web Push 需要 HTTPS，請使用正式網址開啟。");
+                enableBtn.disabled = true;
+                return;
+            }
+            const registration = await getRegistration();
+            const subscription = await registration.pushManager.getSubscription();
+            if (subscription) {
+                setStatus("通知已啟用。");
+            } else if (win.Notification.permission === "denied") {
+                setStatus("通知權限已被封鎖，請到瀏覽器或系統設定重新允許。");
+            } else {
+                setStatus("通知尚未啟用。");
+            }
+        }
+
+        enableBtn.addEventListener("click", async function () {
+            try {
+                if (!("Notification" in win) || !("PushManager" in win)) {
+                    setStatus("此瀏覽器不支援 Web Push 通知。");
+                    return;
+                }
+                if (!win.isSecureContext) {
+                    setStatus("Web Push 需要 HTTPS，請使用正式網址開啟。");
+                    return;
+                }
+                const permission = await win.Notification.requestPermission();
+                if (permission !== "granted") {
+                    setStatus("尚未允許通知。");
+                    return;
+                }
+                const registration = await getRegistration();
+                let subscription = await registration.pushManager.getSubscription();
+                if (!subscription) {
+                    subscription = await registration.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: urlBase64ToUint8Array(publicKey)
+                    });
+                }
+                const response = await win.fetch("/api/push/subscribe", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(subscription)
+                });
+                if (!response.ok) {
+                    throw new Error("訂閱儲存失敗：" + response.status);
+                }
+                setStatus("通知已啟用。");
+            } catch (error) {
+                setStatus(error.message || "未能啟用通知。");
+            }
+        });
+
+        disableBtn.addEventListener("click", async function () {
+            try {
+                const registration = await getRegistration();
+                const subscription = await registration.pushManager.getSubscription();
+                const endpoint = subscription ? subscription.endpoint : "";
+                if (subscription) {
+                    await subscription.unsubscribe();
+                }
+                const response = await win.fetch("/api/push/unsubscribe", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ endpoint: endpoint })
+                });
+                if (!response.ok) {
+                    throw new Error("取消訂閱儲存失敗：" + response.status);
+                }
+                setStatus("通知已取消。");
+            } catch (error) {
+                setStatus(error.message || "未能取消通知。");
+            }
+        });
+
+        refreshStatus().catch(function (error) {
+            setStatus(error.message || "未能檢查通知狀態。");
+        });
+    })();
+    </script>
+    """.replace("__VAPID_PUBLIC_KEY__", json.dumps(vapid_public_key))
+    components.html(html, height=96)
 
 
 def _clear_vote_cache_only():
@@ -360,37 +508,61 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
                 f"INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty) VALUES (:topic_text, :author, :category, :difficulty)",
                 {"topic_text": topic, "author": author, "category": category, "difficulty": difficulty}
             )
-            execute_query(
-                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text",
+            updated = execute_query_count(
+                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
                 {"topic_text": topic}
             )
+            if updated:
+                notify_vote_event(
+                    "辯題投票通過",
+                    f"「{topic}」已通過並加入辯題庫。",
+                    tag=f"topic-vote-passed-{topic}",
+                )
             clear_caches()
             st.balloons()
             st.rerun()
         if against_count >= threshold and against_count > agree_count:
             st.error(f"辯題「{topic}」已獲得{against_count}票不同意票，正在刪除辯題...")
-            execute_query(
-                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+            updated = execute_query_count(
+                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
                 {"topic_text": topic}
             )
+            if updated:
+                notify_vote_event(
+                    "辯題投票否決",
+                    f"「{topic}」已被否決。",
+                    tag=f"topic-vote-rejected-{topic}",
+                )
             clear_caches()
             st.rerun()
     elif mode == "depose":
         if agree_count >= threshold and agree_count > against_count:
             st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
-            execute_query(
-                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text",
+            updated = execute_query_count(
+                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
                 {"topic_text": topic},
             )
-            execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
+            if updated:
+                execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
+                notify_vote_event(
+                    "罷免動議通過",
+                    f"「{topic}」已被罷免並從辯題庫移除。",
+                    tag=f"topic-removal-passed-{topic}",
+                )
             clear_caches()
             st.rerun()
         if against_count >= threshold and against_count > agree_count:
             st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
-            execute_query(
-                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+            updated = execute_query_count(
+                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
                 {"topic_text": topic},
             )
+            if updated:
+                notify_vote_event(
+                    "罷免動議否決",
+                    f"「{topic}」的罷免動議已被否決。",
+                    tag=f"topic-removal-rejected-{topic}",
+                )
             clear_caches()
             st.balloons()
             st.rerun()
@@ -672,6 +844,12 @@ if selected_tab == "proposal":
                     )
                     param = {"new_topic": new_topic, "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": new_category, "difficulty": new_difficulty}
                     execute_query(query, param)
+                    notify_vote_event(
+                        "新辯題待投票",
+                        f"「{new_topic}」已加入投票區，截止日期為 {deadline}。",
+                        exclude_user=user_id,
+                        tag=f"topic-vote-new-{new_topic}",
+                    )
                     clear_caches()
                     st.success("辯題已加入投票區！")
 
@@ -693,6 +871,12 @@ if selected_tab == "proposal":
                 )
                 topic_params = {"new_topic": pending_topic_data["new_topic"], "user_id": user_id, "created_at": hk_time, "deadline": deadline, "threshold": ENTRY_THRESHOLD, "category": pending_topic_data["new_category"], "difficulty": pending_topic_data["new_difficulty"]}
                 execute_query(query, topic_params)
+                notify_vote_event(
+                    "新辯題待投票",
+                    f"「{pending_topic_data['new_topic']}」已加入投票區，截止日期為 {deadline}。",
+                    exclude_user=user_id,
+                    tag=f"topic-vote-new-{pending_topic_data['new_topic']}",
+                )
                 clear_caches()
                 st.session_state["confirm_imbalance"] = False
                 st.success("辯題已加入投票區！")
@@ -770,6 +954,12 @@ if selected_tab == "proposal":
                             "threshold": DEPOSE_THRESHOLD
                         }
                         execute_query(query, param)
+                        notify_vote_event(
+                            "新罷免動議待投票",
+                            f"「{t}」已提出罷免動議，截止日期為 {deadline}。",
+                            exclude_user=user_id,
+                            tag=f"topic-removal-new-{t}",
+                        )
                 clear_caches()
                 if proposed:
                     st.success("罷免動議已提出！")
@@ -816,10 +1006,16 @@ elif selected_tab == "topic_vote":
             # Auto-reject expired topics before rendering the card (avoids flash)
             if deadline_passed:
                 st.warning(f"辯題「{topic}」投票期限（{deadline_str} 23:59）已過，未達入庫標準，系統自動否決。")
-                execute_query(
-                    f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+                updated = execute_query_count(
+                    f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
                     {"topic_text": topic},
                 )
+                if updated:
+                    notify_vote_event(
+                        "辯題投票逾期",
+                        f"「{topic}」未達入庫標準，已自動否決。",
+                        tag=f"topic-vote-expired-{topic}",
+                    )
                 clear_caches()
                 st.rerun()
 
@@ -959,10 +1155,16 @@ elif selected_tab == "depose_vote":
             # Topic vote expiries use UPDATE status='rejected' to preserve the rejection log in tab2.
             if depose_deadline_passed:
                 st.warning(f"罷免動議「{topic}」投票期限（{depose_deadline_str} 23:59）已過，未達罷免標準，動議自動取消。")
-                execute_query(
-                    f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text",
+                updated = execute_query_count(
+                    f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
                     {"topic_text": topic},
                 )
+                if updated:
+                    notify_vote_event(
+                        "罷免動議逾期",
+                        f"「{topic}」的罷免動議未達標準，已自動取消。",
+                        tag=f"topic-removal-expired-{topic}",
+                    )
                 clear_caches()
                 st.rerun()
 
@@ -1036,6 +1238,10 @@ elif selected_tab == "member_stats":
 
 elif selected_tab == "account":
     st.subheader("帳戶管理")
+
+    with st.expander("通知設定", expanded=True):
+        st.caption("啟用後，新議案及投票結果可在 PWA 未開啟時推送到你的裝置。iPhone / iPad 需先將系統加入主畫面。")
+        render_push_notification_settings()
 
     with st.expander("更改密碼", expanded=False):
         with st.form("change_user_password"):
