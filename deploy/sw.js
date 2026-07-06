@@ -17,7 +17,7 @@ self.addEventListener("push", function (event) {
         }
     }
 
-    const title = data.title || "聖呂中辯";
+    const title = data.title || "聖呂電子系統";
     const options = {
         body: data.body || "",
         icon: "/app-icon-192.png",

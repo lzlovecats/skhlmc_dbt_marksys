@@ -19,7 +19,7 @@ PWA_HEAD = """
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/app-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="聖呂中辯">
+<meta name="apple-mobile-web-app-title" content="聖呂電子系統">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#111827">
 <script>
