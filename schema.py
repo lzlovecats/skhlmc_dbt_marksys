@@ -19,6 +19,7 @@ TABLE_TOPIC_REMOVAL_VOTES = "topic_removal_votes"
 TABLE_TOPIC_REMOVAL_VOTE_BALLOTS = "topic_removal_vote_ballots"
 TABLE_LOGIN_RECORDS = "login_records"
 TABLE_NOTIFICATION_READS = "notification_reads"
+TABLE_PUSH_SUBSCRIPTIONS = "push_subscriptions"
 TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
 TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
 TABLE_MATCH_VIDEOS = "match_videos"
@@ -274,6 +275,24 @@ CREATE TABLE IF NOT EXISTS {TABLE_NOTIFICATION_READS} (
     read_at              TIMESTAMP,
     PRIMARY KEY (notification_id, user_id),
     CONSTRAINT fk_notification_reads_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Table: PUSH_SUBSCRIPTIONS
+# Browser Web Push subscriptions for committee vote notifications.
+# endpoint is the browser push-service URL and is globally unique per subscription.
+CREATE_PUSH_SUBSCRIPTIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PUSH_SUBSCRIPTIONS} (
+    endpoint            TEXT        PRIMARY KEY,
+    user_id             TEXT,
+    subscription_json   TEXT        NOT NULL,
+    is_active           BOOLEAN     DEFAULT TRUE,
+    created_at          TIMESTAMP,
+    updated_at          TIMESTAMP,
+    last_error          TEXT,
+    CONSTRAINT fk_push_subscriptions_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
 );
@@ -573,6 +592,8 @@ CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
     ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
     ON {TABLE_MOTION_COMMENTS}(motion_type, motion_key);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active
+    ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
     ON {TABLE_AI_FUND_TRANSACTIONS}(status);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_created_at
@@ -609,6 +630,7 @@ ALL_SCHEMAS = [
     CREATE_TOPIC_REMOVAL_VOTE_BALLOTS,  # → topic_removal_votes, accounts
     CREATE_LOGIN_RECORDS,              # → accounts
     CREATE_NOTIFICATION_READS,         # → accounts
+    CREATE_PUSH_SUBSCRIPTIONS,         # → accounts
     CREATE_COMPETITION_REGISTRATION_SETTINGS,  # no deps
     CREATE_COMPETITION_REGISTRATIONS,           # no deps
     CREATE_MATCH_VIDEOS,              # → matches

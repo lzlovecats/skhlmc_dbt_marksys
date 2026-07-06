@@ -1,13 +1,23 @@
 import asyncio
+import datetime
+import hashlib
+import hmac
+import json
 import logging
 import os
 from pathlib import Path
+from urllib.parse import quote_plus
+
+import tomllib
 
 import httpx
 import websockets
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import create_engine, text
 from starlette.websockets import WebSocketDisconnect
+
+from schema import CREATE_PUSH_SUBSCRIPTIONS, TABLE_PUSH_SUBSCRIPTIONS
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -19,7 +29,7 @@ PWA_HEAD = """
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/app-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="聖呂電子系統">
+<meta name="apple-mobile-web-app-title" content="聖呂中辯">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#111827">
 <script>
@@ -43,6 +53,7 @@ HOP_BY_HOP_HEADERS = {
 
 app = FastAPI()
 logger = logging.getLogger("skh_proxy")
+_db_engine = None
 
 
 def _proxy_headers(headers):
@@ -91,6 +102,81 @@ def _inject_pwa_head(content):
     return html.replace("</head>", PWA_HEAD + "\n</head>", 1).encode("utf-8")
 
 
+def _get_db_url():
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        return env_url
+
+    secrets_path = BASE_DIR / ".streamlit" / "secrets.toml"
+    if not secrets_path.exists():
+        return None
+
+    with secrets_path.open("rb") as f:
+        secrets = tomllib.load(f)
+
+    db = secrets.get("connections", {}).get("postgresql", {})
+    if not db:
+        return None
+
+    dialect = db.get("dialect", "postgresql")
+    username = quote_plus(str(db.get("username", "")))
+    password = quote_plus(str(db.get("password", "")))
+    host = db.get("host", "localhost")
+    port = db.get("port", "5432")
+    database = db.get("database", "")
+    return f"{dialect}://{username}:{password}@{host}:{port}/{database}"
+
+
+def _get_db_engine():
+    global _db_engine
+    if _db_engine is None:
+        db_url = _get_db_url()
+        if not db_url:
+            return None
+        _db_engine = create_engine(db_url, pool_pre_ping=True)
+    return _db_engine
+
+
+def _verify_committee_cookie(request: Request):
+    raw_cookie = request.cookies.get("committee_user")
+    if not raw_cookie or ":" not in raw_cookie:
+        return None
+
+    engine = _get_db_engine()
+    if engine is None:
+        return None
+
+    user_id, sig = raw_cookie.rsplit(":", 1)
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    secret = row._mapping["value"]
+    expected = hmac.new(str(secret).encode(), user_id.encode(), hashlib.sha256).hexdigest()
+    if hmac.compare_digest(sig, expected):
+        return user_id
+    return None
+
+
+def _require_committee_user(request: Request):
+    user_id = _verify_committee_cookie(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return user_id
+
+
+def _ensure_push_subscriptions_table(conn):
+    conn.execute(text(CREATE_PUSH_SUBSCRIPTIONS))
+    conn.execute(text(
+        f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active "
+        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active)"
+    ))
+
+
 @app.get("/manifest.json")
 async def manifest():
     return FileResponse(BASE_DIR / "static" / "manifest.json", media_type="application/manifest+json")
@@ -107,6 +193,87 @@ async def app_icon(size: str):
     if size not in {"180", "192", "512"} or not icon_path.exists():
         return Response(status_code=404)
     return FileResponse(icon_path, media_type="image/png")
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request):
+    user_id = _require_committee_user(request)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    try:
+        subscription = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    endpoint = str(subscription.get("endpoint", "")).strip() if isinstance(subscription, dict) else ""
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="Missing endpoint")
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        _ensure_push_subscriptions_table(conn)
+        conn.execute(
+            text(
+                f"INSERT INTO {TABLE_PUSH_SUBSCRIPTIONS} "
+                "(endpoint, user_id, subscription_json, is_active, created_at, updated_at, last_error) "
+                "VALUES (:endpoint, :user_id, :subscription_json, TRUE, :now, :now, NULL) "
+                "ON CONFLICT (endpoint) DO UPDATE SET "
+                "user_id = EXCLUDED.user_id, "
+                "subscription_json = EXCLUDED.subscription_json, "
+                "is_active = TRUE, "
+                "updated_at = EXCLUDED.updated_at, "
+                "last_error = NULL"
+            ),
+            {
+                "endpoint": endpoint,
+                "user_id": user_id,
+                "subscription_json": json.dumps(subscription, ensure_ascii=False),
+                "now": now,
+            },
+        )
+
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    user_id = _require_committee_user(request)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        pass
+    endpoint = str(payload.get("endpoint", "")).strip() if isinstance(payload, dict) else ""
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        _ensure_push_subscriptions_table(conn)
+        if endpoint:
+            conn.execute(
+                text(
+                    f"UPDATE {TABLE_PUSH_SUBSCRIPTIONS} "
+                    "SET is_active = FALSE, updated_at = :now "
+                    "WHERE endpoint = :endpoint AND user_id = :user_id"
+                ),
+                {"endpoint": endpoint, "user_id": user_id, "now": now},
+            )
+        else:
+            conn.execute(
+                text(
+                    f"UPDATE {TABLE_PUSH_SUBSCRIPTIONS} "
+                    "SET is_active = FALSE, updated_at = :now "
+                    "WHERE user_id = :user_id"
+                ),
+                {"user_id": user_id, "now": now},
+            )
+
+    return {"ok": True}
 
 
 @app.websocket("/{path:path}")
