@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: skhlmc-dbt-marksys
+    env: docker
+    plan: starter
+    dockerfilePath: ./deploy/Dockerfile
+    autoDeploy: false

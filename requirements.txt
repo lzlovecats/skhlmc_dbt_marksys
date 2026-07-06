@@ -11,3 +11,7 @@ reportlab
 pypdf
 google-genai
 openai
+fastapi
+uvicorn[standard]
+httpx
+websockets
