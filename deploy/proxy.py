@@ -60,6 +60,22 @@ def _response_headers(headers):
     }
 
 
+def _websocket_headers(headers):
+    blocked = HOP_BY_HOP_HEADERS | {
+        "host",
+        "sec-websocket-accept",
+        "sec-websocket-extensions",
+        "sec-websocket-key",
+        "sec-websocket-protocol",
+        "sec-websocket-version",
+    }
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in blocked
+    }
+
+
 def _inject_pwa_head(content):
     try:
         html = content.decode("utf-8")
@@ -96,7 +112,7 @@ async def websocket_proxy(websocket: WebSocket, path: str):
 
     query = f"?{websocket.url.query}" if websocket.url.query else ""
     backend_url = f"{STREAMLIT_WS_URL}/{path}{query}"
-    headers = _proxy_headers(websocket.headers)
+    headers = _websocket_headers(websocket.headers)
 
     try:
         try:
