@@ -354,11 +354,20 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
         new_comment = st.text_area("發表意見", key=f"comment_{motion_type}_{idx}", placeholder="就此議案發表你的看法⋯")
         if st.button("發表", key=f"post_comment_{motion_type}_{idx}"):
             if new_comment.strip():
+                comment_text = new_comment.strip()
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
                 execute_query(
                     f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
                     "VALUES (:type, :key, :uid, :text, :now)",
-                    {"type": motion_type, "key": motion_key, "uid": user_id, "text": new_comment.strip(), "now": hk_now},
+                    {"type": motion_type, "key": motion_key, "uid": user_id, "text": comment_text, "now": hk_now},
+                )
+                snippet = comment_text if len(comment_text) <= 40 else comment_text[:40] + "⋯"
+                topic_label = motion_key if len(str(motion_key)) <= 20 else str(motion_key)[:20] + "⋯"
+                notify_vote_event(
+                    "💬 新留言",
+                    f"{user_id} 在「{topic_label}」發表意見：{snippet}",
+                    exclude_user=user_id,
+                    tag=f"comment-{motion_type}-{motion_key}",
                 )
                 st.rerun()
             else:
