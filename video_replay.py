@@ -591,7 +591,7 @@ with vote_col:
     current_vote = my_vote_df.iloc[0]["vote_choice"] if not my_vote_df.empty else None
     vote_options = ["pro", "con", "undecided"]
     selected_vote = st.radio(
-        "你認為哪方勝出？",
+        "你認為哪方值得勝利？",
         options=vote_options,
         format_func=lambda value: VOTE_LABELS[value],
         index=vote_options.index(current_vote) if current_vote in vote_options else 0,
