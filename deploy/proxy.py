@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -41,6 +42,7 @@ HOP_BY_HOP_HEADERS = {
 
 
 app = FastAPI()
+logger = logging.getLogger("skh_proxy")
 
 
 def _proxy_headers(headers):
@@ -63,6 +65,7 @@ def _response_headers(headers):
 def _websocket_headers(headers):
     blocked = HOP_BY_HOP_HEADERS | {
         "host",
+        "origin",
         "sec-websocket-accept",
         "sec-websocket-extensions",
         "sec-websocket-key",
@@ -108,18 +111,31 @@ async def app_icon(size: str):
 
 @app.websocket("/{path:path}")
 async def websocket_proxy(websocket: WebSocket, path: str):
-    await websocket.accept()
+    # Streamlit repurposes Sec-WebSocket-Protocol to carry tokens. The first
+    # entry ("streamlit") is the actual subprotocol and MUST be echoed back to
+    # the browser on accept — otherwise the browser rejects the handshake and
+    # reconnects endlessly, leaving a blank page. The full list is forwarded to
+    # the backend so it can read the xsrf token / session id entries.
+    raw_subprotocols = websocket.headers.get("sec-websocket-protocol", "")
+    requested_subprotocols = [p.strip() for p in raw_subprotocols.split(",") if p.strip()]
+    selected_subprotocol = requested_subprotocols[0] if requested_subprotocols else None
+    await websocket.accept(subprotocol=selected_subprotocol)
 
     query = f"?{websocket.url.query}" if websocket.url.query else ""
     backend_url = f"{STREAMLIT_WS_URL}/{path}{query}"
     headers = _websocket_headers(websocket.headers)
+    headers["Host"] = "127.0.0.1:8501"
+    headers["Origin"] = STREAMLIT_HTTP_URL
+
+    connect_kwargs = {"subprotocols": requested_subprotocols} if requested_subprotocols else {}
 
     try:
         try:
-            backend = await websockets.connect(backend_url, additional_headers=headers)
+            backend = await websockets.connect(backend_url, additional_headers=headers, **connect_kwargs)
         except TypeError:
-            backend = await websockets.connect(backend_url, extra_headers=headers)
-    except Exception:
+            backend = await websockets.connect(backend_url, extra_headers=headers, **connect_kwargs)
+    except Exception as e:
+        logger.exception("WebSocket backend connection failed for %s: %s", backend_url, e)
         await websocket.close(code=1011)
         return
 
@@ -154,8 +170,12 @@ async def websocket_proxy(websocket: WebSocket, path: str):
                 task.result()
         except WebSocketDisconnect:
             return
-        except Exception:
-            await websocket.close(code=1011)
+        except Exception as e:
+            logger.exception("WebSocket proxy failed for %s: %s", backend_url, e)
+            try:
+                await websocket.close(code=1011)
+            except RuntimeError:
+                pass
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
