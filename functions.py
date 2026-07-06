@@ -1439,6 +1439,18 @@ def check_committee_login():
 
     st.subheader("內部委員會成員登入")
 
+    # PWA / 慢速裝置有時 CookieManager 元件未及載入，自動登入會失敗。
+    # 提供一個手動按鈕，重新讀取已儲存的 cookie 再試一次。
+    if st.button("🔄 用已儲存的登入資料登入", key="committee_cookie_login"):
+        cookie_manager.get_all(key="committee_cookies_manual_get")
+        raw_cookie = get_cookie(cookie_manager, "committee_user")
+        verified_user = _verify_cookie(raw_cookie) if raw_cookie else None
+        if verified_user:
+            st.session_state["committee_user"] = verified_user
+            st.rerun()
+        else:
+            st.warning("找不到有效的登入紀錄，請於下方重新輸入帳號密碼。")
+
     with st.form("committee_login"):
         uid = st.text_input("用戶名稱")
         upw = st.text_input("密碼", type="password")
@@ -1468,7 +1480,7 @@ def check_committee_login():
 
 
 def return_expire_day():
-    return datetime.datetime.now() + datetime.timedelta(days=1)
+    return datetime.datetime.now() + datetime.timedelta(days=7)
 
 
 _ACTIVITY_VIEW_SQL = f"""

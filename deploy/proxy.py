@@ -137,16 +137,16 @@ def _get_db_engine():
     return _db_engine
 
 
-def _verify_committee_cookie(request: Request):
-    raw_cookie = request.cookies.get("committee_user")
-    if not raw_cookie or ":" not in raw_cookie:
+def _verify_committee_token(token: str):
+    """Verify a signed ``user_id:sig`` token against the shared cookie secret."""
+    if not token or ":" not in token:
         return None
 
     engine = _get_db_engine()
     if engine is None:
         return None
 
-    user_id, sig = raw_cookie.rsplit(":", 1)
+    user_id, sig = token.rsplit(":", 1)
     with engine.begin() as conn:
         row = conn.execute(
             text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
@@ -162,8 +162,19 @@ def _verify_committee_cookie(request: Request):
     return None
 
 
+def _verify_committee_cookie(request: Request):
+    return _verify_committee_token(request.cookies.get("committee_user") or "")
+
+
 def _require_committee_user(request: Request):
+    # The cookie is the primary source, but requests originating from the
+    # sandboxed Streamlit component iframe cannot carry a SameSite=Strict
+    # cookie, so fall back to a signed bearer token in the Authorization header.
     user_id = _verify_committee_cookie(request)
+    if not user_id:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            user_id = _verify_committee_token(auth[7:].strip())
     if not user_id:
         raise HTTPException(status_code=401, detail="Not logged in")
     return user_id
