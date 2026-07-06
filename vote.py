@@ -2,7 +2,7 @@ import json
 import math
 import streamlit as st
 import streamlit.components.v1 as components
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, _sign_cookie
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_MOTION_COMMENTS,
@@ -154,6 +154,12 @@ def render_push_notification_settings():
         st.info("尚未設定 Web Push 金鑰，暫時未能啟用背景通知。")
         return
 
+    current_user = st.session_state.get("committee_user")
+    if not current_user:
+        st.info("請先登入以設定通知。")
+        return
+    auth_token = _sign_cookie(current_user)
+
     html = """
     <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
@@ -170,6 +176,7 @@ def render_push_notification_settings():
         const enableBtn = doc.getElementById("enablePush");
         const disableBtn = doc.getElementById("disablePush");
         const publicKey = __VAPID_PUBLIC_KEY__;
+        const authToken = __PUSH_AUTH_TOKEN__;
 
         function setStatus(message) {
             statusEl.textContent = message;
@@ -243,7 +250,10 @@ def render_push_notification_settings():
                 const response = await win.fetch("/api/push/subscribe", {
                     method: "POST",
                     credentials: "include",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + authToken
+                    },
                     body: JSON.stringify(subscription)
                 });
                 if (!response.ok) {
@@ -266,7 +276,10 @@ def render_push_notification_settings():
                 const response = await win.fetch("/api/push/unsubscribe", {
                     method: "POST",
                     credentials: "include",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + authToken
+                    },
                     body: JSON.stringify({ endpoint: endpoint })
                 });
                 if (!response.ok) {
@@ -283,7 +296,8 @@ def render_push_notification_settings():
         });
     })();
     </script>
-    """.replace("__VAPID_PUBLIC_KEY__", json.dumps(vapid_public_key))
+    """.replace("__VAPID_PUBLIC_KEY__", json.dumps(vapid_public_key)) \
+       .replace("__PUSH_AUTH_TOKEN__", json.dumps(auth_token))
     components.html(html, height=96)
 
 
