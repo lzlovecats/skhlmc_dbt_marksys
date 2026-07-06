@@ -23,11 +23,19 @@ TABLE_PUSH_SUBSCRIPTIONS = "push_subscriptions"
 TABLE_COMPETITION_REGISTRATION_SETTINGS = "competition_registration_settings"
 TABLE_COMPETITION_REGISTRATIONS = "competition_registrations"
 TABLE_MATCH_VIDEOS = "match_videos"
+TABLE_VIDEO_VIEWS = "video_views"
+TABLE_VIDEO_COMMENTS = "video_comments"
+TABLE_VIDEO_VOTES = "video_votes"
+TABLE_VIDEO_CHAPTERS = "video_chapters"
+TABLE_VIDEO_PROGRESS = "video_progress"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
 TABLE_AI_FUND_TRANSACTIONS = "ai_fund_transactions"
 TABLE_AI_FUND_USAGE_LOGS = "ai_fund_usage_logs"
+TABLE_LATENESS_FUND_RECORDS = "lateness_fund_records"
+TABLE_LATENESS_FUND_EXPENSES = "lateness_fund_expenses"
+TABLE_LATENESS_FUND_PERIODS = "lateness_fund_periods"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -40,7 +48,10 @@ CREATE_ACCOUNTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
     user_id             TEXT    PRIMARY KEY,
     password_hash       TEXT,
-    account_status      TEXT    DEFAULT 'inactive'
+    account_status      TEXT    DEFAULT 'inactive',
+    active_since        DATE    DEFAULT CURRENT_DATE,
+    last_login_at       TIMESTAMP,
+    account_disabled    BOOLEAN DEFAULT FALSE
 );
 """
 
@@ -355,6 +366,94 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_VIDEOS} (
 );
 """
 
+# Table: VIDEO_VIEWS
+# One row per recorded view event. User-level history allows resume and top placement.
+CREATE_VIDEO_VIEWS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_VIEWS} (
+    id              SERIAL      PRIMARY KEY,
+    video_id        INTEGER     NOT NULL,
+    user_id         TEXT        NOT NULL,
+    viewed_at       TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_video_views_video
+        FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_views_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Table: VIDEO_COMMENTS
+# Committee discussion under replay videos.
+CREATE_VIDEO_COMMENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_COMMENTS} (
+    id              SERIAL      PRIMARY KEY,
+    video_id        INTEGER     NOT NULL,
+    user_id         TEXT        NOT NULL,
+    comment_text    TEXT        NOT NULL,
+    created_at      TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_video_comments_video
+        FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_comments_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Table: VIDEO_VOTES
+# One vote per user per video: pro / con / undecided.
+CREATE_VIDEO_VOTES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_VOTES} (
+    video_id        INTEGER     NOT NULL,
+    user_id         TEXT        NOT NULL,
+    vote_choice     TEXT        CHECK (vote_choice IN ('pro', 'con', 'undecided')),
+    updated_at      TIMESTAMP   DEFAULT NOW(),
+    PRIMARY KEY (video_id, user_id),
+    CONSTRAINT fk_video_votes_video
+        FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_votes_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Table: VIDEO_CHAPTERS
+# Per-video jump points for debate roles / sections.
+CREATE_VIDEO_CHAPTERS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_CHAPTERS} (
+    video_id        INTEGER     NOT NULL,
+    chapter_label   TEXT        NOT NULL,
+    start_seconds   INTEGER     NOT NULL DEFAULT 0,
+    display_order   INTEGER     DEFAULT 0,
+    updated_at      TIMESTAMP   DEFAULT NOW(),
+    PRIMARY KEY (video_id, chapter_label),
+    CONSTRAINT fk_video_chapters_video
+        FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE CASCADE
+);
+"""
+
+# Table: VIDEO_PROGRESS
+# Latest watch position per user per video.
+CREATE_VIDEO_PROGRESS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_PROGRESS} (
+    video_id         INTEGER     NOT NULL,
+    user_id          TEXT        NOT NULL,
+    watched_seconds  INTEGER     DEFAULT 0,
+    duration_seconds INTEGER     DEFAULT 0,
+    updated_at       TIMESTAMP   DEFAULT NOW(),
+    PRIMARY KEY (video_id, user_id),
+    CONSTRAINT fk_video_progress_video
+        FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_progress_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
 # Table: MATCH_ROSTER_LINKS
 # Unguessable per-side links for teams to submit their own roster.
 CREATE_MATCH_ROSTER_LINKS = f"""
@@ -451,6 +550,54 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
 );
 """
 
+# Table: LATENESS_FUND_RECORDS
+# Internal late penalty records.
+# Penalty is calculated from display/query logic as nth late record per member × late_minutes.
+CREATE_LATENESS_FUND_RECORDS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_LATENESS_FUND_RECORDS} (
+    id              SERIAL      PRIMARY KEY,
+    late_date       DATE        NOT NULL,
+    member_name     TEXT        NOT NULL,
+    late_minutes    INTEGER     NOT NULL CHECK (late_minutes > 0),
+    paid_amount     NUMERIC(10, 2) DEFAULT 0,
+    note            TEXT,
+    created_by      TEXT,
+    created_at      TIMESTAMP   DEFAULT NOW(),
+    updated_at      TIMESTAMP,
+    CONSTRAINT fk_lateness_fund_record_created_by
+        FOREIGN KEY (created_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+# Table: LATENESS_FUND_EXPENSES
+# Expenses paid out from collected late penalties.
+CREATE_LATENESS_FUND_EXPENSES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_LATENESS_FUND_EXPENSES} (
+    id              SERIAL      PRIMARY KEY,
+    expense_date    DATE        NOT NULL,
+    amount_hkd      NUMERIC(10, 2) NOT NULL CHECK (amount_hkd > 0),
+    note            TEXT,
+    created_by      TEXT,
+    created_at      TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_lateness_fund_expense_created_by
+        FOREIGN KEY (created_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+# Table: LATENESS_FUND_PERIODS
+# Per-fiscal-year opening balance (Bal b/d) for the lateness fund custodian account.
+# Closing balance (Bal c/d) is derived: opening_balance + received - expenses in the year.
+CREATE_LATENESS_FUND_PERIODS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_LATENESS_FUND_PERIODS} (
+    year_label      TEXT        PRIMARY KEY,
+    opening_balance NUMERIC(10, 2) DEFAULT 0,
+    note            TEXT,
+    updated_at      TIMESTAMP   DEFAULT NOW()
+);
+"""
+
 # View: COMMITTEE_VOTE_ACTIVITY
 # Canonical source for committee participation metrics used by Streamlit.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
@@ -477,15 +624,6 @@ all_events AS (
     UNION ALL
     SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
 ),
-event_count AS (
-    SELECT COUNT(*) AS total_votes FROM all_events
-),
-past_10 AS (
-    SELECT topic_text, vote_source
-    FROM all_events
-    ORDER BY created_at DESC
-    LIMIT 10
-),
 ballot_summary AS (
     SELECT
         user_id,
@@ -502,27 +640,41 @@ base_stats AS (
     SELECT
         a.user_id,
         a.account_status,
-        COALESCE((SELECT total_votes FROM event_count), 0) AS total_votes,
         (
             SELECT COUNT(*) FROM all_events ae
-            WHERE (
-                ae.vote_source = 'tv'
-                AND EXISTS (
-                    SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-                    WHERE b.topic_text = ae.topic_text
-                      AND b.user_id = a.user_id
-                )
-            ) OR (
-                ae.vote_source = 'tdv'
-                AND EXISTS (
-                    SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-                    WHERE b.topic_text = ae.topic_text
-                      AND b.user_id = a.user_id
-                )
-            )
+            WHERE a.active_since IS NULL
+               OR ae.created_at::date >= a.active_since
+        ) AS total_votes,
+        (
+            SELECT COUNT(*) FROM all_events ae
+            WHERE (a.active_since IS NULL OR ae.created_at::date >= a.active_since)
+              AND (
+                  (
+                      ae.vote_source = 'tv'
+                      AND EXISTS (
+                          SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
+                          WHERE b.topic_text = ae.topic_text
+                            AND b.user_id = a.user_id
+                      )
+                  ) OR (
+                      ae.vote_source = 'tdv'
+                      AND EXISTS (
+                          SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
+                          WHERE b.topic_text = ae.topic_text
+                            AND b.user_id = a.user_id
+                      )
+                  )
+              )
         ) AS participated_votes,
         (
-            SELECT COUNT(*) FROM past_10 p
+            SELECT COUNT(*) FROM (
+                SELECT ae.topic_text, ae.vote_source
+                FROM all_events ae
+                WHERE a.active_since IS NULL
+                   OR ae.created_at::date >= a.active_since
+                ORDER BY ae.created_at DESC
+                LIMIT 10
+            ) p
             WHERE (
                 p.vote_source = 'tv'
                 AND EXISTS (
@@ -544,6 +696,7 @@ base_stats AS (
     FROM {TABLE_ACCOUNTS} a
     LEFT JOIN ballot_summary bs ON bs.user_id = a.user_id
     WHERE a.user_id NOT IN ('admin', 'developer', '')
+      AND COALESCE(a.account_disabled, FALSE) = FALSE
 )
 SELECT
     user_id,
@@ -588,6 +741,16 @@ CREATE INDEX IF NOT EXISTS idx_match_videos_match_id
     ON {TABLE_MATCH_VIDEOS}(match_id);
 CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order
     ON {TABLE_MATCH_VIDEOS}(is_visible, display_order);
+CREATE INDEX IF NOT EXISTS idx_video_views_video_id
+    ON {TABLE_VIDEO_VIEWS}(video_id);
+CREATE INDEX IF NOT EXISTS idx_video_views_user_updated
+    ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_comments_video_created
+    ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice
+    ON {TABLE_VIDEO_VOTES}(video_id, vote_choice);
+CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
+    ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
     ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
@@ -602,6 +765,10 @@ CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at
     ON {TABLE_AI_FUND_USAGE_LOGS}(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_user_id
     ON {TABLE_AI_FUND_USAGE_LOGS}(user_id);
+CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_date
+    ON {TABLE_LATENESS_FUND_RECORDS}(member_name, late_date);
+CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date
+    ON {TABLE_LATENESS_FUND_EXPENSES}(expense_date);
 """
 
 # System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
@@ -634,10 +801,18 @@ ALL_SCHEMAS = [
     CREATE_COMPETITION_REGISTRATION_SETTINGS,  # no deps
     CREATE_COMPETITION_REGISTRATIONS,           # no deps
     CREATE_MATCH_VIDEOS,              # → matches
+    CREATE_VIDEO_VIEWS,               # → match_videos, accounts
+    CREATE_VIDEO_COMMENTS,            # → match_videos, accounts
+    CREATE_VIDEO_VOTES,               # → match_videos, accounts
+    CREATE_VIDEO_CHAPTERS,            # → match_videos
+    CREATE_VIDEO_PROGRESS,            # → match_videos, accounts
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
     CREATE_AI_FUND_USAGE_LOGS,        # → accounts
+    CREATE_LATENESS_FUND_RECORDS,     # → accounts
+    CREATE_LATENESS_FUND_EXPENSES,    # → accounts
+    CREATE_LATENESS_FUND_PERIODS,     # no deps
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables

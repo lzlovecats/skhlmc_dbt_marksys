@@ -9,6 +9,7 @@ from functions import (
     check_committee_login,
     committee_cookie_manager,
     del_cookie,
+    render_committee_auth_bridge,
     load_matches_from_db,
     render_page_guidance,
     get_connection,
@@ -265,6 +266,7 @@ if user_id == "admin":
     if st.button("登出"):
         st.session_state["committee_user"] = None
         del_cookie(committee_cookie_manager(), "committee_user")
+        render_committee_auth_bridge(clear=True)
         st.rerun()
     st.stop()
 

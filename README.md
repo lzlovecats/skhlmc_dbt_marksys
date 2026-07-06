@@ -109,13 +109,15 @@ A full-featured electronic scoring and management platform for school debate com
 - 賽會人員可為現有場次新增多條 YouTube 比賽片段連結
 - 未使用電子分紙系統的舊比賽，可手動輸入比賽名稱、辯題及正反方隊名
 - 支援 `https://youtube.com/watch?v=...`、`youtube.com/watch?v=...`、`www.youtube.com/watch?v=...` 及 `youtu.be/...` 格式
-- 公開重溫頁無須登入，可按場次、隊伍、辯題或片段標題搜尋
+- 內部委員會成員登入後可在系統內播放片段，並查看觀看次數、留言、勝負投票及章節跳轉
+- 管理頁支援 CSV 批量匯入 YouTube Studio 影片清單，並可設定各辯位或環節的開始時間
 
 **English:**
 - Organisers can add multiple YouTube replay links for each existing match
 - Legacy matches that were not scored in the system can be added with manually entered metadata
 - Supports common YouTube URL formats, including links without an explicit `https://` prefix
-- The public replay page is login-free and searchable by match, team, motion, or video title
+- Committee members can watch embedded replays after login, with view counts, comments, winner voting, and chapter jumps
+- The admin page supports CSV bulk import from YouTube Studio exports and per-section timestamps
 
 ---
 
@@ -170,8 +172,8 @@ A full-featured electronic scoring and management platform for school debate com
 | 賽會人員 / Organiser | 報名管理、場次管理、比賽片段管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
 | 準參賽隊伍 / Prospective Teams | 比賽報名 | 無需登入（只限報名時間內） |
 | 參賽隊伍 / Teams | 提交比賽名單、查閱分紙 | 隨機專屬名單連結、查閱分紙密碼 |
-| 一般人員 / Public | 比賽片段重溫、查閱辯題庫 | 無需登入 |
-| 委員會成員 / Committee | 辯題徵集、投票及罷免、✨AI 辯論易 | 個人帳戶（用戶名稱 + 密碼） |
+| 一般人員 / Public | 查閱辯題庫 | 無需登入 |
+| 委員會成員 / Committee | 辯題徵集、投票及罷免、✨AI 辯論易、比賽片段重溫 | 個人帳戶（用戶名稱 + 密碼） |
 | Developer | 開發者設定 | 開發者密碼（存於 DB） |
 
 ---
@@ -283,7 +285,7 @@ streamlit run main.py
 ├── match_info.py             # 場次管理 / Match management
 ├── team_roster.py            # 隱藏隊伍名單提交頁 / Hidden team roster submission page
 ├── video_admin.py            # 比賽片段管理 / Match video management
-├── video_replay.py           # 比賽片段重溫 / Public match video replay
+├── video_replay.py           # 比賽片段重溫 / Committee match video replay
 ├── management.py             # 賽果統計 / Results dashboard
 ├── registration.py           # 公開比賽報名 / Public competition registration
 ├── registration_admin.py     # 比賽報名管理 / Registration management

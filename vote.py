@@ -2,7 +2,8 @@ import json
 import math
 import streamlit as st
 import streamlit.components.v1 as components
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, del_cookie, committee_cookie_manager, return_gemini_reminder, return_chatgpt_reminder, return_gemini_depose_reminder, return_chatgpt_depose_reminder, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, _sign_cookie
+from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, del_cookie, committee_cookie_manager, render_committee_auth_bridge, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, _sign_cookie
+from ai_coach_helpers import generate_general_ai_reply, get_ai_model_settings, is_successful_ai_result
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_MOTION_COMMENTS,
@@ -351,8 +352,13 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                 st.divider()
         else:
             st.caption("暫時未有討論。")
-        new_comment = st.text_area("發表意見", key=f"comment_{motion_type}_{idx}", placeholder="就此議案發表你的看法⋯")
-        if st.button("發表", key=f"post_comment_{motion_type}_{idx}"):
+        new_comment = st.text_area("發表意見", key=f"comment_{motion_type}_{idx}", placeholder="就此議案發表意見，或按 Tag AI 取得中立分析。")
+        post_col, ai_col = st.columns(2)
+        with post_col:
+            post_comment = st.button("發表", key=f"post_comment_{motion_type}_{idx}", use_container_width=True)
+        with ai_col:
+            tag_ai = st.button("Tag AI（Gemini 3.5 Flash）", key=f"tag_ai_{motion_type}_{idx}", use_container_width=True)
+        if post_comment:
             if new_comment.strip():
                 comment_text = new_comment.strip()
                 hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
@@ -369,9 +375,37 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                     exclude_user=user_id,
                     tag=f"comment-{motion_type}-{motion_key}",
                 )
+                queue_toast("已成功留言", icon="☑️")
                 st.rerun()
             else:
                 st.warning("請輸入內容。")
+        if tag_ai:
+            ensure_ai_comment_account()
+            if new_comment.strip():
+                hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+                execute_query(
+                    f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
+                    "VALUES (:type, :key, :uid, :text, :now)",
+                    {"type": motion_type, "key": motion_key, "uid": user_id, "text": new_comment.strip(), "now": hk_now},
+                )
+                comments = query_params(
+                    f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
+                    "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
+                    {"type": motion_type, "key": motion_key},
+                )
+            with st.spinner("AI 正在分析討論內容，請稍候⋯"):
+                ai_text, _usage = ai_discussion_reply(motion_type, motion_key, comments)
+            if is_successful_ai_result(ai_text):
+                hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+                execute_query(
+                    f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
+                    "VALUES (:type, :key, :uid, :text, :now)",
+                    {"type": motion_type, "key": motion_key, "uid": "Gemini 3.5 Flash", "text": ai_text, "now": hk_now},
+                )
+                queue_toast("AI 已回覆討論", icon="☑️")
+                st.rerun()
+            else:
+                st.error(ai_text)
 
 
 def _ballot_delete(table, topic, user_id):
@@ -594,13 +628,57 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
 # Get committee cookie manager first
 cm = committee_cookie_manager()
 
-@st.dialog("Gemini 審題提示")
-def show_gemini_reminder(reminder_fn):
-    st.markdown(reminder_fn())
 
-@st.dialog("ChatGPT 審題提示")
-def show_chatgpt_reminder(reminder_fn):
-    st.markdown(reminder_fn())
+def get_vote_ai_model():
+    settings = get_ai_model_settings()
+    return settings.get("default_model") or "Gemini 2.5 Flash"
+
+
+def ai_review_topic(topic, category, difficulty):
+    difficulty_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
+    system_prompt = (
+        "你是香港中學辯論比賽的辯題審查員。請使用粵語書面語，"
+        "從表述清晰度、正反責任平衡、可辯性、資料可得性、討論價值、類別及難度合理性六方面評價。"
+        "回覆要精簡、可執行，最後給出「建議：通過／修改後通過／不建議加入」。"
+    )
+    user_text = f"""待審查辯題：{topic}
+類別：{category}
+難度：{difficulty_label}
+
+請審查此辯題是否適合加入投票區，並列出需要修改的地方。"""
+    return generate_general_ai_reply(system_prompt, user_text, get_vote_ai_model())
+
+
+def ai_discussion_reply(motion_type, motion_key, comments):
+    discussion_lines = []
+    for _, c in comments.iterrows():
+        discussion_lines.append(f"{c['user_id']}：{c['comment_text']}")
+    system_prompt = (
+        "你是辯題討論區的 AI 助手。請使用粵語書面語，保持中立，"
+        "集中分析議案本身，不要代替成員投票。"
+    )
+    motion_label = "辯題投票" if motion_type == "topic_vote" else "罷免動議"
+    user_text = f"""議案類型：{motion_label}
+議案：{motion_key}
+
+目前討論：
+{chr(10).join(discussion_lines) if discussion_lines else "暫時未有討論。"}
+
+請回應最近的 AI tag，指出主要爭議、可補充資料，以及正反雙方可考慮的角度。"""
+    return generate_general_ai_reply(system_prompt, user_text, "Gemini 3.5 Flash")
+
+
+def ensure_ai_comment_account():
+    if st.session_state.get("_ai_comment_account_ready"):
+        return
+    execute_query(
+        f"""
+        INSERT INTO {TABLE_ACCOUNTS} (user_id, password_hash, account_status, account_disabled)
+        VALUES ('Gemini 3.5 Flash', '', 'inactive', TRUE)
+        ON CONFLICT (user_id) DO UPDATE SET account_disabled = TRUE
+        """
+    )
+    st.session_state["_ai_comment_account_ready"] = True
 
 @st.dialog("投反對票")
 def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False):
@@ -641,6 +719,7 @@ if user_id == "admin":
     if st.button("登出"):
         st.session_state["committee_user"] = None
         del_cookie(cm, "committee_user")
+        render_committee_auth_bridge(clear=True)
         st.rerun()
     st.stop()
 show_noti_popup(user_id)
@@ -801,6 +880,27 @@ if selected_tab == "proposal":
             options=[1, 2, 3],
             format_func=lambda x: DIFFICULTY_OPTIONS[x]
         )
+        if st.button("AI 審查提案", key="ai_review_new_topic"):
+            if not new_topic.strip():
+                st.warning("請先輸入完整辯題。")
+            else:
+                with st.spinner("AI 正在審查提案，請稍候⋯"):
+                    ai_review, _usage = ai_review_topic(new_topic.strip(), new_category, new_difficulty)
+                st.session_state["proposal_ai_review"] = {
+                    "topic": new_topic.strip(),
+                    "category": new_category,
+                    "difficulty": new_difficulty,
+                    "review": ai_review,
+                }
+        review_data = st.session_state.get("proposal_ai_review")
+        if (
+            review_data
+            and review_data.get("topic") == new_topic.strip()
+            and review_data.get("category") == new_category
+            and review_data.get("difficulty") == new_difficulty
+        ):
+            with st.expander("AI 審查結果", expanded=True):
+                st.markdown(review_data["review"])
 
     # If there are >= 10 pending topics, block new submissions and remind voting first.
     pending_vote_data, _, _ = get_vote_data()
@@ -996,14 +1096,6 @@ elif selected_tab == "topic_vote":
     st.caption("當不同意票數達入庫門檻，且不同意票多於同意票時，系統會自動否決該辯題。")
 
     render_refresh_button("refresh_vote_tab2")
-    with st.expander("💡 AI 審題提示"):
-        ai_col1, ai_col2 = st.columns(2)
-        with ai_col1:
-            if st.button("Gemini 審題提示", key="gemini_tab2"):
-                show_gemini_reminder(return_gemini_reminder)
-        with ai_col2:
-            if st.button("ChatGPT 審題提示", key="chatgpt_tab2"):
-                show_chatgpt_reminder(return_chatgpt_reminder)
     st.divider()
     
     vote_data, passed_list, rejected_list = get_vote_data()
@@ -1105,14 +1197,6 @@ elif selected_tab == "depose_vote":
     st.caption("當不同意票數達罷免門檻，且不同意票多於同意票時，系統會自動否決罷免動議。")
 
     render_refresh_button("refresh_vote_tab3")
-    with st.expander("💡 AI 審題提示"):
-        ai_col1, ai_col2 = st.columns(2)
-        with ai_col1:
-            if st.button("Gemini 審題提示", key="gemini_tab3"):
-                show_gemini_reminder(return_gemini_depose_reminder)
-        with ai_col2:
-            if st.button("ChatGPT 審題提示", key="chatgpt_tab3"):
-                show_chatgpt_reminder(return_chatgpt_depose_reminder)
 
     conn = get_connection()
     df_depose = conn.query(
@@ -1301,4 +1385,5 @@ elif selected_tab == "account":
     if st.button("登出", type="primary"):
         st.session_state["committee_user"] = None
         del_cookie(cm, "committee_user")
+        render_committee_auth_bridge(clear=True)
         st.rerun()
