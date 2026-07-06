@@ -378,8 +378,7 @@ with col_left:
 
     with st.container(border=True):
         st.markdown("### 🌐 一般人員")
-        st.write("瀏覽比賽片段、公開辯題庫及相關統計。")
-        st.page_link("video_replay.py", label="比賽片段重溫", icon="🎬")
+        st.write("瀏覽公開辯題庫及相關統計。")
         st.page_link("open_db.py", label="查閱辯題庫", icon="📚")
 
 with col_right:
@@ -398,9 +397,10 @@ with col_right:
 
 with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
-    st.write("提出辯題、參與投票、提出罷免動議、使用 AI 辯論教練、管理遲到罰款及個人帳戶。")
+    st.write("提出辯題、參與投票、提出罷免動議、重溫比賽片段、使用 AI 辯論教練、管理遲到罰款及個人帳戶。")
     st.page_link("vote.py", label="辯題徵集、投票及罷免", icon="🗳️")
     st.page_link("ai_coach.py", label="AI 辯論易", icon="✨")
+    st.page_link("video_replay.py", label="比賽片段重溫", icon="🎬")
     st.page_link("lateness_fund.py", label="遲到罰款基金", icon="💰")
 
 st.divider()

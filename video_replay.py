@@ -76,6 +76,23 @@ def _seconds_to_label(seconds):
     return f"{minute}:{sec:02d}"
 
 
+def _parse_time_to_seconds(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    parts = text.split(":")
+    if not all(part.strip().isdigit() for part in parts):
+        return None
+    nums = [int(part.strip()) for part in parts]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    return None
+
+
 def _safe_int(value, default=0):
     try:
         if value is None or value != value:
@@ -228,11 +245,51 @@ def _render_youtube_player(video_id, youtube_id, start_seconds, auth_token):
     components.html(html, height=420)
 
 
+def _render_mobile_styles():
+    # 手機（≤640px）響應式排版：沿用 home.py 已確立嘅模式。此版本 Streamlit
+    # 嘅 st.columns 喺窄螢幕唔會自動堆疊，須用 CSS 強制 column 全闊度直向排列。
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 640px) {
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+                padding-top: 1rem;
+            }
+            div[data-testid="stButton"] button {
+                min-height: 2.75rem;
+                align-items: center;
+            }
+            div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+                min-width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+            .st-key-skh-chapter-grid div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+                min-width: 50% !important;
+                flex: 1 1 50% !important;
+            }
+            h1 {
+                font-size: 1.65rem !important;
+                line-height: 1.25 !important;
+            }
+            h3 {
+                font-size: 1.08rem !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 st.header("比賽片段重溫")
+_render_mobile_styles()
 render_page_guidance(
     [
         "此頁只供內部委員會成員登入後使用。",
         "可在系統內直接播放片段，並使用章節按鈕跳轉至不同辯位或環節。",
+        "所有內部委員會成員都可以更新片段章節時間點。",
         "系統會記錄最近觀看的片段及觀看位置，方便下次繼續。",
     ],
 )
@@ -416,17 +473,88 @@ with player_col:
     )
     if not chapter_rows.empty:
         st.caption("章節跳轉")
-        chapter_cols = st.columns(4)
-        for position, (_, chapter) in enumerate(chapter_rows.iterrows()):
-            with chapter_cols[position % 4]:
-                if st.button(
-                    f"{chapter['chapter_label']} {_seconds_to_label(chapter['start_seconds'])}",
-                    key=f"chapter_{selected_video_id}_{chapter['chapter_label']}",
-                    use_container_width=True,
-                ):
-                    _select_video(selected_video_id, int(chapter["start_seconds"]))
+        with st.container(key="skh-chapter-grid"):
+            chapter_cols = st.columns(4)
+            for position, (_, chapter) in enumerate(chapter_rows.iterrows()):
+                with chapter_cols[position % 4]:
+                    if st.button(
+                        f"{chapter['chapter_label']} {_seconds_to_label(chapter['start_seconds'])}",
+                        key=f"chapter_{selected_video_id}_{chapter['chapter_label']}",
+                        use_container_width=True,
+                    ):
+                        _select_video(selected_video_id, int(chapter["start_seconds"]))
     else:
         st.caption("此片段暫未設定章節。")
+
+    with st.expander("更新章節時間點", expanded=chapter_rows.empty):
+        st.caption("所有內部委員會成員均可更新；時間可輸入秒數、mm:ss 或 hh:mm:ss。未啟用的章節不會顯示。")
+        chapter_map = {
+            str(row["chapter_label"]): int(row["start_seconds"])
+            for _, row in chapter_rows.iterrows()
+        } if not chapter_rows.empty else {}
+
+        with st.form(f"replay_chapter_form_{selected_video_id}"):
+            chapter_inputs = []
+            for chapter_index, chapter_label in enumerate(CHAPTER_LABELS):
+                chapter_col1, chapter_col2 = st.columns([1, 2])
+                with chapter_col1:
+                    enabled = st.checkbox(
+                        chapter_label,
+                        value=chapter_label in chapter_map,
+                        key=f"replay_chapter_enabled_{selected_video_id}_{chapter_label}",
+                    )
+                with chapter_col2:
+                    current_value = _seconds_to_label(chapter_map[chapter_label]) if chapter_label in chapter_map else ""
+                    time_text = st.text_input(
+                        "開始時間",
+                        value=current_value,
+                        key=f"replay_chapter_time_{selected_video_id}_{chapter_label}",
+                        label_visibility="collapsed",
+                        placeholder="例：12:34",
+                    )
+                chapter_inputs.append((chapter_label, chapter_index, enabled, time_text))
+            save_chapters = st.form_submit_button("儲存章節時間表", type="primary", use_container_width=True)
+
+        if save_chapters:
+            chapter_values = []
+            invalid_labels = []
+            for chapter_label, chapter_index, enabled, time_text in chapter_inputs:
+                if not enabled:
+                    continue
+                start_seconds_for_chapter = _parse_time_to_seconds(time_text)
+                if start_seconds_for_chapter is None:
+                    invalid_labels.append(chapter_label)
+                else:
+                    chapter_values.append((chapter_label, chapter_index, start_seconds_for_chapter))
+
+            if invalid_labels:
+                st.error("以下章節時間格式無效：" + "、".join(invalid_labels))
+            else:
+                now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+                execute_query(
+                    f"DELETE FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id = :video_id",
+                    {"video_id": int(selected_video_id)},
+                )
+                for chapter_label, chapter_index, start_seconds_for_chapter in chapter_values:
+                    execute_query(
+                        f"""
+                        INSERT INTO {TABLE_VIDEO_CHAPTERS} (
+                            video_id, chapter_label, start_seconds, display_order, updated_at
+                        )
+                        VALUES (
+                            :video_id, :chapter_label, :start_seconds, :display_order, :updated_at
+                        )
+                        """,
+                        {
+                            "video_id": int(selected_video_id),
+                            "chapter_label": chapter_label,
+                            "start_seconds": int(start_seconds_for_chapter),
+                            "display_order": int(chapter_index),
+                            "updated_at": now_hk,
+                        },
+                    )
+                _queue_replay_toast("章節時間表已更新。", icon="✅")
+                st.rerun()
 
     with st.popover("🔗 分享此片段連結", use_container_width=True):
         st.caption("複製以下連結，一按即可開啟本片段：")
