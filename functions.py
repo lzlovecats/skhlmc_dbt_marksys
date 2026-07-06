@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import hashlib
 import hmac
 import json
@@ -13,6 +14,7 @@ import datetime
 import os
 import io
 import bcrypt
+from http.cookies import SimpleCookie
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from schema import (
@@ -20,6 +22,11 @@ from schema import (
     CREATE_COMPETITION_REGISTRATION_SETTINGS,
     CREATE_COMPETITION_REGISTRATIONS,
     CREATE_MATCH_VIDEOS,
+    CREATE_VIDEO_VIEWS,
+    CREATE_VIDEO_COMMENTS,
+    CREATE_VIDEO_VOTES,
+    CREATE_VIDEO_CHAPTERS,
+    CREATE_VIDEO_PROGRESS,
     CREATE_MATCH_ROSTER_LINKS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_DEBATERS,
@@ -27,6 +34,11 @@ from schema import (
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
     TABLE_MATCH_VIDEOS,
+    TABLE_VIDEO_VIEWS,
+    TABLE_VIDEO_COMMENTS,
+    TABLE_VIDEO_VOTES,
+    TABLE_VIDEO_CHAPTERS,
+    TABLE_VIDEO_PROGRESS,
     TABLE_MATCH_ROSTER_LINKS,
     TABLE_NOTIFICATION_READS,
     TABLE_PUSH_SUBSCRIPTIONS,
@@ -40,6 +52,7 @@ from schema import (
     TABLE_TOPICS,
     VIEW_COMMITTEE_VOTE_ACTIVITY,
     CREATE_PUSH_SUBSCRIPTIONS,
+    CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +131,31 @@ def committee_cookie_manager():
     return st.session_state["committee_cookie_manager"]
 
 
+def render_committee_auth_bridge(token=None, clear=False):
+    token_json = json.dumps(token or "")
+    clear_json = json.dumps(bool(clear))
+    components_html = f"""
+    <script>
+    (function () {{
+        const win = window.parent;
+        const token = {token_json};
+        const shouldClear = {clear_json};
+        const cookieName = "committee_user";
+        if (shouldClear) {{
+            win.localStorage.removeItem(cookieName);
+            win.document.cookie = cookieName + "=; Max-Age=0; Path=/; SameSite=Lax";
+            return;
+        }}
+        if (token) {{
+            win.localStorage.setItem(cookieName, token);
+            win.document.cookie = cookieName + "=" + encodeURIComponent(token) + "; Max-Age=15552000; Path=/; SameSite=Lax";
+        }}
+    }})();
+    </script>
+    """
+    components.html(components_html, height=0, width=0)
+
+
 def _get_cookie_secret() -> str:
     secret = get_system_config("cookie_secret")
     if secret:
@@ -147,6 +185,25 @@ def _verify_cookie(cookie_value: str) -> str | None:
     expected = hmac.new(secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected):
         return user_id
+    return None
+
+
+def get_committee_cookie_from_context():
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies and cookies.get("committee_user"):
+            return cookies.get("committee_user")
+    except Exception:
+        pass
+    try:
+        headers = getattr(st.context, "headers", None)
+        raw_cookie = headers.get("cookie") if headers else ""
+        parsed = SimpleCookie()
+        parsed.load(raw_cookie or "")
+        if "committee_user" in parsed:
+            return parsed["committee_user"].value
+    except Exception:
+        pass
     return None
 
 
@@ -222,6 +279,48 @@ def ensure_match_videos_table():
         return False
 
 
+def ensure_video_interaction_tables():
+    if st.session_state.get("_video_interaction_tables_ready"):
+        return True
+    if not ensure_match_videos_table():
+        return False
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_VIDEO_VIEWS))
+            s.execute(text(CREATE_VIDEO_COMMENTS))
+            s.execute(text(CREATE_VIDEO_VOTES))
+            s.execute(text(CREATE_VIDEO_CHAPTERS))
+            s.execute(text(CREATE_VIDEO_PROGRESS))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_video_views_video_id "
+                f"ON {TABLE_VIDEO_VIEWS}(video_id)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated "
+                f"ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_video_comments_video_created "
+                f"ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice "
+                f"ON {TABLE_VIDEO_VOTES}(video_id, vote_choice)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated "
+                f"ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)"
+            ))
+            s.commit()
+        st.session_state["_video_interaction_tables_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_video_interaction_tables failed: %s", e)
+        return False
+
+
 def ensure_match_roster_links_table():
     if st.session_state.get("_match_roster_links_ready"):
         return True
@@ -291,7 +390,7 @@ def send_push_notification(subscription, title, body, url="/vote", tag=None):
         return False, f"pywebpush unavailable: {e}"
 
     payload = {
-        "title": title,
+        "title": _push_title_with_emoji(title),
         "body": body,
         "url": url,
     }
@@ -304,6 +403,7 @@ def send_push_notification(subscription, title, body, url="/vote", tag=None):
             data=json.dumps(payload, ensure_ascii=False),
             vapid_private_key=config["private_key"],
             vapid_claims={"sub": config["subject"]},
+            headers={"Urgency": "high"},
             ttl=60 * 60 * 24,
             timeout=(5, 10),
         )
@@ -313,6 +413,29 @@ def send_push_notification(subscription, title, body, url="/vote", tag=None):
         return False, f"{status_code or ''} {e}".strip()
     except Exception as e:
         return False, str(e)
+
+
+def _push_title_with_emoji(title):
+    title = str(title or "").strip()
+    if not title:
+        return "🔔 聖呂中辯"
+    if re.match(r"^[^\w\s]", title):
+        return title
+    emoji_map = [
+        ("新留言", "💬"),
+        ("新辯題", "📝"),
+        ("辯題投票通過", "✅"),
+        ("辯題投票否決", "❌"),
+        ("辯題投票逾期", "⏰"),
+        ("新罷免動議", "✂️"),
+        ("罷免動議通過", "🗑️"),
+        ("罷免動議否決", "🛡️"),
+        ("罷免動議逾期", "⏰"),
+    ]
+    for prefix, emoji in emoji_map:
+        if title.startswith(prefix):
+            return f"{emoji} {title}"
+    return f"🔔 {title}"
 
 
 def notify_committee_vote_event(title, body, exclude_user=None, target_user=None, tag=None, url="/vote"):
@@ -679,6 +802,74 @@ def execute_query_count(sql_str, params=None):
         count = result.rowcount
         s.commit()
     return count
+
+
+def ensure_account_lifecycle_columns():
+    if st.session_state.get("_account_lifecycle_ready"):
+        return True
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(f"ALTER TABLE {TABLE_ACCOUNTS} ADD COLUMN IF NOT EXISTS active_since DATE"))
+            s.execute(text(f"ALTER TABLE {TABLE_ACCOUNTS} ALTER COLUMN active_since SET DEFAULT CURRENT_DATE"))
+            s.execute(text(f"ALTER TABLE {TABLE_ACCOUNTS} ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP"))
+            s.execute(text(f"ALTER TABLE {TABLE_ACCOUNTS} ADD COLUMN IF NOT EXISTS account_disabled BOOLEAN DEFAULT FALSE"))
+            s.execute(text(f"UPDATE {TABLE_ACCOUNTS} SET account_disabled = FALSE WHERE account_disabled IS NULL"))
+            s.execute(text(
+                f"""
+                UPDATE {TABLE_ACCOUNTS} a
+                SET active_since = DATE '2026-07-06'
+                WHERE a.user_id IN ('auyeunghc', 'hojy', 'chanjy', 'lauys')
+                  AND (a.active_since IS NULL OR a.active_since < DATE '2026-07-06')
+                """
+            ))
+            for ddl in CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW.split(";"):
+                if ddl.strip():
+                    s.execute(text(ddl))
+            s.commit()
+        st.session_state["_account_lifecycle_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_account_lifecycle_columns failed: %s", e)
+        return False
+
+
+def update_committee_login_time(user_id: str):
+    ensure_account_lifecycle_columns()
+    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    execute_query(
+        f"""
+        UPDATE {TABLE_ACCOUNTS}
+        SET last_login_at = :now,
+            account_disabled = FALSE
+        WHERE user_id = :user_id
+        """,
+        {"user_id": user_id, "now": now},
+    )
+
+
+def disable_dormant_committee_accounts():
+    if not ensure_account_lifecycle_columns():
+        return
+    cutoff = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None) - datetime.timedelta(days=180)
+    execute_query(
+        f"""
+        UPDATE {TABLE_ACCOUNTS} a
+        SET last_login_at = COALESCE(a.last_login_at, login_stats.last_login_at),
+            account_disabled = TRUE
+        FROM (
+            SELECT user_id, MAX(logged_in_at) AS last_login_at
+            FROM {TABLE_LOGIN_RECORDS}
+            WHERE login_type = 'committee'
+            GROUP BY user_id
+        ) login_stats
+        WHERE a.user_id = login_stats.user_id
+          AND a.user_id NOT IN ('admin', 'developer', '')
+          AND COALESCE(a.account_disabled, FALSE) = FALSE
+          AND COALESCE(a.last_login_at, login_stats.last_login_at) < :cutoff
+        """,
+        {"cutoff": cutoff},
+    )
 
 
 def load_matches_from_db():
@@ -1416,6 +1607,12 @@ _verify_password = _verify_config_password
 
 
 def check_committee_login():
+    ensure_account_lifecycle_columns()
+    # Sweep dormant (180-day inactive) accounts once per session rather than
+    # hiding a write inside the cached participation-stats query.
+    if not st.session_state.get("_dormant_sweep_done"):
+        st.session_state["_dormant_sweep_done"] = True
+        disable_dormant_committee_accounts()
     cookie_manager = committee_cookie_manager()
 
     if "committee_user" not in st.session_state:
@@ -1424,6 +1621,12 @@ def check_committee_login():
     # Check cookies for auto-login. CookieManager returns default {} on first run until the
     # browser component runs; give it one rerun so the component can return real cookies.
     if st.session_state["committee_user"] is None:
+        context_cookie = get_committee_cookie_from_context()
+        verified_context_user = _verify_cookie(context_cookie) if context_cookie else None
+        if verified_context_user:
+            st.session_state["committee_user"] = verified_context_user
+            update_committee_login_time(verified_context_user)
+            st.rerun()
         if not st.session_state.get("_committee_cookie_rerun_done"):
             st.session_state["_committee_cookie_rerun_done"] = True
             st.rerun()
@@ -1432,9 +1635,11 @@ def check_committee_login():
         verified_user = _verify_cookie(raw_cookie) if raw_cookie else None
         if verified_user:
             st.session_state["committee_user"] = verified_user
+            update_committee_login_time(verified_user)
             st.rerun()
 
     if st.session_state["committee_user"]:
+        render_committee_auth_bridge(_sign_cookie(st.session_state["committee_user"]))
         return True
 
     st.subheader("內部委員會成員登入")
@@ -1447,6 +1652,7 @@ def check_committee_login():
         verified_user = _verify_cookie(raw_cookie) if raw_cookie else None
         if verified_user:
             st.session_state["committee_user"] = verified_user
+            update_committee_login_time(verified_user)
             st.rerun()
         else:
             st.warning("找不到有效的登入紀錄，請於下方重新輸入帳號密碼。")
@@ -1471,16 +1677,19 @@ def check_committee_login():
             if login_success:
                 refresh_acc_type(uid.strip())
                 _log_login(uid.strip(), "committee")
+                update_committee_login_time(uid.strip())
                 st.session_state["committee_user"] = uid.strip()
-                set_cookie(cookie_manager, "committee_user", _sign_cookie(uid.strip()), expires_at=return_expire_day())
+                auth_token = _sign_cookie(uid.strip())
+                set_cookie(cookie_manager, "committee_user", auth_token, expires_at=return_expire_day())
+                render_committee_auth_bridge(auth_token)
                 st.success(f"歡迎，{uid.strip()}。")
-                st.rerun()
+                return True
             else:
                 st.error("用戶名稱或密碼錯誤。")
 
 
 def return_expire_day():
-    return datetime.datetime.now() + datetime.timedelta(days=7)
+    return datetime.datetime.now() + datetime.timedelta(days=180)
 
 
 _ACTIVITY_VIEW_SQL = f"""
@@ -1551,14 +1760,6 @@ def compute_threshold(base_min: int, pct: float) -> int:
     return max(base_min, math.ceil(pct * active_count))
 
 
-def return_gemini_reminder():
-    return load_markdown_asset("gemini_reminder.md")
-
-
-def return_chatgpt_reminder():
-    return load_markdown_asset("chatgpt_reminder.md")
-
-
 @st.cache_data(ttl=60)
 def _compute_all_user_stats():
     """Compute participation stats for all users in a single SQL query."""
@@ -1574,9 +1775,6 @@ def get_active_user_count():
     df = _compute_all_user_stats()
     if df.empty:
         return 0, []
-    total_votes = int(df.iloc[0]["total_votes"])
-    if total_votes == 0:
-        return 0, []
     active = df[df["is_active"].apply(_coerce_bool)]
     return len(active), [str(user_id).strip() for user_id in active["user_id"].tolist()]
 
@@ -1590,12 +1788,13 @@ def get_member_participation_stats():
     df = _compute_all_user_stats()
     if df.empty:
         return [], 0
-    total_votes = int(df.iloc[0]["total_votes"])
+    total_votes = int(df["total_votes"].max()) if "total_votes" in df else 0
 
     stats = []
     for _, row in df.iterrows():
+        member_total_votes = int(row["total_votes"])
         participated = int(row["participated_votes"])
-        overall_rate = participated / total_votes if total_votes > 0 else 0
+        overall_rate = participated / member_total_votes if member_total_votes > 0 else 0
         last10 = int(row["last10_participated"])
         total_ballots = int(row["total_ballots"])
         agree_ballots = int(row["agree_ballots"])
@@ -1604,7 +1803,7 @@ def get_member_participation_stats():
 
         stats.append({
             "用戶": str(row["user_id"]).strip(),
-            "整體投票次數": f"{participated} / {total_votes}",
+            "整體投票次數": f"{participated} / {member_total_votes}",
             "整體投票率": f"{overall_rate:.1%}",
             "最近10次參與": last10,
             "同意票數": f"{agree_ballots} / {total_ballots}",
@@ -1673,11 +1872,3 @@ def show_noti_popup(user_id: str) -> None:
             st.rerun()
 
     _render()
-
-
-def return_gemini_depose_reminder():
-    return load_markdown_asset("gemini_depose_reminder.md")
-
-
-def return_chatgpt_depose_reminder():
-    return load_markdown_asset("chatgpt_depose_reminder.md")

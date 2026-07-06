@@ -1,11 +1,14 @@
 import datetime
+import csv
+import io
+import re
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from functions import check_admin, ensure_match_videos_table, execute_query, query_params, render_page_guidance
-from schema import TABLE_MATCHES, TABLE_MATCH_VIDEOS
+from functions import check_admin, ensure_match_videos_table, ensure_video_interaction_tables, execute_query, query_params, render_page_guidance
+from schema import TABLE_MATCHES, TABLE_MATCH_VIDEOS, TABLE_VIDEO_CHAPTERS
 
 
 SOURCE_EXISTING = "連結現有場次"
@@ -20,6 +23,7 @@ ADD_FIELD_DEFAULTS = {
     "add_display_order": 0,
     "add_is_visible": True,
 }
+CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "台下", "交互", "自由辯論", "反結", "正結"]
 
 
 def _is_youtube_url(url):
@@ -75,6 +79,110 @@ def _to_int(value, default=0):
         return default
 
 
+def _parse_bool(value, default=True):
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    if text in ("1", "true", "yes", "y", "顯示", "公開", "是"):
+        return True
+    if text in ("0", "false", "no", "n", "隱藏", "否"):
+        return False
+    return default
+
+
+def _parse_time_to_seconds(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    parts = text.split(":")
+    if not all(part.strip().isdigit() for part in parts):
+        return None
+    nums = [int(part.strip()) for part in parts]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    return None
+
+
+def _seconds_to_label(seconds):
+    seconds = int(seconds or 0)
+    minutes, sec = divmod(seconds, 60)
+    hour, minute = divmod(minutes, 60)
+    if hour:
+        return f"{hour}:{minute:02d}:{sec:02d}"
+    return f"{minute}:{sec:02d}"
+
+
+# YouTube Studio 影片標題常見格式：﹙聯中2015﹚拉布對本港社會發展利多於弊﹙正﹚
+# 首個括號＝賽事／場次，末個括號若為正／反／甲／乙＝辯方，中間＝辯題。
+_BRACKET_RE = re.compile(r"[（(﹙]\s*([^（(﹙）)﹚]*?)\s*[）)﹚]")
+
+
+def _side_of(token):
+    token = str(token or "").strip()
+    if not token:
+        return ""
+    if token[0] == "正" or token == "甲":
+        return "pro"
+    if token[0] == "反" or token == "乙":
+        return "con"
+    return ""
+
+
+def _parse_studio_title(raw_title):
+    """從 YouTube Studio 影片標題拆解出（場次、辯題、辯方）。"""
+    title = str(raw_title or "").strip()
+    groups = list(_BRACKET_RE.finditer(title))
+    if not groups:
+        return "", title, ""
+
+    first = groups[0]
+    match_label = first.group(1).strip()
+    remove_spans = [first.span()]
+
+    side = ""
+    last = groups[-1]
+    if last is not first:
+        side = _side_of(last.group(1))
+        if side:
+            remove_spans.append(last.span())
+
+    kept = []
+    cursor = 0
+    for start, end in sorted(remove_spans):
+        kept.append(title[cursor:start])
+        cursor = end
+    kept.append(title[cursor:])
+    topic = re.sub(r"\s+", " ", "".join(kept)).strip(" 　｜|:：-—・")
+    return match_label, topic, side
+
+
+def _read_import_rows(uploaded_file, pasted_csv):
+    raw_text = ""
+    if uploaded_file is not None:
+        raw_text = uploaded_file.getvalue().decode("utf-8-sig")
+    elif pasted_csv.strip():
+        raw_text = pasted_csv.strip()
+    if not raw_text:
+        return []
+    reader = csv.DictReader(io.StringIO(raw_text))
+    return [row for row in reader]
+
+
+def _row_value(row, *keys):
+    lower_map = {str(key).strip().lower(): value for key, value in row.items()}
+    for key in keys:
+        if key in row and row.get(key) is not None:
+            return row.get(key)
+        value = lower_map.get(str(key).strip().lower())
+        if value is not None:
+            return value
+    return ""
+
+
 def _clear_add_video_fields():
     for key, value in ADD_FIELD_DEFAULTS.items():
         st.session_state[key] = value
@@ -99,7 +207,7 @@ def _resolve_match_params(video_source, selected_match=None, match_label="", top
 
 
 def render_video_admin():
-    if not ensure_match_videos_table():
+    if not ensure_match_videos_table() or not ensure_video_interaction_tables():
         st.error("未能建立或讀取比賽片段資料表，請稍後再試或聯絡開發人員。")
         st.stop()
 
@@ -181,7 +289,7 @@ def render_video_admin():
             video_title = st.text_input("片段標題", placeholder="例：全場片段／上半場／下半場", key="add_video_title")
             youtube_url = st.text_input("YouTube 連結", key="add_youtube_url")
             display_order = st.number_input("排序", min_value=0, step=1, value=0, key="add_display_order")
-            is_visible = st.checkbox("在公開重溫頁顯示", value=True, key="add_is_visible")
+            is_visible = st.checkbox("在會員重溫頁顯示", value=True, key="add_is_visible")
             add_video = st.form_submit_button("新增片段", type="primary", use_container_width=True)
 
         if add_video:
@@ -240,6 +348,115 @@ def render_video_admin():
                 st.session_state["video_action_message"] = {"type": "success", "content": "比賽片段已新增。"}
                 st.rerun()
 
+    with st.expander("批量匯入 YouTube 片段", expanded=False):
+        st.caption("可直接上載 YouTube Studio 匯出的「Table data.csv」（Content＝影片 ID、Video title＝標題），系統會自動由標題拆解場次及辯題。")
+        st.caption("亦支援自訂欄位：video_title, youtube_url 或 video_id / Content, match_label, topic_text, pro_team, con_team, display_order, is_visible")
+        st.caption("重複的 YouTube 連結會自動略過，可安全地重覆匯入。")
+        uploaded_csv = st.file_uploader("上載 CSV", type=["csv"], key="video_import_csv")
+        pasted_csv = st.text_area(
+            "或貼上 CSV 內容",
+            placeholder="Content,Video title,...（或 video_title,youtube_url,match_label,...）",
+            key="video_import_text",
+        )
+        parse_from_title = st.checkbox(
+            "由影片標題自動拆解場次／辯題（YouTube Studio 格式）",
+            value=True,
+            key="video_import_parse_title",
+        )
+        if st.button("匯入片段", type="primary", use_container_width=True):
+            rows = _read_import_rows(uploaded_csv, pasted_csv)
+            if not rows:
+                st.warning("請先上載或貼上 CSV。")
+            else:
+                existing_df = query_params(f"SELECT youtube_url FROM {TABLE_MATCH_VIDEOS}")
+                existing_urls = (
+                    {str(u).strip() for u in existing_df["youtube_url"].tolist()}
+                    if not existing_df.empty
+                    else set()
+                )
+                inserted = 0
+                skipped = 0
+                duplicated = 0
+                for row in rows:
+                    title = _clean_text(_row_value(row, "video_title", "title", "Video title", "影片標題"))
+                    url = _clean_text(_row_value(row, "youtube_url", "url", "Video URL", "YouTube 連結"))
+                    video_id = _clean_text(_row_value(row, "video_id", "Video ID", "影片 ID", "Content", "content"))
+                    if video_id.lower() == "total":
+                        continue
+                    if not url and video_id:
+                        url = f"https://www.youtube.com/watch?v={video_id}"
+                    match_label = _clean_text(_row_value(row, "match_label", "場次", "比賽名稱"))
+                    topic_text = _clean_text(_row_value(row, "topic_text", "辯題"))
+                    pro_team = _clean_text(_row_value(row, "pro_team", "正方"))
+                    con_team = _clean_text(_row_value(row, "con_team", "反方"))
+                    display_order = _to_int(_row_value(row, "display_order", "排序"), 0)
+                    is_visible = _parse_bool(_row_value(row, "is_visible", "顯示"), True)
+
+                    # YouTube Studio 匯出只有標題，無場次／辯題欄位時，由標題自動拆解。
+                    if parse_from_title and not match_label and not topic_text and title:
+                        parsed_label, parsed_topic, _side = _parse_studio_title(title)
+                        match_label = parsed_label
+                        topic_text = parsed_topic
+
+                    if not title or not url or not _is_youtube_url(url):
+                        skipped += 1
+                        continue
+
+                    normalized_url = _normalize_youtube_url(url)
+                    if normalized_url in existing_urls:
+                        duplicated += 1
+                        continue
+                    existing_urls.add(normalized_url)
+
+                    execute_query(
+                        f"""
+                        INSERT INTO {TABLE_MATCH_VIDEOS} (
+                            match_id,
+                            match_label,
+                            video_title,
+                            youtube_url,
+                            standalone_topic_text,
+                            standalone_pro_team,
+                            standalone_con_team,
+                            is_visible,
+                            display_order,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES (
+                            NULL,
+                            :match_label,
+                            :video_title,
+                            :youtube_url,
+                            :standalone_topic_text,
+                            :standalone_pro_team,
+                            :standalone_con_team,
+                            :is_visible,
+                            :display_order,
+                            :created_at,
+                            :updated_at
+                        )
+                        """,
+                        {
+                            "match_label": match_label or None,
+                            "video_title": title,
+                            "youtube_url": normalized_url,
+                            "standalone_topic_text": topic_text or None,
+                            "standalone_pro_team": pro_team or None,
+                            "standalone_con_team": con_team or None,
+                            "is_visible": bool(is_visible),
+                            "display_order": display_order,
+                            "created_at": now_hk,
+                            "updated_at": now_hk,
+                        },
+                    )
+                    inserted += 1
+                st.session_state["video_action_message"] = {
+                    "type": "success" if inserted else "warning",
+                    "content": f"已匯入 {inserted} 條片段，略過格式無效 {skipped} 條，略過重複 {duplicated} 條。",
+                }
+                st.rerun()
+
     videos_df = query_params(
         f"""
         SELECT
@@ -280,7 +497,7 @@ def render_video_admin():
     visible_count = int(videos_df["is_visible"].sum())
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     metric_col1.metric("全部片段", len(videos_df))
-    metric_col2.metric("公開顯示", visible_count)
+    metric_col2.metric("會員頁顯示", visible_count)
     metric_col3.metric("已隱藏", len(videos_df) - visible_count)
 
     display_df = videos_df.copy()
@@ -366,7 +583,7 @@ def render_video_admin():
                 step=1,
                 value=_to_int(selected_row["display_order"]),
             )
-            edit_visible = st.checkbox("在公開重溫頁顯示", value=bool(selected_row["is_visible"]))
+            edit_visible = st.checkbox("在會員重溫頁顯示", value=bool(selected_row["is_visible"]))
             update_video = st.form_submit_button("儲存片段資料", type="primary", use_container_width=True)
 
         if update_video:
@@ -411,6 +628,84 @@ def render_video_admin():
                 st.session_state["video_action_message"] = {"type": "success", "content": "片段資料已更新。"}
                 st.rerun()
 
+    with st.container(border=True):
+        st.subheader("章節時間表")
+        st.caption("時間可輸入秒數、mm:ss 或 hh:mm:ss；未啟用的章節不會在前台顯示。")
+        chapter_df = query_params(
+            f"""
+            SELECT chapter_label, start_seconds
+            FROM {TABLE_VIDEO_CHAPTERS}
+            WHERE video_id = :video_id
+            """,
+            {"video_id": int(selected_video_id)},
+        )
+        chapter_map = {
+            str(row["chapter_label"]): int(row["start_seconds"])
+            for _, row in chapter_df.iterrows()
+        } if not chapter_df.empty else {}
+
+        with st.form("chapter_form"):
+            chapter_inputs = []
+            for chapter_index, chapter_label in enumerate(CHAPTER_LABELS):
+                chapter_col1, chapter_col2 = st.columns([1, 2])
+                with chapter_col1:
+                    enabled = st.checkbox(
+                        chapter_label,
+                        value=chapter_label in chapter_map,
+                        key=f"chapter_enabled_{selected_video_id}_{chapter_label}",
+                    )
+                with chapter_col2:
+                    current_value = _seconds_to_label(chapter_map[chapter_label]) if chapter_label in chapter_map else ""
+                    time_text = st.text_input(
+                        "開始時間",
+                        value=current_value,
+                        key=f"chapter_time_{selected_video_id}_{chapter_label}",
+                        label_visibility="collapsed",
+                        placeholder="例：12:34",
+                    )
+                chapter_inputs.append((chapter_label, chapter_index, enabled, time_text))
+            save_chapters = st.form_submit_button("儲存章節時間表", type="primary", use_container_width=True)
+
+        if save_chapters:
+            chapter_values = []
+            invalid_labels = []
+            for chapter_label, chapter_index, enabled, time_text in chapter_inputs:
+                if not enabled:
+                    continue
+                start_seconds = _parse_time_to_seconds(time_text)
+                if start_seconds is None:
+                    invalid_labels.append(chapter_label)
+                else:
+                    chapter_values.append((chapter_label, chapter_index, start_seconds))
+
+            if invalid_labels:
+                st.error("以下章節時間格式無效：" + "、".join(invalid_labels))
+            else:
+                execute_query(
+                    f"DELETE FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id = :video_id",
+                    {"video_id": int(selected_video_id)},
+                )
+                for chapter_label, chapter_index, start_seconds in chapter_values:
+                    execute_query(
+                        f"""
+                        INSERT INTO {TABLE_VIDEO_CHAPTERS} (
+                            video_id, chapter_label, start_seconds, display_order, updated_at
+                        )
+                        VALUES (
+                            :video_id, :chapter_label, :start_seconds, :display_order, :updated_at
+                        )
+                        """,
+                        {
+                            "video_id": int(selected_video_id),
+                            "chapter_label": chapter_label,
+                            "start_seconds": int(start_seconds),
+                            "display_order": int(chapter_index),
+                            "updated_at": now_hk,
+                        },
+                    )
+                st.session_state["video_action_message"] = {"type": "success", "content": "章節時間表已更新。"}
+                st.rerun()
+
     with st.expander("危險操作", expanded=st.session_state["delete_confirm_video_id"] == selected_video_id):
         st.warning(f"刪除片段「{selected_row['video_title']}」後無法復原。")
         if st.session_state["delete_confirm_video_id"] != selected_video_id:
@@ -440,7 +735,7 @@ if __name__ == "__main__":
         [
             "使用賽會人員密碼登入後，可為每場比賽新增多條 YouTube 片段連結。",
             "片段可連結現有場次；舊比賽未有場次資料時，可手動輸入比賽名稱、辯題及隊名。",
-            "只有標記為顯示的片段會出現在公開重溫頁，排序數字較小的片段會較先顯示。",
+            "只有標記為顯示的片段會出現在會員重溫頁，排序數字較小的片段會較先顯示。",
         ],
     )
 

@@ -17,7 +17,14 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import create_engine, text
 from starlette.websockets import WebSocketDisconnect
 
-from schema import CREATE_PUSH_SUBSCRIPTIONS, TABLE_PUSH_SUBSCRIPTIONS
+from schema import (
+    CREATE_PUSH_SUBSCRIPTIONS,
+    CREATE_VIDEO_PROGRESS,
+    CREATE_VIDEO_VIEWS,
+    TABLE_PUSH_SUBSCRIPTIONS,
+    TABLE_VIDEO_PROGRESS,
+    TABLE_VIDEO_VIEWS,
+)
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -31,7 +38,13 @@ PWA_HEAD = """
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="聖呂中辯">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111827">
+<style>
+input, textarea, select {
+    font-size: 16px !important;
+}
+</style>
 <script>
 if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(function () {});
@@ -188,6 +201,19 @@ def _ensure_push_subscriptions_table(conn):
     ))
 
 
+def _ensure_video_tracking_tables(conn):
+    conn.execute(text(CREATE_VIDEO_VIEWS))
+    conn.execute(text(CREATE_VIDEO_PROGRESS))
+    conn.execute(text(
+        f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated "
+        f"ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)"
+    ))
+    conn.execute(text(
+        f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated "
+        f"ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)"
+    ))
+
+
 @app.get("/manifest.json")
 async def manifest():
     return FileResponse(BASE_DIR / "static" / "manifest.json", media_type="application/manifest+json")
@@ -283,6 +309,86 @@ async def push_unsubscribe(request: Request):
                 ),
                 {"user_id": user_id, "now": now},
             )
+
+    return {"ok": True}
+
+
+@app.post("/api/video/view")
+async def video_view(request: Request):
+    user_id = _require_committee_user(request)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    try:
+        video_id = int(payload.get("video_id"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid video_id")
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        _ensure_video_tracking_tables(conn)
+        conn.execute(
+            text(
+                f"INSERT INTO {TABLE_VIDEO_VIEWS} (video_id, user_id, viewed_at) "
+                "VALUES (:video_id, :user_id, :viewed_at)"
+            ),
+            {"video_id": video_id, "user_id": user_id, "viewed_at": now},
+        )
+
+    return {"ok": True}
+
+
+@app.post("/api/video/progress")
+async def video_progress(request: Request):
+    user_id = _require_committee_user(request)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    try:
+        video_id = int(payload.get("video_id"))
+        watched_seconds = max(0, int(float(payload.get("watched_seconds") or 0)))
+        duration_seconds = max(0, int(float(payload.get("duration_seconds") or 0)))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid progress payload")
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        _ensure_video_tracking_tables(conn)
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO {TABLE_VIDEO_PROGRESS} (
+                    video_id, user_id, watched_seconds, duration_seconds, updated_at
+                )
+                VALUES (
+                    :video_id, :user_id, :watched_seconds, :duration_seconds, :updated_at
+                )
+                ON CONFLICT (video_id, user_id) DO UPDATE SET
+                    watched_seconds = EXCLUDED.watched_seconds,
+                    duration_seconds = EXCLUDED.duration_seconds,
+                    updated_at = EXCLUDED.updated_at
+                """
+            ),
+            {
+                "video_id": video_id,
+                "user_id": user_id,
+                "watched_seconds": watched_seconds,
+                "duration_seconds": duration_seconds,
+                "updated_at": now,
+            },
+        )
 
     return {"ok": True}
 

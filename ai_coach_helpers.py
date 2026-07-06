@@ -1380,6 +1380,11 @@ def _generate_response(model_config, system_prompt: str, user_text: str) -> tupl
     return _generate_openrouter_text(model_config, system_prompt, user_text)
 
 
+def generate_general_ai_reply(system_prompt: str, user_text: str, model_label: str | None = None) -> tuple[str, dict | None]:
+    model_config = _get_model_config(model_label)
+    return _generate_response(model_config, system_prompt, user_text)
+
+
 def _generate_gemini_text(model_config, system_prompt: str, user_text: str) -> tuple[str, dict | None]:
     client, error = _get_gemini_client()
     if error:
