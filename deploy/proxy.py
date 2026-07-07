@@ -25,6 +25,7 @@ from schema import (
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
 )
+from debate_timing import get_full_mock_sequence  # pure helper, no side effects
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -428,6 +429,225 @@ async def video_progress(request: Request):
         )
 
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Competition-day projector (big-screen display + operator control)
+#
+# Additive and self-contained: new routes are registered before the catch-all
+# proxy below, backed by a single lazily-created table (projector_state) plus
+# read-only reads of the existing matches/debaters tables. No Streamlit page,
+# existing endpoint, or schema migration is touched, so deploying this to
+# Render does not change existing behaviour. The projector intentionally shows
+# NO timer — timing stays on the chairperson's own device exactly as before.
+# ---------------------------------------------------------------------------
+
+PROJECTOR_DEFAULT_DISPLAY = "main"
+
+CREATE_PROJECTOR_STATE = """
+CREATE TABLE IF NOT EXISTS projector_state (
+    display_key   TEXT PRIMARY KEY,
+    match_id      TEXT,
+    debate_format TEXT,
+    seg_index     INTEGER DEFAULT 0,
+    visible       BOOLEAN DEFAULT TRUE,
+    updated_at    TIMESTAMP
+);
+"""
+
+# segment-id prefix -> debater position (1 主辯, 2 一副, 3 二副, 4 結辯).
+# Only these single-speaker turns map to a named debater; prep / free-debate /
+# cross-exam / 聯中三副 segments have no 1-4 slot and show role text only.
+_SEG_POSITION = {"main": 1, "dep1": 2, "dep2": 3, "closing": 4}
+
+
+def _seg_speaker_slot(seg_id: str):
+    for prefix, pos in _SEG_POSITION.items():
+        if seg_id.startswith(prefix + "_"):
+            if seg_id.endswith("_pro"):
+                return ("pro", pos)
+            if seg_id.endswith("_con"):
+                return ("con", pos)
+    return None
+
+
+def _active_side(seg_side: str):
+    if seg_side == "正方":
+        return "pro"
+    if seg_side == "反方":
+        return "con"
+    return None  # 雙方 / 準備 — no single active side
+
+
+def _ensure_projector_table(conn):
+    conn.execute(text(CREATE_PROJECTOR_STATE))
+
+
+def _resolve_projector_state(engine, display_key):
+    """Turn the stored row into ready-to-render display JSON (motion, team
+    names, current speaking role/name). All resolution happens here so the
+    display page can stay dumb and just poll."""
+    with engine.begin() as conn:
+        _ensure_projector_table(conn)
+        row = conn.execute(
+            text("SELECT match_id, debate_format, seg_index, visible "
+                 "FROM projector_state WHERE display_key = :k"),
+            {"k": display_key},
+        ).fetchone()
+
+    if row is None or not row._mapping.get("match_id"):
+        return {"configured": False, "visible": False, "display_key": display_key}
+
+    r = row._mapping
+    match_id = r["match_id"]
+    debate_format = r.get("debate_format") or "校園隨想"
+
+    with engine.begin() as conn:
+        m = conn.execute(
+            text("SELECT topic_text, pro_team, con_team FROM matches WHERE match_id = :id"),
+            {"id": match_id},
+        ).fetchone()
+        drows = conn.execute(
+            text("SELECT side, position, debater_name FROM debaters WHERE match_id = :id"),
+            {"id": match_id},
+        ).fetchall()
+
+    names = {(d._mapping["side"], d._mapping["position"]): d._mapping["debater_name"]
+             for d in drows}
+
+    seq = get_full_mock_sequence(debate_format)
+    total = len(seq)
+    idx = r.get("seg_index") or 0
+    if total:
+        idx = max(0, min(idx, total - 1))
+    seg = seq[idx] if total else {"id": "", "label": "", "side": ""}
+    slot = _seg_speaker_slot(seg["id"])
+    speaker_name = names.get(slot) if slot else None
+
+    mm = m._mapping if m else {}
+    return {
+        "configured": True,
+        "visible": bool(r.get("visible", True)),
+        "display_key": display_key,
+        "motion": (mm.get("topic_text") or ""),
+        "pro_team": (mm.get("pro_team") or ""),
+        "con_team": (mm.get("con_team") or ""),
+        "segment_label": seg["label"],
+        "segment_side": seg["side"],
+        "active_side": _active_side(seg["side"]),
+        "speaker_name": speaker_name or "",
+        "seg_index": idx,
+        "seg_total": total,
+        "debate_format": debate_format,
+    }
+
+
+@app.get("/projector")
+async def projector_display_page():
+    return FileResponse(BASE_DIR / "templates" / "projector_display.html",
+                        media_type="text/html")
+
+
+@app.get("/projector/control")
+async def projector_control_page():
+    return FileResponse(BASE_DIR / "templates" / "projector_control.html",
+                        media_type="text/html")
+
+
+@app.get("/api/projector/state")
+async def projector_get_state(request: Request):
+    display_key = request.query_params.get("display", PROJECTOR_DEFAULT_DISPLAY)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+    return _resolve_projector_state(engine, display_key)
+
+
+@app.get("/api/projector/sequence")
+async def projector_get_sequence(request: Request):
+    debate_format = request.query_params.get("format", "校園隨想")
+    seq = get_full_mock_sequence(debate_format)
+    return {"format": debate_format,
+            "segments": [{"label": s["label"], "side": s["side"]} for s in seq]}
+
+
+@app.get("/api/projector/matches")
+async def projector_list_matches(request: Request):
+    _require_committee_user(request)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT match_id, match_date, match_time, topic_text, pro_team, con_team "
+            "FROM matches ORDER BY match_date DESC NULLS LAST, match_time DESC NULLS LAST"
+        )).fetchall()
+    return {"matches": [
+        {
+            "match_id": x._mapping["match_id"],
+            "match_date": str(x._mapping["match_date"]) if x._mapping["match_date"] else "",
+            "match_time": str(x._mapping["match_time"]) if x._mapping["match_time"] else "",
+            "topic_text": x._mapping["topic_text"] or "",
+            "pro_team": x._mapping["pro_team"] or "",
+            "con_team": x._mapping["con_team"] or "",
+        }
+        for x in rows
+    ]}
+
+
+@app.post("/api/projector/state")
+async def projector_set_state(request: Request):
+    _require_committee_user(request)
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    display_key = str(payload.get("display") or PROJECTOR_DEFAULT_DISPLAY)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+    with engine.begin() as conn:
+        _ensure_projector_table(conn)
+        current = conn.execute(
+            text("SELECT match_id, debate_format, seg_index, visible "
+                 "FROM projector_state WHERE display_key = :k"),
+            {"k": display_key},
+        ).fetchone()
+        cur = current._mapping if current else {}
+
+        # partial update: keep existing values for any field not supplied
+        match_id = payload.get("match_id", cur.get("match_id"))
+        debate_format = payload.get("debate_format", cur.get("debate_format") or "校園隨想")
+        seg_index = payload.get("seg_index", cur.get("seg_index") or 0)
+        visible = payload.get("visible", cur.get("visible") if current else True)
+        try:
+            seg_index = int(seg_index)
+        except Exception:
+            seg_index = 0
+        visible = bool(visible)
+
+        conn.execute(
+            text("""
+                INSERT INTO projector_state
+                    (display_key, match_id, debate_format, seg_index, visible, updated_at)
+                VALUES (:k, :match_id, :debate_format, :seg_index, :visible, :now)
+                ON CONFLICT (display_key) DO UPDATE SET
+                    match_id = EXCLUDED.match_id,
+                    debate_format = EXCLUDED.debate_format,
+                    seg_index = EXCLUDED.seg_index,
+                    visible = EXCLUDED.visible,
+                    updated_at = EXCLUDED.updated_at
+            """),
+            {"k": display_key, "match_id": match_id, "debate_format": debate_format,
+             "seg_index": seg_index, "visible": visible, "now": now},
+        )
+
+    return _resolve_projector_state(engine, display_key)
 
 
 GEMINI_LIVE_WS_URL = (

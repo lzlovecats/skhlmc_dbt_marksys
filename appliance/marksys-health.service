@@ -1,0 +1,11 @@
+[Unit]
+Description=Marksys — appliance health snapshot for the on-screen light
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=marksys
+Group=marksys
+Environment=MARKSYS_ENV_FILE=/etc/marksys/appliance.env
+ExecStart=/opt/skhlmc-dbt-marksys/appliance/health_check.sh

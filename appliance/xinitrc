@@ -1,0 +1,23 @@
+#!/bin/sh
+# Marksys kiosk X session. Copied to ~marksys/.xinitrc and started by `startx`
+# after autologin on tty1 (see appliance/README.md).
+
+# no screen blanking / power management
+xset s off -dpms s noblank 2>/dev/null || true
+
+# share the same config the systemd units use, so overrides (e.g. HEALTH_FILE)
+# reach the overlay too. `set -a` auto-exports everything sourced here.
+if [ -f /etc/marksys/appliance.env ]; then
+    set -a
+    . /etc/marksys/appliance.env
+    set +a
+fi
+
+# lightweight WM so the health overlay reliably stays above the kiosk window
+openbox &
+
+# top-right health light (green / amber / red) — reads HEALTH_FILE from the env above
+/opt/skhlmc-dbt-marksys/appliance/health_overlay.py &
+
+# main chooser + Chromium kiosk loop; ends the X session when it exits
+exec /opt/skhlmc-dbt-marksys/appliance/marksys-kiosk.sh

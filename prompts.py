@@ -308,7 +308,7 @@ def build_full_mock_live_prompt(topic: str, user_side: str, debate_format: str, 
 規則：
 - 用自然香港粵語口語回應，保留正式辯論術語；所有屬於你嘅回合都要用語音讀出。
 - 嚴格按上面次序進行。系統會喺每段開始時提示「而家輪到 X」，你就按嗰段身分進行。
-- 台上發言段落：只喺屬於你（{ai_side}）嘅段落以該身分正式發言。發言要有完整結構、例證、反駁同小結。系統會喺每段開始時話你知該段目標秒數，台上發言要盡量用足時間（最少講到約七成時間），但唔好超時。
+- 台上發言段落：只喺屬於你（{ai_side}）嘅段落以該身分正式發言。發言要有完整結構、例證、反駁同小結。系統會喺每段開始時話你知該段目標秒數同建議字數範圍；請按字數建議生成適合朗讀嘅稿，優先確保唔超時，唔需要為夾滿時間而硬塞內容。
 - 輪到用戶（{user_side}）嘅台上段落，你只作一句簡短示意後等用戶，唔好搶答。
 - 自由辯論、台下問答、交互答問呢啲互動段落，你要正常參與、保持攻防節奏。
 - 自由辯論、台下問答、交互答問每次回應必須做到：指出用戶一個漏洞或讓步 → 作一句短反駁 → 追問一條難避問題。
@@ -323,7 +323,7 @@ def build_full_mock_live_prompt(topic: str, user_side: str, debate_format: str, 
 # Live session runtime prompt（即場傳俾 AI 嘅 user turn）
 #
 # 經 __LIVE_PROMPTS__ 注入 live_debate.html；JS 只做機械式 token 代入。
-# segment_announce 內用 {label}/{side}/{secs}/{min_secs} 由 JS fillTemplate 填。
+# segment_announce 內用 {label}/{side}/{secs}/{word_min}/{word_max} 由 JS fillTemplate 填。
 # ─────────────────────────────────────────────────────────────
 LIVE_RUNTIME_PROMPTS = {
     # Free De：用戶係反方時，AI（正方）先開局
@@ -335,8 +335,8 @@ LIVE_RUNTIME_PROMPTS = {
     "segment_announce": (
         "【環節提示】而家輪到「{label}」，本環節時間約 {secs} 秒。"
         "如果呢段屬於你（{side}）：若係台上發言（主辯／副辯／結辯等單人發言），"
-        "請立即用語音以呢個身分正式發言，內容要盡量用足時間，最少講到約 {min_secs} 秒，"
-        "但唔好超過 {secs} 秒；若係自由辯論、台下問答或交互答問呢類互動環節，"
+        "請立即用語音以呢個身分正式發言，直接讀出約 {word_min} - {word_max} 字嘅可讀稿，唔好讀出字數或準備過程，"
+        "以 300 字約 1 分鐘估算，優先唔好超過 {secs} 秒；若係自由辯論、台下問答或交互答問呢類互動環節，"
         "就唔使夾夠時間，保持短而尖銳嘅攻防節奏即可。"
         "如果係我方（用戶）發言，你只用一句簡短示意後等我發言，唔好搶答。"
     ),

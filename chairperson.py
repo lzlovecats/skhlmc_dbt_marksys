@@ -57,6 +57,15 @@ selected_match = st.selectbox(
 
 match_data = all_matches[selected_match]
 
+with st.expander("📽 比賽日投影大屏", expanded=False):
+    st.caption("大屏顯示辯題、正反隊名同而家發言者（不顯示時間）。")
+    st.link_button(
+        "🎛️ 開啟投影控制",
+        "/projector/control",
+        use_container_width=True,
+    )
+    st.caption("投影機／大屏請開啟 `/projector`（比賽日專用機模式會自動開啟）。")
+
 
 def _clean_value(value, fallback=""):
     text = str(value or "").strip()
