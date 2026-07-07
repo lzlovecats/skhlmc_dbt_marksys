@@ -2,7 +2,7 @@ import json
 import math
 import streamlit as st
 import streamlit.components.v1 as components
-from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event
+from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, DIFFICULTY_CRITERIA, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, get_system_config
 from auth import require_committee, del_cookie, committee_cookie_manager, render_committee_auth_bridge, _sign_cookie
 from ai_coach_helpers import generate_general_ai_reply, get_ai_model_settings, is_successful_ai_result
 from schema import (
@@ -361,12 +361,16 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                 st.divider()
         else:
             st.caption("暫時未有討論。")
-        new_comment = st.text_area("發表意見", key=f"comment_{motion_type}_{idx}", placeholder="就此議案發表意見，或按 Tag AI 取得中立分析。")
+        new_comment = st.text_area(
+            "發表意見",
+            key=f"comment_{motion_type}_{idx}",
+            placeholder="就此議案發表意見。如要問 AI，可喺留言加「@Gemini 你的問題」（例如：@Gemini 呢條辯題嘅難度應否調高？），或按 Tag Gemini 取得中立分析。",
+        )
         post_col, ai_col = st.columns(2)
         with post_col:
             post_comment = st.button("發表", key=f"post_comment_{motion_type}_{idx}", use_container_width=True)
         with ai_col:
-            tag_ai = st.button("Tag AI（Gemini 3.5 Flash）", key=f"tag_ai_{motion_type}_{idx}", use_container_width=True)
+            tag_ai = st.button("Tag Gemini", key=f"tag_ai_{motion_type}_{idx}", use_container_width=True)
         if post_comment:
             if new_comment.strip():
                 comment_text = new_comment.strip()
@@ -384,8 +388,35 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                     exclude_user=user_id,
                     tag=f"comment-{motion_type}-{motion_key}",
                 )
-                queue_toast("已成功留言", icon="☑️")
-                st.rerun()
+                # If the member tagged @Gemini, let the AI answer their question inline.
+                gemini_question = _extract_gemini_question(comment_text)
+                ai_failed = False
+                if gemini_question is not None:
+                    ensure_ai_comment_account()
+                    comments = query_params(
+                        f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
+                        "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
+                        {"type": motion_type, "key": motion_key},
+                    )
+                    with st.spinner("AI 正在回應提問，請稍候⋯"):
+                        ai_text, _usage = ai_discussion_reply(
+                            motion_type, motion_key, comments, question=gemini_question
+                        )
+                    if is_successful_ai_result(ai_text):
+                        ai_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+                        execute_query(
+                            f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
+                            "VALUES (:type, :key, :uid, :text, :now)",
+                            {"type": motion_type, "key": motion_key, "uid": "Gemini 3.5 Flash", "text": ai_text, "now": ai_now},
+                        )
+                    else:
+                        ai_failed = True
+                if ai_failed:
+                    st.warning("留言已儲存，但 AI 回應失敗，可稍後再按 Tag Gemini 或重新提問。")
+                    st.error(ai_text)
+                else:
+                    queue_toast("已成功留言", icon="☑️")
+                    st.rerun()
             else:
                 st.warning("請輸入內容。")
         if tag_ai:
@@ -706,7 +737,7 @@ def ai_review_topic(topic, category, difficulty):
         category,
         difficulty_label,
         category_options=CATEGORIES,
-        difficulty_definitions=DIFFICULTY_OPTIONS,
+        difficulty_definitions=DIFFICULTY_CRITERIA,
         analytics_context=analytics_context,
     )
     return generate_general_ai_reply(VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, get_vote_ai_model())
@@ -742,6 +773,10 @@ def _gather_bank_analysis_context():
         if cat not in CATEGORIES:
             summary_lines.append(f"- {cat or '（未分類）'}：{int(c)}（{int(c) / total * 100:.0f}%）")
 
+    summary_lines.append("難度分級標準：")
+    for lvl in (1, 2, 3):
+        summary_lines.append(f"- {DIFFICULTY_CRITERIA.get(lvl, lvl)}")
+
     summary_lines.append("難度分佈：")
     for lvl in (1, 2, 3):
         c = int((bank_df["difficulty"] == lvl).sum())
@@ -774,7 +809,67 @@ def ai_analyze_topic_bank():
     return generate_general_ai_reply(VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
 
 
-def ai_discussion_reply(motion_type, motion_key, comments):
+def save_bank_analysis(analysis_text, user_id):
+    """Persist the latest bank analysis to system_config so all committee members share it."""
+    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    for key, val in (
+        ("vote_bank_analysis", analysis_text),
+        ("vote_bank_analysis_at", hk_now),
+        ("vote_bank_analysis_by", user_id or ""),
+    ):
+        execute_query(
+            "INSERT INTO system_config (key, value, updated_at) VALUES (:k, :v, :u) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+            {"k": key, "v": val, "u": hk_now},
+        )
+    return hk_now
+
+
+def load_bank_analysis():
+    """Return (analysis_text, analysed_at, analysed_by) — the shared saved analysis."""
+    return (
+        get_system_config("vote_bank_analysis"),
+        get_system_config("vote_bank_analysis_at"),
+        get_system_config("vote_bank_analysis_by"),
+    )
+
+
+def _extract_gemini_question(comment):
+    """Return the question after an @Gemini mention, or None if not tagged.
+
+    Falls back to the whole comment when @Gemini is present without trailing text.
+    """
+    idx = comment.lower().find("@gemini")
+    if idx == -1:
+        return None
+    question = comment[idx + len("@gemini"):].strip().lstrip("：:，, ").strip()
+    return question or comment.strip()
+
+
+def _build_motion_background(motion_type, motion_key):
+    """Category + current difficulty (with the full rubric) for the discussed motion."""
+    src = TABLE_TOPIC_VOTES if motion_type == "topic_vote" else TABLE_TOPICS
+    meta = query_params(
+        f"SELECT category, difficulty FROM {src} WHERE topic_text = :t LIMIT 1",
+        {"t": motion_key},
+    )
+    lines = []
+    if not meta.empty:
+        row = meta.iloc[0]
+        if row.get("category"):
+            lines.append(f"辯題類別：{row['category']}")
+        try:
+            diff_label = DIFFICULTY_OPTIONS.get(int(row["difficulty"]))
+        except (TypeError, ValueError):
+            diff_label = None
+        if diff_label:
+            lines.append(f"目前難度：{diff_label}")
+    lines.append("難度分級標準：")
+    lines.extend(f"- {DIFFICULTY_CRITERIA[lvl]}" for lvl in (1, 2, 3))
+    return "\n".join(lines)
+
+
+def ai_discussion_reply(motion_type, motion_key, comments, question=None):
     discussion_lines = []
     for _, c in comments.iterrows():
         discussion_lines.append(f"{c['user_id']}：{c['comment_text']}")
@@ -787,8 +882,10 @@ def ai_discussion_reply(motion_type, motion_key, comments):
         )
         if not reason_rows.empty:
             removal_reasons = parse_reason_list(reason_rows.iloc[0]["removal_reasons"])
+    background = _build_motion_background(motion_type, motion_key)
     user_text = build_vote_discussion_prompt(
-        motion_type, motion_key, discussion_lines, removal_reasons=removal_reasons
+        motion_type, motion_key, discussion_lines,
+        removal_reasons=removal_reasons, question=question, background=background,
     )
     return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, "Gemini 3.5 Flash")
 
@@ -987,9 +1084,8 @@ if selected_tab == "proposal":
         new_topic = st.text_input("請輸入完整辯題")
         new_category = st.selectbox("辯題類別", options=CATEGORIES)
         st.caption("辯題難度標準：")
-        st.caption("Lv1：概念日常、背景知識少，適合完全無經驗的新手")
-        st.caption("Lv2：需要一定議題認識或邏輯鋪陳，但不需要專業知識")
-        st.caption("Lv3：涉及專業政策、複雜概念界定、或需要大量資料支撐")
+        for _lvl in (1, 2, 3):
+            st.caption(DIFFICULTY_CRITERIA[_lvl])
         new_difficulty = st.selectbox(
             "辯題難度",
             options=[1, 2, 3],
@@ -1427,7 +1523,7 @@ elif selected_tab == "depose_vote":
 
 elif selected_tab == "bank_analysis":
     st.subheader("分析現有辯題庫")
-    st.caption("由 AI 即時分析辯題庫嘅類別／難度分佈、題目質素，並提出未來方向同即時可做建議。")
+    st.caption("由 AI 分析辯題庫嘅類別／難度分佈、題目質素，並提出未來方向同即時可做建議。分析結果會儲存並與所有委員共享。")
 
     render_refresh_button("refresh_vote_bank_analysis")
 
@@ -1438,15 +1534,26 @@ elif selected_tab == "bank_analysis":
             + "\n".join(f"- {t}" for t in stale_topics)
         )
 
+    saved_analysis, analysed_at, analysed_by = load_bank_analysis()
+    if analysed_at:
+        by_txt = f"（由 {analysed_by} 執行）" if analysed_by else ""
+        st.caption(f"🕒 上次分析時間：{analysed_at}{by_txt}")
+    else:
+        st.caption("🕒 尚未有分析紀錄。")
+
     if st.button("AI 分析辯題庫", key="ai_analyze_bank"):
         with st.spinner("AI 正在分析辯題庫，請稍候⋯"):
             bank_analysis, _usage = ai_analyze_topic_bank()
-        st.session_state["bank_analysis_result"] = bank_analysis
+        if is_successful_ai_result(bank_analysis):
+            save_bank_analysis(bank_analysis, user_id)
+            queue_toast("已更新辯題庫分析", icon="☑️")
+            st.rerun()
+        else:
+            st.error(bank_analysis)
 
-    bank_analysis_result = st.session_state.get("bank_analysis_result")
-    if bank_analysis_result:
+    if saved_analysis:
         with st.expander("AI 分析結果", expanded=True):
-            st.markdown(bank_analysis_result)
+            st.markdown(saved_analysis)
 
 
 elif selected_tab == "member_stats":
