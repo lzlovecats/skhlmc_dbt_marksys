@@ -10,6 +10,7 @@ from functions import (
     del_cookie,
     execute_query,
     execute_query_count,
+    notify_committee_vote_event,
     query_params,
     render_committee_auth_bridge,
     render_page_guidance,
@@ -93,7 +94,6 @@ def ensure_lateness_fund_tables() -> bool:
         execute_query(f"ALTER TABLE {TABLE_LATENESS_FUND_RECORDS} ADD COLUMN IF NOT EXISTS member_user_id TEXT")
         execute_query(f"DROP INDEX IF EXISTS idx_lateness_fund_records_member_date")
         execute_query(f"ALTER TABLE {TABLE_LATENESS_FUND_RECORDS} DROP COLUMN IF EXISTS member_name")
-        execute_query(f"ALTER TABLE {TABLE_LATENESS_FUND_RECORDS} ALTER COLUMN member_user_id SET NOT NULL")
         execute_query(
             f"""
             DO $$
@@ -385,7 +385,7 @@ with st.expander("年度結餘設定", expanded=False):
     with bd_col1:
         if st.button("儲存Bal b/d", use_container_width=True):
             set_period_opening(selected_label, bd_input)
-            st.success(f"已更新 {selected_label} 年度Bal/bld。")
+            st.success(f"已更新 {selected_label} 年度 Bal b/d。")
             st.rerun()
     with bd_col2:
         prev_label = _fy_label(selected_year - 1)
@@ -407,7 +407,7 @@ with st.expander("年度結餘設定", expanded=False):
             prev_expense_total = _as_float(prev_expenses["amount_hkd"].sum()) if not prev_expenses.empty else 0.0
             prev_closing = get_period_opening(prev_label) + prev_received - prev_expense_total
             set_period_opening(selected_label, prev_closing)
-            st.success(f"已將 {prev_label} 年結餘額 {_format_hkd(prev_closing)} 結轉為 {selected_label} Bal/bld。")
+            st.success(f"已將 {prev_label} 年結餘額 {_format_hkd(prev_closing)} 結轉為 {selected_label} Bal b/d。")
             st.rerun()
 
 overview_tab, input_tab, history_tab = st.tabs(["總覽", "新增紀錄", "紀錄管理"])
@@ -419,6 +419,76 @@ with overview_tab:
         st.info("本年度暫無遲到紀錄。")
     else:
         st.dataframe(prepare_summary_display(summary_df), use_container_width=True, hide_index=True)
+
+        with st.container(border=True):
+            st.markdown("##### 發送遲到罰款通知")
+            outstanding_df = summary_df[summary_df["balance"] < 0]
+            outstanding_ids = outstanding_df["member_user_id"].tolist()
+            st.caption(
+                f"本年度有結欠的委員：{len(outstanding_ids)} 人"
+                + (f"（{'、'.join(outstanding_ids)}）" if outstanding_ids else "")
+            )
+            notify_target = st.radio(
+                "發送對象",
+                options=["outstanding", "all"],
+                format_func=lambda v: "只發送給有結欠的委員" if v == "outstanding" else "發送給所有委員",
+                horizontal=True,
+                key="lateness_notify_target",
+            )
+            custom_notify_msg = st.text_input(
+                "通知內容（可留空使用預設）",
+                key="lateness_notify_msg",
+                placeholder="例：請盡快找數！",
+            )
+            if st.button("發送通知", type="primary", use_container_width=True, key="lateness_notify_send"):
+                custom_text = custom_notify_msg.strip()
+                if notify_target == "outstanding":
+                    targets = {
+                        str(row["member_user_id"]): -_as_float(row["balance"])
+                        for _, row in outstanding_df.iterrows()
+                    }
+                else:
+                    targets = {uid: None for uid in get_member_options()}
+
+                if not targets:
+                    st.info(
+                        "本年度暫無有結欠的委員，毋須發送通知。"
+                        if notify_target == "outstanding"
+                        else "暫時未有可通知的委員帳戶。"
+                    )
+                else:
+                    title = "💰 遲到罰款提醒"
+                    if outstanding_ids:
+                        all_default_body = (
+                            f"{selected_label} 年度尚有結欠遲到罰款的委員："
+                            f"{'、'.join(outstanding_ids)}，請盡快繳交。"
+                        )
+                    else:
+                        all_default_body = f"{selected_label} 年度暫無委員結欠遲到罰款。"
+                    sent_count = 0
+                    notified_members = 0
+                    for target_uid, owed in targets.items():
+                        if custom_text:
+                            body = custom_text
+                        elif owed is not None:
+                            body = f"你於 {selected_label} 年度尚欠遲到罰款 {_format_hkd(owed)}，請盡快繳交！"
+                        else:
+                            body = all_default_body
+                        count = notify_committee_vote_event(
+                            title,
+                            body,
+                            target_user=target_uid,
+                            tag="lateness-fund-reminder",
+                            url="/lateness-fund",
+                        )
+                        if count:
+                            sent_count += count
+                            notified_members += 1
+
+                    if sent_count:
+                        st.success(f"已向 {notified_members} 位委員發送通知（合共 {sent_count} 部裝置）。")
+                    else:
+                        st.warning("未能發送通知，對象可能尚未開啟推送通知。")
 
         member_ids = summary_df["member_user_id"].tolist()
         selected_member = st.selectbox("搜尋帳戶", member_ids)

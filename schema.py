@@ -581,7 +581,7 @@ CREATE_LATENESS_FUND_RECORDS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_LATENESS_FUND_RECORDS} (
     id              SERIAL      PRIMARY KEY,
     late_date       DATE        NOT NULL,
-    member_user_id  TEXT        NOT NULL,
+    member_user_id  TEXT,
     late_minutes    INTEGER     NOT NULL CHECK (late_minutes > 0),
     paid_amount     NUMERIC(10, 2) DEFAULT 0,
     note            TEXT,
