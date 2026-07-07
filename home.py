@@ -93,7 +93,6 @@ def _render_mobile_styles():
             .block-container {
                 padding-left: 1rem;
                 padding-right: 1rem;
-                padding-top: 1rem;
             }
             div[data-testid="stHorizontalBlock"] {
                 gap: 0.75rem;
