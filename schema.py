@@ -849,9 +849,88 @@ ALL_SCHEMAS = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────
+# Idempotent migrations
+# ─────────────────────────────────────────────────────────────
+# `CREATE TABLE IF NOT EXISTS` cannot retrofit constraint changes onto tables
+# that already exist, so older databases keep whatever constraints they were
+# first created with. These migrations bring existing databases up to date.
+# Each statement must be safe to run repeatedly.
+#
+# The FK-upgrade blocks look up the *actual* constraint by the columns it links
+# (regardless of its name — old DBs use the auto-generated `*_fkey` name, newer
+# ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
+# that deleting/removing a topic also clears its removal-vote row and ballots.
+MIGRATIONS = [
+    f"""
+    DO $$
+    DECLARE cname text;
+    BEGIN
+        SELECT conname INTO cname
+        FROM pg_constraint
+        WHERE conrelid = '{TABLE_TOPIC_REMOVAL_VOTES}'::regclass
+          AND contype = 'f'
+          AND confrelid = '{TABLE_TOPICS}'::regclass;
+        IF cname IS NOT NULL THEN
+            EXECUTE format('ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTES} DROP CONSTRAINT %I', cname);
+        END IF;
+        ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTES}
+            ADD CONSTRAINT fk_topic_removal_votes_topic
+            FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPICS}(topic_text) ON DELETE CASCADE;
+    END $$;
+    """,
+    f"""
+    DO $$
+    DECLARE cname text;
+    BEGIN
+        SELECT conname INTO cname
+        FROM pg_constraint
+        WHERE conrelid = '{TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}'::regclass
+          AND contype = 'f'
+          AND confrelid = '{TABLE_TOPIC_REMOVAL_VOTES}'::regclass;
+        IF cname IS NOT NULL THEN
+            EXECUTE format('ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} DROP CONSTRAINT %I', cname);
+        END IF;
+        ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
+            ADD CONSTRAINT fk_topic_removal_vote_ballots_topic
+            FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPIC_REMOVAL_VOTES}(topic_text) ON DELETE CASCADE;
+    END $$;
+    """,
+]
+
+
+def run_migrations(conn) -> list[str]:
+    """Run each idempotent migration in its own transaction.
+
+    A failure in one migration is isolated (rolled back and logged) so it does
+    not block the others. Returns a per-statement result log.
+    """
+    results = []
+    uses_session = hasattr(conn, "session")
+    for ddl in MIGRATIONS:
+        label = " ".join(ddl.split())[:70]
+        try:
+            if uses_session:
+                with conn.session as s:
+                    s.execute(text(ddl))
+                    s.commit()
+            else:
+                conn.execute(text(ddl))
+                conn.commit()
+            results.append(f"OK: {label}")
+        except Exception as e:
+            if not uses_session:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            results.append(f"ERR: {label} -> {e}")
+    return results
+
+
 def init_db(conn) -> None:
     """
-    Create all tables if they do not already exist.
+    Create all tables if they do not already exist, then run migrations.
 
     Parameters
     ----------
@@ -882,3 +961,6 @@ def init_db(conn) -> None:
         for ddl in ALL_SCHEMAS:
             conn.execute(text(ddl))
         conn.commit()
+
+    # Retrofit constraint changes onto pre-existing tables.
+    run_migrations(conn)

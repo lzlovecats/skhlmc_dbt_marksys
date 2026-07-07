@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from functions import check_admin, ensure_match_videos_table, ensure_video_interaction_tables, execute_query, query_params, render_page_guidance
+from auth import check_admin
+from functions import ensure_match_videos_table, ensure_video_interaction_tables, execute_query, query_params, render_page_guidance
 from schema import TABLE_MATCHES, TABLE_MATCH_VIDEOS, TABLE_VIDEO_CHAPTERS
 
 

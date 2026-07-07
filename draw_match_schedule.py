@@ -3,7 +3,8 @@ import random
 import pandas as pd
 import streamlit as st
 
-from functions import check_admin, render_page_guidance
+from auth import check_admin
+from functions import render_page_guidance
 
 
 def normalize_teams(raw_text):

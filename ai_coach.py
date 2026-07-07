@@ -5,11 +5,8 @@ import math
 from pathlib import Path
 import streamlit.components.v1 as components
 from speech_recorder_component import render_speech_recorder
+from auth import require_committee
 from functions import (
-    check_committee_login,
-    committee_cookie_manager,
-    del_cookie,
-    render_committee_auth_bridge,
     load_matches_from_db,
     render_page_guidance,
     get_connection,
@@ -256,19 +253,7 @@ render_page_guidance(
     title="首次使用指南",
 )
 
-if not check_committee_login():
-    st.stop()
-
-user_id = st.session_state["committee_user"]
-
-if user_id == "admin":
-    st.error("賽會人員帳戶不能使用此頁面。請改用內部委員會成員帳戶登入。")
-    if st.button("登出"):
-        st.session_state["committee_user"] = None
-        del_cookie(committee_cookie_manager(), "committee_user")
-        render_committee_auth_bridge(clear=True)
-        st.rerun()
-    st.stop()
+user_id = require_committee()
 
 ai_model_settings = get_ai_model_settings()
 model_options = list(ai_model_settings["model_options"].keys())

@@ -2,7 +2,8 @@ import json
 import math
 import streamlit as st
 import streamlit.components.v1 as components
-from functions import check_committee_login, show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, del_cookie, committee_cookie_manager, render_committee_auth_bridge, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, _sign_cookie
+from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event
+from auth import require_committee, del_cookie, committee_cookie_manager, render_committee_auth_bridge, _sign_cookie
 from ai_coach_helpers import generate_general_ai_reply, get_ai_model_settings, is_successful_ai_result
 from schema import (
     TABLE_ACCOUNTS,
@@ -16,8 +17,10 @@ from schema import (
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from prompts import (
+    VOTE_BANK_ANALYSIS_SYSTEM_PROMPT,
     VOTE_DISCUSSION_SYSTEM_PROMPT,
     VOTE_TOPIC_REVIEW_SYSTEM_PROMPT,
+    build_vote_bank_analysis_prompt,
     build_vote_discussion_prompt,
     build_vote_topic_review_prompt,
 )
@@ -605,8 +608,11 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
                 f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
                 {"topic_text": topic},
             )
+            # Always remove the topic from the bank when a removal passes.
+            # Decoupled from `updated` so it self-heals even if the status row was
+            # already resolved (e.g. a prior run/session), preventing stale entries.
+            execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
             if updated:
-                execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
                 notify_vote_event(
                     "罷免動議通過",
                     f"「{topic}」已被罷免並從辯題庫移除。",
@@ -640,17 +646,150 @@ def get_vote_ai_model():
     return settings.get("default_model") or "Gemini 2.5 Flash"
 
 
+def _gather_topic_review_context(category, difficulty):
+    """Bank composition (duplicate/ratio check) + historical proposal pass-rate stats."""
+    conn = get_connection()
+    lines = []
+
+    # Existing bank: category ratio + same-category topics for duplicate/overlap check
+    bank_df = conn.query(f"SELECT topic_text, category FROM {TABLE_TOPICS}", ttl=5)
+    if not bank_df.empty:
+        total = len(bank_df)
+        same_cat = bank_df[bank_df["category"] == category]
+        cat_count = len(same_cat)
+        ratio = cat_count / total * 100 if total else 0.0
+        lines.append(f"現有辯題庫共 {total} 條；類別「{category}」佔 {cat_count} 條（{ratio:.0f}%，上限 20%）。")
+        sample = same_cat["topic_text"].tolist()[:15]
+        if sample:
+            lines.append("同類別現有辯題（用嚟檢查重複／重疊）：")
+            lines.extend(f"- {t}" for t in sample)
+    else:
+        lines.append("現有辯題庫暫時無資料。")
+
+    # Historical proposal outcomes (resolved votes only)
+    votes_df = conn.query(
+        f"SELECT status, category, difficulty FROM {TABLE_TOPIC_VOTES} "
+        "WHERE status IN ('passed', 'rejected')",
+        ttl=5,
+    )
+    if not votes_df.empty:
+        def _rate(df):
+            n = len(df)
+            passed = int((df["status"] == "passed").sum())
+            return passed, n, (passed / n * 100 if n else 0.0)
+
+        passed, n, rate = _rate(votes_df)
+        lines.append(f"歷史提案通過率：整體 {passed}/{n}（{rate:.0f}%）。")
+        cat_df = votes_df[votes_df["category"] == category]
+        if not cat_df.empty:
+            passed, n, rate = _rate(cat_df)
+            lines.append(f"　同類別「{category}」：{passed}/{n}（{rate:.0f}%）。")
+        try:
+            diff_df = votes_df[votes_df["difficulty"] == int(difficulty)]
+        except (TypeError, ValueError):
+            diff_df = votes_df.iloc[0:0]
+        if not diff_df.empty:
+            passed, n, rate = _rate(diff_df)
+            diff_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
+            lines.append(f"　同難度「{diff_label}」：{passed}/{n}（{rate:.0f}%）。")
+    else:
+        lines.append("歷史提案投票數據不足，通過機率只能作定性判斷。")
+
+    return "\n".join(lines)
+
+
 def ai_review_topic(topic, category, difficulty):
     difficulty_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
-    user_text = build_vote_topic_review_prompt(topic, category, difficulty_label)
+    analytics_context = _gather_topic_review_context(category, difficulty)
+    user_text = build_vote_topic_review_prompt(
+        topic,
+        category,
+        difficulty_label,
+        category_options=CATEGORIES,
+        difficulty_definitions=DIFFICULTY_OPTIONS,
+        analytics_context=analytics_context,
+    )
     return generate_general_ai_reply(VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+
+
+def _find_stale_removed_topics():
+    """Topics still in the bank despite a passed removal motion (data-integrity check)."""
+    df = get_connection().query(
+        f"SELECT t.topic_text FROM {TABLE_TOPICS} t "
+        f"JOIN {TABLE_TOPIC_REMOVAL_VOTES} r ON r.topic_text = t.topic_text "
+        "WHERE r.status = 'passed'",
+        ttl=5,
+    )
+    return df["topic_text"].tolist() if not df.empty else []
+
+
+def _gather_bank_analysis_context():
+    """Build a summary + topic list of the current topic bank for AI analysis."""
+    conn = get_connection()
+    bank_df = conn.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}", ttl=5)
+    if bank_df.empty:
+        return "辯題庫暫時無題目。", []
+
+    total = len(bank_df)
+    summary_lines = [f"總題目數：{total}", "類別分佈："]
+    cat_counts = bank_df["category"].value_counts()
+    for cat in CATEGORIES:
+        c = int(cat_counts.get(cat, 0))
+        pct = c / total * 100 if total else 0
+        flag = "（已超過 20% 上限）" if pct > 20 else ""
+        summary_lines.append(f"- {cat}：{c}（{pct:.0f}%）{flag}")
+    for cat, c in cat_counts.items():
+        if cat not in CATEGORIES:
+            summary_lines.append(f"- {cat or '（未分類）'}：{int(c)}（{int(c) / total * 100:.0f}%）")
+
+    summary_lines.append("難度分佈：")
+    for lvl in (1, 2, 3):
+        c = int((bank_df["difficulty"] == lvl).sum())
+        pct = c / total * 100 if total else 0
+        summary_lines.append(f"- {DIFFICULTY_OPTIONS.get(lvl, lvl)}：{c}（{pct:.0f}%）")
+
+    votes_df = conn.query(
+        f"SELECT status FROM {TABLE_TOPIC_VOTES} WHERE status IN ('passed', 'rejected')",
+        ttl=5,
+    )
+    if not votes_df.empty:
+        n = len(votes_df)
+        passed = int((votes_df["status"] == "passed").sum())
+        summary_lines.append(f"歷史提案通過率：{passed}/{n}（{passed / n * 100:.0f}%）")
+
+    topic_lines = []
+    for _, r in bank_df.iterrows():
+        try:
+            diff_label = DIFFICULTY_OPTIONS.get(int(r["difficulty"]), str(r["difficulty"]))
+        except (TypeError, ValueError):
+            diff_label = "—"
+        topic_lines.append(f"- {r['topic_text']}（{r.get('category') or '—'}｜{diff_label}）")
+
+    return "\n".join(summary_lines), topic_lines
+
+
+def ai_analyze_topic_bank():
+    bank_summary, topic_lines = _gather_bank_analysis_context()
+    user_text = build_vote_bank_analysis_prompt(bank_summary, topic_lines)
+    return generate_general_ai_reply(VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
 
 
 def ai_discussion_reply(motion_type, motion_key, comments):
     discussion_lines = []
     for _, c in comments.iterrows():
         discussion_lines.append(f"{c['user_id']}：{c['comment_text']}")
-    user_text = build_vote_discussion_prompt(motion_type, motion_key, discussion_lines)
+    removal_reasons = None
+    if motion_type == "topic_removal":
+        reason_rows = query_params(
+            f"SELECT removal_reasons FROM {TABLE_TOPIC_REMOVAL_VOTES} "
+            "WHERE topic_text = :topic AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+            {"topic": motion_key},
+        )
+        if not reason_rows.empty:
+            removal_reasons = parse_reason_list(reason_rows.iloc[0]["removal_reasons"])
+    user_text = build_vote_discussion_prompt(
+        motion_type, motion_key, discussion_lines, removal_reasons=removal_reasons
+    )
     return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, "Gemini 3.5 Flash")
 
 
@@ -695,19 +834,7 @@ def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False
                 _clear_vote_cache_only()
                 st.rerun()
 
-if not check_committee_login():
-    st.stop()
-
-user_id = st.session_state["committee_user"]
-
-if user_id == "admin":
-    st.error("賽會人員帳戶不能使用此頁面。請改用內部委員會成員帳戶登入。")
-    if st.button("登出"):
-        st.session_state["committee_user"] = None
-        del_cookie(cm, "committee_user")
-        render_committee_auth_bridge(clear=True)
-        st.rerun()
-    st.stop()
+user_id = require_committee()
 show_noti_popup(user_id)
 show_queued_toast()
 st.caption("活躍成員標準：整體投票率達 40%，且最近十次投票至少參與三次。")
@@ -811,7 +938,7 @@ def get_pending_depose_count():
 _pending_vote_count = get_pending_vote_count()
 _pending_depose_count = get_pending_depose_count()
 
-_tab_options = ["proposal", "topic_vote", "depose_vote", "member_stats", "account"]
+_tab_options = ["proposal", "topic_vote", "depose_vote", "bank_analysis", "member_stats", "account"]
 
 
 def format_tab_label(tab_name):
@@ -821,6 +948,8 @@ def format_tab_label(tab_name):
         return f"📊 辯題投票 ({_pending_vote_count})" if _pending_vote_count else "📊 辯題投票"
     if tab_name == "depose_vote":
         return f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
+    if tab_name == "bank_analysis":
+        return "🔍 辯題庫分析"
     if tab_name == "member_stats":
         return "👥 參與率"
     return "🔐 帳戶"
@@ -1294,6 +1423,30 @@ elif selected_tab == "depose_vote":
             check_vote_resolution(agree_count, against_count, row_depose_threshold, topic, agree_list, against_list,
                                    mode="depose")
 
+
+
+elif selected_tab == "bank_analysis":
+    st.subheader("分析現有辯題庫")
+    st.caption("由 AI 即時分析辯題庫嘅類別／難度分佈、題目質素，並提出未來方向同即時可做建議。")
+
+    render_refresh_button("refresh_vote_bank_analysis")
+
+    stale_topics = _find_stale_removed_topics()
+    if stale_topics:
+        st.warning(
+            "⚠️ 偵測到以下題目已被罷免通過，但仍留喺辯題庫，建議手動核實並刪除：\n"
+            + "\n".join(f"- {t}" for t in stale_topics)
+        )
+
+    if st.button("AI 分析辯題庫", key="ai_analyze_bank"):
+        with st.spinner("AI 正在分析辯題庫，請稍候⋯"):
+            bank_analysis, _usage = ai_analyze_topic_bank()
+        st.session_state["bank_analysis_result"] = bank_analysis
+
+    bank_analysis_result = st.session_state.get("bank_analysis_result")
+    if bank_analysis_result:
+        with st.expander("AI 分析結果", expanded=True):
+            st.markdown(bank_analysis_result)
 
 
 elif selected_tab == "member_stats":

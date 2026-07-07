@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data, render_page_guidance, render_password_gate
+from auth import render_password_gate
+from functions import get_best_debater_results, get_connection, get_score_data, query_params, normalize_judge_name, _verify_config_password, _deserialize_score_data, render_page_guidance
 from scoring import SPEECH_CRITERIA, speech_col, FREE_DEBATE_MAX, COHERENCE_MAX, GRAND_TOTAL
 from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
 

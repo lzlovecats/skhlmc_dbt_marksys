@@ -2,7 +2,8 @@ import re
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from functions import check_admin, get_connection, get_system_config, _verify_config_password, render_page_guidance, render_password_gate
+from auth import check_admin, render_password_gate
+from functions import get_connection, get_system_config, _verify_config_password, render_page_guidance
 
 st.header("資料庫管理控制台")
 render_page_guidance(

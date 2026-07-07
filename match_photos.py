@@ -3,14 +3,11 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+from auth import require_committee
 from functions import (
-    check_committee_login,
-    committee_cookie_manager,
-    del_cookie,
     ensure_match_photos_table,
     execute_query,
     query_params,
-    render_committee_auth_bridge,
     render_page_guidance,
 )
 from schema import TABLE_MATCHES, TABLE_MATCH_PHOTOS, TABLE_MATCH_VIDEOS
@@ -93,18 +90,7 @@ render_page_guidance(
     ],
 )
 
-if not check_committee_login():
-    st.stop()
-
-user_id = st.session_state["committee_user"]
-if user_id == "admin":
-    st.error("賽會人員帳戶不能使用此頁面。請改用內部委員會成員帳戶登入。")
-    if st.button("登出"):
-        st.session_state["committee_user"] = None
-        del_cookie(committee_cookie_manager(), "committee_user")
-        render_committee_auth_bridge(clear=True)
-        st.rerun()
-    st.stop()
+user_id = require_committee()
 
 if not ensure_match_photos_table():
     st.error("未能建立或讀取比賽圖片資料表，請稍後再試或聯絡開發人員。")

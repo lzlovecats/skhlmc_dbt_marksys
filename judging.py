@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from auth import render_password_gate
 from functions import (
     load_matches_from_db,
     load_draft_from_db,
@@ -12,7 +13,6 @@ from functions import (
     auto_derive_ranking_order,
     _verify_config_password,
     render_page_guidance,
-    render_password_gate,
 )
 from scoring import (
     SPEECH_CRITERIA, speech_col, SPEECH_TOTAL_MAX,

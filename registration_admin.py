@@ -3,8 +3,8 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+from auth import check_admin
 from functions import (
-    check_admin,
     ensure_registration_tables,
     execute_query,
     get_registration_settings,
