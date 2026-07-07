@@ -324,6 +324,70 @@ with st.expander("刪除帳戶", expanded=False):
             except Exception as e:
                 st.error(f"刪除帳戶失敗：{e}")
 
+def _load_system_json_list(config_key):
+    try:
+        data = json.loads(get_system_config(config_key) or "[]")
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+st.divider()
+st.subheader("TTS 錄音收集設定")
+st.caption("控制邊啲委員做「錄音委員」，以及邊啲委員做「錄音管理員」（可審核錄音、管理句庫、下載 dataset）。")
+
+with st.expander("指定 TTS 錄音委員及管理員", expanded=False):
+    tts_accounts_df = query_params(
+        f"""
+        SELECT user_id
+        FROM {TABLE_ACCOUNTS}
+        WHERE user_id NOT IN ('admin', 'developer', '')
+        ORDER BY user_id
+        """
+    )
+    tts_account_options = tts_accounts_df["user_id"].tolist() if not tts_accounts_df.empty else []
+    current_allowed = [
+        user_id for user_id in _load_system_json_list("tts_recording_allowed_users")
+        if user_id in tts_account_options
+    ]
+    current_reviewers = [
+        user_id for user_id in _load_system_json_list("tts_recording_reviewers")
+        if user_id in tts_account_options
+    ]
+    if not tts_account_options:
+        st.info("目前未有可選委員帳戶。")
+    else:
+        selected_allowed = st.multiselect(
+            "TTS 錄音委員（負責錄音）",
+            options=tts_account_options,
+            default=current_allowed,
+            key="tts_recording_allowed_select",
+        )
+        selected_reviewers = st.multiselect(
+            "TTS 錄音管理員（審核錄音、管理句庫、export）",
+            options=tts_account_options,
+            default=current_reviewers,
+            key="tts_recording_reviewers_select",
+        )
+        if st.button("更新 TTS 錄音設定", type="primary"):
+            updated_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+            for key, value in {
+                "tts_recording_allowed_users": selected_allowed,
+                "tts_recording_reviewers": selected_reviewers,
+            }.items():
+                execute_query(
+                    "INSERT INTO system_config (key, value, updated_at) "
+                    "VALUES (:key, :value, :updated_at) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+                    {
+                        "key": key,
+                        "value": json.dumps(value, ensure_ascii=False),
+                        "updated_at": updated_at,
+                    },
+                )
+            st.success("TTS 錄音設定已更新。")
+            st.rerun()
+
 st.divider()
 st.subheader("AI基金管理員設定")
 st.caption("AI基金管理員可在 AI 辯論易的「💲AI基金」分頁確認入數、記錄 provider 支出及更新AI基金設定。")

@@ -9,10 +9,11 @@ _speech_recorder_component = components.declare_component(
 )
 
 
-def render_speech_recorder(key: str, bell_src: str = "", bell_schedule=None):
+def render_speech_recorder(key: str, bell_src: str = "", bell_schedule=None, output_format: str = ""):
     return _speech_recorder_component(
         bell_src=bell_src,
         bell_schedule=bell_schedule or [],
+        output_format=output_format,
         key=key,
         default=None,
     )

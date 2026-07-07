@@ -105,6 +105,11 @@ let firedBells = new Set();
 let bellBuffer = null;
 let bellLoading = null;
 let bellCtx = null;
+let wavCtx = null;
+let wavSource = null;
+let wavProcessor = null;
+let wavChunks = [];
+let wavSampleRate = 44100;
 
 const badgeEl = document.getElementById("badge");
 const statusEl = document.getElementById("status");
@@ -149,6 +154,10 @@ function getBellSchedule() {
 
 function getBellSrc() {
     return args.bell_src || "";
+}
+
+function getOutputFormat() {
+    return String(args.output_format || "").toLowerCase();
 }
 
 function getBellCtx() {
@@ -248,10 +257,86 @@ function setReady(size) {
     recordBtn.disabled = false;
 }
 
+function floatTo16BitPCM(float32) {
+    const pcm = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return pcm;
+}
+
+function encodeWav(buffers, sampleRate) {
+    let length = 0;
+    buffers.forEach((buf) => { length += buf.length; });
+    const samples = new Float32Array(length);
+    let offset = 0;
+    buffers.forEach((buf) => {
+        samples.set(buf, offset);
+        offset += buf.length;
+    });
+    const pcm = floatTo16BitPCM(samples);
+    const wav = new ArrayBuffer(44 + pcm.byteLength);
+    const view = new DataView(wav);
+    function writeString(pos, str) {
+        for (let i = 0; i < str.length; i++) view.setUint8(pos + i, str.charCodeAt(i));
+    }
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + pcm.byteLength, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, pcm.byteLength, true);
+    const bytes = new Uint8Array(wav, 44);
+    bytes.set(new Uint8Array(pcm.buffer));
+    return new Blob([wav], { type: "audio/wav" });
+}
+
+async function stopWavNodes() {
+    try { if (wavProcessor) wavProcessor.disconnect(); } catch (e) {}
+    try { if (wavSource) wavSource.disconnect(); } catch (e) {}
+    try { if (wavCtx) await wavCtx.close(); } catch (e) {}
+    wavProcessor = null;
+    wavSource = null;
+    wavCtx = null;
+}
+
 async function startRecording() {
     try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // For WAV (TTS training) we want the rawest possible mic signal, so we
+        // disable the browser DSP that would otherwise colour the recording.
+        const audioConstraints = getOutputFormat() === "wav"
+            ? {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: 1,
+            }
+            : true;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
         chunks = [];
+        wavChunks = [];
+        if (getOutputFormat() === "wav") {
+            wavCtx = new (window.AudioContext || window.webkitAudioContext)();
+            await wavCtx.resume();
+            wavSampleRate = wavCtx.sampleRate;
+            wavSource = wavCtx.createMediaStreamSource(stream);
+            wavProcessor = wavCtx.createScriptProcessor(4096, 1, 1);
+            wavProcessor.onaudioprocess = (event) => {
+                const raw = event.inputBuffer.getChannelData(0);
+                wavChunks.push(new Float32Array(raw));
+            };
+            wavSource.connect(wavProcessor);
+            wavProcessor.connect(wavCtx.destination);
+            recorder = { state: "recording", stop: stopWavRecording };
+        } else {
         recorder = new MediaRecorder(stream);
         recorder.ondataavailable = ev => {
             if (ev.data && ev.data.size) chunks.push(ev.data);
@@ -271,6 +356,7 @@ async function startRecording() {
                     audio_base64: base64,
                     mime_type: mimeType,
                     size: blob.size,
+                    duration_seconds: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
                     recorded_at: Date.now()
                 });
                 setFrameHeight();
@@ -278,6 +364,7 @@ async function startRecording() {
             reader.readAsDataURL(blob);
         };
         recorder.start();
+        }
         startedAt = Date.now();
         firedBells.clear();
         setRecording();
@@ -288,6 +375,31 @@ async function startRecording() {
         badgeEl.className = "badge recording";
         statusEl.textContent = "未能使用麥克風：" + e.message;
     }
+}
+
+async function stopWavRecording() {
+    if (!recorder || recorder.state !== "recording") return;
+    recorder.state = "inactive";
+    if (timerHandle) clearInterval(timerHandle);
+    timerHandle = null;
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    await stopWavNodes();
+    const blob = encodeWav(wavChunks, wavSampleRate);
+    const reader = new FileReader();
+    reader.onloadend = () => {
+        const result = String(reader.result || "");
+        const base64 = result.includes(",") ? result.split(",")[1] : result;
+        setReady(blob.size);
+        sendValue({
+            audio_base64: base64,
+            mime_type: "audio/wav",
+            size: blob.size,
+            duration_seconds: Math.max(0, Math.round((Date.now() - startedAt) / 1000)),
+            recorded_at: Date.now()
+        });
+        setFrameHeight();
+    };
+    reader.readAsDataURL(blob);
 }
 
 function stopRecording() {
@@ -309,6 +421,7 @@ clearBtn.addEventListener("click", () => {
     if (timerHandle) clearInterval(timerHandle);
     timerHandle = null;
     chunks = [];
+    wavChunks = [];
     firedBells.clear();
     timerEl.textContent = "00:00";
     hintEl.textContent = "完成發言後按「完成並送出」，錄音會送到上方表單等候分析。";
