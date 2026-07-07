@@ -1,0 +1,14 @@
+[Unit]
+Description=Marksys — schedule local database backups
+
+[Timer]
+# Daily at 02:30. On competition days you can also trigger a manual backup
+# any time with:  sudo systemctl start marksys-backup.service
+OnCalendar=*-*-* 02:30:00
+# If the machine was off at 02:30, run as soon as it next boots.
+Persistent=true
+RandomizedDelaySec=300
+Unit=marksys-backup.service
+
+[Install]
+WantedBy=timers.target

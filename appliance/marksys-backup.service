@@ -1,0 +1,18 @@
+[Unit]
+Description=Marksys — local backup of the remote Supabase database
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as a low-privilege user that can read the secrets and write backups.
+User=marksys
+Group=marksys
+Environment=MARKSYS_ENV_FILE=/etc/marksys/appliance.env
+ExecStart=/opt/skhlmc-dbt-marksys/appliance/backup_db.sh
+Nice=10
+# The dump can take a while on a big tournament DB; don't kill it early.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

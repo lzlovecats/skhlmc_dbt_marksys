@@ -576,9 +576,11 @@ function announceSegmentToAi(seg) {
         setSubstatus("如屬 AI 段落，請聽完 AI 發言；如屬你方段落，AI 示意後會解鎖錄音。");
         startWaitTimer();
         const segSecs = Number(seg.seconds || 0);
-        const minSecs = Math.round(segSecs * 0.7);
+        const wordMin = Math.round((segSecs / 60) * 250);
+        const wordMax = Math.round((segSecs / 60) * 300);
         sendTextTurn(fillTemplate(LIVE_PROMPTS.segment_announce, {
-            label: seg.label || "", side: seg.side || "", secs: segSecs, min_secs: minSecs
+            label: seg.label || "", side: seg.side || "", secs: segSecs,
+            word_min: wordMin, word_max: wordMax
         }));
     } catch (e) {
         isWaiting = false;

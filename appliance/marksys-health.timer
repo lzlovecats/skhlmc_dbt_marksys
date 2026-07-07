@@ -1,0 +1,11 @@
+[Unit]
+Description=Marksys — run the health check every minute
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=10
+Unit=marksys-health.service
+
+[Install]
+WantedBy=timers.target
