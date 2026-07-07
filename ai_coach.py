@@ -82,6 +82,10 @@ def _format_ai_estimate(feature: str, model_label: str, has_audio: bool = False,
     return f"估算成本：{format_usd_money(usd, decimals=4, escape_markdown=True)} ≈ {_format_hkd_4dp(hkd)} / 次{search_note}。"
 
 
+def _azure_tts_configured() -> bool:
+    return bool(st.secrets.get("AZURE_SPEECH_KEY") and st.secrets.get("AZURE_SPEECH_REGION"))
+
+
 def _record_ai_usage(user_id: str, feature: str, model_label: str, result: str, has_audio: bool = False, usage: dict | None = None):
     success = is_successful_ai_result(result)
     try:
@@ -783,6 +787,8 @@ if selected_tab == "free_debate":
             f"而家模型為 {model_label}，不支援打Free De，"
             f"開始Free De 時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
         )
+    if not _azure_tts_configured():
+        st.warning("未設定 Azure TTS，AI 讀音會 fallback 用 Gemini Live 原生聲音。")
 
     free_topic_source = st.radio(
         "辯題來源",
@@ -942,6 +948,8 @@ if selected_tab == "full_mock":
             f"目前模型為 {model_label}，不支援打Mock功能，"
             f"開始時會改用 {FREE_DEBATE_LIVE_MODEL_LABEL}。"
         )
+    if not _azure_tts_configured():
+        st.warning("未設定 Azure TTS，AI 讀音會 fallback 用 Gemini Live 原生聲音。")
 
     mock_topic_source = st.radio(
         "辯題來源",

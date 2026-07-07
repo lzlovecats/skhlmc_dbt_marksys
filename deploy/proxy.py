@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from urllib.parse import quote_plus
+from xml.sax.saxutils import escape as xml_escape
 
 import tomllib
 
@@ -68,6 +69,7 @@ HOP_BY_HOP_HEADERS = {
 app = FastAPI()
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
+_streamlit_secrets = None
 
 
 def _proxy_headers(headers):
@@ -139,6 +141,33 @@ def _get_db_url():
     port = db.get("port", "5432")
     database = db.get("database", "")
     return f"{dialect}://{username}:{password}@{host}:{port}/{database}"
+
+
+def _get_streamlit_secrets():
+    global _streamlit_secrets
+    if _streamlit_secrets is not None:
+        return _streamlit_secrets
+
+    secrets_path = BASE_DIR / ".streamlit" / "secrets.toml"
+    if not secrets_path.exists():
+        _streamlit_secrets = {}
+        return _streamlit_secrets
+
+    try:
+        with secrets_path.open("rb") as f:
+            _streamlit_secrets = tomllib.load(f)
+    except Exception:
+        logger.exception("Failed to read Streamlit secrets")
+        _streamlit_secrets = {}
+    return _streamlit_secrets
+
+
+def _get_proxy_secret(key: str, default: str = "") -> str:
+    value = os.getenv(key)
+    if value is not None:
+        return value
+    value = _get_streamlit_secrets().get(key, default)
+    return str(value) if value is not None else default
 
 
 def _get_db_engine():
@@ -349,6 +378,80 @@ async def push_unsubscribe(request: Request):
             )
 
     return {"ok": True}
+
+
+def _build_azure_tts_ssml(text_value: str, voice: str, rate: str) -> str:
+    voice = xml_escape(voice or "zh-HK-HiuMaanNeural", {'"': "&quot;"})
+    rate = xml_escape(rate or "0%", {'"': "&quot;"})
+    text_value = xml_escape(text_value)
+    return (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xml:lang="zh-HK">'
+        f'<voice name="{voice}"><prosody rate="{rate}">{text_value}</prosody></voice>'
+        "</speak>"
+    )
+
+
+@app.post("/api/tts/azure")
+async def azure_tts(request: Request):
+    _require_committee_user(request)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    tts_text = str(payload.get("text") or "").strip()
+    if not tts_text:
+        raise HTTPException(status_code=400, detail="Missing text")
+    if len(tts_text) > 1200:
+        raise HTTPException(status_code=400, detail="Text is too long")
+
+    speech_key = _get_proxy_secret("AZURE_SPEECH_KEY").strip()
+    speech_region = _get_proxy_secret("AZURE_SPEECH_REGION").strip()
+    if not speech_key or not speech_region:
+        raise HTTPException(status_code=503, detail="Azure TTS is not configured")
+
+    voice = _get_proxy_secret("AZURE_TTS_VOICE", "zh-HK-HiuMaanNeural").strip() or "zh-HK-HiuMaanNeural"
+    rate = _get_proxy_secret("AZURE_TTS_RATE", "0%").strip() or "0%"
+    output_format = (
+        _get_proxy_secret("AZURE_TTS_OUTPUT_FORMAT", "audio-24khz-48kbitrate-mono-mp3").strip()
+        or "audio-24khz-48kbitrate-mono-mp3"
+    )
+    ssml = _build_azure_tts_ssml(tts_text, voice, rate)
+    endpoint = f"https://{speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            azure_response = await client.post(
+                endpoint,
+                content=ssml.encode("utf-8"),
+                headers={
+                    "Ocp-Apim-Subscription-Key": speech_key,
+                    "Content-Type": "application/ssml+xml; charset=utf-8",
+                    "X-Microsoft-OutputFormat": output_format,
+                    "User-Agent": "skhlmc-dbt-marksys",
+                },
+            )
+    except httpx.HTTPError as e:
+        logger.warning("Azure TTS request failed: %s", e)
+        raise HTTPException(status_code=502, detail="Azure TTS request failed")
+
+    if azure_response.status_code != 200:
+        logger.warning(
+            "Azure TTS returned %s: %s",
+            azure_response.status_code,
+            azure_response.text[:300],
+        )
+        raise HTTPException(status_code=502, detail="Azure TTS request failed")
+
+    return Response(
+        content=azure_response.content,
+        media_type=azure_response.headers.get("content-type") or "audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/video/view")
