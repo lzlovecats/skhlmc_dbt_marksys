@@ -190,8 +190,21 @@ const LIVE_PROMPTS = (__LIVE_PROMPTS__ || {});
 function fillTemplate(tpl, map) {
     return String(tpl || "").replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
 }
-const WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
-function buildWsUrl(token) { return WS_BASE + "?access_token=" + encodeURIComponent(token); }
+// 如果設定咗 relay（Render/Singapore），瀏覽器會連 relay 而唔係直連 Google，
+// 令香港等受限地區都用得。未設定時 fallback 直連 Google（本地開發用）。
+const RELAY_WS_BASE = __RELAY_WS_BASE__;
+const DIRECT_WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
+const WS_BASE = RELAY_WS_BASE || DIRECT_WS_BASE;
+// relay 模式下附上 server 簽發嘅 HMAC sig，令 relay 只服務本 app 發出嘅 token。
+const TOKEN_SIGS = (__TOKEN_SIGS__ || {});
+function buildWsUrl(token) {
+    let url = WS_BASE + "?access_token=" + encodeURIComponent(token);
+    if (RELAY_WS_BASE) {
+        const sig = TOKEN_SIGS[token] || "";
+        if (sig) url += "&sig=" + encodeURIComponent(sig);
+    }
+    return url;
+}
 
 let ws = null;
 let stream = null;
@@ -973,7 +986,7 @@ function openSessionWs() {
     ws.onerror = (ev) => {
         console.error("WS error:", ev);
         if (switchingSession) return;
-        setState("錯誤", "Gemini Live 連線發生錯誤。請開啟 VPN 轉換IP或檢查網絡後重新開始。", "error", false);
+        setState("錯誤", "Gemini Live 連線發生錯誤。請檢查網絡後重新開始。", "error", false);
         setSubstatus("如果已經完成發言但沒有回應，請停止後重新開始自由辯論。");
     };
     ws.onclose = (ev) => {
@@ -1007,13 +1020,13 @@ function formatCloseMessage(ev) {
     const reason = ev.reason || "";
     const lower = reason.toLowerCase();
     if (lower.includes("location") || lower.includes("not supported") || lower.includes("unsupported")) {
-        return "Gemini Live 地區限制：暫時不支援你所在地區。請開啟 VPN 連去受支援地區後再重新開始。";
+        return "Gemini Live 暫時未能連線（地區限制）。系統應已經 relay 轉駁，請稍後重新開始；若持續失敗請聯絡開發者。";
     }
     if (lower.includes("token") || ev.code === 1008) {
         return "Live token 可能已過期或無效，請重新開始自由辯論。";
     }
     if (ev.code === 1006) {
-        return "Live 連線中斷。如你身處香港等不支援地區，請開啟 VPN 連去受支援地區（例如台灣、日本、美國）後重試；否則請檢查網絡後重新開始。";
+        return "Live 連線中斷，請檢查網絡後重新開始；若持續失敗請聯絡開發者。";
     }
     return "自由辯論已結束（code " + ev.code + (reason ? "：" + reason : "") + "）。";
 }
