@@ -219,6 +219,8 @@ OPENROUTER_API_KEY = "your_openrouter_api_key"
 VAPID_PUBLIC_KEY = "your_vapid_public_key"
 VAPID_PRIVATE_KEY = "your_vapid_private_key"
 VAPID_SUBJECT = "https://skhlmc-dbt-marksys.onrender.com"
+# 選填：Gemini Live relay（見下）。設定後香港用戶會經 relay 連 Gemini Live。
+LIVE_RELAY_WS_BASE = "wss://skhlmc-dbt-marksys.onrender.com/gemini-live"
 
 [connections.postgresql]
 dialect = "postgresql"
@@ -232,6 +234,17 @@ password = "your_password"
 `GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
 
 Gemini Live 自由辯論會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
+
+**Gemini Live 地區限制與 relay / Regional restriction & relay**
+
+Gemini Live 由**使用者瀏覽器直接連** Google 的 WebSocket，Google 會以瀏覽器 IP 判斷地區。香港等未支援地區會被封鎖，令「打Free De」「打Mock」無法連線。
+
+解決方法是經部署在**受支援地區**（本專案 Render 位於 Singapore）的 relay 轉駁：瀏覽器改連 `deploy/proxy.py` 的 `/gemini-live` 端點，由 relay 代連 Google，Google 看到的是 Singapore IP。
+
+- 設定 `LIVE_RELAY_WS_BASE`（例：`wss://<你的-render-域名>/gemini-live`）即啟用 relay；**留空／不設定則 fallback 直連 Google**（適合本地開發或本身在支援地區）。
+- **授權**：`/gemini-live` 並非公開的開放 relay。app 會用資料庫 `system_config.cookie_secret` 對每個 ephemeral token 產生 HMAC 簽名（`auth.sign_relay_token`），relay 在撥號往 Google 前先驗證簽名（`proxy._verify_relay_signature`）。簽名不符會在 WebSocket handshake 前直接 reject（close 1008），確保只有本 app 發出的 token 用得到 relay，防止外人白嫖連線／頻寬。因此 relay 與主應用**必須共用同一個資料庫**（同一 `cookie_secret`）。
+
+The relay only serves tokens minted by this app: each ephemeral token is HMAC-signed with the shared `cookie_secret`, and the relay verifies the signature before dialing Google, rejecting unauthorized handshakes with close code 1008. The relay (`deploy/proxy.py`) and the app must therefore share the same database.
 
 `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` 用於 PWA Web Push 通知；如未設定，辯題投票頁仍可正常使用，但不會啟用背景推送通知。
 

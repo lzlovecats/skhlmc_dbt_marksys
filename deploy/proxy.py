@@ -179,6 +179,43 @@ def _verify_committee_cookie(request: Request):
     return _verify_committee_token(request.cookies.get("committee_user") or "")
 
 
+_relay_cookie_secret = None
+
+
+def _get_relay_cookie_secret():
+    """Read (and cache) the shared cookie_secret used to sign Gemini Live relay
+    tokens. Cached in-process because it rarely changes and this is hit on every
+    relay connection attempt."""
+    global _relay_cookie_secret
+    if _relay_cookie_secret is not None:
+        return _relay_cookie_secret
+
+    engine = _get_db_engine()
+    if engine is None:
+        return None
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
+        ).fetchone()
+    if row is None:
+        return None
+    _relay_cookie_secret = str(row._mapping["value"])
+    return _relay_cookie_secret
+
+
+def _verify_relay_signature(token: str, sig: str) -> bool:
+    """Verify the HMAC signature the app attaches to a Gemini Live ephemeral
+    token (see auth.sign_relay_token). Blocks anyone from using /gemini-live as
+    an open relay with an arbitrary token."""
+    if not token or not sig:
+        return False
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        return False
+    expected = hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
 def _require_committee_user(request: Request):
     # The cookie is the primary source, but requests originating from the
     # sandboxed Streamlit component iframe cannot carry a SameSite=Strict
@@ -391,6 +428,92 @@ async def video_progress(request: Request):
         )
 
     return {"ok": True}
+
+
+GEMINI_LIVE_WS_URL = (
+    "wss://generativelanguage.googleapis.com/ws/"
+    "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
+)
+
+
+@app.websocket("/gemini-live")
+async def gemini_live_relay(websocket: WebSocket):
+    # 香港（及其他受限地區）用戶嘅瀏覽器無法直連 Google Gemini Live WS，會被
+    # geo-block。呢個 relay 喺 Render(Singapore) 代連 Google，令 Google 睇到嘅
+    # 係受支援地區嘅 IP。瀏覽器只需連呢度，token 照舊用 ?access_token= query 傳，
+    # 唔使 subprotocol（同瀏覽器直連 Google 時一致）。
+    token = websocket.query_params.get("access_token", "")
+    sig = websocket.query_params.get("sig", "")
+    # 授權：只服務由本 app（用 cookie_secret 簽發）嘅 token，防止外人白嫖 relay
+    # 消耗連線／頻寬。喺 accept 之前 reject，唔會完成 WS handshake、亦唔會撥去
+    # Google。
+    if not _verify_relay_signature(token, sig):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+
+    backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
+
+    try:
+        # max_size=None：AI 回覆嘅音訊 frame 可以大過 websockets 預設 1MB 上限。
+        # ping_interval=None：避免 keepalive pong timeout 喺長時間等待時誤斷線。
+        backend = await websockets.connect(backend_url, max_size=None, ping_interval=None)
+    except Exception as e:
+        logger.exception("Gemini Live relay backend connect failed: %s", e)
+        await websocket.close(code=1011)
+        return
+
+    async with backend:
+        async def client_to_backend():
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    await backend.close()
+                    break
+                elif "text" in message and message["text"] is not None:
+                    await backend.send(message["text"])
+                elif "bytes" in message and message["bytes"] is not None:
+                    await backend.send(message["bytes"])
+
+        async def backend_to_client():
+            async for message in backend:
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(message)
+
+        tasks = [
+            asyncio.create_task(client_to_backend()),
+            asyncio.create_task(backend_to_client()),
+        ]
+        try:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()
+        except WebSocketDisconnect:
+            return
+        except Exception as e:
+            logger.exception("Gemini Live relay failed: %s", e)
+
+    # 把 Google 嘅 close code / reason 傳返畀瀏覽器，令前端 formatCloseMessage
+    # 對 token 過期(1008)等情況嘅提示照樣有效。1005/1006 唔可以明文送出，改用
+    # 合法碼；reason 限 123 bytes。
+    code = backend.close_code or 1000
+    if code in (1005, 1006):
+        code = 1011 if code == 1006 else 1000
+    reason = (backend.close_reason or "").encode("utf-8")[:123].decode("utf-8", "ignore")
+    try:
+        await websocket.close(code=code, reason=reason)
+    except TypeError:
+        try:
+            await websocket.close(code=code)
+        except RuntimeError:
+            pass
+    except RuntimeError:
+        pass
 
 
 @app.websocket("/{path:path}")

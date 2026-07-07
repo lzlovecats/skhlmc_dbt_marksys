@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import streamlit.components.v1 as components
 from speech_recorder_component import render_speech_recorder
-from auth import require_committee
+from auth import require_committee, sign_relay_token
 from functions import (
     load_matches_from_db,
     render_page_guidance,
@@ -152,6 +152,25 @@ def _render_live_debate_component(
     live_html = template_path.read_text(encoding="utf-8")
     if session_label != "自由辯論":
         live_html = live_html.replace("自由辯論", session_label)
+    # 設定咗 LIVE_RELAY_WS_BASE（例如 wss://<render-domain>/gemini-live）時，瀏覽器
+    # 會經 Render(Singapore) relay 連 Gemini Live，令香港等受限地區都用得；未設定
+    # 時 fallback 直連 Google。
+    try:
+        relay_ws_base = st.secrets.get("LIVE_RELAY_WS_BASE", "") or ""
+    except Exception:
+        relay_ws_base = ""
+    live_html = live_html.replace("__RELAY_WS_BASE__", json.dumps(relay_ws_base))
+    # relay 模式下，為每粒 token 簽一個 HMAC，令 relay 只服務本 app 發出嘅 token
+    # （見 auth.sign_relay_token / proxy._verify_relay_signature）。
+    token_sigs = {}
+    if relay_ws_base:
+        try:
+            for t in [token, *(tokens or [])]:
+                if t and t not in token_sigs:
+                    token_sigs[t] = sign_relay_token(t)
+        except Exception as e:
+            st.caption(f"Live relay 簽章未能產生：{e}")
+    live_html = live_html.replace("__TOKEN_SIGS__", json.dumps(token_sigs))
     bell_src = _load_bell_src()
     live_html = live_html.replace("__LIVE_TOKEN__", json.dumps(token))
     live_html = live_html.replace("__LIVE_MODEL__", json.dumps(model))

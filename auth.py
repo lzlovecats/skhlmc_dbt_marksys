@@ -131,6 +131,15 @@ def _verify_cookie(cookie_value: str) -> str | None:
     return None
 
 
+def sign_relay_token(token: str) -> str:
+    """簽發 Gemini Live ephemeral token，畀 /gemini-live relay 驗證。
+
+    Relay（proxy.py）同 app 共用 DB 入面嘅 cookie_secret，令 relay 只服務由本 app
+    發出嘅 token，防止外人白嫖 Render relay 消耗連線／頻寬。"""
+    secret = _get_cookie_secret()
+    return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
 def get_committee_cookie_from_context():
     try:
         cookies = getattr(st.context, "cookies", None)
