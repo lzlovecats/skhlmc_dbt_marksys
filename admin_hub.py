@@ -1,6 +1,7 @@
 import streamlit as st
 
-from functions import check_admin, render_page_guidance
+from auth import check_admin
+from functions import render_page_guidance
 
 st.header("賽務管理易")
 render_page_guidance(

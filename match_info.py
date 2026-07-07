@@ -1,8 +1,8 @@
 import streamlit as st
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse, urlunparse
+from auth import check_admin
 from functions import (
-    check_admin,
     get_connection,
     load_matches_from_db,
     save_match_to_db,

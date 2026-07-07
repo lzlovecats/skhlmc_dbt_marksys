@@ -4,15 +4,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+from auth import require_committee
 from functions import (
-    check_committee_login,
-    committee_cookie_manager,
-    del_cookie,
     execute_query,
     execute_query_count,
     notify_committee_vote_event,
     query_params,
-    render_committee_auth_bridge,
     render_page_guidance,
 )
 from schema import (
@@ -295,18 +292,7 @@ def prepare_expenses_display(df):
     })
 
 
-if not check_committee_login():
-    st.stop()
-
-user_id = st.session_state["committee_user"]
-if user_id == "admin":
-    st.error("賽會人員帳戶不能使用此頁面。請改用內部委員會成員帳戶登入。")
-    if st.button("登出賽會人員帳戶", use_container_width=True):
-        st.session_state["committee_user"] = None
-        del_cookie(committee_cookie_manager(), "committee_user")
-        render_committee_auth_bridge(clear=True)
-        st.rerun()
-    st.stop()
+user_id = require_committee()
 
 if not ensure_lateness_fund_tables():
     st.error("遲到罰款基金資料表尚未就緒，請聯絡開發者執行資料庫初始化。")

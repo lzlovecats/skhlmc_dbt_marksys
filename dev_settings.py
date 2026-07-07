@@ -4,7 +4,7 @@ import datetime
 from zoneinfo import ZoneInfo
 import json
 from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data, ensure_push_subscriptions_table, get_vapid_public_key, notify_committee_vote_event
-from schema import TABLE_ACCOUNTS, TABLE_PUSH_SUBSCRIPTIONS, init_db
+from schema import TABLE_ACCOUNTS, TABLE_PUSH_SUBSCRIPTIONS, init_db, run_migrations
 from ai_coach_helpers import (
     AI_MODEL_OPTIONS,
     AI_PROVIDER_LABELS,
@@ -349,12 +349,17 @@ with st.expander("指定AI基金管理員", expanded=False):
 
 st.divider()
 st.subheader("資料庫結構初始化")
-st.caption("執行 init_db 以確保所有資料表、視圖及索引已建立。適用於首次部署或結構更新後。")
+st.caption("執行 init_db 以確保所有資料表、視圖及索引已建立，並套用結構升級（migrations）。適用於首次部署或結構更新後。")
 if st.button("執行 init_db", type="primary"):
     try:
         conn = get_connection()
         init_db(conn)
+        migration_log = run_migrations(conn)
         st.success("資料庫結構初始化完成。")
+        if migration_log:
+            with st.expander("結構升級（migrations）結果", expanded=True):
+                for line in migration_log:
+                    (st.error if line.startswith("ERR") else st.caption)(line)
     except Exception as e:
         st.error(f"初始化失敗：{e}")
 

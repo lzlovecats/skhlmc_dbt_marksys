@@ -6,7 +6,8 @@ from datetime import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 
-from functions import check_admin, get_score_data, get_best_debater_results, load_matches_from_db, query_params, render_page_guidance
+from auth import check_admin
+from functions import get_score_data, get_best_debater_results, load_matches_from_db, query_params, render_page_guidance
 from schema import TABLE_SCORE_DRAFTS
 from debate_timing import DEBATE_FORMATS, get_debate_timer_config
 

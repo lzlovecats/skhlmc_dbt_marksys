@@ -1,5 +1,6 @@
 import streamlit as st
-from functions import check_admin, get_score_data, get_best_debater_results, query_params, render_page_guidance
+from auth import check_admin
+from functions import get_score_data, get_best_debater_results, query_params, render_page_guidance
 from schema import TABLE_MATCHES
 st.header("查閱比賽結果")
 render_page_guidance(
