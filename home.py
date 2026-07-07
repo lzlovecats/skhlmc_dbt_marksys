@@ -396,9 +396,10 @@ with col_right:
 
 with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
-    st.write("提出辯題、參與投票、提出罷免動議、重溫比賽片段及圖片、使用 AI 辯論教練、管理遲到罰款及個人帳戶。")
+    st.write("提出辯題、參與投票、提出罷免動議、重溫比賽片段及圖片、使用 AI 辯論教練、提交 TTS 錄音、管理遲到罰款及個人帳戶。")
     st.page_link("vote.py", label="辯題徵集、投票及罷免", icon="🗳️")
     st.page_link("ai_coach.py", label="AI 辯論易", icon="✨")
+    st.page_link("tts_recording.py", label="TTS 錄音收集", icon="🎙️")
     st.page_link("video_replay.py", label="比賽片段重溫", icon="🎬")
     st.page_link("match_photos.py", label="比賽圖片回顧", icon="🖼️")
     st.page_link("lateness_fund.py", label="遲到罰款基金", icon="💰")
