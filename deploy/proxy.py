@@ -26,7 +26,11 @@ from schema import (
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
 )
-from debate_timing import get_full_mock_sequence  # pure helper, no side effects
+from debate_timing import (  # pure helpers, no side effects
+    get_full_mock_sequence,
+    get_debate_timer_config,
+    DEBATE_FORMATS,
+)
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -760,6 +764,56 @@ async def projector_set_state(request: Request):
         )
 
     return _resolve_projector_state(engine, display_key)
+
+
+# ---------------------------------------------------------------------------
+# Appliance practice page (login-free kiosk hub)
+#
+# Additive and self-contained, same pattern as the projector above. Serves one
+# static big-text page (templates/appliance_practice.html) meant for the
+# dedicated-machine 日常練習 mode (PRACTICE_URL). It embeds the chairperson
+# 叮叮 timer (all formats) — pure client-side, no login — and links out to the
+# existing /ai-coach for AI practice (the kiosk browser stays logged in as the
+# appliance's own committee account, so the token-signed Gemini Live relay keeps
+# working). No Streamlit page, schema, or existing route is touched.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/practice")
+async def appliance_practice_page():
+    return FileResponse(BASE_DIR / "templates" / "appliance_practice.html",
+                        media_type="text/html")
+
+
+@app.get("/api/practice/bell")
+async def appliance_practice_bell():
+    return FileResponse(BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg")
+
+
+@app.get("/api/practice/timer-config")
+async def appliance_practice_timer_config(request: Request):
+    """Serve the chairperson bell/timer schedule for a format so the static
+    practice page can render the same 叮叮 timer without a Streamlit session.
+    Pure computation (no DB, no auth)."""
+    debate_format = request.query_params.get("format", DEBATE_FORMATS[0])
+    if debate_format not in DEBATE_FORMATS:
+        debate_format = DEBATE_FORMATS[0]
+
+    def _opt_float(name):
+        raw = request.query_params.get(name)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    config = get_debate_timer_config(
+        debate_format,
+        free_debate_minutes=_opt_float("free_minutes"),
+        closing_prep_minutes=_opt_float("closing_prep_minutes"),
+    )
+    return {"format": debate_format, "formats": DEBATE_FORMATS, **config}
 
 
 GEMINI_LIVE_WS_URL = (
