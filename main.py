@@ -126,7 +126,7 @@ pg = st.navigation({
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_vote, page_ai_coach, page_lateness_fund, page_video_replay, page_match_photos],
+    "內部委員會成員": [page_vote, page_ai_coach, page_video_replay, page_match_photos, page_lateness_fund],
     "開發者": [page_dev_settings],
 })
 
@@ -149,7 +149,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.6.5")
+    st.caption("🛠️ 系統版本：3.6.6")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()
