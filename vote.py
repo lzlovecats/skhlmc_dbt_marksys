@@ -907,13 +907,18 @@ def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False
     st.write(f"**{topic}**")
     if is_switch:
         st.info("你目前已投同意票，確認後將轉為反對票。")
-    selected_reasons = st.multiselect(
+    # Use inline pills instead of st.multiselect: the multiselect dropdown popover
+    # renders behind/outside the dialog modal, making the options impossible to click.
+    selected_reasons = st.pills(
         "請選擇不同意原因（至少選一項）",
-        options=TOPIC_REJECTION_REASONS
+        options=TOPIC_REJECTION_REASONS,
+        selection_mode="multi",
+        key=f"against_reasons_{topic}",
     )
     other_reason = st.text_area(
         "其他原因（如有）",
-        placeholder="如需要，可補充具體修訂意見。"
+        placeholder="如需要，可補充具體修訂意見。",
+        key=f"against_other_{topic}",
     )
     if st.button("確認投票", type="primary"):
         reasons = collect_reasons(selected_reasons, other_reason)
