@@ -93,7 +93,7 @@
 (function () {
   var DISPLAY = new URLSearchParams(location.search).get("display") || "main";
   var el = function (id) { return document.getElementById(id); };
-  var state = { seg_index: 0, seg_total: 0, visible: false, debate_format: "校園隨想" };
+  var state = { match_id: "", seg_index: 0, seg_total: 0, visible: false, debate_format: "校園隨想" };
   var segments = [];
 
   function setStatus(msg, cls) {
@@ -106,10 +106,18 @@
     });
   }
 
+  function authToken() {
+    try { return window.localStorage.getItem("committee_user") || ""; }
+    catch (e) { return ""; }
+  }
+
   function api(method, url, body) {
+    var headers = body ? { "Content-Type": "application/json" } : {};
+    var token = authToken();
+    if (token) headers.Authorization = "Bearer " + token;
     return fetch(url, {
       method: method,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
       body: body ? JSON.stringify(body) : undefined,
       credentials: "same-origin",
       cache: "no-store"
@@ -134,6 +142,7 @@
           o.textContent = (m.match_date || "") + " " + (m.pro_team || "?") + " vs " + (m.con_team || "?");
           sel.appendChild(o);
         });
+        if (state.match_id) sel.value = state.match_id;
         setStatus("");
       })
       .catch(function (e) { setStatus(e.message, "err"); });
@@ -164,11 +173,13 @@
 
   function applyState(s) {
     if (!s) return;
+    state.match_id = s.match_id || state.match_id || "";
     state.seg_index = s.seg_index || 0;
     state.seg_total = s.seg_total || segments.length;
     state.visible = !!s.visible;
     state.debate_format = s.debate_format || state.debate_format;
     renderSeq();
+    if (state.match_id && el("match").value !== state.match_id) el("match").value = state.match_id;
     var t = el("toggle");
     t.textContent = state.visible ? "■ 隱藏大屏" : "▶ 顯示大屏";
     t.className = "big " + (state.visible ? "toggle-on" : "toggle-off");
