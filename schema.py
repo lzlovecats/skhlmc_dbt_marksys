@@ -581,13 +581,16 @@ CREATE_LATENESS_FUND_RECORDS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_LATENESS_FUND_RECORDS} (
     id              SERIAL      PRIMARY KEY,
     late_date       DATE        NOT NULL,
-    member_name     TEXT        NOT NULL,
+    member_user_id  TEXT        NOT NULL,
     late_minutes    INTEGER     NOT NULL CHECK (late_minutes > 0),
     paid_amount     NUMERIC(10, 2) DEFAULT 0,
     note            TEXT,
     created_by      TEXT,
     created_at      TIMESTAMP   DEFAULT NOW(),
     updated_at      TIMESTAMP,
+    CONSTRAINT fk_lateness_fund_record_member
+        FOREIGN KEY (member_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
     CONSTRAINT fk_lateness_fund_record_created_by
         FOREIGN KEY (created_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
@@ -791,8 +794,8 @@ CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at
     ON {TABLE_AI_FUND_USAGE_LOGS}(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_user_id
     ON {TABLE_AI_FUND_USAGE_LOGS}(user_id);
-CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_date
-    ON {TABLE_LATENESS_FUND_RECORDS}(member_name, late_date);
+CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date
+    ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date);
 CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date
     ON {TABLE_LATENESS_FUND_EXPENSES}(expense_date);
 """

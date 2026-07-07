@@ -80,16 +80,42 @@ def _to_date(value):
         return None
 
 
+def _format_date(value) -> str:
+    date_value = _to_date(value)
+    return date_value.strftime("%d/%m/%Y") if date_value else ""
+
+
 def ensure_lateness_fund_tables() -> bool:
     if st.session_state.get("_lateness_fund_tables_ready"):
         return True
     try:
         execute_query(CREATE_LATENESS_FUND_RECORDS)
+        execute_query(f"ALTER TABLE {TABLE_LATENESS_FUND_RECORDS} ADD COLUMN IF NOT EXISTS member_user_id TEXT")
+        execute_query(f"DROP INDEX IF EXISTS idx_lateness_fund_records_member_date")
+        execute_query(f"ALTER TABLE {TABLE_LATENESS_FUND_RECORDS} DROP COLUMN IF EXISTS member_name")
+        execute_query(f"ALTER TABLE {TABLE_LATENESS_FUND_RECORDS} ALTER COLUMN member_user_id SET NOT NULL")
+        execute_query(
+            f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'fk_lateness_fund_record_member'
+                ) THEN
+                    ALTER TABLE {TABLE_LATENESS_FUND_RECORDS}
+                    ADD CONSTRAINT fk_lateness_fund_record_member
+                    FOREIGN KEY (member_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+                    ON DELETE SET NULL;
+                END IF;
+            END $$;
+            """
+        )
         execute_query(CREATE_LATENESS_FUND_EXPENSES)
         execute_query(CREATE_LATENESS_FUND_PERIODS)
         execute_query(
-            f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_date "
-            f"ON {TABLE_LATENESS_FUND_RECORDS}(member_name, late_date)"
+            f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date "
+            f"ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date)"
         )
         execute_query(
             f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date "
@@ -112,20 +138,9 @@ def get_member_options() -> list[str]:
         ORDER BY user_id
         """
     )
-    record_df = query_params(
-        f"""
-        SELECT DISTINCT member_name
-        FROM {TABLE_LATENESS_FUND_RECORDS}
-        WHERE member_name IS NOT NULL AND member_name != ''
-        ORDER BY member_name
-        """
-    )
-    names = []
-    if not account_df.empty:
-        names.extend(str(user_id).strip() for user_id in account_df["user_id"].tolist())
-    if not record_df.empty:
-        names.extend(str(name).strip() for name in record_df["member_name"].tolist())
-    return sorted({name for name in names if name})
+    if account_df.empty:
+        return []
+    return [str(user_id).strip() for user_id in account_df["user_id"].tolist() if str(user_id).strip()]
 
 
 def get_late_records():
@@ -142,7 +157,7 @@ def get_late_records():
             SELECT
                 id,
                 late_date,
-                member_name,
+                member_user_id,
                 late_minutes,
                 COALESCE(paid_amount, 0) AS paid_amount,
                 note,
@@ -151,7 +166,7 @@ def get_late_records():
                 updated_at,
                 {fiscal_expr}::int AS fiscal_start_year,
                 ROW_NUMBER() OVER (
-                    PARTITION BY member_name, {fiscal_expr}
+                    PARTITION BY member_user_id, {fiscal_expr}
                     ORDER BY late_date, id
                 ) AS late_no
             FROM {TABLE_LATENESS_FUND_RECORDS}
@@ -203,7 +218,7 @@ def build_member_summary(year_records: pd.DataFrame) -> pd.DataFrame:
     if year_records.empty:
         return pd.DataFrame()
     grouped = (
-        year_records.groupby("member_name")
+        year_records.groupby("member_user_id")
         .agg(
             late_count=("id", "count"),
             total_late_minutes=("late_minutes", "sum"),
@@ -213,10 +228,10 @@ def build_member_summary(year_records: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     grouped["balance"] = grouped["paid_amount"] - grouped["penalty_amount"]
-    grouped = grouped.sort_values(["total_late_minutes", "member_name"], ascending=[False, True])
+    grouped = grouped.sort_values(["total_late_minutes", "member_user_id"], ascending=[False, True])
     grouped["late_rank"] = grouped["total_late_minutes"].rank(method="dense", ascending=False).astype(int)
     return grouped[
-        ["late_rank", "member_name", "late_count", "total_late_minutes", "penalty_amount", "paid_amount", "balance"]
+        ["late_rank", "member_user_id", "late_count", "total_late_minutes", "penalty_amount", "paid_amount", "balance"]
     ]
 
 
@@ -226,14 +241,14 @@ def prepare_records_display(df):
     display_df = df.copy()
     if "fiscal_start_year" in display_df.columns:
         display_df = display_df.drop(columns=["fiscal_start_year"])
-    display_df["late_date"] = pd.to_datetime(display_df["late_date"]).dt.strftime("%Y-%m-%d")
+    display_df["late_date"] = pd.to_datetime(display_df["late_date"]).dt.strftime("%d/%m/%Y")
     display_df["penalty_amount"] = display_df["penalty_amount"].map(_format_hkd)
     display_df["paid_amount"] = display_df["paid_amount"].map(_format_hkd)
     display_df["record_balance"] = display_df["record_balance"].map(_format_hkd)
     return display_df.rename(columns={
         "id": "ID",
         "late_date": "日期",
-        "member_name": "成員",
+        "member_user_id": "帳戶",
         "late_minutes": "遲到分鐘",
         "late_no": "本年度第幾次",
         "penalty_amount": "應繳罰款",
@@ -255,7 +270,7 @@ def prepare_summary_display(df):
     display_df["balance"] = display_df["balance"].map(_format_hkd)
     return display_df.rename(columns={
         "late_rank": "排名",
-        "member_name": "成員",
+        "member_user_id": "帳戶",
         "late_count": "遲到次數",
         "total_late_minutes": "累計遲到分鐘",
         "penalty_amount": "應繳罰款",
@@ -268,7 +283,7 @@ def prepare_expenses_display(df):
     if df.empty:
         return df
     display_df = df.copy()
-    display_df["expense_date"] = pd.to_datetime(display_df["expense_date"]).dt.strftime("%Y-%m-%d")
+    display_df["expense_date"] = pd.to_datetime(display_df["expense_date"]).dt.strftime("%d/%m/%Y")
     display_df["amount_hkd"] = display_df["amount_hkd"].map(_format_hkd)
     return display_df.rename(columns={
         "id": "ID",
@@ -345,7 +360,7 @@ year_expense_total = _as_float(year_expenses["amount_hkd"].sum()) if not year_ex
 year_outstanding = year_penalties - year_received
 closing_balance = opening_balance + year_received - year_expense_total
 
-st.caption(f"目前年度：{selected_label}（{year_start:%Y-%m-%d} 至 {year_end:%Y-%m-%d}）")
+st.caption(f"目前年度：{selected_label}（{year_start:%d/%m/%Y} 至 {year_end:%d/%m/%Y}）")
 metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
 metric_col1.metric("Bal b/d", _format_hkd(opening_balance))
 metric_col2.metric("本年度已收罰款", _format_hkd(year_received))
@@ -405,16 +420,16 @@ with overview_tab:
     else:
         st.dataframe(prepare_summary_display(summary_df), use_container_width=True, hide_index=True)
 
-        member_names = summary_df["member_name"].tolist()
-        selected_member = st.selectbox("搜尋成員", member_names)
-        member_row = summary_df[summary_df["member_name"] == selected_member].iloc[0]
+        member_ids = summary_df["member_user_id"].tolist()
+        selected_member = st.selectbox("搜尋帳戶", member_ids)
+        member_row = summary_df[summary_df["member_user_id"] == selected_member].iloc[0]
         member_col1, member_col2, member_col3, member_col4 = st.columns(4)
         member_col1.metric("累計遲到分鐘", int(member_row["total_late_minutes"] or 0))
         member_col2.metric("遲到次數", int(member_row["late_count"] or 0))
         member_col3.metric("應繳罰款", _format_hkd(member_row["penalty_amount"]))
         member_col4.metric("餘額", _format_hkd(member_row["balance"]))
 
-        member_records = year_records[year_records["member_name"] == selected_member]
+        member_records = year_records[year_records["member_user_id"] == selected_member]
         st.dataframe(
             prepare_records_display(member_records),
             use_container_width=True,
@@ -434,30 +449,27 @@ with overview_tab:
 with input_tab:
     st.markdown("#### 新增遲到紀錄")
     member_options = get_member_options()
-    member_choice_options = member_options + ["其他"] if "其他" not in member_options else member_options
     late_col1, late_col2 = st.columns(2)
     with late_col1:
         late_date = st.date_input("日期", value=_today_hk(), key="lateness_late_date")
-        if member_choice_options:
-            member_choice = st.selectbox("成員", member_choice_options, key="lateness_member_choice")
+        if member_options:
+            member_user_id = st.selectbox("帳戶", member_options, key="lateness_member_user_id")
         else:
-            member_choice = "其他"
-        custom_member = ""
-        if member_choice == "其他":
-            custom_member = st.text_input("成員名稱", key="lateness_custom_member")
+            member_user_id = ""
+            st.warning("暫時未有可選帳戶，請先建立內部委員會帳戶。")
     with late_col2:
         late_minutes = st.number_input("遲到分鐘", min_value=1, value=1, step=1, key="lateness_late_minutes")
         paid_amount = st.number_input("已繳金額（HKD）", min_value=0.0, value=0.0, step=1.0, format="%.2f", key="lateness_paid_amount")
         late_note = st.text_input("備註（如有）", key="lateness_note")
 
-    member_name = custom_member.strip() if member_choice == "其他" else str(member_choice).strip()
+    member_user_id = str(member_user_id).strip()
 
     # 預覽：計算該成員於此紀錄所屬年度的第幾次遲到。
     entry_date = late_date if isinstance(late_date, datetime.date) else _today_hk()
     entry_start, entry_end = _fy_range(_fiscal_start_year(entry_date))
-    if member_name and not records_df.empty:
+    if member_user_id and not records_df.empty:
         prior_dates = records_df[
-            (records_df["member_name"] == member_name)
+            (records_df["member_user_id"] == member_user_id)
             & (records_df["late_date_d"] >= entry_start)
             & (records_df["late_date_d"] <= entry_end)
         ]
@@ -467,26 +479,26 @@ with input_tab:
     next_late_no = previous_late_count + 1
     preview_penalty = next_late_no * int(late_minutes or 0)
     st.caption(
-        f"按現有紀錄計算，今次是 {member_name or '該成員'} 於 {_fy_label(_fiscal_start_year(entry_date))} 年度第 "
+        f"按現有紀錄計算，今次是 {member_user_id or '該帳戶'} 於 {_fy_label(_fiscal_start_year(entry_date))} 年度第 "
         f"{next_late_no} 次遲到，應繳 {_format_hkd(preview_penalty)}。"
     )
 
-    if st.button("新增遲到紀錄", type="primary", use_container_width=True):
-        if not member_name:
-            st.warning("請輸入成員名稱。")
+    if st.button("新增遲到紀錄", type="primary", use_container_width=True, disabled=not member_options):
+        if not member_user_id:
+            st.warning("請選擇帳戶。")
         else:
             execute_query(
                 f"""
                 INSERT INTO {TABLE_LATENESS_FUND_RECORDS} (
-                    late_date, member_name, late_minutes, paid_amount, note, created_by, created_at
+                    late_date, member_user_id, late_minutes, paid_amount, note, created_by, created_at
                 )
                 VALUES (
-                    :late_date, :member_name, :late_minutes, :paid_amount, :note, :created_by, :created_at
+                    :late_date, :member_user_id, :late_minutes, :paid_amount, :note, :created_by, :created_at
                 )
                 """,
                 {
                     "late_date": late_date,
-                    "member_name": member_name,
+                    "member_user_id": member_user_id,
                     "late_minutes": int(late_minutes),
                     "paid_amount": float(paid_amount),
                     "note": late_note.strip(),
@@ -546,7 +558,7 @@ with history_tab:
 
         st.markdown("#### 更新已繳金額")
         record_options = {
-            int(row["id"]): f"#{int(row['id'])}｜{row['member_name']}｜{_to_date(row['late_date'])}｜第 {int(row['late_no'])} 次｜應繳 {_format_hkd(row['penalty_amount'])}"
+            int(row["id"]): f"#{int(row['id'])}｜{row['member_user_id']}｜{_format_date(row['late_date'])}｜第 {int(row['late_no'])} 次｜應繳 {_format_hkd(row['penalty_amount'])}"
             for _, row in year_records.iterrows()
         }
         selected_record_id = st.selectbox(
