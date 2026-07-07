@@ -28,7 +28,30 @@ def render_pwa_install_listener():
             if (!win.document.getElementById("skh-mobile-input-zoom-fix")) {
                 const style = win.document.createElement("style");
                 style.id = "skh-mobile-input-zoom-fix";
-                style.textContent = "input, textarea, select { font-size: 16px !important; }";
+                style.textContent = `
+                    input, textarea, select { font-size: 16px !important; }
+
+                    @media (max-width: 640px) {
+                        [data-testid="stExpandSidebarButton"] {
+                            position: fixed !important;
+                            top: max(1.25rem, calc(env(safe-area-inset-top) + 0.75rem)) !important;
+                            left: 0.75rem !important;
+                            z-index: 999999 !important;
+                        }
+
+                        [data-testid="collapsedControl"],
+                        [data-testid="stExpandSidebarButton"],
+                        button[aria-label="Open sidebar"] {
+                            width: 3rem !important;
+                            height: 3rem !important;
+                            min-width: 3rem !important;
+                            min-height: 3rem !important;
+                            padding: 0.65rem !important;
+                            align-items: center !important;
+                            justify-content: center !important;
+                        }
+                    }
+                `;
                 win.document.head.appendChild(style);
             }
 
@@ -149,7 +172,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.6.6")
+    st.caption("🛠️ 系統版本：3.6.7")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()
