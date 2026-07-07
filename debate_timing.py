@@ -1,4 +1,4 @@
-DEBATE_FORMATS = ["校園隨想", "聯中", "星島"]
+DEBATE_FORMATS = ["校園隨想", "聯中", "星島", "基本法盃"]
 
 
 def _bell(t, rings, label):
@@ -132,6 +132,29 @@ def get_debate_timer_config(debate_format, free_debate_minutes=None, closing_pre
             "floor_prep": 60,
             "floor_answer": 60,
         }
+    elif debate_format == "基本法盃":
+        timer_stages = [
+            ("main", "主結辯"),
+            ("deputy", "一二副"),
+            ("closing_prep", "結辯準備"),
+        ]
+        bell_schedules = {
+            "main": [
+                _bell(0, 1, "開始 — 1 叮"),
+                _bell(210, 1, "3:30 — 1 叮"),
+                _bell(240, 2, "4:00 — 2 叮"),
+                _bell(255, 3, "4:15 — 3 叮"),
+            ],
+            "deputy": [
+                _bell(0, 1, "開始 — 1 叮"),
+                _bell(150, 1, "2:30 — 1 叮"),
+                _bell(180, 2, "3:00 — 2 叮"),
+                _bell(195, 3, "3:15 — 3 叮"),
+            ],
+            "closing_prep": closing_prep_schedule,
+        }
+        warning_times = {"main": 210, "deputy": 150, "closing_prep": None}
+        overtime_times = {"main": 240, "deputy": 180, "closing_prep": closing_prep_seconds}
     else:
         timer_stages = [
             ("main", "主結辯"),
@@ -171,8 +194,8 @@ def get_debate_timer_config(debate_format, free_debate_minutes=None, closing_pre
     }
 
 
-# 完整 Mock：每個賽制嘅有序流程。結辯準備時間按賽制固定（校園隨想2/聯中3/星島1 分）。
-_MOCK_CLOSING_PREP_MINUTES = {"校園隨想": 2.0, "聯中": 3.0, "星島": 1.0}
+# 完整 Mock：每個賽制嘅有序流程。結辯準備時間按賽制固定（校園隨想2/聯中3/星島1/基本法盃2 分）。
+_MOCK_CLOSING_PREP_MINUTES = {"校園隨想": 2.0, "聯中": 3.0, "星島": 1.0, "基本法盃": 2.0}
 
 
 def _mock_segment(seg_id, label, side, bells):
@@ -230,6 +253,15 @@ def get_full_mock_sequence(debate_format, free_debate_minutes=None):
             add(f"floor{r}_con_q", f"台下問答 第{r}次 · 反方問", "反方", "floor_question")
             add(f"floor{r}_pro_a", f"台下問答 第{r}次 · 正方答", "正方", "floor_answer")
         add("free", "自由辯論（每邊）", "雙方", "free")
+        add("closing_prep", "結辯準備", "準備", "closing_prep")
+        add("closing_con", "反方結辯", "反方", "main")
+        add("closing_pro", "正方結辯", "正方", "main")
+    elif debate_format == "基本法盃":
+        add("main_pro", "正方主辯", "正方", "main")
+        add("main_con", "反方主辯", "反方", "main")
+        for n, cn in ((1, "一"), (2, "二")):
+            add(f"dep{n}_pro", f"正方{cn}副", "正方", "deputy")
+            add(f"dep{n}_con", f"反方{cn}副", "反方", "deputy")
         add("closing_prep", "結辯準備", "準備", "closing_prep")
         add("closing_con", "反方結辯", "反方", "main")
         add("closing_pro", "正方結辯", "正方", "main")

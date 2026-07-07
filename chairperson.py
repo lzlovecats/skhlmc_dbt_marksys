@@ -17,7 +17,7 @@ st.header("主席主持易")
 render_page_guidance(
     [
         "選擇場次後，可使用開場白和結語模板，或使用計時器為各辯論環節計時。",
-        "計時器會在指定時間自動響鈴提示，自由辯論環節兩邊計時互斥。",
+        "計時器會在指定時間自動響鈴提示；如賽制設有自由辯論，兩邊計時互斥。",
         "結語需要評分資料，請確保評判已完成提交。",
     ],
 )
@@ -413,7 +413,7 @@ elif tab == "結尾完結易":
 
 elif tab == "叮叮易":
     debate_format = st.selectbox("賽制", options=DEBATE_FORMATS, key="cp_timer_format")
-    free_debate_minutes = 5.0
+    free_debate_minutes = None
     if debate_format == "聯中":
         free_debate_minutes = st.number_input(
             "自由辯論時間（每邊，分鐘）",
@@ -423,6 +423,8 @@ elif tab == "叮叮易":
             step=0.5,
             key="cp_lz_free_minutes",
         )
+    elif debate_format == "基本法盃":
+        st.caption("基本法盃：主辯及結辯 4 分鐘；一副及二副 3 分鐘；不設自由辯論。")
     closing_prep_minutes = st.number_input(
         "結辯準備時間（分鐘）",
         min_value=0.5,
