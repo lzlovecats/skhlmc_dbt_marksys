@@ -15,6 +15,12 @@ from schema import (
 )
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from prompts import (
+    VOTE_DISCUSSION_SYSTEM_PROMPT,
+    VOTE_TOPIC_REVIEW_SYSTEM_PROMPT,
+    build_vote_discussion_prompt,
+    build_vote_topic_review_prompt,
+)
 
 st.header("辯題徵集、投票及罷免")
 render_page_guidance(
@@ -636,36 +642,16 @@ def get_vote_ai_model():
 
 def ai_review_topic(topic, category, difficulty):
     difficulty_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
-    system_prompt = (
-        "你是香港中學辯論比賽的辯題審查員。請使用粵語書面語，"
-        "從表述清晰度、正反責任平衡、可辯性、資料可得性、討論價值、類別及難度合理性六方面評價。"
-        "回覆要精簡、可執行，最後給出「建議：通過／修改後通過／不建議加入」。"
-    )
-    user_text = f"""待審查辯題：{topic}
-類別：{category}
-難度：{difficulty_label}
-
-請審查此辯題是否適合加入投票區，並列出需要修改的地方。"""
-    return generate_general_ai_reply(system_prompt, user_text, get_vote_ai_model())
+    user_text = build_vote_topic_review_prompt(topic, category, difficulty_label)
+    return generate_general_ai_reply(VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, get_vote_ai_model())
 
 
 def ai_discussion_reply(motion_type, motion_key, comments):
     discussion_lines = []
     for _, c in comments.iterrows():
         discussion_lines.append(f"{c['user_id']}：{c['comment_text']}")
-    system_prompt = (
-        "你是辯題討論區的 AI 助手。請使用粵語書面語，保持中立，"
-        "集中分析議案本身，不要代替成員投票。"
-    )
-    motion_label = "辯題投票" if motion_type == "topic_vote" else "罷免動議"
-    user_text = f"""議案類型：{motion_label}
-議案：{motion_key}
-
-目前討論：
-{chr(10).join(discussion_lines) if discussion_lines else "暫時未有討論。"}
-
-請回應最近的 AI tag，指出主要爭議、可補充資料，以及正反雙方可考慮的角度。"""
-    return generate_general_ai_reply(system_prompt, user_text, "Gemini 3.5 Flash")
+    user_text = build_vote_discussion_prompt(motion_type, motion_key, discussion_lines)
+    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, "Gemini 3.5 Flash")
 
 
 def ensure_ai_comment_account():

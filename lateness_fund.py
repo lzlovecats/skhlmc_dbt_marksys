@@ -29,9 +29,8 @@ st.title("遲到罰款基金")
 
 render_page_guidance(
     [
-        "此頁只供內部委員會成員登入後使用。",
-        "新增遲到紀錄時，系統會按 Excel 原有公式自動計算罰款：該成員於本年度第 N 次遲到 × 遲到分鐘。",
-        "基金以年度（每年 9 月至翌年 8 月）劃分，設有上手結餘（b/d）及年結餘額（c/d），並可結轉至下一年度。",
+        "計算罰款公式：該成員於本年度第 N 次遲到 × 遲到分鐘。",
+        "基金以年度（每年 9 月至翌年 8 月）劃分，設有Bal b/d及Bal c/d。",
     ],
     title="遲到罰款基金使用指南",
 )
@@ -348,20 +347,20 @@ closing_balance = opening_balance + year_received - year_expense_total
 
 st.caption(f"目前年度：{selected_label}（{year_start:%Y-%m-%d} 至 {year_end:%Y-%m-%d}）")
 metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-metric_col1.metric("上手結餘 b/d", _format_hkd(opening_balance))
+metric_col1.metric("Bal b/d", _format_hkd(opening_balance))
 metric_col2.metric("本年度已收罰款", _format_hkd(year_received))
 metric_col3.metric("本年度支出", _format_hkd(year_expense_total))
-metric_col4.metric("年結餘額 c/d", _format_hkd(closing_balance))
+metric_col4.metric("Bal c/d", _format_hkd(closing_balance))
 
 metric2_col1, metric2_col2, metric2_col3 = st.columns(3)
 metric2_col1.metric("本年度應收罰款", _format_hkd(year_penalties))
 metric2_col2.metric("本年度未收罰款", _format_hkd(year_outstanding))
 metric2_col3.metric("本年度罰款次數", int(len(year_records)))
 
-with st.expander("年度結餘設定（b/d ／ c/d）", expanded=False):
-    st.caption("上手結餘（Bal b/d）為本年度開始時基金持有的現金；年結餘額（Bal c/d）＝上手結餘 ＋ 本年度已收罰款 － 本年度支出。")
+with st.expander("年度結餘設定", expanded=False):
+    st.caption("Bal b/d為本年度開始時基金持有的現金，Bal c/d ＝Bal b/d ＋ 本年度已收罰款 － 本年度支出。")
     bd_input = st.number_input(
-        f"{selected_label} 年度上手結餘（HKD）",
+        f"{selected_label} Bal b/d（HKD）",
         value=float(opening_balance),
         step=1.0,
         format="%.2f",
@@ -369,9 +368,9 @@ with st.expander("年度結餘設定（b/d ／ c/d）", expanded=False):
     )
     bd_col1, bd_col2 = st.columns(2)
     with bd_col1:
-        if st.button("儲存上手結餘", use_container_width=True):
+        if st.button("儲存Bal b/d", use_container_width=True):
             set_period_opening(selected_label, bd_input)
-            st.success(f"已更新 {selected_label} 年度上手結餘。")
+            st.success(f"已更新 {selected_label} 年度Bal/bld。")
             st.rerun()
     with bd_col2:
         prev_label = _fy_label(selected_year - 1)
@@ -393,7 +392,7 @@ with st.expander("年度結餘設定（b/d ／ c/d）", expanded=False):
             prev_expense_total = _as_float(prev_expenses["amount_hkd"].sum()) if not prev_expenses.empty else 0.0
             prev_closing = get_period_opening(prev_label) + prev_received - prev_expense_total
             set_period_opening(selected_label, prev_closing)
-            st.success(f"已將 {prev_label} 年結餘額 {_format_hkd(prev_closing)} 結轉為 {selected_label} 上手結餘。")
+            st.success(f"已將 {prev_label} 年結餘額 {_format_hkd(prev_closing)} 結轉為 {selected_label} Bal/bld。")
             st.rerun()
 
 overview_tab, input_tab, history_tab = st.tabs(["總覽", "新增紀錄", "紀錄管理"])
@@ -413,7 +412,7 @@ with overview_tab:
         member_col1.metric("累計遲到分鐘", int(member_row["total_late_minutes"] or 0))
         member_col2.metric("遲到次數", int(member_row["late_count"] or 0))
         member_col3.metric("應繳罰款", _format_hkd(member_row["penalty_amount"]))
-        member_col4.metric("結餘", _format_hkd(member_row["balance"]))
+        member_col4.metric("餘額", _format_hkd(member_row["balance"]))
 
         member_records = year_records[year_records["member_name"] == selected_member]
         st.dataframe(

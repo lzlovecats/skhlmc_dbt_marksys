@@ -28,6 +28,7 @@ TABLE_VIDEO_COMMENTS = "video_comments"
 TABLE_VIDEO_VOTES = "video_votes"
 TABLE_VIDEO_CHAPTERS = "video_chapters"
 TABLE_VIDEO_PROGRESS = "video_progress"
+TABLE_MATCH_PHOTOS = "match_photos"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
@@ -454,6 +455,29 @@ CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_PROGRESS} (
 );
 """
 
+# Table: MATCH_PHOTOS
+# Committee-uploaded highlight photos grouped by replay match/album.
+CREATE_MATCH_PHOTOS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_MATCH_PHOTOS} (
+    id              SERIAL      PRIMARY KEY,
+    match_video_id  INTEGER,
+    album_label     TEXT        NOT NULL,
+    photo_title     TEXT,
+    caption         TEXT,
+    file_name       TEXT,
+    mime_type       TEXT,
+    image_data      BYTEA       NOT NULL,
+    uploaded_by     TEXT,
+    created_at      TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_match_photos_video
+        FOREIGN KEY (match_video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_match_photos_user
+        FOREIGN KEY (uploaded_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
 # Table: MATCH_ROSTER_LINKS
 # Unguessable per-side links for teams to submit their own roster.
 CREATE_MATCH_ROSTER_LINKS = f"""
@@ -751,6 +775,8 @@ CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice
     ON {TABLE_VIDEO_VOTES}(video_id, vote_choice);
 CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
     ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_match_photos_album_created
+    ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
     ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
@@ -806,6 +832,7 @@ ALL_SCHEMAS = [
     CREATE_VIDEO_VOTES,               # → match_videos, accounts
     CREATE_VIDEO_CHAPTERS,            # → match_videos
     CREATE_VIDEO_PROGRESS,            # → match_videos, accounts
+    CREATE_MATCH_PHOTOS,              # → match_videos, accounts
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
