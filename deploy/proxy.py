@@ -529,6 +529,7 @@ def _resolve_projector_state(engine, display_key):
         "configured": True,
         "visible": bool(r.get("visible", True)),
         "display_key": display_key,
+        "match_id": match_id,
         "motion": (mm.get("topic_text") or ""),
         "pro_team": (mm.get("pro_team") or ""),
         "con_team": (mm.get("con_team") or ""),

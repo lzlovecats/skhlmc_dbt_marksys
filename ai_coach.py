@@ -1132,7 +1132,7 @@ if selected_tab == "fund":
     if not fund_settings["treasurers"]:
         st.warning("尚未設定AI基金管理員。請先到開發者設定指定AI基金管理員。")
     elif is_treasurer:
-        st.success("你係 AI基金管理員，可確認入數、記錄支出及更新AI基金設定。")
+        st.success("你是 AI基金管理員，可確認入數、記錄支出及更新AI基金設定。")
 
     fund_overview_tab, fund_deposit_tab, fund_usage_tab = st.tabs(
         ["總覽", "入數 / 交易", "AI 用量"]
