@@ -88,6 +88,7 @@ page_db_mgmt = st.Page("db_mgmt.py", title="資料庫管理控制台")
 page_draw_schedule = st.Page("draw_match_schedule.py", title="抽取賽程")
 page_score_sheet = st.Page("review.py", title="查閱比賽分紙")
 page_video_replay = st.Page("video_replay.py", title="比賽片段重溫", url_path="video-replay")
+page_match_photos = st.Page("match_photos.py", title="比賽圖片回顧", url_path="match-photos")
 page_video_admin = st.Page("video_admin.py", title="比賽片段管理")
 page_registration = st.Page("registration.py", title="比賽報名", url_path="registration")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫")
@@ -125,7 +126,7 @@ pg = st.navigation({
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_vote, page_ai_coach, page_lateness_fund, page_video_replay],
+    "內部委員會成員": [page_vote, page_ai_coach, page_lateness_fund, page_video_replay, page_match_photos],
     "開發者": [page_dev_settings],
 })
 
@@ -148,7 +149,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.6.4")
+    st.caption("🛠️ 系統版本：3.6.5")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

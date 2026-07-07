@@ -110,6 +110,18 @@ _SCHEMAS = {
         ("duration_seconds", "INTEGER",                       "影片長度秒數"),
         ("updated_at",       "TIMESTAMP",                     "更新時間"),
     ],
+    "match_photos — 比賽圖片回顧": [
+        ("id",             "SERIAL (PK)",                "自動編號"),
+        ("match_video_id", "INTEGER (FK→match_videos)",  "所屬比賽片段場次；其他相片可留空"),
+        ("album_label",    "TEXT",                       "圖片所屬場次或其他相片"),
+        ("photo_title",    "TEXT",                       "圖片標題"),
+        ("caption",        "TEXT",                       "圖片說明"),
+        ("file_name",      "TEXT",                       "原始檔名"),
+        ("mime_type",      "TEXT",                       "圖片格式"),
+        ("image_data",     "BYTEA",                      "圖片內容"),
+        ("uploaded_by",    "TEXT (FK→accounts)",         "上載者帳號"),
+        ("created_at",     "TIMESTAMP",                  "上載時間"),
+    ],
     "debaters — 辯員名單": [
         ("match_id",     "TEXT (PK, FK→matches)", "所屬場次"),
         ("side",         "TEXT (PK)",             "'pro'（正方）| 'con'（反方）"),

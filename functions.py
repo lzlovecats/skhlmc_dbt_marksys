@@ -27,6 +27,7 @@ from schema import (
     CREATE_VIDEO_VOTES,
     CREATE_VIDEO_CHAPTERS,
     CREATE_VIDEO_PROGRESS,
+    CREATE_MATCH_PHOTOS,
     CREATE_MATCH_ROSTER_LINKS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_DEBATERS,
@@ -39,6 +40,7 @@ from schema import (
     TABLE_VIDEO_VOTES,
     TABLE_VIDEO_CHAPTERS,
     TABLE_VIDEO_PROGRESS,
+    TABLE_MATCH_PHOTOS,
     TABLE_MATCH_ROSTER_LINKS,
     TABLE_NOTIFICATION_READS,
     TABLE_PUSH_SUBSCRIPTIONS,
@@ -318,6 +320,28 @@ def ensure_video_interaction_tables():
         return True
     except Exception as e:
         logger.warning("ensure_video_interaction_tables failed: %s", e)
+        return False
+
+
+def ensure_match_photos_table():
+    if st.session_state.get("_match_photos_table_ready"):
+        return True
+    if not ensure_match_videos_table():
+        return False
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_MATCH_PHOTOS))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created "
+                f"ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)"
+            ))
+            s.commit()
+        st.session_state["_match_photos_table_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_match_photos_table failed: %s", e)
         return False
 
 
