@@ -15,7 +15,7 @@ import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from starlette.websockets import WebSocketDisconnect
 
 from schema import (
@@ -177,6 +177,14 @@ def _get_db_engine():
         if not db_url:
             return None
         _db_engine = create_engine(db_url, pool_pre_ping=True)
+
+        @event.listens_for(_db_engine, "connect")
+        def _set_search_path(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("SET search_path TO public, extensions")
+            finally:
+                cursor.close()
     return _db_engine
 
 
