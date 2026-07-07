@@ -24,7 +24,7 @@ ADD_FIELD_DEFAULTS = {
     "add_display_order": 0,
     "add_is_visible": True,
 }
-CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "台下", "交互", "自由辯論", "反結", "正結"]
+CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "攻辯", "台下", "交互", "自由辯論", "反結", "正結"]
 
 
 def _is_youtube_url(url):

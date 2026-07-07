@@ -25,7 +25,8 @@ from schema import (
 )
 
 
-CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "台下", "交互", "自由辯論", "反結", "正結"]
+CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "攻辯", "台下", "交互", "自由辯論", "反結", "正結"]
+CHAPTER_ORDER = {chapter_label: chapter_index for chapter_index, chapter_label in enumerate(CHAPTER_LABELS)}
 VOTE_LABELS = {"pro": "正方勝出", "con": "反方勝出", "undecided": "難以判斷"}
 
 
@@ -456,6 +457,13 @@ with player_col:
         """,
         {"video_id": int(selected_video_id)},
     )
+    if not chapter_rows.empty:
+        chapter_rows = chapter_rows.copy()
+        chapter_rows["_chapter_order"] = chapter_rows["chapter_label"].map(CHAPTER_ORDER)
+        chapter_rows["_chapter_order"] = chapter_rows["_chapter_order"].fillna(
+            chapter_rows["display_order"] + len(CHAPTER_LABELS)
+        )
+        chapter_rows = chapter_rows.sort_values(["_chapter_order", "start_seconds"], kind="stable")
     if not chapter_rows.empty:
         st.caption("章節跳轉")
         with st.container(key="skh-chapter-grid"):

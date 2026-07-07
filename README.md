@@ -216,6 +216,10 @@ On Streamlit Community Cloud, `packages.txt` only installs CJK fonts and no long
 ```toml
 GEMINI_API_KEY = "your_gemini_api_key"
 OPENROUTER_API_KEY = "your_openrouter_api_key"
+AZURE_SPEECH_KEY = "your_azure_speech_key"
+AZURE_SPEECH_REGION = "eastasia"
+AZURE_TTS_VOICE = "zh-HK-HiuMaanNeural"
+AZURE_TTS_RATE = "0%"
 VAPID_PUBLIC_KEY = "your_vapid_public_key"
 VAPID_PRIVATE_KEY = "your_vapid_private_key"
 VAPID_SUBJECT = "https://skhlmc-dbt-marksys.onrender.com"
@@ -231,7 +235,7 @@ username = "your_user"
 password = "your_password"
 ```
 
-`GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
+`GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4；`AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` 用於 Free De / Mock 的 Azure TTS 廣東話播放，未設定時會 fallback 用 Gemini Live 原生聲音。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
 
 Gemini Live 自由辯論會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
 

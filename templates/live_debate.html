@@ -235,6 +235,20 @@ let finalFeedbackComplete = false;
 let bellBuffer = null;
 let bellLoading = null;
 let bellCtx = null;
+let azureTtsEnabled = true;
+let azureTtsSessionDisabled = false;
+let ttsTextBuffer = "";
+let ttsQueue = [];
+let ttsPlaying = false;
+let ttsPending = 0;
+let ttsDrainResolvers = [];
+let currentTtsAudio = null;
+let currentTtsUrl = "";
+let ttsFallbackActive = false;
+let nativeAudioParts = [];
+let ttsWarningShown = false;
+let ttsReceivedText = false;
+let ttsGeneration = 0;
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -578,6 +592,7 @@ function announceSegmentToAi(seg) {
         const segSecs = Number(seg.seconds || 0);
         const wordMin = Math.round((segSecs / 60) * 250);
         const wordMax = Math.round((segSecs / 60) * 300);
+        resetAiAudioForTurn(true);
         sendTextTurn(fillTemplate(LIVE_PROMPTS.segment_announce, {
             label: seg.label || "", side: seg.side || "", secs: segSecs,
             word_min: wordMin, word_max: wordMax
@@ -644,6 +659,7 @@ function buildTranscriptContext() {
 function switchToSession(sessionIdx, segIdx) {
     stopActiveRecording();
     clearWaitTimer();
+    resetAiAudioForTurn(true);
     isRecording = false;
     isWaiting = false;
     currentSessionIdx = sessionIdx;
@@ -753,6 +769,197 @@ function bytesToBase64(bytes) {
         binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
     return btoa(binary);
+}
+
+function authToken() {
+    try {
+        const parentToken = window.parent && window.parent.localStorage
+            ? window.parent.localStorage.getItem("committee_user")
+            : "";
+        if (parentToken) return parentToken;
+    } catch (e) {}
+    try { return window.localStorage.getItem("committee_user") || ""; }
+    catch (e) { return ""; }
+}
+
+function resetAiAudioForTurn(stopCurrent) {
+    ttsGeneration += 1;
+    ttsTextBuffer = "";
+    ttsQueue = [];
+    ttsPending = 0;
+    ttsPlaying = false;
+    ttsFallbackActive = false;
+    nativeAudioParts = [];
+    ttsReceivedText = false;
+    resolveTtsDrain();
+    if (stopCurrent && currentTtsAudio) {
+        try { currentTtsAudio.pause(); currentTtsAudio.src = ""; } catch (e) {}
+    }
+    if (currentTtsUrl) {
+        try { URL.revokeObjectURL(currentTtsUrl); } catch (e) {}
+    }
+    currentTtsAudio = null;
+    currentTtsUrl = "";
+    if (stopCurrent && outputCtx) playAt = outputCtx.currentTime;
+}
+
+function resolveTtsDrain() {
+    if (ttsQueue.length || ttsPending || ttsPlaying || currentTtsAudio) return;
+    const resolvers = ttsDrainResolvers.slice();
+    ttsDrainResolvers = [];
+    resolvers.forEach((resolve) => resolve());
+}
+
+function waitForTtsDrain() {
+    if (ttsFallbackActive || azureTtsSessionDisabled || !azureTtsEnabled) return Promise.resolve();
+    if (!ttsQueue.length && !ttsPending && !ttsPlaying && !currentTtsAudio) return Promise.resolve();
+    return new Promise((resolve) => ttsDrainResolvers.push(resolve));
+}
+
+function nextTtsBoundary(text) {
+    const marks = "。！？；\n";
+    for (let i = 0; i < text.length; i++) {
+        if (marks.indexOf(text[i]) >= 0) return i + 1;
+    }
+    return -1;
+}
+
+function queueAzureTtsText(text, force) {
+    if (!azureTtsEnabled || azureTtsSessionDisabled || ttsFallbackActive) return;
+    if (!text && !force) return;
+    if (text) {
+        ttsReceivedText = true;
+        ttsTextBuffer += text;
+    }
+    let boundary = nextTtsBoundary(ttsTextBuffer);
+    while (boundary > 0) {
+        const chunk = ttsTextBuffer.slice(0, boundary).trim();
+        ttsTextBuffer = ttsTextBuffer.slice(boundary);
+        if (chunk) enqueueTtsChunk(chunk);
+        boundary = nextTtsBoundary(ttsTextBuffer);
+    }
+    if (force && ttsTextBuffer.trim()) {
+        enqueueTtsChunk(ttsTextBuffer.trim());
+        ttsTextBuffer = "";
+    }
+}
+
+function enqueueTtsChunk(text) {
+    if (!text) return;
+    if (text.length > 1200) {
+        for (let i = 0; i < text.length; i += 1200) {
+            const part = text.slice(i, i + 1200).trim();
+            if (part) ttsQueue.push(part);
+        }
+        processTtsQueue();
+        return;
+    }
+    ttsQueue.push(text);
+    processTtsQueue();
+}
+
+function playNativeAudioParts() {
+    if (!nativeAudioParts.length) return;
+    const parts = nativeAudioParts.slice();
+    nativeAudioParts = [];
+    parts.forEach((part) => playPcm(part.data, part.mimeType));
+}
+
+function activateNativeTtsFallback(message) {
+    if (ttsFallbackActive) return;
+    ttsFallbackActive = true;
+    ttsQueue = [];
+    ttsPending = 0;
+    ttsTextBuffer = "";
+    if (currentTtsAudio) {
+        try { currentTtsAudio.pause(); currentTtsAudio.src = ""; } catch (e) {}
+    }
+    if (currentTtsUrl) {
+        try { URL.revokeObjectURL(currentTtsUrl); } catch (e) {}
+    }
+    currentTtsAudio = null;
+    currentTtsUrl = "";
+    if (!ttsWarningShown) {
+        ttsWarningShown = true;
+        setHint(message || "Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。");
+    }
+    playNativeAudioParts();
+    resolveTtsDrain();
+}
+
+async function processTtsQueue() {
+    if (ttsPlaying || ttsFallbackActive || azureTtsSessionDisabled || !azureTtsEnabled) return;
+    const text = ttsQueue.shift();
+    if (!text) {
+        resolveTtsDrain();
+        return;
+    }
+    const generation = ttsGeneration;
+    ttsPlaying = true;
+    ttsPending += 1;
+    try {
+        const token = authToken();
+        const headers = { "Content-Type": "application/json" };
+        if (token) headers.Authorization = "Bearer " + token;
+        const resp = await fetch("/api/tts/azure", {
+            method: "POST",
+            headers,
+            credentials: "same-origin",
+            cache: "no-store",
+            body: JSON.stringify({ text })
+        });
+        if (!resp.ok) {
+            if (resp.status === 503 || resp.status === 401) azureTtsSessionDisabled = true;
+            throw new Error("Azure TTS HTTP " + resp.status);
+        }
+        const blob = await resp.blob();
+        if (generation !== ttsGeneration) return;
+        await playTtsBlob(blob);
+    } catch (e) {
+        if (generation !== ttsGeneration) return;
+        console.warn("[Live] Azure TTS fallback:", e);
+        activateNativeTtsFallback("Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。");
+    } finally {
+        if (generation !== ttsGeneration) return;
+        ttsPending = Math.max(0, ttsPending - 1);
+        ttsPlaying = false;
+        if (!ttsFallbackActive && ttsQueue.length) {
+            processTtsQueue();
+        } else {
+            resolveTtsDrain();
+        }
+    }
+}
+
+function playTtsBlob(blob) {
+    return new Promise((resolve, reject) => {
+        if (!blob || !blob.size) {
+            reject(new Error("Empty TTS audio"));
+            return;
+        }
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentTtsAudio = audio;
+        currentTtsUrl = url;
+        audio.onended = () => {
+            URL.revokeObjectURL(url);
+            if (currentTtsAudio === audio) currentTtsAudio = null;
+            if (currentTtsUrl === url) currentTtsUrl = "";
+            resolve();
+        };
+        audio.onerror = () => {
+            URL.revokeObjectURL(url);
+            if (currentTtsAudio === audio) currentTtsAudio = null;
+            if (currentTtsUrl === url) currentTtsUrl = "";
+            reject(new Error("TTS audio playback failed"));
+        };
+        audio.play().catch((e) => {
+            URL.revokeObjectURL(url);
+            if (currentTtsAudio === audio) currentTtsAudio = null;
+            if (currentTtsUrl === url) currentTtsUrl = "";
+            reject(e);
+        });
+    });
 }
 
 function pcmBase64ToFloat32(base64) {
@@ -872,6 +1079,7 @@ async function prepareMicAfterSetup() {
                     setTalkEnabled(false);
                     setState("等待 AI", "AI 先發言，請聽完再回應。", "wait", true);
                     setSubstatus("AI 會先代表正方開局。");
+                    resetAiAudioForTurn(true);
                     sendTextTurn(LIVE_PROMPTS.ai_opening_reverse);
                     startWaitTimer();
                 } catch (e) {
@@ -961,12 +1169,17 @@ function openSessionWs() {
         if (sc.outputTranscription && sc.outputTranscription.text) {
             beginAiResponse();
             appendLineText(aiLine, sc.outputTranscription.text);
+            queueAzureTtsText(sc.outputTranscription.text, false);
         }
         if (sc.modelTurn && sc.modelTurn.parts) {
             beginAiResponse();
             sc.modelTurn.parts.forEach((part) => {
                 if (part.inlineData && part.inlineData.data) {
-                    playPcm(part.inlineData.data, part.inlineData.mimeType);
+                    if (azureTtsEnabled && !azureTtsSessionDisabled && !ttsFallbackActive) {
+                        nativeAudioParts.push({ data: part.inlineData.data, mimeType: part.inlineData.mimeType });
+                    } else {
+                        playPcm(part.inlineData.data, part.inlineData.mimeType);
+                    }
                 }
                 if (part.text) appendLineText(aiLine, part.text);
             });
@@ -979,6 +1192,10 @@ function openSessionWs() {
             setState("AI 回覆中", "AI 已生成回覆，正在播放。", "reply", true);
         }
         if (sc.turnComplete) {
+            queueAzureTtsText("", true);
+            if (azureTtsEnabled && !ttsReceivedText && nativeAudioParts.length) {
+                activateNativeTtsFallback("未收到可用嘅 AI 文字轉錄，今輪會改用 Gemini Live 原生聲音。");
+            }
             if (MOCK_MODE) recordTranscriptTurn();
             clearWaitTimer();
             showRetry(false);
@@ -1041,6 +1258,7 @@ function beginTurn() {
     }
     if (inputCtx && inputCtx.state === "suspended") inputCtx.resume();
     if (outputCtx && outputCtx.state === "suspended") outputCtx.resume();
+    resetAiAudioForTurn(true);
     ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
     isRecording = true;
     userLine = null;
@@ -1124,6 +1342,7 @@ function prepareFinalFeedback(reason) {
     setTalkEnabled(false);
     showFeedbackButton(true);
     stopActiveRecording();
+    resetAiAudioForTurn(true);
     isWaiting = false;
     isRecording = false;
     talkBtn.textContent = "等待評價";
@@ -1162,6 +1381,7 @@ function requestFinalFeedback() {
 
     try {
         stopActiveRecording();
+        resetAiAudioForTurn(true);
         sendTextTurn(buildFeedbackPrompt());
         startFinalFeedbackWaitTimer();
     } catch (e) {
@@ -1185,11 +1405,18 @@ function beginAiResponse() {
     setActiveAiLine(aiLine);
 }
 
-function finishTurnAfterPlayback() {
+async function waitForAiPlayback() {
+    await waitForTtsDrain();
     const delay = outputCtx && playAt > outputCtx.currentTime
         ? Math.ceil((playAt - outputCtx.currentTime) * 1000) + 200
         : 200;
-    setTimeout(() => {
+    return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+function finishTurnAfterPlayback() {
+    waitForAiPlayback().then(() => {
+        return new Promise((resolve) => setTimeout(resolve, 200));
+    }).then(() => {
         if (!micReady || !ws || ws.readyState !== WebSocket.OPEN) return;
         if (finalFeedbackRequested) {
             finalFeedbackComplete = true;
@@ -1216,7 +1443,7 @@ function finishTurnAfterPlayback() {
         setSubstatus("按下開始錄音，完成發言後再按下送出。");
         setTalkEnabled(true);
         resumeSpeechTimer();
-    }, delay);
+    });
 }
 
 function cleanupMedia(closeSocket) {
@@ -1226,6 +1453,7 @@ function cleanupMedia(closeSocket) {
     micReady = false;
     recordStartedAt = null;
     meterEl.style.width = "0%";
+    resetAiAudioForTurn(true);
     try { if (processor) processor.disconnect(); } catch (e) {}
     try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
     try { if (stream) stream.getTracks().forEach((track) => track.stop()); } catch (e) {}
@@ -1296,6 +1524,7 @@ try {
     retryBtn.addEventListener("click", () => {
         isWaiting = false;
         clearWaitTimer();
+        resetAiAudioForTurn(true);
         showRetry(false);
         addLine("系統", "上一輪未收到 AI 回覆，可以再次發言。", false);
         setState("準備好", "輪到你。", "ready", false);
