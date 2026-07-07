@@ -56,6 +56,9 @@ DEPOSE_REASONS = [
     "難度分類不當",
 ]
 
+AI_COMMENT_USER_ID = "Gemini"
+AI_DISCUSSION_MODEL = "Gemini 3.5 Flash"
+
 
 def parse_reason_map(raw_value):
     if isinstance(raw_value, dict):
@@ -407,7 +410,7 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                         execute_query(
                             f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
                             "VALUES (:type, :key, :uid, :text, :now)",
-                            {"type": motion_type, "key": motion_key, "uid": "Gemini 3.5 Flash", "text": ai_text, "now": ai_now},
+                            {"type": motion_type, "key": motion_key, "uid": AI_COMMENT_USER_ID, "text": ai_text, "now": ai_now},
                         )
                     else:
                         ai_failed = True
@@ -440,7 +443,7 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                 execute_query(
                     f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
                     "VALUES (:type, :key, :uid, :text, :now)",
-                    {"type": motion_type, "key": motion_key, "uid": "Gemini 3.5 Flash", "text": ai_text, "now": hk_now},
+                    {"type": motion_type, "key": motion_key, "uid": AI_COMMENT_USER_ID, "text": ai_text, "now": hk_now},
                 )
                 queue_toast("AI 已回覆討論", icon="☑️")
                 st.rerun()
@@ -887,7 +890,7 @@ def ai_discussion_reply(motion_type, motion_key, comments, question=None):
         motion_type, motion_key, discussion_lines,
         removal_reasons=removal_reasons, question=question, background=background,
     )
-    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, "Gemini 3.5 Flash")
+    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, AI_DISCUSSION_MODEL)
 
 
 def ensure_ai_comment_account():
@@ -896,9 +899,10 @@ def ensure_ai_comment_account():
     execute_query(
         f"""
         INSERT INTO {TABLE_ACCOUNTS} (user_id, password_hash, account_status, account_disabled)
-        VALUES ('Gemini 3.5 Flash', '', 'inactive', TRUE)
+        VALUES (:uid, '', 'inactive', TRUE)
         ON CONFLICT (user_id) DO UPDATE SET account_disabled = TRUE
-        """
+        """,
+        {"uid": AI_COMMENT_USER_ID},
     )
     st.session_state["_ai_comment_account_ready"] = True
 
