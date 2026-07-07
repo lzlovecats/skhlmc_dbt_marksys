@@ -70,6 +70,13 @@ CATEGORIES = [
     "香港社會政策", "青少年與教育", "哲理／價值觀"
 ]
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
+# Detailed difficulty rubric — single source of truth for both the proposal-form
+# captions and the AI prompts, so the AI judges difficulty by the same standard.
+DIFFICULTY_CRITERIA = {
+    1: "Lv1：概念日常、背景知識少，適合完全無經驗的新手",
+    2: "Lv2：需要一定議題認識或邏輯鋪陳，但不需要專業知識",
+    3: "Lv3：涉及專業政策、複雜概念界定、或需要大量資料支撐",
+}
 
 
 def normalize_judge_name(name: str) -> str:

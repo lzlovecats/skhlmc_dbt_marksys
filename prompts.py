@@ -200,19 +200,28 @@ def build_vote_discussion_prompt(
     motion_key: str,
     discussion_lines: list[str],
     removal_reasons: list[str] | None = None,
+    question: str | None = None,
+    background: str | None = None,
 ) -> str:
     motion_label = "辯題投票" if motion_type == "topic_vote" else "罷免動議"
     discussion_text = chr(10).join(discussion_lines) if discussion_lines else "暫時未有討論。"
     reason_section = ""
     if removal_reasons:
         reason_section = "罷免理由：" + "；".join(removal_reasons) + "\n"
+    background_section = f"{background}\n" if background else ""
+    if question:
+        question_section = f"委員 @Gemini 嘅提問：{question}\n"
+        closing = "請優先、具體咁回答上面委員嘅提問，並結合議案背景同討論內容作出分析；如有需要再補充正反角度。"
+    else:
+        question_section = ""
+        closing = "請回應最近的 AI tag：先回應委員提出嘅擔憂或觀點，再指出主要爭議、可補充資料，以及正反雙方可考慮的角度。"
     return f"""議案類型：{motion_label}
 議案：{motion_key}
-{reason_section}
+{background_section}{reason_section}{question_section}
 目前討論：
 {discussion_text}
 
-請回應最近的 AI tag：先回應委員提出嘅擔憂或觀點，再指出主要爭議、可補充資料，以及正反雙方可考慮的角度。"""
+{closing}"""
 
 
 VOTE_BANK_ANALYSIS_SYSTEM_PROMPT = """你是香港中學辯論校隊嘅辯題庫顧問。請使用粵語書面語，根據提供嘅辯題庫現況（類別／難度分佈、題目清單、歷史投票數據），分析辯題庫嘅健康狀況。
