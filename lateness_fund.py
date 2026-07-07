@@ -577,6 +577,15 @@ with input_tab:
                 },
             )
             st.success("已新增遲到紀錄。")
+            # 清除輸入欄位，避免不小心重複提交同一筆紀錄。
+            for _field_key in (
+                "lateness_late_date",
+                "lateness_member_user_id",
+                "lateness_late_minutes",
+                "lateness_paid_amount",
+                "lateness_note",
+            ):
+                st.session_state.pop(_field_key, None)
             st.rerun()
 
     st.divider()
@@ -662,6 +671,32 @@ with history_tab:
             st.success("已更新已繳金額。" if updated else "找不到要更新的紀錄。")
             st.rerun()
 
+        st.markdown("#### 刪除遲到紀錄")
+        st.caption("如錯誤新增遲到紀錄，可在此永久刪除。此操作無法復原。")
+        delete_record_id = st.selectbox(
+            "選擇要刪除的紀錄",
+            list(record_options.keys()),
+            format_func=lambda record_id: record_options.get(record_id, str(record_id)),
+            key="lateness_delete_record_select",
+        )
+        confirm_delete_record = st.checkbox(
+            "我確認要刪除以上遲到紀錄",
+            key="lateness_delete_record_confirm",
+        )
+        if st.button(
+            "刪除遲到紀錄",
+            use_container_width=True,
+            disabled=not confirm_delete_record,
+            key="lateness_delete_record_btn",
+        ):
+            deleted = execute_query_count(
+                f"DELETE FROM {TABLE_LATENESS_FUND_RECORDS} WHERE id = :record_id",
+                {"record_id": int(delete_record_id)},
+            )
+            st.success("已刪除遲到紀錄。" if deleted else "找不到要刪除的紀錄。")
+            st.session_state.pop("lateness_delete_record_confirm", None)
+            st.rerun()
+
     st.divider()
     st.markdown(f"#### 支出紀錄（{selected_label} 年度）")
     if year_expenses.empty:
@@ -676,3 +711,33 @@ with history_tab:
             mime="text/csv",
             use_container_width=True,
         )
+
+        st.markdown("#### 刪除支出紀錄")
+        st.caption("如錯誤新增支出紀錄，可在此永久刪除。此操作無法復原。")
+        expense_options = {
+            int(row["id"]): f"#{int(row['id'])}｜{_format_date(row['expense_date'])}｜{_format_hkd(row['amount_hkd'])}｜{row['note'] or ''}"
+            for _, row in year_expenses.iterrows()
+        }
+        delete_expense_id = st.selectbox(
+            "選擇要刪除的支出紀錄",
+            list(expense_options.keys()),
+            format_func=lambda expense_id: expense_options.get(expense_id, str(expense_id)),
+            key="lateness_delete_expense_select",
+        )
+        confirm_delete_expense = st.checkbox(
+            "我確認要刪除以上支出紀錄",
+            key="lateness_delete_expense_confirm",
+        )
+        if st.button(
+            "刪除支出紀錄",
+            use_container_width=True,
+            disabled=not confirm_delete_expense,
+            key="lateness_delete_expense_btn",
+        ):
+            deleted = execute_query_count(
+                f"DELETE FROM {TABLE_LATENESS_FUND_EXPENSES} WHERE id = :expense_id",
+                {"expense_id": int(delete_expense_id)},
+            )
+            st.success("已刪除支出紀錄。" if deleted else "找不到要刪除的紀錄。")
+            st.session_state.pop("lateness_delete_expense_confirm", None)
+            st.rerun()

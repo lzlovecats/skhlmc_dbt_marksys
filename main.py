@@ -39,6 +39,12 @@ def render_pwa_install_listener():
                             z-index: 999999 !important;
                         }
 
+                        /* Reserve space so the fixed expand button never overlaps
+                           the page title/content on mobile. */
+                        .block-container {
+                            padding-top: calc(env(safe-area-inset-top) + 4.75rem) !important;
+                        }
+
                         [data-testid="collapsedControl"],
                         [data-testid="stExpandSidebarButton"],
                         button[aria-label="Open sidebar"] {
@@ -172,7 +178,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.6.7")
+    st.caption("🛠️ 系統版本：3.6.8")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()
