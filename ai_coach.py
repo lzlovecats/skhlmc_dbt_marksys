@@ -831,7 +831,7 @@ if selected_tab == "free_debate":
     )
     free_debate_format = st.selectbox(
         "賽制",
-        options=DEBATE_FORMATS,
+        options=[fmt for fmt in DEBATE_FORMATS if fmt != "基本法盃"],
         key="free_debate_live_format",
     )
     if free_debate_format == "聯中":

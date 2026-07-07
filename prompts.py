@@ -104,6 +104,11 @@ def build_strategy_prompt(debate_format: str) -> str:
         interaction = "交互答問（雙方輪流問答，考驗即時反應同邏輯；此賽制無自由辯論）"
         interaction_point = "**交互答問策略建議**：提問方向、準備發問／準備回答嘅節奏、防守同反擊要點"
         format_note = "\n- 注意：星島賽制以交互答問取代自由辯論；評分沿用同一標準（自由辯論部分）。"
+    elif debate_format == "基本法盃":
+        roster = "每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）"
+        interaction = "沒有自由辯論"
+        interaction_point = "**台上攻防策略建議**：各辯員如何預判對方論點、分配反駁責任、鋪排結辯收束"
+        format_note = "\n- 注意：基本法盃賽制無自由辯論；主辯及結辯 4 分鐘，一副及二副 3 分鐘。"
     else:  # 校園隨想
         roster = "每隊四位辯員：主辯（開場立論）、一副（補充論證）、二副（反駁對方）、結辯（總結陳詞）"
         interaction = "自由辯論（雙方交替發言）"
