@@ -29,6 +29,9 @@ TABLE_VIDEO_VOTES = "video_votes"
 TABLE_VIDEO_CHAPTERS = "video_chapters"
 TABLE_VIDEO_PROGRESS = "video_progress"
 TABLE_MATCH_PHOTOS = "match_photos"
+TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
+TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
+TABLE_TTS_SCRIPTS = "tts_scripts"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
@@ -478,6 +481,66 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_PHOTOS} (
 );
 """
 
+# Tables: TTS voice recording dataset
+CREATE_TTS_VOICE_CONSENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_CONSENTS} (
+    user_id          TEXT,
+    consent_version  TEXT,
+    consent_text     TEXT        NOT NULL,
+    consented_at     TIMESTAMP   DEFAULT NOW(),
+    withdrawn_at     TIMESTAMP,
+    PRIMARY KEY (user_id, consent_version),
+    CONSTRAINT fk_tts_voice_consents_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+CREATE_TTS_VOICE_RECORDINGS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
+    id                SERIAL      PRIMARY KEY,
+    speaker_user_id   TEXT,
+    script_id         TEXT        NOT NULL,
+    prompt_text       TEXT        NOT NULL,
+    audio_data        BYTEA       NOT NULL,
+    mime_type         TEXT,
+    file_ext          TEXT,
+    size_bytes        INTEGER,
+    duration_seconds  INTEGER,
+    ai_review_status  TEXT        CHECK (ai_review_status IN ('passed', 'failed', 'error')),
+    ai_review_json    TEXT,
+    ai_transcript     TEXT,
+    status            TEXT        DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn')),
+    review_note       TEXT,
+    reviewed_by       TEXT,
+    reviewed_at       TIMESTAMP,
+    created_at        TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_tts_voice_recordings_speaker
+        FOREIGN KEY (speaker_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_tts_voice_recordings_reviewer
+        FOREIGN KEY (reviewed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+# Table: TTS_SCRIPTS
+# Recording script bank, editable by TTS recording admins. Seeded from the
+# built-in default bank in tts_recording.py when empty.
+CREATE_TTS_SCRIPTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_TTS_SCRIPTS} (
+    script_id   TEXT        PRIMARY KEY,
+    category    TEXT        NOT NULL,
+    text        TEXT        NOT NULL,
+    is_active   BOOLEAN     DEFAULT TRUE,
+    sort_order  INTEGER     DEFAULT 0,
+    created_by  TEXT,
+    created_at  TIMESTAMP   DEFAULT NOW(),
+    updated_at  TIMESTAMP   DEFAULT NOW()
+);
+"""
+
 # Table: MATCH_ROSTER_LINKS
 # Unguessable per-side links for teams to submit their own roster.
 CREATE_MATCH_ROSTER_LINKS = f"""
@@ -780,6 +843,12 @@ CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
     ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_photos_album_created
     ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
+    ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
+    ON {TABLE_TTS_VOICE_RECORDINGS}(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
+    ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
     ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
@@ -836,6 +905,9 @@ ALL_SCHEMAS = [
     CREATE_VIDEO_CHAPTERS,            # → match_videos
     CREATE_VIDEO_PROGRESS,            # → match_videos, accounts
     CREATE_MATCH_PHOTOS,              # → match_videos, accounts
+    CREATE_TTS_VOICE_CONSENTS,        # → accounts
+    CREATE_TTS_VOICE_RECORDINGS,      # → accounts
+    CREATE_TTS_SCRIPTS,               # → (standalone)
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts

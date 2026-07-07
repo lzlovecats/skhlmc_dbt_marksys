@@ -373,3 +373,64 @@ LIVE_RUNTIME_PROMPTS = {
         "\n\n【剛才各環節發言摘要，供你引用，唔好當作新一輪攻防】\n"
     ),
 }
+
+
+# ─────────────────────────────────────────────────────────────
+# TTS 錄音收集：音質預檢 + 句庫缺口分析（tts_recording.py 用）
+# ─────────────────────────────────────────────────────────────
+TTS_AUDIO_REVIEW_SYSTEM_PROMPT = (
+    "你係廣東話 TTS 訓練資料音質檢查員。請只回傳 JSON，唔好加 markdown。"
+    "你要判斷錄音是否適合放入語音訓練 dataset。"
+)
+
+
+def build_tts_audio_review_prompt(prompt_text: str) -> str:
+    return f"""
+請檢查呢段錄音是否適合用作廣東話 TTS 訓練資料。
+
+指定稿句：
+{prompt_text}
+
+請回傳 JSON：
+{{
+  "passed": true/false,
+  "noise_level": "low" | "medium" | "high",
+  "clipping": true/false,
+  "volume": "too_low" | "ok" | "too_high",
+  "speech_clarity": "clear" | "unclear",
+  "transcript": "你聽到嘅內容",
+  "matches_prompt": true/false,
+  "reason": "簡短原因"
+}}
+
+Pass 條件：語音清楚、背景聲唔高、冇明顯爆咪、音量合適、內容大致對應指定稿句。
+"""
+
+
+TTS_COVERAGE_SYSTEM_PROMPT = (
+    "你係廣東話 TTS 訓練資料規劃專家。請只回傳 JSON，唔好加 markdown。"
+    "你要分析現有錄音句庫嘅覆蓋度，指出訓練一個高質廣東話讀音模型仲欠缺咩，"
+    "並建議新句子填補缺口。"
+)
+
+
+def build_tts_coverage_prompt(bank_summary: str) -> str:
+    return f"""
+以下係現有句庫，每行格式為 [類別] 稿件id｜已接受錄音數｜待審核數｜句子內容：
+
+{bank_summary}
+
+請以廣東話 TTS 訓練角度分析覆蓋度，並回傳 JSON：
+{{
+  "overall": "一兩句總結而家覆蓋情況",
+  "well_covered": ["已足夠嘅範疇"],
+  "gaps": [
+    {{"area": "缺口範疇（例如：某類聲調、罕見韻母、英文夾雜、長句韻律）", "why": "點解重要"}}
+  ],
+  "suggested_scripts": [
+    {{"category": "建議放入邊個類別", "text": "建議新增嘅廣東話句子（書面粵語，口語化）"}}
+  ]
+}}
+
+要求：suggested_scripts 提供 8 至 15 句，針對缺口，句子要自然、貼近辯論情境、覆蓋唔同聲調同讀音難點。
+"""

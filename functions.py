@@ -28,6 +28,9 @@ from schema import (
     CREATE_VIDEO_CHAPTERS,
     CREATE_VIDEO_PROGRESS,
     CREATE_MATCH_PHOTOS,
+    CREATE_TTS_VOICE_CONSENTS,
+    CREATE_TTS_VOICE_RECORDINGS,
+    CREATE_TTS_SCRIPTS,
     CREATE_MATCH_ROSTER_LINKS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_DEBATERS,
@@ -41,6 +44,9 @@ from schema import (
     TABLE_VIDEO_CHAPTERS,
     TABLE_VIDEO_PROGRESS,
     TABLE_MATCH_PHOTOS,
+    TABLE_TTS_VOICE_CONSENTS,
+    TABLE_TTS_VOICE_RECORDINGS,
+    TABLE_TTS_SCRIPTS,
     TABLE_MATCH_ROSTER_LINKS,
     TABLE_NOTIFICATION_READS,
     TABLE_PUSH_SUBSCRIPTIONS,
@@ -235,6 +241,36 @@ def ensure_match_photos_table():
         return True
     except Exception as e:
         logger.warning("ensure_match_photos_table failed: %s", e)
+        return False
+
+
+def ensure_tts_recording_tables():
+    if st.session_state.get("_tts_recording_tables_ready"):
+        return True
+
+    try:
+        conn = get_connection()
+        with conn.session as s:
+            s.execute(text(CREATE_TTS_VOICE_CONSENTS))
+            s.execute(text(CREATE_TTS_VOICE_RECORDINGS))
+            s.execute(text(CREATE_TTS_SCRIPTS))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created "
+                f"ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created "
+                f"ON {TABLE_TTS_VOICE_RECORDINGS}(status, created_at DESC)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category "
+                f"ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order)"
+            ))
+            s.commit()
+        st.session_state["_tts_recording_tables_ready"] = True
+        return True
+    except Exception as e:
+        logger.warning("ensure_tts_recording_tables failed: %s", e)
         return False
 
 
