@@ -5,6 +5,8 @@ import hmac
 import json
 import logging
 import os
+import secrets
+import time
 from pathlib import Path
 from urllib.parse import quote_plus
 from xml.sax.saxutils import escape as xml_escape
@@ -900,6 +902,475 @@ async def gemini_live_relay(websocket: WebSocket):
             pass
     except RuntimeError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Networked practice rooms (聯機打 Free De / Mock)
+#
+# Additive and self-contained, same discipline as the projector block above:
+# these routes are registered BEFORE the catch-all proxy routes (WS at the very
+# bottom, HTTP after) — Starlette matches in declaration order, so a route
+# declared after the catch-all would be swallowed and proxied to Streamlit.
+#
+# Rooms live in an in-memory dict in this single uvicorn process (the deployment
+# is a single Render instance). WebSocket objects cannot be shared across
+# processes, and audio fan-out is far too high-frequency for the DB-polling
+# pattern the projector uses — so in-memory is both correct and simplest here.
+# No Streamlit page, DB schema, or existing route is touched.
+#
+# Two modes:
+#   A  真人對真人 1v1 — two committee members debate by voice; the server fans
+#      out each active speaker's PCM frames to the peer. AI is only a 評判.
+#   B  多人對 AI 1-4 — a team shares ONE server-owned Gemini Live session and
+#      takes turns; the server forwards the active speaker's audio to Gemini and
+#      broadcasts Gemini's audio/transcript to everyone. (Gemini leg: phase 2.)
+# ---------------------------------------------------------------------------
+
+ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no O/0/I/1
+ROOM_CODE_LEN = 5
+MAX_ROOMS = int(os.getenv("MAX_ROOMS", "8"))
+ROOM_EMPTY_GRACE_MS = 60 * 1000       # keep an empty room this long for reconnects
+ROOM_MAX_AGE_MS = 90 * 60 * 1000      # hard TTL
+
+ROOMS = {}  # code -> Room
+
+
+def _now_ms():
+    return int(time.time() * 1000)
+
+
+def _build_room_segments(structure, debate_format, free_minutes):
+    """Server is authoritative over the segment/timer sequence. Reuses the same
+    pure helpers the Streamlit tabs use (already imported at top)."""
+    if structure == "mock":
+        return get_full_mock_sequence(debate_format, free_debate_minutes=free_minutes)
+    seconds = int(round(float(free_minutes or 2.5) * 60))
+    warn = max(0, seconds - 30)
+    bells = [
+        {"t": 0, "rings": 1, "label": "開始 — 1 叮"},
+        {"t": warn, "rings": 1, "label": "完結前 30 秒 — 1 叮"},
+        {"t": seconds, "rings": 2, "label": "時間到 — 2 叮"},
+    ]
+    return [{"id": "free", "label": "自由辯論", "side": "雙方", "seconds": seconds, "bells": bells}]
+
+
+class RoomMember:
+    def __init__(self, user_id, ws):
+        self.user_id = user_id
+        self.ws = ws
+        self.role = None          # "正方"/"反方" (A) or claimed side (B)
+        self.name = user_id
+        self.connected = True
+        self.joined_at = _now_ms()
+
+
+class Room:
+    def __init__(self, code, mode, created_by, debate_format, topic,
+                 structure, free_minutes, capacity):
+        self.code = code
+        self.mode = mode                 # "A" | "B"
+        self.created_by = created_by
+        self.created_at = _now_ms()
+        self.phase = "lobby"             # lobby | active | ended
+        self.debate_format = debate_format
+        self.topic = topic
+        self.structure = structure       # free | mock
+        self.free_minutes = free_minutes
+        self.capacity = capacity
+        self.segments = _build_room_segments(structure, debate_format, free_minutes)
+        self.seg_index = 0
+        self.seg_started_ms = None
+        self.members = {}                # user_id -> RoomMember
+        self.transcript = []             # {speaker, side, seg, text}
+        self.empty_since = None
+        self.creator_side = None         # mode A: side the host picked at create
+        # mode B / judge (Gemini leg wired in phase 2)
+        self.human_side = None           # 正方/反方 the humans take in mode B
+        self.gemini = None               # {tokens, sigs, prompt, model, session_labels}
+        self.gemini_ws = None
+        self.gemini_task = None
+        self.lock = asyncio.Lock()
+
+    def roster(self):
+        return [
+            {"user_id": m.user_id, "name": m.name, "role": m.role,
+             "connected": m.connected, "is_host": m.user_id == self.created_by}
+            for m in self.members.values()
+        ]
+
+    def current_segment(self):
+        if 0 <= self.seg_index < len(self.segments):
+            return self.segments[self.seg_index]
+        return None
+
+    def active_speaker(self):
+        """The single member allowed to speak this segment, or None when the
+        segment is open (雙方 free debate) or silent (準備)."""
+        seg = self.current_segment()
+        if not seg:
+            return None
+        side = seg.get("side")
+        if side in ("正方", "反方"):
+            for m in self.members.values():
+                if m.role == side:
+                    return m.user_id
+        return None
+
+    def state_msg(self):
+        seg = self.current_segment()
+        return {
+            "type": "state",
+            "phase": self.phase,
+            "seg_index": self.seg_index,
+            "seg_total": len(self.segments),
+            "seg_label": seg.get("label") if seg else "",
+            "side": seg.get("side") if seg else "",
+            "seconds": seg.get("seconds") if seg else 0,
+            "bells": seg.get("bells") if seg else [],
+            "active_speaker": self.active_speaker(),
+            "seg_started_ms": self.seg_started_ms,
+            "server_now_ms": _now_ms(),
+        }
+
+
+def _gc_rooms():
+    now = _now_ms()
+    for code in list(ROOMS.keys()):
+        room = ROOMS.get(code)
+        if room is None:
+            continue
+        if now - room.created_at > ROOM_MAX_AGE_MS:
+            ROOMS.pop(code, None)
+            continue
+        if any(m.connected for m in room.members.values()):
+            room.empty_since = None
+        else:
+            if room.empty_since is None:
+                room.empty_since = now
+            elif now - room.empty_since > ROOM_EMPTY_GRACE_MS:
+                ROOMS.pop(code, None)
+
+
+def _active_room_count():
+    return len([r for r in ROOMS.values() if r.phase != "ended"])
+
+
+async def _room_broadcast(room, msg, exclude=None):
+    text = json.dumps(msg, ensure_ascii=False)
+    for m in list(room.members.values()):
+        if not m.connected or (exclude and m.user_id == exclude):
+            continue
+        try:
+            await m.ws.send_text(text)
+        except Exception:
+            m.connected = False
+
+
+def _audio_fields(msg):
+    """Accept either the Gemini realtimeInput shape or a flat {data,mimeType}."""
+    if isinstance(msg.get("realtimeInput"), dict):
+        a = msg["realtimeInput"].get("audio") or {}
+        return a.get("data"), a.get("mimeType")
+    return msg.get("data"), msg.get("mimeType")
+
+
+# --- Gemini leg (mode B) — stubs; fully wired in phase 2 -------------------
+
+async def _room_start_gemini_if_needed(room):
+    return  # phase 2
+
+
+async def _room_forward_audio_to_gemini(room, member, data, mime):
+    return  # phase 2
+
+
+async def _room_close_gemini(room):
+    ws = room.gemini_ws
+    room.gemini_ws = None
+    if ws is not None:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+# --- message handling ------------------------------------------------------
+
+async def _room_handle_audio(room, member, msg):
+    if room.phase != "active":
+        return
+    seg = room.current_segment()
+    if not seg or seg.get("side") == "準備":
+        return
+    active = room.active_speaker()
+    if active is not None and member.user_id != active:
+        return  # defense-in-depth: drop non-active speaker's audio
+    data, mime = _audio_fields(msg)
+    if not data:
+        return
+    if room.mode == "B":
+        await _room_forward_audio_to_gemini(room, member, data, mime)
+    else:
+        await _room_broadcast(
+            room,
+            {"type": "peer_audio", "from": member.user_id, "data": data,
+             "mimeType": mime or "audio/pcm;rate=16000"},
+            exclude=member.user_id,
+        )
+
+
+async def _room_handle_turn(room, member, speaking):
+    await _room_broadcast(
+        room, {"type": "speaking", "user_id": member.user_id, "speaking": speaking},
+        exclude=member.user_id,
+    )
+    if room.mode == "B" and room.gemini_ws is not None:
+        try:
+            key = "activityStart" if speaking else "activityEnd"
+            await room.gemini_ws.send(json.dumps({"realtimeInput": {key: {}}}))
+        except Exception:
+            pass
+
+
+async def _room_handle_message(room, member, msg):
+    mtype = msg.get("type")
+    if mtype == "audio" or "realtimeInput" in msg:
+        await _room_handle_audio(room, member, msg)
+        return
+
+    is_host = member.user_id == room.created_by
+
+    if mtype == "claim_role":
+        side = msg.get("side")
+        if room.mode == "A" and side in ("正方", "反方"):
+            if all(m.role != side or m.user_id == member.user_id
+                   for m in room.members.values()):
+                member.role = side
+                await _room_broadcast(room, {"type": "roster", "roster": room.roster()})
+        return
+
+    if mtype == "start" and is_host:
+        room.phase = "active"
+        room.seg_index = 0
+        room.seg_started_ms = _now_ms()
+        await _room_start_gemini_if_needed(room)
+        await _room_broadcast(room, room.state_msg())
+        return
+
+    if mtype in ("next_segment", "set_segment") and is_host:
+        if mtype == "set_segment":
+            try:
+                idx = int(msg.get("index", room.seg_index))
+            except Exception:
+                idx = room.seg_index
+        else:
+            idx = room.seg_index + 1
+        idx = max(0, min(idx, len(room.segments) - 1))
+        room.seg_index = idx
+        room.seg_started_ms = _now_ms()
+        await _room_broadcast(room, room.state_msg())
+        return
+
+    if mtype == "end" and is_host:
+        room.phase = "ended"
+        await _room_close_gemini(room)
+        await _room_broadcast(room, {"type": "ended"})
+        return
+
+    if mtype in ("turn_begin", "turn_end"):
+        await _room_handle_turn(room, member, mtype == "turn_begin")
+        return
+
+    if mtype == "chat":
+        await _room_broadcast(room, {"type": "chat", "from": member.user_id,
+                                     "text": str(msg.get("text", ""))[:500]})
+        return
+
+
+@app.post("/api/room/create")
+async def room_create(request: Request):
+    user_id = _require_committee_user(request)
+    _gc_rooms()
+    if _active_room_count() >= MAX_ROOMS:
+        raise HTTPException(status_code=429, detail="太多練習房，請稍後再試")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    mode = str(payload.get("mode") or "A").upper()
+    if mode not in ("A", "B"):
+        mode = "A"
+    debate_format = str(payload.get("debate_format") or DEBATE_FORMATS[0])
+    if debate_format not in DEBATE_FORMATS:
+        debate_format = DEBATE_FORMATS[0]
+    structure = str(payload.get("structure") or ("mock" if mode == "B" else "free"))
+    if structure not in ("free", "mock"):
+        structure = "free"
+    topic = str(payload.get("topic") or "").strip()
+    try:
+        free_minutes = float(payload.get("free_minutes") or 2.5)
+    except Exception:
+        free_minutes = 2.5
+    if mode == "A":
+        capacity = 2
+    else:
+        try:
+            capacity = max(1, min(4, int(payload.get("capacity") or 4)))
+        except Exception:
+            capacity = 4
+
+    code = None
+    for _ in range(20):
+        candidate = "".join(secrets.choice(ROOM_CODE_ALPHABET) for _ in range(ROOM_CODE_LEN))
+        if candidate not in ROOMS:
+            code = candidate
+            break
+    if code is None:
+        raise HTTPException(status_code=503, detail="無法產生房號，請再試")
+
+    room = Room(code, mode, user_id, debate_format, topic, structure, free_minutes, capacity)
+    if mode == "A":
+        side = payload.get("side")
+        room.creator_side = side if side in ("正方", "反方") else "正方"
+    else:
+        hs = payload.get("human_side")
+        room.human_side = hs if hs in ("正方", "反方") else "正方"
+        gem = payload.get("gemini")
+        if isinstance(gem, dict):
+            room.gemini = {
+                "tokens": gem.get("tokens") or [],
+                "sigs": gem.get("sigs") or {},
+                "prompt": gem.get("prompt") or "",
+                "model": gem.get("model") or "",
+                "session_labels": gem.get("session_labels") or [],
+            }
+    ROOMS[code] = room
+    return {"ok": True, "code": code, "mode": mode}
+
+
+@app.get("/api/room/{code}")
+async def room_info(code: str, request: Request):
+    _require_committee_user(request)
+    room = ROOMS.get((code or "").upper())
+    if not room or room.phase == "ended":
+        raise HTTPException(status_code=404, detail="房間唔存在或已結束")
+    return {
+        "ok": True, "code": room.code, "mode": room.mode, "phase": room.phase,
+        "debate_format": room.debate_format, "topic": room.topic,
+        "structure": room.structure, "capacity": room.capacity,
+        "human_side": room.human_side, "roster": room.roster(),
+    }
+
+
+@app.post("/api/room/{code}/leave")
+async def room_leave(code: str, request: Request):
+    user_id = _require_committee_user(request)
+    room = ROOMS.get((code or "").upper())
+    if room and user_id in room.members:
+        m = room.members[user_id]
+        m.connected = False
+        try:
+            await m.ws.close()
+        except Exception:
+            pass
+        await _room_broadcast(room, {"type": "roster", "roster": room.roster()})
+    return {"ok": True}
+
+
+@app.get("/api/room/{code}/transcript")
+async def room_transcript(code: str, request: Request):
+    _require_committee_user(request)
+    room = ROOMS.get((code or "").upper())
+    if not room:
+        raise HTTPException(status_code=404, detail="房間唔存在")
+    return {"ok": True, "topic": room.topic, "debate_format": room.debate_format,
+            "transcript": room.transcript}
+
+
+@app.websocket("/room/{code}")
+async def room_ws(websocket: WebSocket, code: str):
+    # Auth before accept(): only committee-signed tokens (user_id:sig) get in,
+    # mirroring the Gemini relay's reject-before-handshake discipline.
+    token = websocket.query_params.get("u", "")
+    user_id = _verify_committee_token(token)
+    if not user_id:
+        await websocket.close(code=1008)
+        return
+
+    code = (code or "").upper()
+    room = ROOMS.get(code)
+    if not room or room.phase == "ended":
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+
+    existing = room.members.get(user_id)
+    if existing is None:
+        if len(room.members) >= room.capacity:
+            try:
+                await websocket.send_text(json.dumps(
+                    {"type": "error", "message": "房間已滿"}, ensure_ascii=False))
+            except Exception:
+                pass
+            await websocket.close(code=1013)
+            return
+        member = RoomMember(user_id, websocket)
+        if room.mode == "A":
+            if user_id == room.created_by and room.creator_side:
+                member.role = room.creator_side
+            else:
+                taken = {m.role for m in room.members.values()}
+                for s in ("正方", "反方"):
+                    if s not in taken:
+                        member.role = s
+                        break
+        else:
+            member.role = room.human_side
+        room.members[user_id] = member
+    else:
+        # reconnect: replace the stale socket, keep the role
+        existing.ws = websocket
+        existing.connected = True
+        member = existing
+    room.empty_since = None
+
+    await websocket.send_text(json.dumps({
+        "type": "roster", "you": user_id, "mode": room.mode,
+        "roster": room.roster(), "topic": room.topic,
+        "debate_format": room.debate_format, "structure": room.structure,
+        "is_host": user_id == room.created_by,
+    }, ensure_ascii=False))
+    await websocket.send_text(json.dumps(room.state_msg(), ensure_ascii=False))
+    await _room_broadcast(room, {"type": "roster", "roster": room.roster()},
+                          exclude=user_id)
+
+    try:
+        while True:
+            raw = await websocket.receive()
+            if raw.get("type") == "websocket.disconnect":
+                break
+            text = raw.get("text")
+            if text is None:
+                continue
+            try:
+                msg = json.loads(text)
+            except Exception:
+                continue
+            await _room_handle_message(room, member, msg)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.exception("room_ws error (%s): %s", code, e)
+    finally:
+        member.connected = False
+        await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
+        await _room_broadcast(room, {"type": "roster", "roster": room.roster()})
+        _gc_rooms()
 
 
 @app.websocket("/{path:path}")

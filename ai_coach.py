@@ -2,10 +2,12 @@ import streamlit as st
 import base64
 import json
 import math
+import os
 from pathlib import Path
+import httpx
 import streamlit.components.v1 as components
 from speech_recorder_component import render_speech_recorder
-from auth import require_committee, sign_relay_token
+from auth import require_committee, sign_relay_token, committee_bearer_token
 from functions import (
     load_matches_from_db,
     render_page_guidance,
@@ -192,6 +194,79 @@ def _render_live_debate_component(
     components.html(live_html, height=height, scrolling=True)
 
 
+def _room_api_base() -> str:
+    """聯機房間狀態住喺 proxy 進程（同 Streamlit 唔同進程），要經 HTTP 調用。
+    容器內 proxy 聽 $PORT；本地無 proxy 時可用 ROOM_API_BASE 覆寫。"""
+    override = os.getenv("ROOM_API_BASE")
+    if override:
+        return override.rstrip("/")
+    port = os.getenv("PORT", "8000")
+    return f"http://127.0.0.1:{port}"
+
+
+def _room_api_post(path: str, payload: dict, user_id: str):
+    """以委員 Bearer token 調用 proxy 嘅房間 API，回傳 (ok, data_or_message)。"""
+    try:
+        token = committee_bearer_token(user_id)
+    except Exception as e:
+        return False, f"未能簽發委員 token：{e}"
+    try:
+        resp = httpx.post(
+            f"{_room_api_base()}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    except Exception as e:
+        return False, f"未能連接房間服務：{e}"
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail")
+        except Exception:
+            detail = resp.text[:200]
+        return False, detail or f"房間服務錯誤（{resp.status_code}）"
+    try:
+        return True, resp.json()
+    except Exception:
+        return False, "房間服務回應無效"
+
+
+def _room_api_get(path: str, user_id: str):
+    try:
+        token = committee_bearer_token(user_id)
+        resp = httpx.get(
+            f"{_room_api_base()}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    except Exception as e:
+        return False, f"未能連接房間服務：{e}"
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail")
+        except Exception:
+            detail = resp.text[:200]
+        return False, detail or f"房間服務錯誤（{resp.status_code}）"
+    try:
+        return True, resp.json()
+    except Exception:
+        return False, "房間服務回應無效"
+
+
+def _render_room_debate_component(code: str, mode: str):
+    template_path = Path(__file__).parent / "templates" / "room_debate.html"
+    room_html = template_path.read_text(encoding="utf-8")
+    try:
+        room_ws_base = st.secrets.get("ROOM_WS_BASE", "") or ""
+    except Exception:
+        room_ws_base = ""
+    room_html = room_html.replace("__ROOM_CODE__", json.dumps(code))
+    room_html = room_html.replace("__ROOM_WS_BASE__", json.dumps(room_ws_base))
+    room_html = room_html.replace("__MODE__", json.dumps(mode))
+    room_html = room_html.replace("__BELL_SRC__", json.dumps(_load_bell_src()))
+    components.html(room_html, height=900, scrolling=True)
+
+
 def _render_speech_recorder(key: str, bell_schedule=None):
     return render_speech_recorder(
         key=key,
@@ -315,7 +390,7 @@ if (
         "建議新增資金。"
     )
 
-_tab_options = ["strategy", "review", "fact_check", "research", "free_debate", "full_mock", "fund"]
+_tab_options = ["strategy", "review", "fact_check", "research", "free_debate", "full_mock", "live_room", "fund"]
 
 
 def format_ai_coach_tab(tab_name):
@@ -331,6 +406,8 @@ def format_ai_coach_tab(tab_name):
         return "🎙️ 打Free De"
     if tab_name == "full_mock":
         return "🏟️ 打Mock"
+    if tab_name == "live_room":
+        return "🎧 聯機練習"
     return "💲AI基金"
 
 
@@ -1123,7 +1200,105 @@ if selected_tab == "full_mock":
             del st.session_state["full_mock_live_session"]
             st.rerun()
 
-# ─── Tab 7: AI基金 ─────────────────────────────────────────────────
+# ─── Tab 7: 聯機練習 ───────────────────────────────────────────────
+
+if selected_tab == "live_room":
+    st.subheader("🎧 聯機練習（Beta）")
+    st.caption(
+        "同其他委員即時聯機語音練習。模式 A：真人對真人（1 對 1），AI 做評判；"
+        "模式 B：多人（1–4）一齊對 AI 練習。用房號加入同一場。"
+    )
+
+    active_room = st.session_state.get("live_room")
+    if active_room:
+        mode_label = "多人對 AI" if active_room["mode"] == "B" else "真人對真人"
+        st.success(
+            f"你已在房間 **{active_room['code']}**（{mode_label}）。"
+            "將房號分享畀其他委員，喺「加入房間」輸入即可。"
+        )
+        if active_room["mode"] == "B":
+            st.info("模式 B 嘅 AI 對手功能建置中（Phase 2）；目前可測試多人連線、輪流同計時。")
+        _render_room_debate_component(active_room["code"], active_room["mode"])
+        if st.button("離開房間", key="live_room_leave"):
+            _room_api_post(f"/api/room/{active_room['code']}/leave", {}, user_id)
+            del st.session_state["live_room"]
+            st.rerun()
+    else:
+        action = st.radio(
+            "要做咩？", ["建立房間", "加入房間"], horizontal=True, key="live_room_action"
+        )
+
+        if action == "加入房間":
+            join_code = st.text_input("房號", key="live_room_join_code", max_chars=8)
+            if st.button("加入房間", type="primary", key="live_room_join_btn"):
+                code = (join_code or "").strip().upper()
+                if not code:
+                    st.warning("請輸入房號。")
+                else:
+                    ok, data = _room_api_get(f"/api/room/{code}", user_id)
+                    if not ok:
+                        st.error(data if isinstance(data, str) else "加入失敗")
+                    else:
+                        st.session_state["live_room"] = {
+                            "code": data["code"], "mode": data.get("mode", "A")
+                        }
+                        st.rerun()
+
+        else:  # 建立房間
+            create_mode = st.radio(
+                "模式",
+                ["真人對真人（1 對 1）", "多人對 AI（1–4 人）"],
+                key="live_room_create_mode",
+            )
+            mode = "A" if create_mode.startswith("真人") else "B"
+            room_format = st.selectbox(
+                "賽制",
+                options=[fmt for fmt in DEBATE_FORMATS if fmt != "基本法盃"],
+                key="live_room_format",
+            )
+            structure_label = st.radio(
+                "形式", ["自由辯論", "完整 Mock"], horizontal=True, key="live_room_structure"
+            )
+            structure = "free" if structure_label == "自由辯論" else "mock"
+            room_topic = st.text_input("辯題（可選）", key="live_room_topic")
+            room_minutes = 2.5
+            if structure == "free":
+                room_minutes = st.number_input(
+                    "自由辯論每邊時間（分鐘）",
+                    min_value=0.5, max_value=10.0, value=2.5, step=0.5,
+                    key="live_room_minutes",
+                )
+
+            payload = {
+                "mode": mode,
+                "debate_format": room_format,
+                "structure": structure,
+                "topic": (room_topic or "").strip(),
+                "free_minutes": float(room_minutes),
+            }
+            if mode == "A":
+                payload["side"] = st.radio(
+                    "你嘅立場", ["正方", "反方"], horizontal=True, key="live_room_side"
+                )
+            else:
+                payload["human_side"] = st.radio(
+                    "你隊立場（AI 打另一邊）",
+                    ["正方", "反方"], horizontal=True, key="live_room_hside",
+                )
+                payload["capacity"] = st.slider(
+                    "隊員人數上限", min_value=1, max_value=4, value=4, key="live_room_cap"
+                )
+                st.caption("模式 B 嘅 AI 對手會喺 Phase 2 接上；目前建立後可先測試多人連線。")
+
+            if st.button("建立房間", type="primary", key="live_room_create_btn"):
+                ok, data = _room_api_post("/api/room/create", payload, user_id)
+                if ok and isinstance(data, dict) and data.get("code"):
+                    st.session_state["live_room"] = {"code": data["code"], "mode": mode}
+                    st.rerun()
+                else:
+                    st.error(data if isinstance(data, str) else "建立房間失敗")
+
+# ─── Tab 8: AI基金 ─────────────────────────────────────────────────
 
 if selected_tab == "fund":
     st.subheader("AI基金")

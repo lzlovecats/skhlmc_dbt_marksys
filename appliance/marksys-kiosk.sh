@@ -50,12 +50,13 @@ launch() {
 
 pick_mode() {
     local args=(--list --radiolist
-        --title="SKHLMC 賽務專用機"
+        --title="聖呂中辯電子系統"
         --text="揀模式："
         --width=440 --height=280 --hide-header
         --column="" --column="k" --column="模式" --print-column=2
         TRUE  practice "🟢   日常練習（學生 / 教練）"
-        FALSE contest  "🔴   比賽日（主席）")
+        FALSE contest  "🔴   比賽日（主席）"
+        FALSE update   "🔄   更新系統（拉取最新版本）")
     if [ "$CHOOSER_TIMEOUT" -gt 0 ]; then
         timeout "$CHOOSER_TIMEOUT" zenity "${args[@]}" 2>/dev/null || echo ""
     else
@@ -63,10 +64,23 @@ pick_mode() {
     fi
 }
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+[ -n "$SCRIPT_DIR" ] || SCRIPT_DIR="/opt/skhlmc-dbt-marksys/appliance"
+
+run_update() {
+    ( zenity --info --title="更新系統" --width=360 \
+        --text="正在更新，請稍候…\n完成後介面會自動重新啟動。" --timeout=4 2>/dev/null || true ) &
+    "$SCRIPT_DIR/update.sh" >/tmp/marksys-update.log 2>&1
+    # Drop the X session; agetty autologin + ~/.bash_profile relaunch startx
+    # with the freshly pulled scripts.
+    pkill -x xinit 2>/dev/null || pkill -x Xorg 2>/dev/null || pkill -x X 2>/dev/null
+}
+
 while true; do
     mode="$(pick_mode)"
     case "$mode" in
         contest) launch "$CONTEST_URL" ;;
+        update)  run_update; exit 0 ;;
         *)       launch "$PRACTICE_URL" ;;   # practice / cancel / timeout
     esac
     # Chromium exited — loop back to the chooser.

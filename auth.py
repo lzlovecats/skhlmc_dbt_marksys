@@ -140,6 +140,14 @@ def sign_relay_token(token: str) -> str:
     return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
 
 
+def committee_bearer_token(user_id: str) -> str:
+    """公開介面：產生一個 ``user_id:sig`` token，畀 Streamlit 進程用 Bearer header
+    調用同一容器內 proxy 嘅內部 API（例如聯機房間 /api/room/*）。proxy 用
+    _verify_committee_token 以共用 cookie_secret 驗證，等同瀏覽器嘅 committee_user
+    cookie。"""
+    return _sign_cookie(user_id)
+
+
 def get_committee_cookie_from_context():
     try:
         cookies = getattr(st.context, "cookies", None)

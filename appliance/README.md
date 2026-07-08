@@ -134,7 +134,7 @@ sudo systemctl enable --now marksys-health.timer
 
 ```
 ┌─────────────────────────────┐
-│   SKHLMC 賽務專用機          │
+│   聖呂中辯電子系統          │
 │   揀模式：                   │
 │   🟢  日常練習（學生/教練）  │
 │   🔴  比賽日（主席）         │
