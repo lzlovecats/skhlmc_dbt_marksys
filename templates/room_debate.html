@@ -50,6 +50,8 @@
   .side-正方 { background:#132e1c; color:#3fb950; }
   .side-反方 { background:#2e1616; color:#f85149; }
   .side-雙方, .side-準備 { background:#22272e; color:#8b949e; }
+  .poschip { display:inline-block; padding:1px 7px; border-radius:6px;
+    font-size:11px; background:#1f2937; color:#c9d1d9; }
   ul.roster { list-style:none; margin:6px 0 0; padding:0; }
   ul.roster li { padding:6px 8px; border-radius:8px; background:#0d1117;
     margin-bottom:5px; display:flex; gap:8px; align-items:center; }
@@ -101,21 +103,15 @@
 
   <div class="card" id="networkTest">
     <div class="muted" style="margin-bottom:6px">開始前測試</div>
-    <div class="row">
-      <button id="permissionCheckBtn">檢查權限</button>
-      <button id="networkTestBtn">測試網絡穩定度</button>
-      <button id="localSoundBtn">本機測試聲</button>
-    </div>
-    <div class="test-result" id="networkTestResult">開始前請先檢查權限及網絡；手機可能需要按一次測試聲才會允許播放音訊。</div>
+    <div class="test-result" id="networkTestResult">主持按「開始」後，系統會自動檢查所有成員的麥克風、播放權限及連線狀態；全部通過後才會開始。</div>
   </div>
 
   <div class="card">
     <div class="muted">成員</div>
     <ul class="roster" id="roster"></ul>
     <div class="row" id="rolePick" style="margin-top:8px">
-      <span class="muted">選擇立場：</span>
-      <button class="pick" data-side="正方">正方</button>
-      <button class="pick" data-side="反方">反方</button>
+      <span class="muted" id="rolePickLabel">選擇立場：</span>
+      <span class="row" id="rolePickButtons"></span>
     </div>
   </div>
 
@@ -167,15 +163,20 @@
   const BELL_VOLUME = 0.9;
 
   // ── state ──
-  let ws = null, myUid = null, isHost = false, myRole = null;
+  let ws = null, myUid = null, isHost = false, myRole = null, myPosition = null;
+  let roomStructure = "", positionLabels = {}, requiredPositions = [];
   let phase = "lobby", segIndex = 0, segTotal = 0, segLabel = "", segSide = "";
   let segSeconds = 0, segBells = [], segStartedMs = null, activeSpeaker = null;
   let sideElapsedMs = { "正方": 0, "反方": 0 };
   let activeTurnUser = null, activeTurnSide = null, activeTurnStartedMs = null;
+  let expectedTurnSide = null;
   let serverOffset = 0;                  // serverNow = Date.now() + serverOffset
   let firedBells = new Set();
   let isRecording = false, micReady = false;
+  let aiSpeaking = false;
   let recognition = null, recogText = "";
+  let transcriptItems = [];
+  let precheckActive = false, activePrecheckId = null;
   let networkTestStartedAt = 0, networkTestTimer = 0;
   let stream = null, inputCtx = null, sourceNode = null, processor = null;
   let outputCtx = null, playAt = 0;
@@ -189,18 +190,34 @@
   }
   function setConn(txt) { $("connStatus").textContent = txt; }
   function appendTranscript(item) {
-    const el = $("transcript");
     if (!item || !item.text) return;
-    if (el.textContent.startsWith("支援語音轉文字")) el.textContent = "";
-    const speaker = (item.side || item.speaker || "成員") + (item.speaker ? "（" + item.speaker + "）" : "");
-    el.textContent += (el.textContent ? "\n" : "") + speaker + "：" + item.text;
+    transcriptItems.push(item);
+    renderTranscriptBySide();
+  }
+  function transcriptLine(item) {
+    const speaker = (item.side || "未標示") + (item.speaker ? "（" + item.speaker + "）" : "");
+    return speaker + "：" + item.text;
+  }
+  function renderTranscriptBySide() {
+    const el = $("transcript");
+    if (!transcriptItems.length) {
+      el.textContent = "支援語音轉文字的瀏覽器會自動記錄發言，方便 AI 評判。";
+      return;
+    }
+    const pro = transcriptItems.filter(item => item.side === "正方").map(transcriptLine);
+    const con = transcriptItems.filter(item => item.side === "反方").map(transcriptLine);
+    const other = transcriptItems.filter(item => item.side !== "正方" && item.side !== "反方").map(transcriptLine);
+    const sections = [
+      "正方：\n" + (pro.length ? pro.join("\n") : "（暫未記錄）"),
+      "反方：\n" + (con.length ? con.join("\n") : "（暫未記錄）")
+    ];
+    if (other.length) sections.push("其他：\n" + other.join("\n"));
+    el.textContent = sections.join("\n\n");
     el.scrollTop = el.scrollHeight;
   }
   function renderTranscript(list) {
-    const el = $("transcript");
-    if (!list || !list.length) return;
-    el.textContent = "";
-    list.forEach(appendTranscript);
+    transcriptItems = (list || []).filter(item => item && item.text);
+    renderTranscriptBySide();
   }
 
   // ── committee token from parent app (same as live_debate authToken) ──
@@ -299,20 +316,27 @@
   }
   async function checkPermissions() {
     const lines = [];
+    let ok = true;
     try {
       await playLocalTestTone();
       lines.push("音訊播放：正常");
     } catch (e) {
       lines.push("音訊播放：未能播放");
+      ok = false;
     }
     try {
       await startMic();
       lines.push("麥克風權限：已允許");
     } catch (e) {
       lines.push("麥克風權限：未允許（" + e.message + "）");
+      ok = false;
     }
-    lines.push("房間連線：" + ((ws && ws.readyState === WebSocket.OPEN) ? "已連線" : "未連線"));
-    setNetworkTest(lines.join("\n"));
+    const wsOk = !!(ws && ws.readyState === WebSocket.OPEN);
+    lines.push("房間連線：" + (wsOk ? "已連線" : "未連線"));
+    if (!wsOk) ok = false;
+    const message = lines.join("\n");
+    setNetworkTest(message);
+    return { ok, message };
   }
   async function runNetworkTest() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -466,7 +490,17 @@
   // ── UI derivation ──
   function canSpeak() {
     if (phase !== "active" || segSide === "準備") return false;
+    if (aiSpeaking) return false;
     if (activeTurnUser && activeTurnUser !== myUid) return false;
+    if (MODE === "B") {
+      // Mode B: the team shares one side; members speak only on their own-side
+      // segments or the free (雙方) segment. AI-side segments are AI-only.
+      if (segSide !== myRole && segSide !== "雙方") return false;
+      if (activeSpeaker != null) return activeSpeaker === myUid;
+      if (segSide === "雙方" && segSeconds && myRole && sideUsedSeconds(myRole) >= segSeconds) return false;
+      return true;
+    }
+    if (expectedTurnSide && myRole !== expectedTurnSide) return false;
     if (segSide === "雙方" && segSeconds && myRole && sideUsedSeconds(myRole) >= segSeconds) return false;
     if (activeSpeaker == null) return segSide === "雙方";   // free debate: both open
     return activeSpeaker === myUid;
@@ -477,36 +511,89 @@
     btn.disabled = !ok;
     if (!ok && isRecording) stopTalk();
     if (phase !== "active") { $("turnHint").textContent = ""; return; }
-    if (ok) $("turnHint").textContent = isRecording ? "錄音中 — 再按一下停止" : "輪到你 — 按一下開始，發言完畢後再按一下停止";
+    if (aiSpeaking) $("turnHint").textContent = "🤖 AI 發言中…";
+    else if (ok) $("turnHint").textContent = isRecording ? "錄音中 — 再按一下停止" : "輪到你 — 按一下開始，發言完畢後再按一下停止";
     else if (segSide === "準備") $("turnHint").textContent = "準備時間";
+    else if (MODE === "B" && segSide && segSide !== myRole && segSide !== "雙方") $("turnHint").textContent = "輪到 AI（" + segSide + "）發言";
+    else if (MODE === "B" && activeSpeaker && activeSpeaker !== myUid) $("turnHint").textContent = "輪到已分配辯位嘅隊員發言";
+    else if (expectedTurnSide) $("turnHint").textContent = "自由辯論由" + expectedTurnSide + "先發言";
     else if (segSide === "雙方" && segSeconds && myRole && sideUsedSeconds(myRole) >= segSeconds) $("turnHint").textContent = "你方時間已用完";
     else if (activeTurnUser && activeTurnUser !== myUid) $("turnHint").textContent = "等待對方發言完畢…";
-    else $("turnHint").textContent = "等待對方發言…";
+    else $("turnHint").textContent = "等待其他人發言…";
   }
   function updateHostButtons() {
     if (!isHost) return;
-    $("startBtn").disabled = phase !== "lobby";
+    $("startBtn").disabled = phase !== "lobby" || precheckActive;
+    $("startBtn").textContent = precheckActive ? "檢查中…" : "開始";
     $("prevBtn").disabled = phase !== "active" || segIndex <= 0;
     $("nextBtn").disabled = phase !== "active" || segTotal <= 1 || segIndex >= segTotal - 1;
     $("judgeBtn").disabled = phase === "lobby";
   }
+  function renderRolePick() {
+    const box = $("rolePick");
+    const buttons = $("rolePickButtons");
+    buttons.innerHTML = "";
+    const showSidePick = MODE === "A" && phase === "lobby";
+    const showPositionPick = MODE === "B" && roomStructure === "mock" && phase === "lobby";
+    box.classList.toggle("hidden", !(showSidePick || showPositionPick));
+    if (showSidePick) {
+      $("rolePickLabel").textContent = "選擇立場：";
+      ["正方", "反方"].forEach(side => {
+        const b = document.createElement("button");
+        b.className = "pick" + (side === myRole ? " active" : "");
+        b.textContent = side;
+        b.dataset.side = side;
+        b.addEventListener("click", () => {
+          if (ws && ws.readyState === WebSocket.OPEN)
+            ws.send(JSON.stringify({ type: "claim_role", side }));
+        });
+        buttons.appendChild(b);
+      });
+    } else if (showPositionPick) {
+      $("rolePickLabel").textContent = "選擇辯位：";
+      const positions = requiredPositions.length
+        ? requiredPositions.map(Number)
+        : Object.keys(positionLabels).map(Number).filter(Boolean).sort((a, b) => a - b);
+      positions.forEach(pos => {
+        const b = document.createElement("button");
+        b.className = "pick" + (pos === myPosition ? " active" : "");
+        b.textContent = positionLabels[pos] || ("第 " + pos + " 位");
+        b.dataset.position = pos;
+        b.addEventListener("click", () => {
+          if (ws && ws.readyState === WebSocket.OPEN)
+            ws.send(JSON.stringify({ type: "claim_position", position: pos }));
+        });
+        buttons.appendChild(b);
+      });
+    }
+  }
   function renderRoster(list) {
     const ul = $("roster"); ul.innerHTML = "";
+    let sawMe = false;
     (list || []).forEach(m => {
       const li = document.createElement("li");
       const nm = m.user_id === myUid ? (m.user_id + "（你）") : m.user_id;
       li.innerHTML = '<span class="dot' + (m.connected ? "" : " off") + '"></span>' +
         '<span class="grow">' + nm + '</span>' +
         (m.role ? '<span class="sidechip side-' + m.role + '">' + m.role + '</span>' : "") +
+        (m.position_label ? '<span class="poschip">' + m.position_label + '</span>' : "") +
         (m.is_host ? '<span class="badge">主持</span>' : "");
       ul.appendChild(li);
-      if (m.user_id === myUid && m.role) myRole = m.role;
+      if (m.user_id === myUid) {
+        sawMe = true;
+        if (m.role) myRole = m.role;
+        myPosition = m.position || null;
+      }
     });
-    document.querySelectorAll("#rolePick .pick").forEach(b =>
-      b.classList.toggle("active", b.dataset.side === myRole));
+    if (!sawMe) myPosition = null;
+    renderRolePick();
   }
   function applyState(s) {
     phase = s.phase; segIndex = s.seg_index; segTotal = s.seg_total;
+    if (phase === "active" || phase === "ended") {
+      precheckActive = false;
+      activePrecheckId = null;
+    }
     segLabel = s.seg_label || ""; segSide = s.side || "";
     segSeconds = s.seconds || 0; segBells = s.bells || [];
     activeSpeaker = s.active_speaker;
@@ -514,6 +601,7 @@
     activeTurnUser = s.active_turn_user || null;
     activeTurnSide = s.active_turn_side || null;
     activeTurnStartedMs = s.active_turn_started_ms || null;
+    expectedTurnSide = s.expected_turn_side || null;
     if (s.server_now_ms) serverOffset = s.server_now_ms - Date.now();
     if (s.seg_started_ms != null && s.seg_started_ms !== segStartedMs) firedBells = new Set();
     segStartedMs = s.seg_started_ms;
@@ -523,7 +611,7 @@
     $("segSub").textContent = (phase === "active" && segTotal > 1)
       ? ("第 " + (segIndex + 1) + " / " + segTotal + " 段") : "";
     if (phase !== "active") { $("timer").textContent = "00:00"; }
-    $("rolePick").classList.toggle("hidden", MODE !== "A" || phase !== "lobby");
+    renderRolePick();
     $("networkTest").classList.toggle("hidden", phase !== "lobby");
     updateSideTimers();
     updateHostButtons();
@@ -577,19 +665,36 @@
     refreshTalk();
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_begin" }));
   }
-  function stopTalk() {
+  function stopTalk(sendTurn = true, sendTranscript = true) {
     if (!isRecording) return;
     isRecording = false;
     $("meter").style.width = "0%";
     $("talkBtn").classList.remove("live");
     $("talkBtn").textContent = "按一下開始發言";
-    stopRecognitionAndSend();
+    if (sendTranscript) stopRecognitionAndSend();
+    else if (recognition) {
+      try { recognition.stop(); } catch (e) {}
+      recognition = null;
+      recogText = "";
+    }
     refreshTalk();
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_end" }));
+    if (sendTurn && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_end" }));
   }
   function toggleTalk() {
     if (isRecording) stopTalk();
     else startTalk();
+  }
+
+  // ── mode B: play the shared AI (Gemini Live) native audio, synced to all ──
+  function handleServerContent(sc) {
+    if (!sc) return;
+    if (sc.interrupted && outputCtx) playAt = outputCtx.currentTime;
+    const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
+    parts.forEach(part => {
+      if (part.inlineData && part.inlineData.data) {
+        playPcm(part.inlineData.data, part.inlineData.mimeType);
+      }
+    });
   }
 
   // ── websocket ──
@@ -614,6 +719,9 @@
     switch (msg.type) {
       case "roster":
         if (msg.you) myUid = msg.you;
+        if (msg.structure) roomStructure = msg.structure;
+        if (msg.position_labels) positionLabels = msg.position_labels;
+        if (msg.required_positions) requiredPositions = msg.required_positions;
         if (typeof msg.is_host === "boolean") {
           isHost = msg.is_host;
           $("hostControls").classList.toggle("hidden", !isHost);
@@ -625,6 +733,17 @@
         renderRoster(msg.roster);
         break;
       case "state": applyState(msg); break;
+      case "precheck_request":
+        runAutoPrecheck(msg.check_id);
+        break;
+      case "precheck_status":
+        renderPrecheckStatus(msg);
+        break;
+      case "precheck_failed":
+        precheckActive = false;
+        renderPrecheckStatus(msg, true);
+        updateHostButtons();
+        break;
       case "peer_audio": if (msg.from !== myUid) playPcm(msg.data, msg.mimeType); break;
       case "test_pong": {
         const sent = Number(msg.client_ts || networkTestStartedAt || 0);
@@ -647,9 +766,15 @@
           setNetworkTest(current + "\n" + (msg.from || "有成員") + " 已收到你的測試聲。");
         }
         break;
-      case "serverContent": break;   // mode B (phase 2) handles Gemini audio
+      case "serverContent": handleServerContent(msg.serverContent); break;  // mode B: AI audio
+      case "ai_ready": log("AI 對手已就緒。"); break;
       case "speaking":
-        log((msg.user_id === myUid ? "你" : (msg.user_id || "對方")) + (msg.speaking ? " 開始發言" : " 發言完畢"));
+        if (msg.user_id === "AI") { aiSpeaking = !!msg.speaking; refreshTalk(); }
+        log((msg.user_id === myUid ? "你" : (msg.user_id === "AI" ? "AI" : (msg.user_id || "對方"))) + (msg.speaking ? " 開始發言" : " 發言完畢"));
+        break;
+      case "turn_rejected":
+        if (isRecording) stopTalk(false, false);
+        log(msg.message || "暫時未能開始發言");
         break;
       case "transcript": appendTranscript(msg.item); break;
       case "judgement_pending": $("judgement").textContent = "AI 評判正在整理結果…"; break;
@@ -666,22 +791,38 @@
   $("modeLabel").textContent = MODE === "B" ? "· 多人對 AI" : "· 真人對真人";
   const talkBtn = $("talkBtn");
   talkBtn.addEventListener("click", toggleTalk);
-  document.querySelectorAll("#rolePick .pick").forEach(b =>
-    b.addEventListener("click", () => {
-      if (ws && ws.readyState === WebSocket.OPEN)
-        ws.send(JSON.stringify({ type: "claim_role", side: b.dataset.side }));
-    }));
   $("startBtn").addEventListener("click", () => sendHost("start"));
   $("nextBtn").addEventListener("click", () => sendHost("next_segment"));
   $("prevBtn").addEventListener("click", () => ws && ws.send(JSON.stringify({ type: "set_segment", index: Math.max(0, segIndex - 1) })));
   $("judgeBtn").addEventListener("click", () => sendHost("request_judgement"));
-  $("permissionCheckBtn").addEventListener("click", () => checkPermissions());
-  $("networkTestBtn").addEventListener("click", () => runNetworkTest());
-  $("localSoundBtn").addEventListener("click", () => {
-    playLocalTestTone().then(() => setNetworkTest("本機測試聲已播放。")).catch(() => setNetworkTest("本機測試聲無法播放。"));
-  });
   $("endBtn").addEventListener("click", () => { if (confirm("結束呢節練習？")) sendHost("end"); });
   function sendHost(type) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type })); }
+
+  function precheckMemberLine(uid, result) {
+    if (!result) return uid + "：等待檢查";
+    return uid + "：" + (result.ok ? "通過" : "未通過") + (result.message ? "\n  " + result.message.replace(/\n/g, "\n  ") : "");
+  }
+  function renderPrecheckStatus(msg, failed = false) {
+    const members = msg.members || [];
+    const results = msg.results || {};
+    const lines = members.map(uid => precheckMemberLine(uid, results[uid]));
+    setNetworkTest((failed ? "開始前檢查未全部通過，請處理後由主持再按開始。\n" : "開始前檢查中，全部成員通過後會自動開始。\n") + lines.join("\n"));
+  }
+  async function runAutoPrecheck(checkId) {
+    precheckActive = true;
+    activePrecheckId = checkId;
+    setNetworkTest("主持已要求開始前檢查，正在檢查本機權限及連線…");
+    updateHostButtons();
+    const result = await checkPermissions();
+    if (ws && ws.readyState === WebSocket.OPEN && activePrecheckId === checkId) {
+      ws.send(JSON.stringify({
+        type: "precheck_result",
+        check_id: checkId,
+        ok: result.ok,
+        message: result.message
+      }));
+    }
+  }
 
   loadBell();
   connect();

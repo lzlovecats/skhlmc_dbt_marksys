@@ -55,6 +55,7 @@ from ai_coach_helpers import (
 )
 from debate_timing import (
     DEBATE_FORMATS,
+    FREE_DEBATE_FORMATS,
     get_debate_timer_config,
     get_full_mock_sequence,
     full_mock_total_seconds,
@@ -905,7 +906,7 @@ if selected_tab == "free_debate":
     )
     free_debate_format = st.selectbox(
         "賽制",
-        options=[fmt for fmt in DEBATE_FORMATS if fmt != "基本法盃"],
+        options=FREE_DEBATE_FORMATS,
         key="free_debate_live_format",
     )
     if free_debate_format == "聯中":
@@ -1194,10 +1195,10 @@ if selected_tab == "full_mock":
 # ─── Tab 7: 連線練習 ───────────────────────────────────────────────
 
 if selected_tab == "live_room":
-    st.subheader("🎧 連線練習（Beta）")
+    st.subheader("🎧 連線練習")
     st.caption(
         "與其他委員即時連線練習。模式 A：真人對真人（1 對 1），AI 擔任評判；"
-        "模式 B：多人（1–4）一起對 AI 練習。使用房間代碼加入同一場練習。"
+        "模式 B：多人一起對 AI 練習（完整 Mock 按賽制要求 3 或 4 位隊員）。使用房間代碼加入同一場練習。"
     )
 
     active_room = st.session_state.get("live_room")
@@ -1208,7 +1209,7 @@ if selected_tab == "live_room":
             "請將房間代碼分享給其他委員，對方在「加入房間」輸入即可。"
         )
         if active_room["mode"] == "B":
-            st.info("模式 B 的 AI 對手功能開發中（Phase 2）；目前可先測試多人連線、輪流發言及計時。")
+            st.info("多人對 AI：隊員輪流「按一下開始，發言完畢再按一下停止」向 AI 發言，AI 會扮演另一方即時攻防，全房一齊聽到。")
         _render_room_debate_component(active_room["code"], active_room["mode"])
         if st.button("離開房間", key="live_room_leave"):
             _room_api_post(f"/api/room/{active_room['code']}/leave", {}, user_id)
@@ -1238,19 +1239,29 @@ if selected_tab == "live_room":
         else:  # 建立房間
             create_mode = st.radio(
                 "模式",
-                ["真人對真人（1 對 1）", "多人對 AI（1–4 人）"],
+                ["真人對真人（1 對 1）", "多人對 AI"],
                 key="live_room_create_mode",
             )
             mode = "A" if create_mode.startswith("真人") else "B"
-            room_format = st.selectbox(
-                "賽制",
-                options=[fmt for fmt in DEBATE_FORMATS if fmt != "基本法盃"],
-                key="live_room_format",
-            )
             structure_label = st.radio(
                 "形式", ["自由辯論", "完整 Mock"], horizontal=True, key="live_room_structure"
             )
             structure = "free" if structure_label == "自由辯論" else "mock"
+            format_options = FREE_DEBATE_FORMATS if structure == "free" else DEBATE_FORMATS
+            room_format = st.selectbox(
+                "賽制",
+                options=format_options,
+                key=f"live_room_format_{structure}",
+            )
+            if mode == "B" and structure == "mock":
+                st.caption(
+                    "完整 Mock（多人對 AI）：隊員輪流負責我方各段發言（用語音轉文字記錄），"
+                    "AI 會在對方段落自動代入發言；主持用「下一段」推進流程。"
+                )
+            elif mode == "B":
+                st.caption("自由辯論（多人對 AI）：隊員輪流發言，AI 扮演另一方即時攻防。")
+            if structure == "free" and room_format not in FREE_DEBATE_FORMATS:
+                st.warning(f"{room_format}不設自由辯論；請改選「完整 Mock」。")
             room_topic_source = st.radio(
                 "辯題來源",
                 ["手動輸入", "從辯題庫選擇"],
@@ -1288,7 +1299,7 @@ if selected_tab == "live_room":
                     room_topic_source = "手動輸入"
 
             if room_topic_source == "手動輸入":
-                room_topic = st.text_input("辯題（可選）", key="live_room_topic")
+                room_topic = st.text_input("辯題", key="live_room_topic")
             room_minutes = 2.5
             if structure == "free":
                 if room_format == "聯中":
@@ -1300,7 +1311,7 @@ if selected_tab == "live_room":
                 else:
                     room_minutes = 2.5
                     if room_format == "校園隨想":
-                        st.caption("校園隨想自由辯論係每邊 2:30。")
+                        st.caption("校園隨想自由辯論為每邊 2:30。")
             elif room_format == "聯中":
                 room_minutes = st.number_input(
                     "Mock 自由辯論每邊時間（分鐘）",
@@ -1324,18 +1335,76 @@ if selected_tab == "live_room":
                     "你的立場（AI 代表另一方）",
                     ["正方", "反方"], horizontal=True, key="live_room_hside",
                 )
-                payload["capacity"] = st.slider(
-                    "隊員人數上限", min_value=1, max_value=4, value=4, key="live_room_cap"
-                )
-                st.caption("模式 B 的 AI 對手會於 Phase 2 接入；目前建立後可先測試多人連線。")
+                if structure == "mock":
+                    mock_capacity = 3 if room_format == "星島" else 4
+                    payload["capacity"] = mock_capacity
+                    st.caption(f"完整 Mock 必須 {mock_capacity} 位隊員全部入房，並先選好辯位，才可開始。")
+                else:
+                    payload["capacity"] = st.slider(
+                        "隊員人數上限", min_value=1, max_value=4, value=4, key="live_room_cap"
+                    )
+                if "GEMINI_API_KEY" not in st.secrets:
+                    st.warning("未設定 GEMINI_API_KEY，暫時無法建立多人對 AI 房間。")
 
             if st.button("建立房間", type="primary", key="live_room_create_btn"):
-                ok, data = _room_api_post("/api/room/create", payload, user_id)
-                if ok and isinstance(data, dict) and data.get("code"):
-                    st.session_state["live_room"] = {"code": data["code"], "mode": mode}
-                    st.rerun()
+                if not payload["topic"]:
+                    st.warning("請手動輸入辯題，或從辯題庫選擇辯題。")
+                elif structure == "free" and room_format not in FREE_DEBATE_FORMATS:
+                    st.warning(f"{room_format}不設自由辯論；請改選「完整 Mock」。")
                 else:
-                    st.error(data if isinstance(data, str) else "建立房間失敗")
+                    proceed = True
+                    if mode == "B":
+                        # Server (proxy) owns the shared Gemini Live session; mint an
+                        # ephemeral token here (needs GEMINI_API_KEY / st.secrets) and
+                        # pass it in the create payload — it never reaches any browser.
+                        if "GEMINI_API_KEY" not in st.secrets:
+                            st.error("未設定 GEMINI_API_KEY，未能啟動 AI 對手。")
+                            proceed = False
+                        else:
+                            token_minutes = 20 if structure == "mock" else 14
+                            token_result = create_gemini_live_ephemeral_token(token_minutes)
+                            if not token_result.get("ok"):
+                                st.error(token_result.get("message", "AI 連線 token 產生失敗。"))
+                                proceed = False
+                            else:
+                                if structure == "mock":
+                                    ai_prompt = build_full_mock_live_prompt(
+                                        payload["topic"], payload["human_side"], room_format,
+                                        free_debate_minutes=(
+                                            room_minutes if room_format == "聯中" else None
+                                        ),
+                                    )
+                                else:
+                                    ai_prompt = build_free_debate_live_prompt(
+                                        payload["topic"], payload["human_side"], ""
+                                    )
+                                payload["gemini"] = {
+                                    "tokens": [token_result["token"]],
+                                    "model": token_result["model"],
+                                    "prompt": ai_prompt,
+                                }
+                                try:
+                                    usage = estimate_ai_feature_usage(
+                                        "free_debate_live",
+                                        FREE_DEBATE_LIVE_MODEL_LABEL,
+                                        duration_minutes=token_minutes,
+                                    )
+                                    log_ai_fund_usage(
+                                        user_id=user_id,
+                                        feature="free_debate_live",
+                                        model_label=FREE_DEBATE_LIVE_MODEL_LABEL,
+                                        success=True,
+                                        usage_override=usage,
+                                    )
+                                except Exception as e:
+                                    st.caption(f"AI 用量估算未能寫入：{e}")
+                    if proceed:
+                        ok, data = _room_api_post("/api/room/create", payload, user_id)
+                        if ok and isinstance(data, dict) and data.get("code"):
+                            st.session_state["live_room"] = {"code": data["code"], "mode": mode}
+                            st.rerun()
+                        else:
+                            st.error(data if isinstance(data, str) else "建立房間失敗")
 
 # ─── Tab 8: AI基金 ─────────────────────────────────────────────────
 

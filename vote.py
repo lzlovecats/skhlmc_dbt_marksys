@@ -5,7 +5,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, DIFFICULTY_CRITERIA, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, get_system_config
 from auth import require_committee, del_cookie, committee_cookie_manager, render_committee_auth_bridge, _sign_cookie
-from ai_coach_helpers import generate_general_ai_reply, get_ai_model_settings, is_successful_ai_result
+from ai_coach_helpers import generate_general_ai_reply, is_successful_ai_result
+from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_MOTION_COMMENTS,
@@ -60,7 +61,6 @@ DEPOSE_REASONS = [
 ]
 
 AI_COMMENT_USER_ID = "Gemini"
-AI_DISCUSSION_MODEL = "Gemini 3.5 Flash"
 
 
 def parse_reason_map(raw_value):
@@ -679,8 +679,7 @@ cm = committee_cookie_manager()
 
 
 def get_vote_ai_model():
-    settings = get_ai_model_settings()
-    return settings.get("default_model") or "Gemini 2.5 Flash"
+    return NON_MANUAL_DEFAULT_AI_MODEL
 
 
 def _gather_topic_review_context(category, difficulty):
@@ -1110,7 +1109,7 @@ def ai_discussion_reply(motion_type, motion_key, comments, question=None):
         motion_type, motion_key, discussion_lines,
         removal_reasons=removal_reasons, question=question, background=background,
     )
-    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, AI_DISCUSSION_MODEL)
+    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, get_vote_ai_model())
 
 
 def ensure_ai_comment_account():
@@ -1275,7 +1274,7 @@ def format_tab_label(tab_name):
     if tab_name == "depose_vote":
         return f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
     if tab_name == "bank_analysis":
-        return "🤖 AI分析"
+        return "📈 AI分析"
     if tab_name == "member_stats":
         return "👥 參與率"
     return "🔐 帳戶"

@@ -617,7 +617,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,

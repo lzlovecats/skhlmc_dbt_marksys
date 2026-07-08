@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>AI 辯論練習</title>
+<style>
+:root {
+    --bg: #0e0f13; --panel: #16181f; --panel-2: #1e2129; --border: #2c313d;
+    --text: #eef1f6; --muted: #9aa3b2; --green: #38c172; --green-d: #2fa863;
+    --red: #ff4b4b; --blue: #3b82f6;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+    background: var(--bg); color: var(--text); min-height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK", "PingFang HK", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+body { display: flex; flex-direction: column; min-height: 100vh; }
+
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 18px clamp(16px, 3vw, 40px);
+    border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.brand { font-size: clamp(22px, 2.6vw, 34px); font-weight: 800; }
+.brand .sub { color: var(--muted); font-weight: 600; font-size: .62em; margin-left: 10px; }
+.back-link {
+    font-size: clamp(16px, 1.7vw, 22px); font-weight: 700; color: var(--muted);
+    text-decoration: none; background: var(--panel-2); border: 2px solid var(--border);
+    border-radius: 12px; padding: 10px 20px; white-space: nowrap;
+}
+
+.wrap { flex: 1; display: flex; justify-content: center; padding: clamp(18px, 3vw, 40px); }
+form { width: 100%; max-width: 880px; }
+
+.field { margin-bottom: clamp(20px, 3vh, 34px); }
+.field > label.title { display: block; font-size: clamp(18px, 2vw, 26px); font-weight: 800; margin-bottom: 12px; }
+
+textarea, select {
+    width: 100%; font-size: clamp(20px, 2.2vw, 30px); font-weight: 600; color: var(--text);
+    background: var(--panel-2); border: 2px solid var(--border); border-radius: 14px;
+    padding: 16px 18px; font-family: inherit;
+}
+textarea { resize: vertical; min-height: 96px; line-height: 1.5; }
+
+.toggle-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.toggle {
+    flex: 1 1 200px; position: relative; cursor: pointer;
+}
+.toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.toggle span {
+    display: block; text-align: center; font-size: clamp(22px, 2.4vw, 32px); font-weight: 800;
+    background: var(--panel-2); border: 2px solid var(--border); border-radius: 16px;
+    padding: 20px 8px; color: var(--muted); transition: all .15s;
+}
+.toggle input:checked + span { color: #fff; border-color: var(--blue); background: #1e335c; }
+
+#minutes-field { display: none; }
+
+.start-btn {
+    width: 100%; font-size: clamp(24px, 3vw, 40px); font-weight: 800; color: #fff;
+    background: var(--green); border: none; border-radius: 20px; cursor: pointer;
+    padding: clamp(18px, 2.6vw, 30px); margin-top: 8px;
+    box-shadow: 0 6px 20px rgba(56, 193, 114, .3); transition: background .15s;
+}
+.start-btn:hover { background: var(--green-d); }
+.start-btn:active { transform: translateY(2px); }
+
+.note {
+    margin-top: 22px; font-size: clamp(14px, 1.5vw, 19px); color: #6b7280;
+    line-height: 1.6; text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+    <div class="brand">🤖 AI 辯論練習<span class="sub">自由辯論</span></div>
+    <a class="back-link" href="/practice">◀ 返回練習</a>
+</div>
+
+<div class="wrap">
+    <form method="get" action="/practice/ai-debate/live">
+        <div class="field">
+            <label class="title" for="topic">辯題</label>
+            <textarea id="topic" name="topic" required placeholder="例如：中學生應該擁有智能電話"></textarea>
+        </div>
+
+        <div class="field">
+            <label class="title">你嘅立場</label>
+            <div class="toggle-row">
+                <label class="toggle">
+                    <input type="radio" name="side" value="正方" checked>
+                    <span>正方</span>
+                </label>
+                <label class="toggle">
+                    <input type="radio" name="side" value="反方">
+                    <span>反方</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="field">
+            <label class="title" for="format">賽制</label>
+            <select id="format" name="format" onchange="onFormatChange()">
+                <option value="校園隨想">校園隨想（自由辯論 2:30）</option>
+                <option value="聯中">聯中（自由辯論可調）</option>
+            </select>
+        </div>
+
+        <div class="field" id="minutes-field">
+            <label class="title" for="minutes">每邊發言時間（分鐘）</label>
+            <select id="minutes" name="minutes">
+                <option value="3">3 分鐘</option>
+                <option value="4">4 分鐘</option>
+                <option value="5" selected>5 分鐘</option>
+                <option value="6">6 分鐘</option>
+            </select>
+        </div>
+
+        <button type="submit" class="start-btn">▶ 開始練習</button>
+
+        <div class="note">
+            開始後需要委員帳戶（部機已登入即可）＋ 允許麥克風權限。<br>
+            AI 會即場同你自由辯論並自動計時、響叮。練習完可按 <b>Alt + F4</b> 返主選單。
+        </div>
+    </form>
+</div>
+
+<script>
+function onFormatChange() {
+    var fmt = document.getElementById("format").value;
+    document.getElementById("minutes-field").style.display = (fmt === "聯中") ? "block" : "none";
+}
+onFormatChange();
+</script>
+</body>
+</html>

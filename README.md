@@ -34,7 +34,9 @@ A full-featured electronic scoring and management platform for school debate com
 - 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini、DeepSeek 或 GPT 模型
 - **發言檢查**：輸入文字稿或粵語錄音（錄音分析需選 Gemini 模型），AI 根據正式評分標準（內容、辭鋒、組織、風度）提供詳細反饋及預估分數
 - **主線策劃**：根據辯題及立場生成完整比賽策略（論點、反駁、自由辯論策略、辯員分工）
-- **Gemini Live 自由辯論**：可手動輸入辯題或從辯題庫選擇，設定每邊發言時間，由 AI 扮演相反立場；使用者按下「開始錄音」，完成發言後再送出，AI 會即時轉錄及回應，系統會以 stopwatch 方式累計使用者發言時間並按賽制響叮提示
+- **Gemini Live 自由辯論 / 完整 Mock**：可手動輸入辯題或從辯題庫選擇，由 AI 扮演相反立場；使用者按下「開始錄音」，完成發言後再送出，AI 會即時轉錄及回應。完整 Mock 會按賽制逐段響叮，並在需要時自動接力到下一個 Gemini Live session
+- **連線練習**：委員可建立或加入房間。真人對真人模式支援 1 對 1 練習及 AI 評判；多人對 AI 模式由 server 持有同一個 Gemini Live session，全房同步聽到 AI。完整 Mock 按賽制要求隊員在線並先分配辯位：星島 3 人，其餘賽制（包括基本法盃）4 人；聯中及星島的主辯／結辯由同一位負責
+- 單人及連線練習共用同一套賽制資料：自由辯論只支援校園隨想、聯中；完整 Mock 支援校園隨想、聯中、星島、基本法盃。星島完整 Mock 包含 6 次交互答問，不設自由辯論
 - 支援 Gemini 2.5 Flash、Gemini 3.5 Flash、Gemini 3.1 Pro Preview、DeepSeek V4 Pro 及 GPT-5.4
 - 會標示模型收費狀態，並提醒委員節約使用高級或收費模型
 - 開發者可在開發者設定啟用 / 停用 AI Provider 及設定預設模型
@@ -45,7 +47,9 @@ A full-featured electronic scoring and management platform for school debate com
 - Committee-only AI debate coach with selectable Gemini, DeepSeek, or GPT models
 - **Speech Review**: submit text or Cantonese audio recordings (audio review requires a Gemini model); AI provides detailed feedback and estimated scores based on the official scoring rubric (Content, Eloquence, Organisation, Manner)
 - **Strategy Planning**: generates full match strategy (arguments, counter-arguments, free debate tactics, role assignments) from a given motion and side
-- **Gemini Live Free Debate**: starts a timed live practice where AI plays the opposing side; users click to record, click again to submit, then receive transcription and AI response
+- **Gemini Live Free Debate / Full Mock**: starts a timed live practice where AI plays the opposing side; users click to record, click again to submit, then receive transcription and AI response. Full Mock follows the debate format segment by segment and can auto-handoff between Gemini Live sessions
+- **Networked Practice**: committee members can create or join rooms. Human-vs-human rooms support 1v1 practice and AI judging; multi-member vs AI rooms share one server-owned Gemini Live session. Full Mock rooms require the format-specific number of online members and assigned roles before start: 3 for 星島, 4 for other formats including 基本法盃; in 聯中 and 星島, the main speaker and closing speaker are the same assigned member
+- Single-user and networked practice use the same debate format data: Free Debate supports only 校園隨想 and 聯中; Full Mock supports 校園隨想, 聯中, 星島 and 基本法盃. 星島 Full Mock includes six cross-examination rounds and has no free-debate segment
 - Supports Gemini 2.5 Flash, Gemini 3.5 Flash, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, and GPT-5.4
 - Shows model cost status and reminds committee members to conserve premium or paid model usage
 - Developers can enable / disable AI providers and set the default model from Developer settings
@@ -235,17 +239,20 @@ username = "your_user"
 password = "your_password"
 ```
 
-`GEMINI_API_KEY` 用於 Gemini 模型；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4；`AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` 用於 Free De / Mock 的 Azure TTS 廣東話播放，未設定時會 fallback 用 Gemini Live 原生聲音。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
+`GEMINI_API_KEY` 用於 Gemini 模型及 Gemini Live 練習；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4；`AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` 用於單人 Free De / Mock 的 Azure TTS 廣東話播放，未設定時會 fallback 用 Gemini Live 原生聲音。連線練習的多人對 AI 房間直接播放 Gemini Live 原生聲音，不依賴 Azure TTS。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
 
-Gemini Live 自由辯論會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
+Gemini Live 自由辯論、完整 Mock 及多人對 AI 連線房間會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
+
+單人 Free De / Mock 的「要求 AI 評價」會經同一條 Gemini Live audio/TTS 流程讀出評語。連線練習房間的「AI 評判」目前只回傳文字評語，不會朗讀。
 
 **Gemini Live 地區限制與 relay / Regional restriction & relay**
 
-Gemini Live 由**使用者瀏覽器直接連** Google 的 WebSocket，Google 會以瀏覽器 IP 判斷地區。香港等未支援地區會被封鎖，令「打Free De」「打Mock」無法連線。
+單人 Free De / Mock 由**使用者瀏覽器直接連** Google 的 WebSocket，Google 會以瀏覽器 IP 判斷地區。香港等未支援地區會被封鎖，令「打Free De」「打Mock」無法連線。
 
 解決方法是經部署在**受支援地區**（本專案 Render 位於 Singapore）的 relay 轉駁：瀏覽器改連 `deploy/proxy.py` 的 `/gemini-live` 端點，由 relay 代連 Google，Google 看到的是 Singapore IP。
 
 - 設定 `LIVE_RELAY_WS_BASE`（例：`wss://<你的-render-域名>/gemini-live`）即啟用 relay；**留空／不設定則 fallback 直連 Google**（適合本地開發或本身在支援地區）。
+- 連線練習的多人對 AI 房間由 proxy server 持有 upstream Gemini Live socket；成員瀏覽器只連本系統房間 WebSocket，因此斷線後會每 5 秒自動重連，房間在全空後保留約 60 秒供短暫續連。
 - **授權**：`/gemini-live` 並非公開的開放 relay。app 會用資料庫 `system_config.cookie_secret` 對每個 ephemeral token 產生 HMAC 簽名（`auth.sign_relay_token`），relay 在撥號往 Google 前先驗證簽名（`proxy._verify_relay_signature`）。簽名不符會在 WebSocket handshake 前直接 reject（close 1008），確保只有本 app 發出的 token 用得到 relay，防止外人白嫖連線／頻寬。因此 relay 與主應用**必須共用同一個資料庫**（同一 `cookie_secret`）。
 
 The relay only serves tokens minted by this app: each ephemeral token is HMAC-signed with the shared `cookie_secret`, and the relay verifies the signature before dialing Google, rejecting unauthorized handshakes with close code 1008. The relay (`deploy/proxy.py`) and the app must therefore share the same database.

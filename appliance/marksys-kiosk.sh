@@ -44,6 +44,8 @@ launch() {
         --disable-session-crashed-bubble --hide-crash-restore-bubble \
         --disable-features=TranslateUI \
         --check-for-update-interval=31536000 \
+        --autoplay-policy=no-user-gesture-required \
+        --auto-accept-camera-and-microphone-capture \
         --user-data-dir="$HOME/.marksys-chrome" \
         "$url" || true
 }
