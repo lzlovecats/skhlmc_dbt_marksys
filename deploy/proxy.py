@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import datetime
 import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import secrets
 import time
@@ -31,8 +33,11 @@ from schema import (
 from debate_timing import (  # pure helpers, no side effects
     get_full_mock_sequence,
     get_debate_timer_config,
+    FREE_DEBATE_FORMATS,
     DEBATE_FORMATS,
 )
+from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
+from prompts import build_free_debate_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
 from prompts import build_room_judgement_prompt
 
 
@@ -819,6 +824,196 @@ async def appliance_practice_timer_config(request: Request):
     return {"format": debate_format, "formats": DEBATE_FORMATS, **config}
 
 
+# ---------------------------------------------------------------------------
+# Appliance AI free-debate practice (login-free kiosk page, committee-gated mint)
+#
+# The kiosk 練習頁 links here. Reuses the SAME Gemini Live engine
+# (templates/live_debate.html), prompt builder and relay as the committee AI
+# coach (ai_coach.py) so behaviour stays consistent — the only differences are a
+# big-text setup page and that the ephemeral-token mint happens here in the
+# proxy (which has no Streamlit `st.secrets`) instead of in ai_coach. Minting is
+# gated on the committee cookie (the kiosk logs in as its own committee account)
+# and rate-limited so the appliance can't be abused into burning AI budget.
+# ---------------------------------------------------------------------------
+
+# Keep in sync with ai_coach_helpers.FREE_DEBATE_LIVE_MODEL.
+FREE_DEBATE_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+
+# Only formats with a free-debate segment are offered for standalone Free De.
+_PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
+
+# In-process rate limit for token minting, keyed by committee user. Single-kiosk
+# scale, so a plain dict that resets on restart is enough.
+_practice_live_hits: dict = {}
+_PRACTICE_LIVE_MAX_PER_HOUR = 30
+_PRACTICE_LIVE_MIN_GAP_SEC = 3
+
+
+def _practice_live_rate_check(user_id: str):
+    """Return an error message if this user is minting too fast, else None."""
+    now = time.time()
+    hits = [t for t in _practice_live_hits.get(user_id, []) if now - t < 3600]
+    if hits and now - hits[-1] < _PRACTICE_LIVE_MIN_GAP_SEC:
+        return "太快喇，請等幾秒再開始。"
+    if len(hits) >= _PRACTICE_LIVE_MAX_PER_HOUR:
+        return "練習次數已達每小時上限，請稍後再試。"
+    hits.append(now)
+    _practice_live_hits[user_id] = hits
+    return None
+
+
+def _sign_relay_token(token: str) -> str:
+    """Mirror auth.sign_relay_token: HMAC the ephemeral token with the shared
+    cookie_secret so the /gemini-live relay (_verify_relay_signature) accepts it."""
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        return ""
+    return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
+def _practice_bell_src() -> str:
+    try:
+        data = (BASE_DIR / "assets" / "bell.mp3").read_bytes()
+        return "data:audio/mpeg;base64," + base64.b64encode(data).decode()
+    except FileNotFoundError:
+        return ""
+
+
+def _mint_gemini_live_token(duration_minutes: float):
+    """Create a single-use Gemini Live ephemeral token. Reimplements
+    ai_coach_helpers.create_gemini_live_ephemeral_token without the Streamlit
+    dependency. Returns (token_name, None) or (None, error_message)."""
+    api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
+    if not api_key:
+        return None, "未設定 GEMINI_API_KEY，未能開始練習。"
+    try:
+        from google import genai  # deferred: heavy import, cloud-only dependency
+    except Exception:
+        return None, "伺服器未安裝 Gemini SDK。"
+    token_minutes = max(3, math.ceil(float(duration_minutes)))
+    expire = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=token_minutes + 2)
+    try:
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
+        token = client.auth_tokens.create(config={
+            "uses": 1,
+            "expire_time": expire,
+            "new_session_expire_time": expire,
+            "http_options": {"api_version": "v1alpha"},
+        })
+    except Exception as e:
+        logger.warning("Gemini Live token mint failed: %s", e)
+        return None, "Gemini 未能建立練習連線，請稍後再試。"
+    token_name = getattr(token, "name", None)
+    if not token_name:
+        return None, "Gemini 未回傳 token。"
+    return token_name, None
+
+
+def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_starts):
+    """Server-render templates/live_debate.html the same way ai_coach does, so the
+    kiosk gets the identical Live engine. Free-debate only — mock fields empty."""
+    html = (BASE_DIR / "templates" / "live_debate.html").read_text(encoding="utf-8")
+    relay_ws_base = _get_proxy_secret("LIVE_RELAY_WS_BASE", "") or ""
+    token_sigs = {}
+    if relay_ws_base:
+        sig = _sign_relay_token(token)
+        if sig:
+            token_sigs[token] = sig
+    replacements = {
+        "__RELAY_WS_BASE__": json.dumps(relay_ws_base),
+        "__TOKEN_SIGS__": json.dumps(token_sigs),
+        "__LIVE_TOKEN__": json.dumps(token),
+        "__LIVE_MODEL__": json.dumps(FREE_DEBATE_LIVE_MODEL),
+        "__LIVE_PROMPT__": json.dumps(prompt, ensure_ascii=False),
+        "__LIVE_MINUTES__": json.dumps(float(live_minutes or 2.5)),
+        "__BELL_SRC__": json.dumps(_practice_bell_src()),
+        "__BELL_SCHEDULE__": json.dumps(bell_schedule or [], ensure_ascii=False),
+        "__MOCK_SEGMENTS__": json.dumps([]),
+        "__MOCK_TOKENS__": json.dumps([]),
+        "__MOCK_SESSION_LABELS__": json.dumps([]),
+        "__AI_STARTS__": json.dumps(bool(ai_starts)),
+        "__LIVE_PROMPTS__": json.dumps(LIVE_RUNTIME_PROMPTS, ensure_ascii=False),
+    }
+    for key, value in replacements.items():
+        html = html.replace(key, value)
+    return html
+
+
+def _practice_error_page(title: str, message: str, back: str = "/practice/ai-debate") -> Response:
+    body = f"""<!DOCTYPE html><html lang="zh-HK"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{xml_escape(title)}</title>
+<style>
+html,body{{margin:0;height:100%;background:#0e0f13;color:#eef1f6;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans HK","PingFang HK",sans-serif;
+display:flex;align-items:center;justify-content:center;text-align:center}}
+.box{{max-width:760px;padding:40px}}
+h1{{font-size:clamp(28px,4vw,48px);margin:0 0 18px}}
+p{{font-size:clamp(18px,2.2vw,26px);color:#9aa3b2;line-height:1.6;margin:0 0 30px}}
+a{{display:inline-block;font-size:clamp(20px,2.4vw,30px);font-weight:800;color:#fff;
+background:#3b82f6;border-radius:16px;padding:16px 44px;text-decoration:none}}
+</style></head><body><div class="box">
+<h1>{xml_escape(title)}</h1><p>{xml_escape(message)}</p>
+<a href="{xml_escape(back)}">◀ 返回</a></div></body></html>"""
+    return Response(content=body, media_type="text/html", status_code=200)
+
+
+@app.get("/practice/ai-debate")
+async def appliance_ai_debate_page():
+    return FileResponse(BASE_DIR / "templates" / "appliance_ai_debate.html",
+                        media_type="text/html")
+
+
+@app.get("/practice/ai-debate/live")
+async def appliance_ai_debate_live(request: Request):
+    # Top-level same-origin navigation, so the committee cookie is sent. Check it
+    # directly (rather than _require_committee_user which raises a JSON 401) so we
+    # can render a friendly big-text page on the kiosk instead.
+    user_id = _verify_committee_cookie(request)
+    if not user_id:
+        return _practice_error_page(
+            "需要委員登入",
+            "AI 辯論練習需要委員帳戶。請喺部機用委員帳戶登入一次（cookie 會記住），再返嚟開始。",
+        )
+
+    rate_error = _practice_live_rate_check(user_id)
+    if rate_error:
+        return _practice_error_page("請稍等", rate_error)
+
+    q = request.query_params
+    topic = (q.get("topic") or "").strip()
+    side = (q.get("side") or "正方").strip()
+    debate_format = (q.get("format") or _PRACTICE_LIVE_FORMATS[0]).strip()
+    if not topic:
+        return _practice_error_page("未有辯題", "請先輸入辯題再開始。")
+    if side not in ("正方", "反方"):
+        side = "正方"
+    if debate_format not in _PRACTICE_LIVE_FORMATS:
+        debate_format = _PRACTICE_LIVE_FORMATS[0]
+
+    if debate_format == "聯中":
+        try:
+            live_minutes = float(q.get("minutes") or 5)
+        except (TypeError, ValueError):
+            live_minutes = 5.0
+        live_minutes = min(10.0, max(0.5, live_minutes))
+    else:
+        live_minutes = 2.5
+
+    bell_schedule = get_debate_timer_config(
+        debate_format, free_debate_minutes=live_minutes,
+    )["bell_schedules"].get("free", [])
+    token_minutes = max(3, math.ceil(live_minutes * 2 + 2))
+
+    token, mint_error = _mint_gemini_live_token(token_minutes)
+    if mint_error:
+        return _practice_error_page("未能開始", mint_error)
+
+    prompt = build_free_debate_live_prompt(topic, side, "")
+    html = _render_live_debate_html(token, prompt, live_minutes, bell_schedule, side == "反方")
+    return Response(content=html, media_type="text/html")
+
+
 GEMINI_LIVE_WS_URL = (
     "wss://generativelanguage.googleapis.com/ws/"
     "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
@@ -922,7 +1117,7 @@ async def gemini_live_relay(websocket: WebSocket):
 # Two modes:
 #   A  真人對真人 1v1 — two committee members debate by voice; the server fans
 #      out each active speaker's PCM frames to the peer. AI is only a 評判.
-#   B  多人對 AI 1-4 — a team shares ONE server-owned Gemini Live session and
+#   B  多人對 AI — a team shares ONE server-owned Gemini Live session and
 #      takes turns; the server forwards the active speaker's audio to Gemini and
 #      broadcasts Gemini's audio/transcript to everyone. (Gemini leg: phase 2.)
 # ---------------------------------------------------------------------------
@@ -932,6 +1127,7 @@ ROOM_CODE_LEN = 5
 MAX_ROOMS = int(os.getenv("MAX_ROOMS", "8"))
 ROOM_EMPTY_GRACE_MS = 60 * 1000       # keep an empty room this long for reconnects
 ROOM_MAX_AGE_MS = 90 * 60 * 1000      # hard TTL
+ROOM_JUDGEMENT_MODELS = model_slugs_for_labels(ROOM_JUDGEMENT_MODEL_LABELS)
 
 ROOMS = {}  # code -> Room
 
@@ -955,11 +1151,37 @@ def _build_room_segments(structure, debate_format, free_minutes):
     return [{"id": "free", "label": "自由辯論", "side": "雙方", "seconds": seconds, "bells": bells}]
 
 
+def _room_segment_position(room, seg):
+    """Return the assigned human position for a single-speaker mock segment."""
+    if not seg:
+        return None
+    seg_id = str(seg.get("id") or "")
+    if seg_id.startswith("main_"):
+        return 1
+    if seg_id.startswith("dep1_"):
+        return 2
+    if seg_id.startswith("dep2_"):
+        return 3
+    if seg_id.startswith("dep3_"):
+        return 4
+    if seg_id.startswith("closing_"):
+        return 1 if room.debate_format in ("聯中", "星島") else 4
+    return None
+
+
+def _fill_live_runtime_prompt(template, values):
+    text_value = str(template or "")
+    for key, value in values.items():
+        text_value = text_value.replace("{" + key + "}", str(value))
+    return text_value
+
+
 class RoomMember:
     def __init__(self, user_id, ws):
         self.user_id = user_id
         self.ws = ws
         self.role = None          # "正方"/"反方" (A) or claimed side (B)
+        self.position = None      # mode B mock: positions 1-4 assigned before start
         self.name = user_id
         self.connected = True
         self.joined_at = _now_ms()
@@ -985,6 +1207,9 @@ class Room:
         self.active_turn_user = None
         self.active_turn_side = None
         self.active_turn_started_ms = None
+        self.free_first_done = False
+        self.precheck_id = None
+        self.precheck_results = {}
         self.members = {}                # user_id -> RoomMember
         self.transcript = []             # {speaker, side, seg, text}
         self.judgement = ""
@@ -998,12 +1223,27 @@ class Room:
         self.tick_task = None
         self.lock = asyncio.Lock()
 
+    def position_labels(self):
+        if self.debate_format == "聯中":
+            return {1: "主辯／結辯", 2: "一副", 3: "二副", 4: "三副"}
+        if self.debate_format == "星島":
+            return {1: "主辯／結辯", 2: "一副", 3: "二副"}
+        return {1: "主辯", 2: "一副", 3: "二副", 4: "結辯"}
+
+    def required_positions(self):
+        return tuple(self.position_labels().keys())
+
     def roster(self):
+        labels = self.position_labels()
         return [
             {"user_id": m.user_id, "name": m.name, "role": m.role,
+             "position": m.position, "position_label": labels.get(m.position, ""),
              "connected": m.connected, "is_host": m.user_id == self.created_by}
             for m in self.members.values()
         ]
+
+    def connected_user_ids(self):
+        return [m.user_id for m in self.members.values() if m.connected]
 
     def current_segment(self):
         if 0 <= self.seg_index < len(self.segments):
@@ -1017,10 +1257,28 @@ class Room:
         if not seg:
             return None
         side = seg.get("side")
+        if self.mode == "B":
+            if self.structure == "mock" and side == self.human_side:
+                position = _room_segment_position(self, seg)
+                if position:
+                    for m in self.members.values():
+                        if m.connected and m.position == position:
+                            return m.user_id
+            return None
         if side in ("正方", "反方"):
             for m in self.members.values():
                 if m.role == side:
                     return m.user_id
+        return None
+
+    def expected_turn_side(self):
+        # Mode B: humans all share one side and the AI plays the other — there is
+        # no 正方-first-among-humans constraint, so any team member may open.
+        if self.mode == "B":
+            return None
+        seg = self.current_segment()
+        if self.phase == "active" and seg and seg.get("side") == "雙方" and not self.free_first_done:
+            return "正方"
         return None
 
     def state_msg(self):
@@ -1043,6 +1301,7 @@ class Room:
             "active_turn_user": self.active_turn_user,
             "active_turn_side": self.active_turn_side,
             "active_turn_started_ms": self.active_turn_started_ms,
+            "expected_turn_side": self.expected_turn_side(),
         }
 
 
@@ -1097,6 +1356,87 @@ def _room_ensure_tick(room):
         room.tick_task = asyncio.create_task(_room_tick(room))
 
 
+def _room_precheck_msg(room, msg_type="precheck_status"):
+    users = room.connected_user_ids()
+    return {
+        "type": msg_type,
+        "check_id": room.precheck_id,
+        "members": users,
+        "results": {u: room.precheck_results.get(u) for u in users},
+    }
+
+
+async def _room_start_active(room):
+    room.phase = "active"
+    room.seg_index = 0
+    room.seg_started_ms = _now_ms()
+    room.side_elapsed_ms = {"正方": 0, "反方": 0}
+    room.active_turn_user = None
+    room.active_turn_side = None
+    room.active_turn_started_ms = None
+    room.free_first_done = False
+    room.precheck_id = None
+    room.precheck_results = {}
+    await _room_start_gemini_if_needed(room)
+    _room_ensure_tick(room)
+    await _room_broadcast(room, room.state_msg())
+
+
+async def _room_begin_precheck(room):
+    start_error = _room_start_blocker(room)
+    if start_error:
+        await _room_broadcast(room, {"type": "error", "message": start_error})
+        return
+    room.precheck_id = secrets.token_hex(6)
+    room.precheck_results = {}
+    await _room_broadcast(room, _room_precheck_msg(room, "precheck_request"))
+    await _room_broadcast(room, _room_precheck_msg(room))
+
+
+async def _room_handle_precheck_result(room, member, msg):
+    if room.phase != "lobby" or not room.precheck_id:
+        return
+    if msg.get("check_id") != room.precheck_id:
+        return
+    room.precheck_results[member.user_id] = {
+        "ok": bool(msg.get("ok")),
+        "message": str(msg.get("message") or "")[:800],
+    }
+    await _room_broadcast(room, _room_precheck_msg(room))
+
+    users = room.connected_user_ids()
+    if not users or any(u not in room.precheck_results for u in users):
+        return
+    if all(room.precheck_results[u].get("ok") for u in users):
+        start_error = _room_start_blocker(room)
+        if start_error:
+            await _room_broadcast(room, {"type": "error", "message": start_error})
+            await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
+            return
+        await _room_start_active(room)
+    else:
+        await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
+
+
+def _room_start_blocker(room):
+    if room.mode == "B" and room.structure == "mock":
+        members = [m for m in room.members.values() if m.connected]
+        required_positions = room.required_positions()
+        required_count = len(required_positions)
+        if len(members) != required_count:
+            return f"完整 Mock 必須啱啱好 {required_count} 位隊員在線；目前有 {len(members)} 位。"
+        positions = [m.position for m in members]
+        missing = [pos for pos in required_positions if pos not in positions]
+        duplicate = len([p for p in positions if p]) != len(set(p for p in positions if p))
+        if missing or duplicate:
+            labels = room.position_labels()
+            missing_text = "、".join(labels.get(pos, str(pos)) for pos in missing)
+            if missing_text:
+                return f"請先分配 {required_count} 個辯位；尚欠：{missing_text}。"
+            return f"請先確保 {required_count} 位隊員各自選擇不同辯位。"
+    return None
+
+
 def _audio_fields(msg):
     """Accept either the Gemini realtimeInput shape or a flat {data,mimeType}."""
     if isinstance(msg.get("realtimeInput"), dict):
@@ -1105,24 +1445,202 @@ def _audio_fields(msg):
     return msg.get("data"), msg.get("mimeType")
 
 
-# --- Gemini leg (mode B) — stubs; fully wired in phase 2 -------------------
+# --- Gemini leg (mode B): one server-owned Gemini Live session per room ------
+#
+# The server (not any browser) owns the single upstream Gemini Live socket, so
+# the ephemeral token never leaves the server, the whole team shares one AI
+# context, and a member dropping does not kill the AI. Same connect/pump shape
+# as gemini_live_relay above; here the proxy is the client. Render's Singapore
+# egress means no geo-block, so no relay hop is needed for this leg.
 
 async def _room_start_gemini_if_needed(room):
-    return  # phase 2
+    if room.mode != "B" or room.gemini is None or room.gemini_ws is not None:
+        return
+    tokens = room.gemini.get("tokens") or []
+    token = tokens[0] if tokens else ""
+    model = room.gemini.get("model") or ""
+    prompt = room.gemini.get("prompt") or ""
+    if not token or not model:
+        await _room_broadcast(room, {"type": "error",
+                                     "message": "未有 AI 連線資料，AI 對手未能啟動。"})
+        return
+
+    backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
+    try:
+        gws = await websockets.connect(backend_url, max_size=None, ping_interval=None)
+    except Exception as e:
+        logger.exception("room Gemini connect failed (%s): %s", room.code, e)
+        await _room_broadcast(room, {"type": "error",
+                                     "message": "AI 對手連線失敗，請重新建立房間。"})
+        return
+
+    room.gemini_ws = gws
+    setup = {
+        "setup": {
+            "model": "models/" + model,
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}
+                },
+            },
+            "systemInstruction": {"parts": [{"text": prompt}]},
+            "realtimeInputConfig": {"automaticActivityDetection": {"disabled": True}},
+            "inputAudioTranscription": {},
+            "outputAudioTranscription": {},
+        }
+    }
+    try:
+        await gws.send(json.dumps(setup))
+    except Exception as e:
+        logger.exception("room Gemini setup failed (%s): %s", room.code, e)
+    room.gemini_task = asyncio.create_task(_room_gemini_pump(room, gws))
+
+
+async def _room_gemini_pump(room, gws):
+    """Read the room's Gemini Live socket and fan its serverContent out to every
+    member (they play the AI's native audio locally, in sync). Also accumulate
+    the AI's transcript into room.transcript so the 評判 covers the AI side."""
+    ai_side = "反方" if room.human_side == "正方" else "正方"
+    ai_buffer = {"text": ""}
+    try:
+        async for raw in gws:
+            if isinstance(raw, bytes):
+                try:
+                    raw = raw.decode("utf-8")
+                except Exception:
+                    continue
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            # NB: Gemini sends setupComplete as an empty object {}, which is
+            # falsy in Python — must test membership, not truthiness.
+            if "setupComplete" in msg:
+                await _room_broadcast(room, {"type": "ai_ready"})
+                # Mock: if the opening segment belongs to the AI, cue it now that
+                # the session is ready (connect happened before this).
+                if room.structure == "mock":
+                    seg0 = room.current_segment()
+                    if seg0 and seg0.get("side") == ai_side:
+                        await _room_cue_ai_segment(room, seg0)
+                continue
+            sc = msg.get("serverContent")
+            if sc is None:
+                continue
+            await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
+            ot = sc.get("outputTranscription") or {}
+            if ot.get("text"):
+                ai_buffer["text"] += ot["text"]
+            if sc.get("turnComplete"):
+                text_value = ai_buffer["text"].strip()
+                ai_buffer["text"] = ""
+                if text_value:
+                    item = {
+                        "speaker": "AI", "side": ai_side, "seg": room.seg_index,
+                        "label": (room.current_segment() or {}).get("label", ""),
+                        "text": text_value[:2000], "created_ms": _now_ms(),
+                    }
+                    room.transcript.append(item)
+                    room.transcript = room.transcript[-80:]
+                    await _room_broadcast(room, {"type": "transcript", "item": item})
+                await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
+                                             "speaking": False})
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.info("room Gemini pump ended (%s): %s", room.code, e)
+    finally:
+        if room.gemini_ws is gws:
+            room.gemini_ws = None
+        try:
+            await gws.close()
+        except Exception:
+            pass
 
 
 async def _room_forward_audio_to_gemini(room, member, data, mime):
-    return  # phase 2
+    gws = room.gemini_ws
+    if gws is None or not data:
+        return
+    try:
+        await gws.send(json.dumps({
+            "realtimeInput": {"audio": {"data": data,
+                                        "mimeType": mime or "audio/pcm;rate=16000"}}
+        }))
+    except Exception:
+        pass
 
 
 async def _room_close_gemini(room):
+    task = room.gemini_task
+    room.gemini_task = None
     ws = room.gemini_ws
     room.gemini_ws = None
+    if task is not None and not task.done():
+        task.cancel()
     if ws is not None:
         try:
             await ws.close()
         except Exception:
             pass
+
+
+def _human_transcript_since_last_ai(room):
+    """The human speeches accumulated since the AI last spoke — used as context
+    when cueing the AI for its next mock segment."""
+    lines = []
+    for item in reversed(room.transcript):
+        if item.get("speaker") == "AI":
+            break
+        lines.append(item)
+    lines.reverse()
+    return "\n".join(f"{i.get('side') or i.get('speaker')}：{i.get('text')}" for i in lines)
+
+
+async def _room_cue_ai_segment(room, seg):
+    """Mock structure: tell the server-owned Gemini session to deliver the
+    current AI-side segment as a full speech, grounded in the latest human
+    transcript. (Free structure uses audio streaming instead — see
+    _room_handle_audio / _room_handle_turn.)"""
+    gws = room.gemini_ws
+    if gws is None or not seg:
+        return
+    ai_side = "反方" if room.human_side == "正方" else "正方"
+    context = _human_transcript_since_last_ai(room)
+    ctx = f"\n\n對手（{room.human_side}）剛才的發言重點：\n{context}" if context else ""
+    seg_secs = int(seg.get("seconds") or 0)
+    word_min = round((seg_secs / 60) * 250)
+    word_max = round((seg_secs / 60) * 300)
+    cue = _fill_live_runtime_prompt(LIVE_RUNTIME_PROMPTS["segment_announce"], {
+        "label": seg.get("label") or "",
+        "side": seg.get("side") or "",
+        "secs": seg_secs,
+        "word_min": word_min,
+        "word_max": word_max,
+    }) + ctx
+    try:
+        await gws.send(json.dumps({"clientContent": {
+            "turns": [{"role": "user", "parts": [{"text": cue}]}],
+            "turnComplete": True,
+        }}))
+        await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
+                                     "speaking": True})
+    except Exception:
+        pass
+
+
+async def _room_on_segment_enter(room):
+    """When the host advances to a new mock segment that belongs to the AI, cue
+    Gemini to speak it. No-op for mode A / free structure."""
+    if room.mode != "B" or room.structure != "mock":
+        return
+    seg = room.current_segment()
+    if not seg:
+        return
+    ai_side = "反方" if room.human_side == "正方" else "正方"
+    if seg.get("side") == ai_side:
+        await _room_cue_ai_segment(room, seg)
 
 
 # --- message handling ------------------------------------------------------
@@ -1133,9 +1651,15 @@ async def _room_handle_audio(room, member, msg):
     seg = room.current_segment()
     if not seg or seg.get("side") == "準備":
         return
+    # Mode B: humans only speak on their own side or the free (雙方) segment; the
+    # AI owns the other side's segments (server cues Gemini there — no human mic).
+    if room.mode == "B" and seg.get("side") not in (room.human_side, "雙方"):
+        return
     active = room.active_speaker()
     if active is not None and member.user_id != active:
         return  # defense-in-depth: drop non-active speaker's audio
+    if room.active_turn_user and room.active_turn_user != member.user_id:
+        return  # only the accepted active turn may send audio
     if room.structure == "free" and member.role in room.side_elapsed_ms:
         used = room.side_elapsed_ms.get(member.role, 0)
         if room.active_turn_side == member.role and room.active_turn_started_ms is not None:
@@ -1145,15 +1669,17 @@ async def _room_handle_audio(room, member, msg):
     data, mime = _audio_fields(msg)
     if not data:
         return
-    if room.mode == "B":
+    await _room_broadcast(
+        room,
+        {"type": "peer_audio", "from": member.user_id, "data": data,
+         "mimeType": mime or "audio/pcm;rate=16000"},
+        exclude=member.user_id,
+    )
+    # Free structure streams the human's audio to Gemini (the AI hears them).
+    # Mock structure is text-cue driven (see _room_cue_ai_segment) — the AI is
+    # cued from the SpeechRecognition transcript, not the raw audio.
+    if room.mode == "B" and room.structure == "free":
         await _room_forward_audio_to_gemini(room, member, data, mime)
-    else:
-        await _room_broadcast(
-            room,
-            {"type": "peer_audio", "from": member.user_id, "data": data,
-             "mimeType": mime or "audio/pcm;rate=16000"},
-            exclude=member.user_id,
-        )
 
 
 async def _room_handle_turn(room, member, speaking):
@@ -1164,6 +1690,31 @@ async def _room_handle_turn(room, member, speaking):
         if room.active_turn_user == member.user_id:
             return
         if room.active_turn_user and room.active_turn_user != member.user_id:
+            await member.ws.send_text(json.dumps({
+                "type": "turn_rejected",
+                "message": "已有成員發言中，請等待對方停止後再開始。",
+            }, ensure_ascii=False))
+            return
+        seg = room.current_segment()
+        if room.mode == "B" and seg and seg.get("side") not in (room.human_side, "雙方"):
+            await member.ws.send_text(json.dumps({
+                "type": "turn_rejected",
+                "message": "呢段輪到 AI 發言。",
+            }, ensure_ascii=False))
+            return
+        active = room.active_speaker()
+        if active is not None and member.user_id != active:
+            await member.ws.send_text(json.dumps({
+                "type": "turn_rejected",
+                "message": "呢段未輪到你嘅辯位發言。",
+            }, ensure_ascii=False))
+            return
+        expected_side = room.expected_turn_side()
+        if expected_side and member.role != expected_side:
+            await member.ws.send_text(json.dumps({
+                "type": "error",
+                "message": f"自由辯論由{expected_side}先發言。",
+            }, ensure_ascii=False))
             return
         if room.structure == "free" and member.role in room.side_elapsed_ms:
             if room.side_elapsed_ms.get(member.role, 0) >= int(room.free_minutes * 60 * 1000):
@@ -1176,6 +1727,8 @@ async def _room_handle_turn(room, member, speaking):
             return
         if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
             room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
+        if (room.current_segment() or {}).get("side") == "雙方" and room.active_turn_side == "正方":
+            room.free_first_done = True
         room.active_turn_user = None
         room.active_turn_side = None
         room.active_turn_started_ms = None
@@ -1183,12 +1736,19 @@ async def _room_handle_turn(room, member, speaking):
         room, {"type": "speaking", "user_id": member.user_id, "speaking": speaking},
     )
     await _room_broadcast(room, room.state_msg())
-    if room.mode == "B" and room.gemini_ws is not None:
+    # Free structure: bracket the human's streamed audio with activity markers so
+    # Gemini generates a rebuttal after each turn.
+    if room.mode == "B" and room.structure == "free" and room.gemini_ws is not None:
         try:
             key = "activityStart" if speaking else "activityEnd"
             await room.gemini_ws.send(json.dumps({"realtimeInput": {key: {}}}))
         except Exception:
             pass
+    # Mock structure: after a human finishes a 雙方 (free-debate) turn, cue the AI
+    # to give a short rebuttal from the transcript.
+    if (room.mode == "B" and room.structure == "mock" and not speaking
+            and (room.current_segment() or {}).get("side") == "雙方"):
+        await _room_cue_ai_segment(room, room.current_segment())
 
 
 async def _room_handle_transcript(room, member, msg):
@@ -1223,45 +1783,64 @@ async def _room_request_judgement(room):
         return
 
     await _room_broadcast(room, {"type": "judgement_pending"})
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-flash:generateContent"
+    prompt_text = build_room_judgement_prompt(
+        room.topic,
+        room.debate_format,
+        room.structure,
+        room.transcript,
     )
     payload = {
         "contents": [{
             "role": "user",
-            "parts": [{"text": build_room_judgement_prompt(
-                room.topic,
-                room.debate_format,
-                room.structure,
-                room.transcript,
-            )}],
+            "parts": [{"text": prompt_text}],
         }],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200},
     }
+    last_error = ""
     try:
         async with httpx.AsyncClient(timeout=45) as client:
-            resp = await client.post(
-                url,
-                params={"key": api_key},
-                json=payload,
-            )
-        if resp.status_code != 200:
-            logger.warning("Room judgement Gemini failed %s: %s", resp.status_code, resp.text[:300])
-            result = "AI 評判暫時失敗，請稍後再試。"
-        else:
-            data = resp.json()
-            parts = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [])
-            )
-            result = "\n".join(str(p.get("text", "")) for p in parts).strip()
-            if not result:
-                result = "AI 評判沒有回傳內容，請稍後再試。"
+            for model in ROOM_JUDGEMENT_MODELS:
+                url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{model}:generateContent"
+                )
+                resp = await client.post(
+                    url,
+                    params={"key": api_key},
+                    json=payload,
+                )
+                if resp.status_code != 200:
+                    try:
+                        err_data = resp.json()
+                        err_msg = err_data.get("error", {}).get("message") or resp.text
+                    except Exception:
+                        err_msg = resp.text
+                    last_error = f"{model} HTTP {resp.status_code}: {str(err_msg)[:220]}"
+                    logger.warning("Room judgement Gemini failed %s", last_error)
+                    continue
+                data = resp.json()
+                parts = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [])
+                )
+                result = "\n".join(str(p.get("text", "")) for p in parts).strip()
+                if result:
+                    break
+                last_error = f"{model}: empty response"
+            else:
+                result = (
+                    "AI 評判暫時失敗。"
+                    + (f"\n原因：{last_error}" if last_error else "")
+                    + "\n請檢查 GEMINI_API_KEY、模型權限或稍後再試。"
+                )
     except Exception as e:
         logger.exception("Room judgement failed: %s", e)
-        result = "AI 評判暫時無法連線，請稍後再試。"
+        result = (
+            "AI 評判暫時無法連線。"
+            f"\n原因：{type(e).__name__}: {str(e)[:220]}"
+            "\n請檢查伺服器網絡或 GEMINI_API_KEY。"
+        )
 
     room.judgement = result
     await _room_broadcast(room, {"type": "judgement", "text": result})
@@ -1281,20 +1860,37 @@ async def _room_handle_message(room, member, msg):
             if all(m.role != side or m.user_id == member.user_id
                    for m in room.members.values()):
                 member.role = side
-                await _room_broadcast(room, {"type": "roster", "roster": room.roster()})
+                await _room_broadcast(room, {
+                    "type": "roster", "roster": room.roster(),
+                    "position_labels": room.position_labels(),
+                    "required_positions": room.required_positions(),
+                })
+        return
+
+    if mtype == "claim_position":
+        if room.mode == "B" and room.structure == "mock" and room.phase == "lobby":
+            try:
+                position = int(msg.get("position") or 0)
+            except Exception:
+                position = 0
+            if position in room.required_positions():
+                if all(not m.connected or m.position != position or m.user_id == member.user_id
+                       for m in room.members.values()):
+                    member.position = position
+                    await _room_broadcast(room, {
+                        "type": "roster", "roster": room.roster(),
+                        "position_labels": room.position_labels(),
+                        "required_positions": room.required_positions(),
+                    })
+                else:
+                    await member.ws.send_text(json.dumps({
+                        "type": "error",
+                        "message": "呢個辯位已經有人選咗。",
+                    }, ensure_ascii=False))
         return
 
     if mtype == "start" and is_host:
-        room.phase = "active"
-        room.seg_index = 0
-        room.seg_started_ms = _now_ms()
-        room.side_elapsed_ms = {"正方": 0, "反方": 0}
-        room.active_turn_user = None
-        room.active_turn_side = None
-        room.active_turn_started_ms = None
-        await _room_start_gemini_if_needed(room)
-        _room_ensure_tick(room)
-        await _room_broadcast(room, room.state_msg())
+        await _room_begin_precheck(room)
         return
 
     if mtype in ("next_segment", "set_segment") and is_host:
@@ -1311,7 +1907,9 @@ async def _room_handle_message(room, member, msg):
         room.active_turn_user = None
         room.active_turn_side = None
         room.active_turn_started_ms = None
+        room.free_first_done = False
         await _room_broadcast(room, room.state_msg())
+        await _room_on_segment_enter(room)
         return
 
     if mtype == "end" and is_host:
@@ -1324,6 +1922,10 @@ async def _room_handle_message(room, member, msg):
 
     if mtype in ("turn_begin", "turn_end"):
         await _room_handle_turn(room, member, mtype == "turn_begin")
+        return
+
+    if mtype == "precheck_result":
+        await _room_handle_precheck_result(room, member, msg)
         return
 
     if mtype == "transcript":
@@ -1390,6 +1992,8 @@ async def room_create(request: Request):
     structure = str(payload.get("structure") or ("mock" if mode == "B" else "free"))
     if structure not in ("free", "mock"):
         structure = "free"
+    if structure == "free" and debate_format not in FREE_DEBATE_FORMATS:
+        raise HTTPException(status_code=400, detail=f"{debate_format}不設自由辯論，請改用完整 Mock。")
     topic = str(payload.get("topic") or "").strip()
     try:
         free_minutes = float(payload.get("free_minutes") or 2.5)
@@ -1397,6 +2001,8 @@ async def room_create(request: Request):
         free_minutes = 2.5
     if mode == "A":
         capacity = 2
+    elif structure == "mock":
+        capacity = 3 if debate_format == "星島" else 4
     else:
         try:
             capacity = max(1, min(4, int(payload.get("capacity") or 4)))
@@ -1443,6 +2049,8 @@ async def room_info(code: str, request: Request):
         "debate_format": room.debate_format, "topic": room.topic,
         "structure": room.structure, "capacity": room.capacity,
         "human_side": room.human_side, "roster": room.roster(),
+        "position_labels": room.position_labels(),
+        "required_positions": room.required_positions(),
     }
 
 
@@ -1457,7 +2065,11 @@ async def room_leave(code: str, request: Request):
             await m.ws.close()
         except Exception:
             pass
-        await _room_broadcast(room, {"type": "roster", "roster": room.roster()})
+        await _room_broadcast(room, {
+            "type": "roster", "roster": room.roster(),
+            "position_labels": room.position_labels(),
+            "required_positions": room.required_positions(),
+        })
     return {"ok": True}
 
 
@@ -1491,7 +2103,7 @@ async def room_ws(websocket: WebSocket, code: str):
 
     existing = room.members.get(user_id)
     if existing is None:
-        if len(room.members) >= room.capacity:
+        if len([m for m in room.members.values() if m.connected]) >= room.capacity:
             try:
                 await websocket.send_text(json.dumps(
                     {"type": "error", "message": "房間已滿"}, ensure_ascii=False))
@@ -1514,6 +2126,18 @@ async def room_ws(websocket: WebSocket, code: str):
         room.members[user_id] = member
     else:
         # reconnect: replace the stale socket, keep the role
+        if not existing.connected and len([m for m in room.members.values() if m.connected]) >= room.capacity:
+            try:
+                await websocket.send_text(json.dumps(
+                    {"type": "error", "message": "房間已滿"}, ensure_ascii=False))
+            except Exception:
+                pass
+            await websocket.close(code=1013)
+            return
+        if existing.position and any(
+                m.connected and m.user_id != existing.user_id and m.position == existing.position
+                for m in room.members.values()):
+            existing.position = None
         existing.ws = websocket
         existing.connected = True
         member = existing
@@ -1523,13 +2147,18 @@ async def room_ws(websocket: WebSocket, code: str):
         "type": "roster", "you": user_id, "mode": room.mode,
         "roster": room.roster(), "topic": room.topic,
         "debate_format": room.debate_format, "structure": room.structure,
+        "position_labels": room.position_labels(),
+        "required_positions": room.required_positions(),
         "is_host": user_id == room.created_by,
         "transcript": room.transcript,
         "judgement": room.judgement,
     }, ensure_ascii=False))
     await websocket.send_text(json.dumps(room.state_msg(), ensure_ascii=False))
-    await _room_broadcast(room, {"type": "roster", "roster": room.roster()},
-                          exclude=user_id)
+    await _room_broadcast(room, {
+        "type": "roster", "roster": room.roster(),
+        "position_labels": room.position_labels(),
+        "required_positions": room.required_positions(),
+    }, exclude=user_id)
 
     try:
         while True:
@@ -1551,7 +2180,11 @@ async def room_ws(websocket: WebSocket, code: str):
     finally:
         member.connected = False
         await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
-        await _room_broadcast(room, {"type": "roster", "roster": room.roster()})
+        await _room_broadcast(room, {
+            "type": "roster", "roster": room.roster(),
+            "position_labels": room.position_labels(),
+            "required_positions": room.required_positions(),
+        })
         _gc_rooms()
 
 

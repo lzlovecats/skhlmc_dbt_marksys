@@ -37,6 +37,7 @@ from schema import (
     TABLE_DEBATERS,
 )
 from debate_timing import get_debate_timer_config, get_full_mock_sequence
+from ai_model_config import DEFAULT_AI_MODEL, AI_MODEL_OPTIONS, NON_MANUAL_MODEL_OPTIONS
 from prompts import (
     SPEECH_REVIEW_SYSTEM_PROMPT,
     QA_REVIEW_SYSTEM_PROMPT,
@@ -105,114 +106,23 @@ AI_PROVIDER_LABELS = {
     "other": "其他",
 }
 
-DEFAULT_AI_MODEL = "Gemini 2.5 Flash"
 AI_ENABLED_PROVIDERS_CONFIG_KEY = "ai_enabled_providers"
 AI_DEFAULT_MODEL_CONFIG_KEY = "ai_default_model"
 GOOGLE_AI_STUDIO_BALANCE_USD_CONFIG_KEY = "google_ai_studio_balance_usd"
 GOOGLE_AI_STUDIO_BALANCE_UPDATED_AT_CONFIG_KEY = "google_ai_studio_balance_updated_at"
 GOOGLE_AI_STUDIO_BALANCE_UPDATED_BY_CONFIG_KEY = "google_ai_studio_balance_updated_by"
-AI_MODEL_OPTIONS = {
-    "Gemini 2.5 Flash": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "api_key": "GEMINI_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": True,
-        "pricing_label": "免費額度 / 收費",
-        "selection_label": "日常練習",
-        "pricing_note": "Provider: Google AI Studio，支援上網搜尋及錄音分析。",
-        "paid_rate_note": "Input US$0.30 / 1M tokens（audio US$1.00 / 1M tokens），output US$2.50 / 1M tokens；Google Search 超額約 US$35 / 1,000 grounded prompts。",
-        "input_price_per_million": 0.30,
-        "audio_input_price_per_million": 1.00,
-        "output_price_per_million": 2.50,
-        "web_search_price_per_call": 0.035,
-        "is_premium": False,
-    },
-    "Gemini 3.5 Flash": {
-        "provider": "gemini",
-        "model": "gemini-3.5-flash",
-        "api_key": "GEMINI_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": True,
-        "pricing_label": "免費額度 / 收費",
-        "selection_label": "高質快速",
-        "pricing_note": "Provider: Google AI Studio，支援上網搜尋及錄音分析。",
-        "paid_rate_note": "Input US$1.50 / 1M tokens，output US$9.00 / 1M tokens；Google Search 超額約 US$14 / 1,000 search queries。",
-        "input_price_per_million": 1.50,
-        "audio_input_price_per_million": 1.50,
-        "output_price_per_million": 9.00,
-        "web_search_price_per_call": 0.014,
-        "is_premium": False,
-    },
-    "Gemini 3.1 Pro": {
-        "provider": "gemini",
-        "model": "gemini-3.1-pro-preview",
-        "api_key": "GEMINI_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": True,
-        "pricing_label": "高級收費",
-        "selection_label": "深入分析",
-        "pricing_note": "Provider: Google AI Studio，支援上網搜尋及錄音分析。",
-        "paid_rate_note": "Input US$2.00 / 1M tokens（prompt >200k：US$4.00），output US$12.00 / 1M tokens（prompt >200k：US$18.00）；Google Search 超額約 US$14 / 1,000 search queries。",
-        "input_price_per_million": 2.00,
-        "audio_input_price_per_million": 2.00,
-        "output_price_per_million": 12.00,
-        "web_search_price_per_call": 0.014,
-        "is_premium": True,
-    },
-    "DeepSeek V4 Pro": {
-        "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-pro",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": False,
-        "supports_web_search": True,
-        "pricing_label": "收費",
-        "selection_label": "平價推理",
-        "pricing_note": "Provider: OpenRouter，支援上網搜尋，不支援錄音分析。",
-        "paid_rate_note": "Input US$0.435 / 1M tokens，output US$0.87 / 1M tokens；OpenRouter fallback web search 約 US$0.005 / 次。",
-        "input_price_per_million": 0.435,
-        "audio_input_price_per_million": None,
-        "output_price_per_million": 0.87,
-        "web_search_price_per_call": 0.005,
-        "is_premium": False,
-    },
-    "Haiku 4.5": {
-        "provider": "openrouter",
-        "model": "anthropic/claude-haiku-4.5",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": False,
-        "supports_web_search": True,
-        "pricing_label": "收費",
-        "selection_label": "第二意見",
-        "pricing_note": "Provider: OpenRouter，支援上網搜尋，不支援錄音分析。",
-        "paid_rate_note": "Input US$1.00 / 1M tokens，output US$5.00 / 1M tokens；OpenRouter web search 約 US$0.01 / 次。",
-        "input_price_per_million": 1.00,
-        "audio_input_price_per_million": None,
-        "output_price_per_million": 5.00,
-        "web_search_price_per_call": 0.01,
-        "is_premium": True,
-    },
-    "GPT-5.4 Mini": {
-        "provider": "openrouter",
-        "model": "openai/gpt-5.4-mini",
-        "api_key": "OPENROUTER_API_KEY",
-        "supports_audio": False,
-        "supports_web_search": True,
-        "pricing_label": "收費",
-        "selection_label": "重要先用",
-        "pricing_note": "Provider: OpenRouter，支援上網搜尋，不支援錄音分析。",
-        "paid_rate_note": "Input US$0.75 / 1M tokens，output US$4.50 / 1M tokens；OpenRouter web search 約 US$0.01 / 次。",
-        "input_price_per_million": 0.75,
-        "audio_input_price_per_million": None,
-        "output_price_per_million": 4.50,
-        "web_search_price_per_call": 0.01,
-        "is_premium": True,
-    },
+
+AI_MODEL_GENERATION_OPTIONS = {
+    **NON_MANUAL_MODEL_OPTIONS,
+    **AI_MODEL_OPTIONS,
 }
 
 
 def _get_model_config(model_label: str | None):
-    return AI_MODEL_OPTIONS.get(model_label or DEFAULT_AI_MODEL, AI_MODEL_OPTIONS[DEFAULT_AI_MODEL])
+    return AI_MODEL_GENERATION_OPTIONS.get(
+        model_label or DEFAULT_AI_MODEL,
+        AI_MODEL_GENERATION_OPTIONS[DEFAULT_AI_MODEL],
+    )
 
 
 def format_ai_model_label(model_label: str) -> str:
@@ -354,7 +264,7 @@ def _estimate_usage_cost(
 
 def _get_model_label_from_config(model_config) -> str:
     model_slug = model_config.get("model")
-    for label, config in AI_MODEL_OPTIONS.items():
+    for label, config in AI_MODEL_GENERATION_OPTIONS.items():
         if config.get("model") == model_slug:
             return label
     return DEFAULT_AI_MODEL

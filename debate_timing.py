@@ -1,4 +1,5 @@
 DEBATE_FORMATS = ["校園隨想", "聯中", "星島", "基本法盃"]
+FREE_DEBATE_FORMATS = ["校園隨想", "聯中"]
 
 
 def _bell(t, rings, label):
