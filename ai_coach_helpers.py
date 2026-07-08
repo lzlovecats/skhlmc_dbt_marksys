@@ -41,8 +41,11 @@ from prompts import (
     SPEECH_REVIEW_SYSTEM_PROMPT,
     QA_REVIEW_SYSTEM_PROMPT,
     build_strategy_prompt,
+    build_strategy_user_prompt,
     WEB_RESEARCH_SYSTEM_PROMPT,
     FACT_CHECK_SYSTEM_PROMPT,
+    build_web_research_user_prompt,
+    build_fact_check_user_prompt,
     build_free_debate_live_prompt,
     build_full_mock_live_prompt,
 )
@@ -1682,14 +1685,13 @@ def brainstorm_strategy(
     model_label: str | None = None,
 ) -> tuple[str, dict | None]:
     model_config = _get_model_config(model_label)
-
-    user_lines = [f"辯題：{topic}", f"立場：{side}", f"賽制：{debate_format}"]
     topic_ctx = _build_topic_context(topic)
-    if topic_ctx:
-        user_lines.append(topic_ctx)
-    user_lines.append("\n請為以上辯題和立場提供完整的比賽策略。")
 
-    return _generate_response(model_config, build_strategy_prompt(debate_format), "\n".join(user_lines))
+    return _generate_response(
+        model_config,
+        build_strategy_prompt(debate_format),
+        build_strategy_user_prompt(topic, side, debate_format, topic_ctx),
+    )
 
 
 def research_web(
@@ -1698,19 +1700,11 @@ def research_web(
     model_label: str | None = None,
 ) -> tuple[str, dict | None]:
     model_config = _get_model_config(model_label)
-    user_text = f"""今日日期：{_today_hk()}
-
-辯題：{topic}
-
-想搵嘅資料：
-{research_need}
-
-請即時上網搜尋最新、可核查資料。每一項可引用資料都要附上來源連結，並標明資料年份、地區或口徑限制。"""
 
     return _generate_web_response(
         model_config,
         WEB_RESEARCH_SYSTEM_PROMPT,
-        user_text,
+        build_web_research_user_prompt(_today_hk(), topic, research_need),
     )
 
 
@@ -1719,15 +1713,9 @@ def fact_check_claim(
     model_label: str | None = None,
 ) -> tuple[str, dict | None]:
     model_config = _get_model_config(model_label)
-    user_text = f"""今日日期：{_today_hk()}
-
-需要核查嘅陳述：
-{statement}
-
-請即時上網搜尋可靠來源，逐項驗證以上陳述嘅真偽。每個判斷都要附上來源連結。"""
 
     return _generate_web_response(
         model_config,
         FACT_CHECK_SYSTEM_PROMPT,
-        user_text,
+        build_fact_check_user_prompt(_today_hk(), statement),
     )

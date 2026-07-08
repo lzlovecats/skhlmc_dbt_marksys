@@ -33,6 +33,7 @@ from debate_timing import (  # pure helpers, no side effects
     get_debate_timer_config,
     DEBATE_FORMATS,
 )
+from prompts import build_room_judgement_prompt
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -980,8 +981,13 @@ class Room:
         self.segments = _build_room_segments(structure, debate_format, free_minutes)
         self.seg_index = 0
         self.seg_started_ms = None
+        self.side_elapsed_ms = {"正方": 0, "反方": 0}
+        self.active_turn_user = None
+        self.active_turn_side = None
+        self.active_turn_started_ms = None
         self.members = {}                # user_id -> RoomMember
         self.transcript = []             # {speaker, side, seg, text}
+        self.judgement = ""
         self.empty_since = None
         self.creator_side = None         # mode A: side the host picked at create
         # mode B / judge (Gemini leg wired in phase 2)
@@ -989,6 +995,7 @@ class Room:
         self.gemini = None               # {tokens, sigs, prompt, model, session_labels}
         self.gemini_ws = None
         self.gemini_task = None
+        self.tick_task = None
         self.lock = asyncio.Lock()
 
     def roster(self):
@@ -1018,6 +1025,8 @@ class Room:
 
     def state_msg(self):
         seg = self.current_segment()
+        now = _now_ms()
+        side_elapsed_ms = dict(self.side_elapsed_ms)
         return {
             "type": "state",
             "phase": self.phase,
@@ -1029,7 +1038,11 @@ class Room:
             "bells": seg.get("bells") if seg else [],
             "active_speaker": self.active_speaker(),
             "seg_started_ms": self.seg_started_ms,
-            "server_now_ms": _now_ms(),
+            "server_now_ms": now,
+            "side_elapsed_ms": side_elapsed_ms,
+            "active_turn_user": self.active_turn_user,
+            "active_turn_side": self.active_turn_side,
+            "active_turn_started_ms": self.active_turn_started_ms,
         }
 
 
@@ -1064,6 +1077,24 @@ async def _room_broadcast(room, msg, exclude=None):
             await m.ws.send_text(text)
         except Exception:
             m.connected = False
+
+
+async def _room_tick(room):
+    try:
+        while room.phase == "active" and ROOMS.get(room.code) is room:
+            await asyncio.sleep(1)
+            if room.phase != "active" or ROOMS.get(room.code) is not room:
+                break
+            await _room_broadcast(room, room.state_msg())
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("room tick failed (%s): %s", room.code, e)
+
+
+def _room_ensure_tick(room):
+    if room.tick_task is None or room.tick_task.done():
+        room.tick_task = asyncio.create_task(_room_tick(room))
 
 
 def _audio_fields(msg):
@@ -1105,6 +1136,12 @@ async def _room_handle_audio(room, member, msg):
     active = room.active_speaker()
     if active is not None and member.user_id != active:
         return  # defense-in-depth: drop non-active speaker's audio
+    if room.structure == "free" and member.role in room.side_elapsed_ms:
+        used = room.side_elapsed_ms.get(member.role, 0)
+        if room.active_turn_side == member.role and room.active_turn_started_ms is not None:
+            used += max(0, _now_ms() - room.active_turn_started_ms)
+        if used >= int(room.free_minutes * 60 * 1000):
+            return
     data, mime = _audio_fields(msg)
     if not data:
         return
@@ -1120,16 +1157,114 @@ async def _room_handle_audio(room, member, msg):
 
 
 async def _room_handle_turn(room, member, speaking):
+    if room.phase != "active":
+        return
+    now = _now_ms()
+    if speaking:
+        if room.active_turn_user == member.user_id:
+            return
+        if room.active_turn_user and room.active_turn_user != member.user_id:
+            return
+        if room.structure == "free" and member.role in room.side_elapsed_ms:
+            if room.side_elapsed_ms.get(member.role, 0) >= int(room.free_minutes * 60 * 1000):
+                return
+        room.active_turn_user = member.user_id
+        room.active_turn_side = member.role
+        room.active_turn_started_ms = now
+    else:
+        if room.active_turn_user != member.user_id:
+            return
+        if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
+            room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
+        room.active_turn_user = None
+        room.active_turn_side = None
+        room.active_turn_started_ms = None
     await _room_broadcast(
         room, {"type": "speaking", "user_id": member.user_id, "speaking": speaking},
-        exclude=member.user_id,
     )
+    await _room_broadcast(room, room.state_msg())
     if room.mode == "B" and room.gemini_ws is not None:
         try:
             key = "activityStart" if speaking else "activityEnd"
             await room.gemini_ws.send(json.dumps({"realtimeInput": {key: {}}}))
         except Exception:
             pass
+
+
+async def _room_handle_transcript(room, member, msg):
+    text_value = str(msg.get("text") or "").strip()
+    if not text_value:
+        return
+    item = {
+        "speaker": member.user_id,
+        "side": member.role or "",
+        "seg": room.seg_index,
+        "label": (room.current_segment() or {}).get("label", ""),
+        "text": text_value[:2000],
+        "created_ms": _now_ms(),
+    }
+    room.transcript.append(item)
+    room.transcript = room.transcript[-80:]
+    await _room_broadcast(room, {"type": "transcript", "item": item})
+
+
+async def _room_request_judgement(room):
+    if not room.transcript:
+        result = "暫時未有逐字稿，AI 評判未能判定哪一方勝出。請先完成發言，或使用支援語音轉文字的瀏覽器。"
+        room.judgement = result
+        await _room_broadcast(room, {"type": "judgement", "text": result})
+        return
+
+    api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
+    if not api_key:
+        result = "未設定 GEMINI_API_KEY，暫時無法使用 AI 評判。"
+        room.judgement = result
+        await _room_broadcast(room, {"type": "judgement", "text": result})
+        return
+
+    await _room_broadcast(room, {"type": "judgement_pending"})
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.5-flash:generateContent"
+    )
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": build_room_judgement_prompt(
+                room.topic,
+                room.debate_format,
+                room.structure,
+                room.transcript,
+            )}],
+        }],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.post(
+                url,
+                params={"key": api_key},
+                json=payload,
+            )
+        if resp.status_code != 200:
+            logger.warning("Room judgement Gemini failed %s: %s", resp.status_code, resp.text[:300])
+            result = "AI 評判暫時失敗，請稍後再試。"
+        else:
+            data = resp.json()
+            parts = (
+                data.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+            result = "\n".join(str(p.get("text", "")) for p in parts).strip()
+            if not result:
+                result = "AI 評判沒有回傳內容，請稍後再試。"
+    except Exception as e:
+        logger.exception("Room judgement failed: %s", e)
+        result = "AI 評判暫時無法連線，請稍後再試。"
+
+    room.judgement = result
+    await _room_broadcast(room, {"type": "judgement", "text": result})
 
 
 async def _room_handle_message(room, member, msg):
@@ -1153,7 +1288,12 @@ async def _room_handle_message(room, member, msg):
         room.phase = "active"
         room.seg_index = 0
         room.seg_started_ms = _now_ms()
+        room.side_elapsed_ms = {"正方": 0, "反方": 0}
+        room.active_turn_user = None
+        room.active_turn_side = None
+        room.active_turn_started_ms = None
         await _room_start_gemini_if_needed(room)
+        _room_ensure_tick(room)
         await _room_broadcast(room, room.state_msg())
         return
 
@@ -1168,17 +1308,57 @@ async def _room_handle_message(room, member, msg):
         idx = max(0, min(idx, len(room.segments) - 1))
         room.seg_index = idx
         room.seg_started_ms = _now_ms()
+        room.active_turn_user = None
+        room.active_turn_side = None
+        room.active_turn_started_ms = None
         await _room_broadcast(room, room.state_msg())
         return
 
     if mtype == "end" and is_host:
         room.phase = "ended"
+        if room.tick_task is not None and not room.tick_task.done():
+            room.tick_task.cancel()
         await _room_close_gemini(room)
         await _room_broadcast(room, {"type": "ended"})
         return
 
     if mtype in ("turn_begin", "turn_end"):
         await _room_handle_turn(room, member, mtype == "turn_begin")
+        return
+
+    if mtype == "transcript":
+        await _room_handle_transcript(room, member, msg)
+        return
+
+    if mtype == "request_judgement" and is_host:
+        asyncio.create_task(_room_request_judgement(room))
+        return
+
+    if mtype == "test_ping":
+        await member.ws.send_text(json.dumps({
+            "type": "test_pong",
+            "client_ts": msg.get("client_ts"),
+            "server_now_ms": _now_ms(),
+        }, ensure_ascii=False))
+        return
+
+    if mtype == "test_audio":
+        data, mime = _audio_fields(msg)
+        if data:
+            await _room_broadcast(
+                room,
+                {"type": "test_audio", "from": member.user_id, "data": data,
+                 "mimeType": mime or "audio/pcm;rate=16000"},
+                exclude=member.user_id,
+            )
+        return
+
+    if mtype == "test_received":
+        await _room_broadcast(
+            room,
+            {"type": "test_received", "from": member.user_id,
+             "source": msg.get("source")},
+        )
         return
 
     if mtype == "chat":
@@ -1230,7 +1410,7 @@ async def room_create(request: Request):
             code = candidate
             break
     if code is None:
-        raise HTTPException(status_code=503, detail="無法產生房號，請再試")
+        raise HTTPException(status_code=503, detail="未能產生房間代碼，請再試。")
 
     room = Room(code, mode, user_id, debate_format, topic, structure, free_minutes, capacity)
     if mode == "A":
@@ -1257,7 +1437,7 @@ async def room_info(code: str, request: Request):
     _require_committee_user(request)
     room = ROOMS.get((code or "").upper())
     if not room or room.phase == "ended":
-        raise HTTPException(status_code=404, detail="房間唔存在或已結束")
+        raise HTTPException(status_code=404, detail="房間不存在或已結束")
     return {
         "ok": True, "code": room.code, "mode": room.mode, "phase": room.phase,
         "debate_format": room.debate_format, "topic": room.topic,
@@ -1286,7 +1466,7 @@ async def room_transcript(code: str, request: Request):
     _require_committee_user(request)
     room = ROOMS.get((code or "").upper())
     if not room:
-        raise HTTPException(status_code=404, detail="房間唔存在")
+        raise HTTPException(status_code=404, detail="房間不存在")
     return {"ok": True, "topic": room.topic, "debate_format": room.debate_format,
             "transcript": room.transcript}
 
@@ -1344,6 +1524,8 @@ async def room_ws(websocket: WebSocket, code: str):
         "roster": room.roster(), "topic": room.topic,
         "debate_format": room.debate_format, "structure": room.structure,
         "is_host": user_id == room.created_by,
+        "transcript": room.transcript,
+        "judgement": room.judgement,
     }, ensure_ascii=False))
     await websocket.send_text(json.dumps(room.state_msg(), ensure_ascii=False))
     await _room_broadcast(room, {"type": "roster", "roster": room.roster()},
