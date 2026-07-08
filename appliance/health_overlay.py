@@ -50,14 +50,33 @@ class Overlay:
         self.dot = self.canvas.create_oval(2, 2, 22, 22,
                                            fill=COLORS["UNKNOWN"], outline="")
 
-        tk.Label(root, text="賽務專用機", fg="white", bg="#111111",
-                 font=("Sans", 11, "bold")).place(x=48, y=12)
+        self.title_lbl = tk.Label(root, text="Health Check", fg="white", bg="#111111",
+                                  font=("Sans", 11, "bold"))
+        self.title_lbl.place(x=48, y=12)
 
         self.lines = tk.Label(root, text="讀取中…", fg="#dddddd", bg="#111111",
                               justify="left", anchor="w", font=("Sans", 9))
         self.lines.place(x=14, y=46)
 
+        # Drag-to-move: overrideredirect() removed the title bar, so let the
+        # operator reposition the light by dragging anywhere on it. Must bind on
+        # every child too — clicks land on them and never reach the root window.
+        self._drag_off = (0, 0)
+        for widget in (root, self.canvas, self.title_lbl, self.lines):
+            widget.configure(cursor="fleur")
+            widget.bind("<Button-1>", self._start_move)
+            widget.bind("<B1-Motion>", self._on_move)
+
         self.refresh()
+
+    def _start_move(self, event):
+        self._drag_off = (event.x_root - self.root.winfo_x(),
+                          event.y_root - self.root.winfo_y())
+
+    def _on_move(self, event):
+        x = event.x_root - self._drag_off[0]
+        y = event.y_root - self._drag_off[1]
+        self.root.geometry(f"+{x}+{y}")
 
     def refresh(self):
         data = None
@@ -75,8 +94,8 @@ class Overlay:
             backup = data.get("backup", {})
             disk = data.get("disk", {})
             self.lines.config(text=(
-                f"App: {app.get('status', '?')}    碟: {disk.get('free_pct', '?')}% 剩\n"
-                f"備份: {backup.get('status', '?')} ({_age_text(backup.get('age_min'))})"
+                f"App: {app.get('status', '?')}    Disk: {disk.get('free_pct', '?')}% Left\n"
+                f"Backup: {backup.get('status', '?')} ({_age_text(backup.get('age_min'))})"
             ))
         else:
             self.canvas.itemconfig(self.dot, fill=COLORS["UNKNOWN"])

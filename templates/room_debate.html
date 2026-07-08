@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      "PingFang HK", "Noto Sans CJK HK", "Microsoft JhengHei", sans-serif;
+    background: #0e1117; color: #e6e6e6; padding: 12px;
+  }
+  .card { background:#161b22; border:1px solid #262d38; border-radius:12px;
+    padding:14px 16px; margin-bottom:12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .grow { flex:1 1 auto; }
+  h2 { margin:0 0 4px; font-size:18px; }
+  .muted { color:#8b949e; font-size:13px; }
+  .code {
+    font-size:30px; font-weight:700; letter-spacing:5px; color:#58a6ff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  button {
+    font-size:15px; padding:9px 16px; border-radius:9px; border:1px solid #30363d;
+    background:#21262d; color:#e6e6e6; cursor:pointer; transition:.12s;
+  }
+  button:hover:not(:disabled) { background:#30363d; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.primary { background:#238636; border-color:#2ea043; }
+  button.primary:hover:not(:disabled) { background:#2ea043; }
+  button.warn { background:#3d1f1f; border-color:#6e2b2b; }
+  button.pick.active { background:#1f6feb; border-color:#388bfd; }
+  .talk {
+    width:100%; font-size:20px; font-weight:700; padding:22px; margin-top:8px;
+    background:#1f6feb; border-color:#388bfd;
+  }
+  .talk.live { background:#da3633; border-color:#f85149; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.7; } }
+  .timer { font-size:46px; font-weight:800; font-variant-numeric:tabular-nums;
+    text-align:center; margin:6px 0; }
+  .seg { text-align:center; font-size:17px; font-weight:600; }
+  .sidechip { display:inline-block; padding:2px 10px; border-radius:20px;
+    font-size:13px; margin-left:6px; }
+  .side-正方 { background:#132e1c; color:#3fb950; }
+  .side-反方 { background:#2e1616; color:#f85149; }
+  .side-雙方, .side-準備 { background:#22272e; color:#8b949e; }
+  ul.roster { list-style:none; margin:6px 0 0; padding:0; }
+  ul.roster li { padding:6px 8px; border-radius:8px; background:#0d1117;
+    margin-bottom:5px; display:flex; gap:8px; align-items:center; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#3fb950; }
+  .dot.off { background:#6e7681; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:6px; background:#30363d; }
+  .meterwrap { height:8px; background:#0d1117; border-radius:5px; overflow:hidden;
+    margin-top:8px; }
+  .meter { height:100%; width:0%; background:#3fb950; transition:width .08s; }
+  #log { font-size:12px; color:#8b949e; max-height:120px; overflow:auto;
+    white-space:pre-wrap; line-height:1.5; }
+  .hidden { display:none !important; }
+  .status { font-size:13px; color:#d29922; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="row">
+      <div class="grow">
+        <h2>🎧 聯機練習室 <span id="modeLabel" class="muted"></span></h2>
+        <div class="muted" id="topicLine"></div>
+      </div>
+      <div style="text-align:right">
+        <div class="muted">房號</div>
+        <div class="code" id="codeText">-----</div>
+      </div>
+    </div>
+    <div class="status" id="connStatus">連接中…</div>
+  </div>
+
+  <div class="card">
+    <div class="muted">參加者</div>
+    <ul class="roster" id="roster"></ul>
+    <div class="row" id="rolePick" style="margin-top:8px">
+      <span class="muted">揀立場：</span>
+      <button class="pick" data-side="正方">正方</button>
+      <button class="pick" data-side="反方">反方</button>
+    </div>
+  </div>
+
+  <div class="card" id="stage">
+    <div class="seg" id="segLabel">等待開始…</div>
+    <div class="timer" id="timer">00:00</div>
+    <div class="muted" id="segSub" style="text-align:center"></div>
+    <div class="meterwrap"><div class="meter" id="meter"></div></div>
+    <button class="talk" id="talkBtn" disabled>按住講話</button>
+    <div class="status" id="turnHint" style="text-align:center;margin-top:6px"></div>
+  </div>
+
+  <div class="card" id="hostControls">
+    <div class="muted" style="margin-bottom:6px">主持控制</div>
+    <div class="row">
+      <button class="primary" id="startBtn">開始</button>
+      <button id="prevBtn">上一段</button>
+      <button id="nextBtn">下一段 ▶</button>
+      <button class="warn" id="endBtn">結束</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="muted">狀態記錄</div>
+    <div id="log"></div>
+  </div>
+
+<script>
+  // ── injected by _render_room_debate_component ──
+  const ROOM_CODE = __ROOM_CODE__;
+  const ROOM_WS_BASE = __ROOM_WS_BASE__;
+  const MODE = __MODE__;                 // "A" | "B"
+  const BELL_SRC = __BELL_SRC__;
+  const BELL_VOLUME = 0.9;
+
+  // ── state ──
+  let ws = null, myUid = null, isHost = false, myRole = null;
+  let phase = "lobby", segIndex = 0, segTotal = 0, segLabel = "", segSide = "";
+  let segSeconds = 0, segBells = [], segStartedMs = null, activeSpeaker = null;
+  let serverOffset = 0;                  // serverNow = Date.now() + serverOffset
+  let firedBells = new Set();
+  let isRecording = false, micReady = false;
+  let stream = null, inputCtx = null, sourceNode = null, processor = null;
+  let outputCtx = null, playAt = 0;
+  let bellCtx = null, bellBuffer = null, bellLoading = null;
+
+  const $ = (id) => document.getElementById(id);
+  function log(msg) {
+    const el = $("log");
+    el.textContent += (el.textContent ? "\n" : "") + msg;
+    el.scrollTop = el.scrollHeight;
+  }
+  function setConn(txt) { $("connStatus").textContent = txt; }
+
+  // ── committee token from parent app (same as live_debate authToken) ──
+  function authToken() {
+    try {
+      const t = window.parent && window.parent.localStorage
+        ? window.parent.localStorage.getItem("committee_user") : "";
+      if (t) return t;
+    } catch (e) {}
+    try { return window.localStorage.getItem("committee_user") || ""; }
+    catch (e) { return ""; }
+  }
+  function wsBase() {
+    if (ROOM_WS_BASE) return ROOM_WS_BASE;
+    try {
+      const loc = window.parent.location;
+      return (loc.protocol === "https:" ? "wss:" : "ws:") + "//" + loc.host + "/room";
+    } catch (e) {}
+    return (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/room";
+  }
+
+  // ── audio helpers (copied from live_debate.html) ──
+  function downsampleBuffer(buffer, inputRate, outputRate) {
+    if (outputRate === inputRate) return buffer;
+    const ratio = inputRate / outputRate;
+    const newLength = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) result[i] = buffer[Math.floor(i * ratio)] || 0;
+    return result;
+  }
+  function floatTo16BitPCM(float32) {
+    const pcm = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return pcm;
+  }
+  function bytesToBase64(bytes) {
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk)
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return btoa(binary);
+  }
+  function pcmBase64ToFloat32(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const view = new DataView(bytes.buffer);
+    const samples = new Float32Array(bytes.byteLength / 2);
+    for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+    return samples;
+  }
+  function playPcm(base64, mimeType) {
+    if (!outputCtx) outputCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (outputCtx.state === "suspended") outputCtx.resume();
+    const m = String(mimeType || "").match(/rate=(\d+)/);
+    const sampleRate = m ? parseInt(m[1], 10) : 24000;
+    const samples = pcmBase64ToFloat32(base64);
+    if (!samples.length) return;
+    const buffer = outputCtx.createBuffer(1, samples.length, sampleRate);
+    buffer.copyToChannel(samples, 0);
+    const src = outputCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(outputCtx.destination);
+    playAt = Math.max(playAt, outputCtx.currentTime);
+    src.start(playAt);
+    playAt += buffer.duration;
+  }
+  async function startMic() {
+    if (micReady) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      throw new Error("此瀏覽器不支援麥克風錄音。");
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    inputCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await inputCtx.resume();
+    sourceNode = inputCtx.createMediaStreamSource(stream);
+    processor = inputCtx.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (event) => {
+      if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const raw = event.inputBuffer.getChannelData(0);
+      let peak = 0;
+      for (let i = 0; i < raw.length; i++) peak = Math.max(peak, Math.abs(raw[i]));
+      $("meter").style.width = Math.min(100, Math.round(peak * 150)) + "%";
+      const down = downsampleBuffer(raw, inputCtx.sampleRate, 16000);
+      const pcm = floatTo16BitPCM(down);
+      ws.send(JSON.stringify({
+        type: "audio",
+        data: bytesToBase64(new Uint8Array(pcm.buffer)),
+        mimeType: "audio/pcm;rate=16000"
+      }));
+    };
+    sourceNode.connect(processor);
+    processor.connect(inputCtx.destination);
+    micReady = true;
+  }
+
+  // ── bells (copied/adapted from live_debate.html) ──
+  function getBellCtx() {
+    if (!bellCtx) bellCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (bellCtx.state === "suspended") bellCtx.resume();
+    return bellCtx;
+  }
+  function loadBell() {
+    if (!BELL_SRC) return Promise.resolve(null);
+    if (!bellLoading) {
+      bellLoading = fetch(BELL_SRC).then(r => r.arrayBuffer())
+        .then(a => getBellCtx().decodeAudioData(a))
+        .then(b => { bellBuffer = b; return b; }).catch(() => null);
+    }
+    return bellLoading;
+  }
+  function playTone(count) {
+    const ctx = getBellCtx();
+    for (let i = 0; i < count; i++) {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.8);
+      gain.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + i * 0.8 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.8 + 0.28);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + i * 0.8); osc.stop(ctx.currentTime + i * 0.8 + 0.3);
+    }
+  }
+  async function playBell(count) {
+    const ctx = getBellCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+    if (!bellBuffer) await loadBell();
+    if (!bellBuffer) { playTone(count); return; }
+    for (let i = 0; i < count; i++) {
+      const src = ctx.createBufferSource(), gain = ctx.createGain();
+      src.buffer = bellBuffer; gain.gain.value = BELL_VOLUME;
+      src.connect(gain); gain.connect(ctx.destination);
+      src.start(ctx.currentTime + i * 0.8);
+    }
+  }
+  function fireBellOnce(key, rings) {
+    if (firedBells.has(key)) return;
+    firedBells.add(key);
+    playBell(rings);
+  }
+  function formatTime(sec) {
+    const m = Math.max(0, Math.floor(sec / 60)), s = Math.max(0, Math.floor(sec % 60));
+    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+  }
+
+  // ── server-authoritative timer follower ──
+  function serverNow() { return Date.now() + serverOffset; }
+  function segElapsed() {
+    if (phase !== "active" || segStartedMs == null) return 0;
+    return (serverNow() - segStartedMs) / 1000;
+  }
+  function tick() {
+    if (phase !== "active" || segStartedMs == null) return;
+    const elapsed = segElapsed();
+    $("timer").textContent = formatTime(elapsed);
+    segBells.forEach((b, i) => {
+      if (elapsed >= Number(b.t || 0)) fireBellOnce("b" + segIndex + "-" + i, Number(b.rings || 1));
+    });
+    const over = segSeconds && elapsed >= segSeconds;
+    $("timer").style.color = over ? "#f85149" : "#e6e6e6";
+  }
+  setInterval(tick, 250);
+
+  // ── UI derivation ──
+  function canSpeak() {
+    if (phase !== "active" || segSide === "準備") return false;
+    if (activeSpeaker == null) return segSide === "雙方";   // free debate: both open
+    return activeSpeaker === myUid;
+  }
+  function refreshTalk() {
+    const btn = $("talkBtn");
+    const ok = canSpeak();
+    btn.disabled = !ok;
+    if (!ok && isRecording) stopTalk();
+    if (phase !== "active") { $("turnHint").textContent = ""; return; }
+    if (ok) $("turnHint").textContent = "輪到你 — 按住講話";
+    else if (segSide === "準備") $("turnHint").textContent = "準備時間";
+    else $("turnHint").textContent = "等待對方發言…";
+  }
+  function renderRoster(list) {
+    const ul = $("roster"); ul.innerHTML = "";
+    (list || []).forEach(m => {
+      const li = document.createElement("li");
+      const nm = m.user_id === myUid ? (m.user_id + "（你）") : m.user_id;
+      li.innerHTML = '<span class="dot' + (m.connected ? "" : " off") + '"></span>' +
+        '<span class="grow">' + nm + '</span>' +
+        (m.role ? '<span class="sidechip side-' + m.role + '">' + m.role + '</span>' : "") +
+        (m.is_host ? '<span class="badge">主持</span>' : "");
+      ul.appendChild(li);
+      if (m.user_id === myUid && m.role) myRole = m.role;
+    });
+  }
+  function applyState(s) {
+    phase = s.phase; segIndex = s.seg_index; segTotal = s.seg_total;
+    segLabel = s.seg_label || ""; segSide = s.side || "";
+    segSeconds = s.seconds || 0; segBells = s.bells || [];
+    activeSpeaker = s.active_speaker;
+    if (s.server_now_ms) serverOffset = s.server_now_ms - Date.now();
+    if (s.seg_started_ms != null && s.seg_started_ms !== segStartedMs) firedBells = new Set();
+    segStartedMs = s.seg_started_ms;
+    const chip = segSide ? ' <span class="sidechip side-' + segSide + '">' + segSide + '</span>' : "";
+    $("segLabel").innerHTML = (phase === "lobby" ? "等待主持開始…" :
+      (phase === "ended" ? "已結束" : segLabel + chip));
+    $("segSub").textContent = (phase === "active" && segTotal > 1)
+      ? ("第 " + (segIndex + 1) + " / " + segTotal + " 段") : "";
+    if (phase !== "active") { $("timer").textContent = "00:00"; }
+    $("rolePick").classList.toggle("hidden", MODE !== "A" || phase !== "lobby");
+    refreshTalk();
+  }
+
+  // ── talk (push to talk) ──
+  async function startTalk() {
+    if (!canSpeak() || isRecording) return;
+    try { await startMic(); } catch (e) { log("麥克風錯誤：" + e.message); return; }
+    isRecording = true;
+    $("talkBtn").classList.add("live");
+    $("talkBtn").textContent = "講話中…（放開結束）";
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_begin" }));
+  }
+  function stopTalk() {
+    if (!isRecording) return;
+    isRecording = false;
+    $("meter").style.width = "0%";
+    $("talkBtn").classList.remove("live");
+    $("talkBtn").textContent = "按住講話";
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_end" }));
+  }
+
+  // ── websocket ──
+  function connect() {
+    const token = authToken();
+    if (!token) { setConn("未登入，無法連接。"); return; }
+    if (!ROOM_CODE) { setConn("未有房號。"); return; }
+    const url = wsBase() + "/" + ROOM_CODE + "?u=" + encodeURIComponent(token);
+    ws = new WebSocket(url);
+    ws.onopen = () => { setConn("已連接 ✅"); };
+    ws.onclose = (ev) => {
+      setConn("連接中斷（" + ev.code + "）。" + (ev.code === 1008 ? "房間唔存在或未登入。" : "5 秒後重試…"));
+      if (ev.code !== 1008 && ev.code !== 1013) setTimeout(connect, 5000);
+    };
+    ws.onerror = () => { setConn("連接錯誤。"); };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      handle(msg);
+    };
+  }
+  function handle(msg) {
+    switch (msg.type) {
+      case "roster":
+        if (msg.you) myUid = msg.you;
+        if (typeof msg.is_host === "boolean") { isHost = msg.is_host; $("hostControls").classList.toggle("hidden", !isHost); }
+        if (msg.topic != null) $("topicLine").textContent = msg.topic ? ("辯題：" + msg.topic) : "";
+        renderRoster(msg.roster);
+        break;
+      case "state": applyState(msg); break;
+      case "peer_audio": if (msg.from !== myUid) playPcm(msg.data, msg.mimeType); break;
+      case "serverContent": break;   // mode B (phase 2) handles Gemini audio
+      case "speaking":
+        log((msg.user_id || "對方") + (msg.speaking ? " 開始發言" : " 發言完畢"));
+        break;
+      case "peer_left": log((msg.user_id || "有人") + " 離開了"); break;
+      case "ended": setConn("練習已結束。"); phase = "ended"; applyState({ phase: "ended", seg_index: 0, seg_total: 0 }); break;
+      case "error": log("⚠️ " + (msg.message || "錯誤")); setConn(msg.message || "錯誤"); break;
+      case "chat": log("💬 " + (msg.from || "") + "：" + (msg.text || "")); break;
+    }
+  }
+
+  // ── wire up ──
+  $("codeText").textContent = ROOM_CODE || "-----";
+  $("modeLabel").textContent = MODE === "B" ? "· 多人對 AI" : "· 真人對真人";
+  const talkBtn = $("talkBtn");
+  talkBtn.addEventListener("mousedown", startTalk);
+  talkBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startTalk(); }, { passive: false });
+  window.addEventListener("mouseup", stopTalk);
+  talkBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopTalk(); }, { passive: false });
+  document.querySelectorAll("#rolePick .pick").forEach(b =>
+    b.addEventListener("click", () => {
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: "claim_role", side: b.dataset.side }));
+    }));
+  $("startBtn").addEventListener("click", () => sendHost("start"));
+  $("nextBtn").addEventListener("click", () => sendHost("next_segment"));
+  $("prevBtn").addEventListener("click", () => ws && ws.send(JSON.stringify({ type: "set_segment", index: Math.max(0, segIndex - 1) })));
+  $("endBtn").addEventListener("click", () => { if (confirm("結束呢節練習？")) sendHost("end"); });
+  function sendHost(type) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type })); }
+
+  loadBell();
+  connect();
+</script>
+</body>
+</html>
