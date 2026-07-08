@@ -315,6 +315,36 @@ def build_vote_bank_analysis_prompt(bank_summary: str, topic_lines: list[str]) -
 請分析呢個辯題庫嘅整體狀況，並俾出未來方向同即時可做嘅建議。"""
 
 
+VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT = """你是聖呂中辯的投票數據分析員。請使用粵語書面語，根據所有歷史投票數據，分析整體委員會投票傾向及各委員偏好。
+
+請涵蓋以下幾方面，用小標題分段、重點可用列點：
+1. 整體委員會取向：通過率、反對率、罷免取向、參與情況；
+2. 類別／難度偏好：哪些類別或難度較易獲支持或被反對；
+3. 各委員偏好：參與率、同意率、較常支持／反對的方向；
+4. 風險及限制：數據不足、偏差、少數活躍委員是否主導結果；
+5. 可行建議：如何改善投票參與、提案質素及辯題庫方向。
+回覆要精簡、有條理、可執行；不要臆測數據以外的個人動機。"""
+
+
+def build_vote_history_analysis_prompt(overall_summary: str, member_lines: list[str], category_lines: list[str], reason_lines: list[str]) -> str:
+    member_text = chr(10).join(member_lines) if member_lines else "暫時未有委員投票紀錄。"
+    category_text = chr(10).join(category_lines) if category_lines else "暫時未有類別／難度統計。"
+    reason_text = chr(10).join(reason_lines) if reason_lines else "暫時未有反對原因統計。"
+    return f"""歷史投票整體摘要：
+{overall_summary}
+
+各委員投票偏好摘要：
+{member_text}
+
+類別／難度投票統計：
+{category_text}
+
+反對原因統計：
+{reason_text}
+
+請分析整體委員會及各委員的投票偏好，並提出改善投票參與及提案質素的建議。"""
+
+
 # ─────────────────────────────────────────────────────────────
 # Gemini Live 陪練 system prompt
 # ─────────────────────────────────────────────────────────────
