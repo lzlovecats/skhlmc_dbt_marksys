@@ -60,7 +60,7 @@ from debate_timing import (
     full_mock_total_seconds,
     split_mock_into_sessions,
 )
-from prompts import LIVE_RUNTIME_PROMPTS
+from prompts import LIVE_RUNTIME_PROMPTS, build_live_research_need_prompt
 
 
 def _format_hkd(amount) -> str:
@@ -112,16 +112,7 @@ def _trim_live_research(text: str, max_chars: int = 4500) -> str:
 
 
 def _prepare_live_research(topic: str, user_side: str, ai_side: str, debate_format: str, mode_label: str, model_label: str, user_id: str) -> str:
-    research_need = f"""請為{mode_label}陪練準備可直接用於即場反駁的資料。
-AI 立場：{ai_side}
-用戶立場：{user_side}
-賽制：{debate_format}
-
-請重點搜尋：
-1. {ai_side}可用的最新數據、案例、政策或研究；
-2. 可攻擊{user_side}主線的反例、代價、執行漏洞；
-3. 可在自由辯論追問的尖銳問題；
-4. 來源年份、地區和限制。"""
+    research_need = build_live_research_need_prompt(mode_label, user_side, ai_side, debate_format)
     result, actual_usage = research_web(
         topic=topic,
         research_need=research_need,
@@ -195,8 +186,8 @@ def _render_live_debate_component(
 
 
 def _room_api_base() -> str:
-    """聯機房間狀態住喺 proxy 進程（同 Streamlit 唔同進程），要經 HTTP 調用。
-    容器內 proxy 聽 $PORT；本地無 proxy 時可用 ROOM_API_BASE 覆寫。"""
+    """連線房間狀態位於 proxy 進程（與 Streamlit 不同進程），需經 HTTP 調用。
+    容器內 proxy 監聽 $PORT；本地沒有 proxy 時可用 ROOM_API_BASE 覆寫。"""
     override = os.getenv("ROOM_API_BASE")
     if override:
         return override.rstrip("/")
@@ -205,7 +196,7 @@ def _room_api_base() -> str:
 
 
 def _room_api_post(path: str, payload: dict, user_id: str):
-    """以委員 Bearer token 調用 proxy 嘅房間 API，回傳 (ok, data_or_message)。"""
+    """以委員 Bearer token 調用 proxy 的房間 API，回傳 (ok, data_or_message)。"""
     try:
         token = committee_bearer_token(user_id)
     except Exception as e:
@@ -344,7 +335,7 @@ st.header("✨AI 辯論易")
 render_page_guidance(
     [
         "使用「練習發言」輸入文字稿或錄音，AI 會按照正式評分標準提供反饋。",
-        "使用「主線策劃」模式，AI 可根據辯題及立場生成論點及應對策略。",
+        "使用「主線策劃」模式，AI 可根據辯題及你的立場生成論點及應對策略。",
         "使用「搵料易」模式，AI 會即時搜尋網上資料並附上來源。",
         "使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。",
     ],
@@ -407,7 +398,7 @@ def format_ai_coach_tab(tab_name):
     if tab_name == "full_mock":
         return "🏟️ 打Mock"
     if tab_name == "live_room":
-        return "🎧 聯機練習"
+        return "🎧 連線練習"
     return "💲AI基金"
 
 
@@ -472,12 +463,12 @@ if selected_tab == "review":
                     st.caption(f"反方：{m['con_team']}")
 
             review_side = st.radio(
-                "立場", ["正方", "反方"], horizontal=True, key="review_side"
+                "你的立場", ["正方", "反方"], horizontal=True, key="review_side"
             )
     else:
         manual_topic = st.text_input("辯題", key="review_manual_topic")
         review_side = st.radio(
-            "立場", ["正方", "反方"], horizontal=True, key="review_side_manual"
+            "你的立場", ["正方", "反方"], horizontal=True, key="review_side_manual"
         )
 
     is_manual_review = source == "手動輸入"
@@ -668,7 +659,7 @@ if selected_tab == "review":
         elif not review_text_for_ai and not has_review_audio:
             st.warning("請輸入文字稿或錄音。")
         elif not review_side:
-            st.warning("請選擇立場。")
+            st.warning("請選擇你的立場。")
         elif source == "手動輸入" and not manual_topic:
             st.warning("請輸入辯題。")
         else:
@@ -747,7 +738,7 @@ if selected_tab == "strategy":
         topic_text = st.text_input("輸入辯題", key="strategy_manual_topic")
 
     strategy_side = st.radio(
-        "立場", ["正方", "反方"], horizontal=True, key="strategy_side"
+        "你的立場", ["正方", "反方"], horizontal=True, key="strategy_side"
     )
     strategy_debate_format = st.selectbox(
         "賽制", options=DEBATE_FORMATS, key="strategy_debate_format"
@@ -907,7 +898,7 @@ if selected_tab == "free_debate":
         free_topic = st.text_input("辯題", key="free_debate_live_topic")
 
     free_side = st.radio(
-        "立場",
+        "你的立場",
         ["正方", "反方"],
         horizontal=True,
         key="free_debate_live_side",
@@ -1068,7 +1059,7 @@ if selected_tab == "full_mock":
         mock_topic = st.text_input("辯題", key="full_mock_topic")
 
     mock_side = st.radio(
-        "立場",
+        "你的立場",
         ["正方", "反方"],
         horizontal=True,
         key="full_mock_side",
@@ -1200,13 +1191,13 @@ if selected_tab == "full_mock":
             del st.session_state["full_mock_live_session"]
             st.rerun()
 
-# ─── Tab 7: 聯機練習 ───────────────────────────────────────────────
+# ─── Tab 7: 連線練習 ───────────────────────────────────────────────
 
 if selected_tab == "live_room":
-    st.subheader("🎧 聯機練習（Beta）")
+    st.subheader("🎧 連線練習（Beta）")
     st.caption(
-        "同其他委員即時聯機語音練習。模式 A：真人對真人（1 對 1），AI 做評判；"
-        "模式 B：多人（1–4）一齊對 AI 練習。用房號加入同一場。"
+        "與其他委員即時連線練習。模式 A：真人對真人（1 對 1），AI 擔任評判；"
+        "模式 B：多人（1–4）一起對 AI 練習。使用房間代碼加入同一場練習。"
     )
 
     active_room = st.session_state.get("live_room")
@@ -1214,10 +1205,10 @@ if selected_tab == "live_room":
         mode_label = "多人對 AI" if active_room["mode"] == "B" else "真人對真人"
         st.success(
             f"你已在房間 **{active_room['code']}**（{mode_label}）。"
-            "將房號分享畀其他委員，喺「加入房間」輸入即可。"
+            "請將房間代碼分享給其他委員，對方在「加入房間」輸入即可。"
         )
         if active_room["mode"] == "B":
-            st.info("模式 B 嘅 AI 對手功能建置中（Phase 2）；目前可測試多人連線、輪流同計時。")
+            st.info("模式 B 的 AI 對手功能開發中（Phase 2）；目前可先測試多人連線、輪流發言及計時。")
         _render_room_debate_component(active_room["code"], active_room["mode"])
         if st.button("離開房間", key="live_room_leave"):
             _room_api_post(f"/api/room/{active_room['code']}/leave", {}, user_id)
@@ -1225,15 +1216,15 @@ if selected_tab == "live_room":
             st.rerun()
     else:
         action = st.radio(
-            "要做咩？", ["建立房間", "加入房間"], horizontal=True, key="live_room_action"
+            "請選擇操作", ["建立房間", "加入房間"], horizontal=True, key="live_room_action"
         )
 
         if action == "加入房間":
-            join_code = st.text_input("房號", key="live_room_join_code", max_chars=8)
+            join_code = st.text_input("房間代碼", key="live_room_join_code", max_chars=8)
             if st.button("加入房間", type="primary", key="live_room_join_btn"):
                 code = (join_code or "").strip().upper()
                 if not code:
-                    st.warning("請輸入房號。")
+                    st.warning("請輸入房間代碼。")
                 else:
                     ok, data = _room_api_get(f"/api/room/{code}", user_id)
                     if not ok:
@@ -1260,13 +1251,61 @@ if selected_tab == "live_room":
                 "形式", ["自由辯論", "完整 Mock"], horizontal=True, key="live_room_structure"
             )
             structure = "free" if structure_label == "自由辯論" else "mock"
-            room_topic = st.text_input("辯題（可選）", key="live_room_topic")
+            room_topic_source = st.radio(
+                "辯題來源",
+                ["手動輸入", "從辯題庫選擇"],
+                horizontal=True,
+                key="live_room_topic_source",
+            )
+            room_topic = ""
+            if room_topic_source == "從辯題庫選擇":
+                try:
+                    conn = get_connection()
+                    topics_df = conn.query(
+                        f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}",
+                        ttl=120,
+                    )
+                except Exception as e:
+                    st.error(f"未能讀取辯題庫：{e}")
+                    topics_df = None
+
+                if topics_df is not None and not topics_df.empty:
+                    topics_df["display"] = topics_df.apply(
+                        lambda r: f"[{r.get('category', '')}] {r['topic_text']}", axis=1
+                    )
+                    selected_display = st.selectbox(
+                        "選擇辯題",
+                        topics_df["display"].tolist(),
+                        key="live_room_topic_select",
+                    )
+                    idx = topics_df["display"].tolist().index(selected_display)
+                    room_topic = topics_df.iloc[idx]["topic_text"]
+                    diff = topics_df.iloc[idx].get("difficulty")
+                    if diff and diff in DIFFICULTY_OPTIONS:
+                        st.caption(f"難度：{DIFFICULTY_OPTIONS[diff]}")
+                else:
+                    st.info("辯題庫暫時沒有辯題，請手動輸入。")
+                    room_topic_source = "手動輸入"
+
+            if room_topic_source == "手動輸入":
+                room_topic = st.text_input("辯題（可選）", key="live_room_topic")
             room_minutes = 2.5
             if structure == "free":
+                if room_format == "聯中":
+                    room_minutes = st.number_input(
+                        "自由辯論每邊時間（分鐘）",
+                        min_value=0.5, max_value=10.0, value=5.0, step=0.5,
+                        key="live_room_minutes",
+                    )
+                else:
+                    room_minutes = 2.5
+                    if room_format == "校園隨想":
+                        st.caption("校園隨想自由辯論係每邊 2:30。")
+            elif room_format == "聯中":
                 room_minutes = st.number_input(
-                    "自由辯論每邊時間（分鐘）",
-                    min_value=0.5, max_value=10.0, value=2.5, step=0.5,
-                    key="live_room_minutes",
+                    "Mock 自由辯論每邊時間（分鐘）",
+                    min_value=2.0, max_value=10.0, value=5.0, step=0.5,
+                    key="live_room_mock_free_minutes",
                 )
 
             payload = {
@@ -1278,17 +1317,17 @@ if selected_tab == "live_room":
             }
             if mode == "A":
                 payload["side"] = st.radio(
-                    "你嘅立場", ["正方", "反方"], horizontal=True, key="live_room_side"
+                    "你的立場", ["正方", "反方"], horizontal=True, key="live_room_side"
                 )
             else:
                 payload["human_side"] = st.radio(
-                    "你隊立場（AI 打另一邊）",
+                    "你的立場（AI 代表另一方）",
                     ["正方", "反方"], horizontal=True, key="live_room_hside",
                 )
                 payload["capacity"] = st.slider(
                     "隊員人數上限", min_value=1, max_value=4, value=4, key="live_room_cap"
                 )
-                st.caption("模式 B 嘅 AI 對手會喺 Phase 2 接上；目前建立後可先測試多人連線。")
+                st.caption("模式 B 的 AI 對手會於 Phase 2 接入；目前建立後可先測試多人連線。")
 
             if st.button("建立房間", type="primary", key="live_room_create_btn"):
                 ok, data = _room_api_post("/api/room/create", payload, user_id)
