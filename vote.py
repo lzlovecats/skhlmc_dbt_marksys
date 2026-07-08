@@ -1,5 +1,6 @@
 import json
 import math
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, DIFFICULTY_CRITERIA, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, get_system_config
@@ -19,9 +20,11 @@ from zoneinfo import ZoneInfo
 from prompts import (
     VOTE_BANK_ANALYSIS_SYSTEM_PROMPT,
     VOTE_DISCUSSION_SYSTEM_PROMPT,
+    VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT,
     VOTE_TOPIC_REVIEW_SYSTEM_PROMPT,
     build_vote_bank_analysis_prompt,
     build_vote_discussion_prompt,
+    build_vote_history_analysis_prompt,
     build_vote_topic_review_prompt,
 )
 
@@ -812,6 +815,147 @@ def ai_analyze_topic_bank():
     return generate_general_ai_reply(VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
 
 
+@st.cache_data(ttl=30)
+def get_vote_history_analysis_data():
+    conn = get_connection()
+    return conn.query(
+        f"""
+        SELECT
+            '辯題投票' AS motion_type,
+            tv.topic_text,
+            tv.status,
+            tv.proposer_user_id,
+            tv.category,
+            tv.difficulty,
+            tv.created_at,
+            b.user_id,
+            b.vote_choice,
+            b.against_reasons
+        FROM {TABLE_TOPIC_VOTES} tv
+        LEFT JOIN {TABLE_TOPIC_VOTE_BALLOTS} b ON b.topic_text = tv.topic_text
+        UNION ALL
+        SELECT
+            '罷免投票' AS motion_type,
+            rv.topic_text,
+            rv.status,
+            rv.proposer_user_id,
+            t.category,
+            t.difficulty,
+            rv.created_at,
+            b.user_id,
+            b.vote_choice,
+            NULL AS against_reasons
+        FROM {TABLE_TOPIC_REMOVAL_VOTES} rv
+        LEFT JOIN {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b ON b.topic_text = rv.topic_text
+        LEFT JOIN {TABLE_TOPICS} t ON t.topic_text = rv.topic_text
+        ORDER BY created_at DESC
+        """,
+        ttl=30,
+    )
+
+
+def _status_label(status):
+    return {"pending": "進行中", "passed": "通過", "rejected": "否決"}.get(str(status), str(status) or "—")
+
+
+def _gather_vote_history_analysis_context(vote_df):
+    if vote_df.empty:
+        return "暫時未有歷史投票數據。", [], [], []
+
+    df = vote_df.fillna("")
+    motion_cols = ["motion_type", "topic_text", "status", "proposer_user_id", "category", "difficulty", "created_at"]
+    motions = df[motion_cols].drop_duplicates()
+    ballots = df[df["user_id"].astype(str).str.strip() != ""].copy()
+
+    total_motions = len(motions)
+    total_ballots = len(ballots)
+    agree_count = int((ballots["vote_choice"] == "agree").sum()) if total_ballots else 0
+    against_count = total_ballots - agree_count
+    avg_ballots = total_ballots / total_motions if total_motions else 0
+
+    summary_lines = [
+        f"歷史議案總數：{total_motions}",
+        f"總投票數：{total_ballots}",
+        f"平均每項議案投票數：{avg_ballots:.1f}",
+        f"整體同意票：{agree_count}（{agree_count / total_ballots * 100:.0f}%）" if total_ballots else "整體同意票：0",
+        f"整體反對票：{against_count}（{against_count / total_ballots * 100:.0f}%）" if total_ballots else "整體反對票：0",
+    ]
+    for motion_type, type_df in motions.groupby("motion_type"):
+        type_total = len(type_df)
+        status_parts = []
+        for status, count in type_df["status"].value_counts().items():
+            status_parts.append(f"{_status_label(status)} {int(count)}")
+        summary_lines.append(f"{motion_type}：{type_total} 項（{'、'.join(status_parts) if status_parts else '未有狀態'}）")
+
+    member_lines = []
+    account_df = get_connection().query(
+        f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin', '{AI_COMMENT_USER_ID}') ORDER BY user_id",
+        ttl=30,
+    )
+    all_user_ids = account_df["user_id"].tolist() if not account_df.empty else []
+    if not ballots.empty:
+        for uid in ballots["user_id"].dropna().unique().tolist():
+            if uid not in all_user_ids:
+                all_user_ids.append(uid)
+    ballot_groups = {uid: member_df for uid, member_df in ballots.groupby("user_id")} if not ballots.empty else {}
+    for uid in all_user_ids:
+        member_df = ballot_groups.get(uid)
+        if member_df is None or member_df.empty:
+            member_lines.append(f"- {uid}：未有投票紀錄；暫時未能判斷偏好。")
+            continue
+        n = len(member_df)
+        agree = int((member_df["vote_choice"] == "agree").sum())
+        against = n - agree
+        topic_n = int((member_df["motion_type"] == "辯題投票").sum())
+        removal_n = int((member_df["motion_type"] == "罷免投票").sum())
+        agree_cats = (
+            member_df[(member_df["motion_type"] == "辯題投票") & (member_df["vote_choice"] == "agree")]["category"]
+            .replace("", "未分類").value_counts().head(2)
+        )
+        against_cats = (
+            member_df[(member_df["motion_type"] == "辯題投票") & (member_df["vote_choice"] != "agree")]["category"]
+            .replace("", "未分類").value_counts().head(2)
+        )
+        support_txt = "、".join(f"{cat}({int(c)})" for cat, c in agree_cats.items()) or "—"
+        oppose_txt = "、".join(f"{cat}({int(c)})" for cat, c in against_cats.items()) or "—"
+        member_lines.append(
+            f"- {uid}：投票 {n} 次；同意率 {agree / n * 100:.0f}%（同意 {agree}／反對 {against}）；"
+            f"辯題投票 {topic_n}、罷免投票 {removal_n}；較常支持：{support_txt}；較常反對：{oppose_txt}"
+        )
+
+    category_lines = []
+    topic_motions = motions[motions["motion_type"] == "辯題投票"]
+    if not topic_motions.empty:
+        for cat, cat_df in topic_motions.groupby(topic_motions["category"].replace("", "未分類")):
+            n = len(cat_df)
+            passed = int((cat_df["status"] == "passed").sum())
+            rejected = int((cat_df["status"] == "rejected").sum())
+            category_lines.append(f"- 類別 {cat}：議案 {n}；通過 {passed}；否決 {rejected}；通過率 {passed / n * 100:.0f}%")
+        for diff, diff_df in topic_motions.groupby(topic_motions["difficulty"]):
+            try:
+                diff_label = DIFFICULTY_OPTIONS.get(int(diff), str(diff))
+            except (TypeError, ValueError):
+                diff_label = str(diff) or "—"
+            n = len(diff_df)
+            passed = int((diff_df["status"] == "passed").sum())
+            category_lines.append(f"- 難度 {diff_label}：議案 {n}；通過 {passed}；通過率 {passed / n * 100:.0f}%")
+
+    reason_counts = {}
+    if "against_reasons" in ballots.columns:
+        for raw in ballots["against_reasons"].tolist():
+            for reason in parse_reason_list(raw):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    reason_lines = [f"- {reason}：{count} 次" for reason, count in sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)]
+
+    return "\n".join(summary_lines), member_lines, category_lines, reason_lines
+
+
+def ai_analyze_vote_history(vote_df):
+    overall_summary, member_lines, category_lines, reason_lines = _gather_vote_history_analysis_context(vote_df)
+    user_text = build_vote_history_analysis_prompt(overall_summary, member_lines, category_lines, reason_lines)
+    return generate_general_ai_reply(VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+
+
 def save_bank_analysis(analysis_text, user_id):
     """Persist the latest bank analysis to system_config so all committee members share it."""
     hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
@@ -835,6 +979,82 @@ def load_bank_analysis():
         get_system_config("vote_bank_analysis_at"),
         get_system_config("vote_bank_analysis_by"),
     )
+
+
+def save_vote_history_analysis(analysis_text, user_id):
+    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    for key, val in (
+        ("vote_history_analysis", analysis_text),
+        ("vote_history_analysis_at", hk_now),
+        ("vote_history_analysis_by", user_id or ""),
+    ):
+        execute_query(
+            "INSERT INTO system_config (key, value, updated_at) VALUES (:k, :v, :u) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+            {"k": key, "v": val, "u": hk_now},
+        )
+    return hk_now
+
+
+def load_vote_history_analysis():
+    return (
+        get_system_config("vote_history_analysis"),
+        get_system_config("vote_history_analysis_at"),
+        get_system_config("vote_history_analysis_by"),
+    )
+
+
+def render_vote_history_charts(vote_df):
+    if vote_df.empty:
+        st.info("暫時未有歷史投票數據可供視覺化。")
+        return
+    df = vote_df.fillna("")
+    motion_cols = ["motion_type", "topic_text", "status", "created_at", "category", "difficulty"]
+    motions = df[motion_cols].drop_duplicates()
+    ballots = df[df["user_id"].astype(str).str.strip() != ""].copy()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("歷史議案", len(motions))
+    c2.metric("總投票數", len(ballots))
+    c3.metric("平均每項投票數", f"{(len(ballots) / len(motions)):.1f}" if len(motions) else "0")
+
+    chart_col1, chart_col2 = st.columns(2)
+    with chart_col1:
+        st.caption("議案結果分佈")
+        status_chart = motions["status"].replace({"pending": "進行中", "passed": "通過", "rejected": "否決"}).value_counts().rename_axis("狀態").reset_index(name="數量")
+        st.bar_chart(status_chart, x="狀態", y="數量")
+    with chart_col2:
+        st.caption("各委員投票次數")
+        if ballots.empty:
+            st.info("暫時未有投票紀錄。")
+        else:
+            member_chart = ballots["user_id"].value_counts().rename_axis("委員").reset_index(name="投票次數")
+            st.bar_chart(member_chart, x="委員", y="投票次數")
+
+    chart_col3, chart_col4 = st.columns(2)
+    with chart_col3:
+        st.caption("辯題類別通過率")
+        topic_motions = motions[motions["motion_type"] == "辯題投票"].copy()
+        if topic_motions.empty:
+            st.info("暫時未有辯題投票紀錄。")
+        else:
+            rows = []
+            for cat, cat_df in topic_motions.groupby(topic_motions["category"].replace("", "未分類")):
+                n = len(cat_df)
+                passed = int((cat_df["status"] == "passed").sum())
+                rows.append({"類別": cat, "通過率": passed / n * 100 if n else 0})
+            st.bar_chart(pd.DataFrame(rows), x="類別", y="通過率")
+    with chart_col4:
+        st.caption("各委員同意率")
+        if ballots.empty:
+            st.info("暫時未有投票紀錄。")
+        else:
+            rows = []
+            for uid, member_df in ballots.groupby("user_id"):
+                n = len(member_df)
+                agree = int((member_df["vote_choice"] == "agree").sum())
+                rows.append({"委員": uid, "同意率": agree / n * 100 if n else 0})
+            st.bar_chart(pd.DataFrame(rows), x="委員", y="同意率")
 
 
 def _extract_gemini_question(comment):
@@ -1055,7 +1275,7 @@ def format_tab_label(tab_name):
     if tab_name == "depose_vote":
         return f"✂️ 罷免投票 ({_pending_depose_count})" if _pending_depose_count else "✂️ 罷免投票"
     if tab_name == "bank_analysis":
-        return "🔍 辯題庫分析"
+        return "🤖 AI分析"
     if tab_name == "member_stats":
         return "👥 參與率"
     return "🔐 帳戶"
@@ -1531,38 +1751,72 @@ elif selected_tab == "depose_vote":
 
 
 elif selected_tab == "bank_analysis":
-    st.subheader("分析現有辯題庫")
-    st.caption("由 AI 分析辯題庫嘅類別／難度分佈、題目質素，並提出未來方向同即時可做建議。分析結果會儲存並與所有委員共享。")
+    st.subheader("AI分析")
+    st.caption("集中分析辯題庫健康狀況及過往投票紀錄。分析結果會儲存並與所有委員共享。")
 
-    render_refresh_button("refresh_vote_bank_analysis")
+    bank_tab, history_tab = st.tabs(["辯題庫分析", "過往投票紀錄分析"])
 
-    stale_topics = _find_stale_removed_topics()
-    if stale_topics:
-        st.warning(
-            "⚠️ 偵測到以下題目已被罷免通過，但仍留喺辯題庫，建議手動核實並刪除：\n"
-            + "\n".join(f"- {t}" for t in stale_topics)
-        )
+    with bank_tab:
+        st.caption("由 AI 分析辯題庫的類別／難度分佈、題目質素，並提出未來方向及即時可做建議。")
+        render_refresh_button("refresh_vote_bank_analysis")
 
-    saved_analysis, analysed_at, analysed_by = load_bank_analysis()
-    if analysed_at:
-        by_txt = f"（由 {analysed_by} 執行）" if analysed_by else ""
-        st.caption(f"🕒 上次分析時間：{analysed_at}{by_txt}")
-    else:
-        st.caption("🕒 尚未有分析紀錄。")
+        stale_topics = _find_stale_removed_topics()
+        if stale_topics:
+            st.warning(
+                "⚠️ 偵測到以下題目已被罷免通過，但仍留在辯題庫，建議手動核實並刪除：\n"
+                + "\n".join(f"- {t}" for t in stale_topics)
+            )
 
-    if st.button("AI 分析辯題庫", key="ai_analyze_bank"):
-        with st.spinner("AI 正在分析辯題庫，請稍候⋯"):
-            bank_analysis, _usage = ai_analyze_topic_bank()
-        if is_successful_ai_result(bank_analysis):
-            save_bank_analysis(bank_analysis, user_id)
-            queue_toast("已更新辯題庫分析", icon="☑️")
-            st.rerun()
+        saved_analysis, analysed_at, analysed_by = load_bank_analysis()
+        if analysed_at:
+            by_txt = f"（由 {analysed_by} 執行）" if analysed_by else ""
+            st.caption(f"🕒 上次分析時間：{analysed_at}{by_txt}")
         else:
-            st.error(bank_analysis)
+            st.caption("🕒 尚未有分析紀錄。")
 
-    if saved_analysis:
-        with st.expander("AI 分析結果", expanded=True):
-            st.markdown(saved_analysis)
+        if st.button("AI 分析辯題庫", key="ai_analyze_bank"):
+            with st.spinner("AI 正在分析辯題庫，請稍候⋯"):
+                bank_analysis, _usage = ai_analyze_topic_bank()
+            if is_successful_ai_result(bank_analysis):
+                save_bank_analysis(bank_analysis, user_id)
+                queue_toast("已更新辯題庫分析", icon="☑️")
+                st.rerun()
+            else:
+                st.error(bank_analysis)
+
+        if saved_analysis:
+            with st.expander("AI 分析結果", expanded=True):
+                st.markdown(saved_analysis)
+
+    with history_tab:
+        st.caption("分析所有歷史辯題投票及罷免投票，了解整體委員會及各委員的投票偏好。")
+        if st.button("🔄 重新整理", key="refresh_vote_history_analysis"):
+            get_vote_history_analysis_data.clear()
+            st.rerun()
+
+        vote_history_df = get_vote_history_analysis_data()
+        render_vote_history_charts(vote_history_df)
+
+        saved_history, history_at, history_by = load_vote_history_analysis()
+        if history_at:
+            by_txt = f"（由 {history_by} 執行）" if history_by else ""
+            st.caption(f"🕒 上次分析時間：{history_at}{by_txt}")
+        else:
+            st.caption("🕒 尚未有分析紀錄。")
+
+        if st.button("AI 分析過往投票紀錄", key="ai_analyze_vote_history"):
+            with st.spinner("AI 正在分析過往投票紀錄，請稍候⋯"):
+                history_analysis, _usage = ai_analyze_vote_history(vote_history_df)
+            if is_successful_ai_result(history_analysis):
+                save_vote_history_analysis(history_analysis, user_id)
+                queue_toast("已更新過往投票紀錄分析", icon="☑️")
+                st.rerun()
+            else:
+                st.error(history_analysis)
+
+        if saved_history:
+            with st.expander("AI 分析結果", expanded=True):
+                st.markdown(saved_history)
 
 
 elif selected_tab == "member_stats":

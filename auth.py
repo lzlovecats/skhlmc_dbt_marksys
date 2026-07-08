@@ -99,6 +99,29 @@ def render_committee_auth_bridge(token=None, clear=False):
     components.html(components_html, height=0, width=0)
 
 
+def render_committee_auth_restore_bridge():
+    components_html = """
+    <script>
+    (function () {
+        const win = window.parent;
+        const cookieName = "committee_user";
+        const token = win.localStorage.getItem(cookieName);
+        if (!token) return;
+        if (win.document.cookie.indexOf(cookieName + "=") !== -1) return;
+        win.document.cookie = cookieName + "=" + encodeURIComponent(token) + "; Max-Age=15552000; Path=/; SameSite=Lax";
+        const reloadKey = "committee_cookie_restored_at";
+        const now = Date.now();
+        const lastReload = Number(win.sessionStorage.getItem(reloadKey) || "0");
+        if (now - lastReload > 3000) {
+            win.sessionStorage.setItem(reloadKey, String(now));
+            setTimeout(function () { win.location.reload(); }, 80);
+        }
+    })();
+    </script>
+    """
+    components.html(components_html, height=0, width=0)
+
+
 def _get_cookie_secret() -> str:
     secret = get_system_config("cookie_secret")
     if secret:
@@ -254,6 +277,7 @@ def check_committee_login():
             st.session_state["committee_user"] = verified_user
             update_committee_login_time(verified_user)
             st.rerun()
+        render_committee_auth_restore_bridge()
 
     if st.session_state["committee_user"]:
         render_committee_auth_bridge(_sign_cookie(st.session_state["committee_user"]))
