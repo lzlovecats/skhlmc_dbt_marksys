@@ -348,7 +348,7 @@ page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admi
 page_chairperson = st.Page("chairperson.py", title="主席主持易", url_path="chairperson")
 page_team_roster = st.Page("team_roster.py", title="提交隊伍名單", url_path="team-roster")
 page_ai_coach = st.Page("ai_coach.py", title="AI 辯論易", url_path="ai-coach")
-page_tts_recording = st.Page("tts_recording.py", title="TTS 錄音收集", url_path="tts-recording")
+page_ai_training = st.Page("ai_training.py", title="聖呂中辯AI訓練", url_path="ai-training")
 page_lateness_fund = st.Page("lateness_fund.py", title="遲到罰款基金", url_path="lateness-fund")
 
 
@@ -377,7 +377,7 @@ pg = st.navigation({
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_vote, page_ai_coach, page_tts_recording, page_video_replay, page_match_photos, page_lateness_fund],
+    "內部委員會成員": [page_vote, page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_lateness_fund],
     "開發者": [page_dev_settings],
 })
 
@@ -400,7 +400,7 @@ with st.sidebar:
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.7.10")
+    st.caption("🛠️ 系統版本：3.7.11")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

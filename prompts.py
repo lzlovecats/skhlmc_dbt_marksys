@@ -471,7 +471,7 @@ LIVE_RUNTIME_PROMPTS = {
 
 
 # ─────────────────────────────────────────────────────────────
-# TTS 錄音收集：音質預檢 + 句庫缺口分析（tts_recording.py 用）
+# AI 訓練頁：TTS 音質預檢 + 句庫缺口分析 + LLM 文字資料預檢（ai_training.py 用）
 # ─────────────────────────────────────────────────────────────
 TTS_AUDIO_REVIEW_SYSTEM_PROMPT = (
     "你係廣東話 TTS 訓練資料音質檢查員。請只回傳 JSON，唔好加 markdown。"
@@ -529,3 +529,48 @@ def build_tts_coverage_prompt(bank_summary: str) -> str:
 
 要求：suggested_scripts 提供 8 至 15 句，針對缺口，句子要自然、貼近辯論情境、覆蓋唔同聲調同讀音難點。
 """
+
+
+LLM_TEXT_REVIEW_SYSTEM_PROMPT = (
+    "你是香港中學辯論 AI 訓練資料審核員。請只回傳 JSON，不能加 markdown。"
+    "你要判斷提交的文字資料是否適合放入聖呂中辯內部辯論 LLM / RAG dataset。"
+)
+
+
+def build_llm_text_review_prompt(data_type, side, title, topic_text, source_note, content_text):
+    return f"""
+請審核以下 LLM 訓練文字資料是否適合放入 dataset。
+
+資料類型：{data_type}
+立場 / 角色：{side}
+標題：{title or ""}
+辯題 / 情境：{topic_text or ""}
+來源 / 備註：{source_note or ""}
+
+文字內容：
+{content_text}
+
+請回傳 JSON：
+{{
+  "passed": true | false,
+  "relevance": "high" | "medium" | "low",
+  "quality": "good" | "usable" | "poor",
+  "cantonese_colloquial": "good" | "mixed" | "not_cantonese",
+  "anonymization": "ok" | "possible_pii" | "contains_pii",
+  "permission_risk": "low" | "medium" | "high",
+  "usable_for": ["可用用途，例如 RAG、評語樣本、攻防樣本、主線策略"],
+  "issues": ["主要問題"],
+  "suggested_fix": "如不適合，建議如何修改",
+  "reason": "一句總結"
+}}
+
+審核標準：
+- 必須與香港中學辯論訓練、評語、策略、逐字稿、攻防或辯題資料有關。
+- 文字內容必須主要使用粵語口語撰寫，應接近日常香港辯論訓練說話方式，例如「我哋」「咁」「點解」「對方呢個講法」。
+- 少量辯論術語、英文詞、引文或必要書面詞可接受；但若整體是書面中文、普通話式中文或翻譯腔，cantonese_colloquial 應為 "not_cantonese" 或 "mixed"。
+- 內容應有足夠資訊量，不應只是零碎短句或私人聊天。
+- 不應包含真名、電話、班別、私人對話、未授權學生資料或其他可識別個人資料。
+- 你不能真正驗證授權，只能根據來源備註判斷風險。
+- 若主要內容不是粵語口語，passed 必須是 false。
+- 若含明顯個人資料或與辯論訓練無關，passed 必須是 false。
+""".strip()

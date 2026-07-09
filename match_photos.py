@@ -182,7 +182,16 @@ if photos_df.empty:
     st.stop()
 
 filter_options = ["全部"] + sorted(photos_df["album_label"].dropna().astype(str).unique().tolist())
-selected_filter = st.selectbox("場次篩選", options=filter_options)
+sort_options = [
+    "相片日期（新至舊）",
+    "相片日期（舊至新）",
+    "上載時間（新至舊）",
+    "上載時間（舊至新）",
+]
+filter_col, sort_col, view_col = st.columns([2, 2, 1])
+selected_filter = filter_col.selectbox("場次篩選", options=filter_options)
+selected_sort = sort_col.selectbox("排序", options=sort_options)
+display_mode = view_col.segmented_control("顯示（僅適用於電腦版）", options=["縮圖牆", "標準"], default="縮圖牆")
 search_term = st.text_input("搜尋", placeholder="輸入場次、標題、說明或上載者")
 
 filtered_df = photos_df.copy()
@@ -190,31 +199,69 @@ if selected_filter != "全部":
     filtered_df = filtered_df[filtered_df["album_label"].astype(str) == selected_filter]
 if search_term:
     keyword = search_term.strip().lower()
-    search_cols = ["album_label", "photo_title", "caption", "uploaded_by", "file_name"]
+    search_cols = ["album_label", "photo_date", "photo_title", "caption", "uploaded_by", "file_name"]
     search_text = filtered_df[search_cols].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
     filtered_df = filtered_df[search_text.str.contains(keyword, regex=False)]
+
+if selected_sort == "相片日期（舊至新）":
+    filtered_df = filtered_df.sort_values(
+        by=["photo_date", "created_at"],
+        ascending=[True, False],
+        na_position="last",
+        kind="mergesort",
+    )
+elif selected_sort == "上載時間（新至舊）":
+    filtered_df = filtered_df.sort_values(by=["created_at"], ascending=[False], kind="mergesort")
+elif selected_sort == "上載時間（舊至新）":
+    filtered_df = filtered_df.sort_values(by=["created_at"], ascending=[True], kind="mergesort")
+else:
+    filtered_df = filtered_df.sort_values(
+        by=["photo_date", "created_at"],
+        ascending=[False, False],
+        na_position="last",
+        kind="mergesort",
+    )
 
 if filtered_df.empty:
     st.info("沒有符合條件的圖片。請調整搜尋關鍵字或篩選條件後再試。")
     st.stop()
 
 st.caption(f"共 {len(filtered_df)} 張圖片")
-photo_cols = st.columns(3)
+compact_view = display_mode == "縮圖牆"
+photo_cols = st.columns(5 if compact_view else 3)
 for index, (_, photo) in enumerate(filtered_df.iterrows()):
-    with photo_cols[index % 3]:
+    with photo_cols[index % len(photo_cols)]:
         image_bytes = _to_bytes(photo["image_data"])
         title = _format_value(photo["photo_title"], photo["file_name"])
-        st.image(image_bytes, caption=title, use_container_width=True)
         photo_date = _format_value(photo["photo_date"], "")
         date_text = f" ｜ {photo_date}" if photo_date else ""
-        st.caption(f"{photo['album_label']}{date_text} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
-        if photo["caption"]:
-            st.write(photo["caption"])
-        with st.popover("下載", use_container_width=True):
-            st.download_button(
-                "下載原圖",
-                data=image_bytes,
-                file_name=photo["file_name"] or f"match-photo-{int(photo['id'])}.jpg",
-                mime=photo["mime_type"] or "image/jpeg",
-                use_container_width=True,
-            )
+        if compact_view:
+            st.image(image_bytes, use_container_width=True)
+            st.caption(title if len(title) <= 18 else f"{title[:18]}...")
+            if photo_date:
+                st.caption(photo_date)
+            with st.popover("詳情", use_container_width=True):
+                st.write(title)
+                st.caption(f"{photo['album_label']}{date_text} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
+                if photo["caption"]:
+                    st.write(photo["caption"])
+                st.download_button(
+                    "下載原圖",
+                    data=image_bytes,
+                    file_name=photo["file_name"] or f"match-photo-{int(photo['id'])}.jpg",
+                    mime=photo["mime_type"] or "image/jpeg",
+                    use_container_width=True,
+                )
+        else:
+            st.image(image_bytes, caption=title, use_container_width=True)
+            st.caption(f"{photo['album_label']}{date_text} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
+            if photo["caption"]:
+                st.write(photo["caption"])
+            with st.popover("下載", use_container_width=True):
+                st.download_button(
+                    "下載原圖",
+                    data=image_bytes,
+                    file_name=photo["file_name"] or f"match-photo-{int(photo['id'])}.jpg",
+                    mime=photo["mime_type"] or "image/jpeg",
+                    use_container_width=True,
+                )
