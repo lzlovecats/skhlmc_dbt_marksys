@@ -1457,9 +1457,16 @@ is_admin = user_id in reviewers
 with st.expander("📖 聖呂中辯自家讀音模型研發計劃書", expanded=False):
     st.markdown(_load_rd_plan())
 
-tts_tab, llm_tab = st.tabs(["TTS 錄音提交", "LLM 文字資料提交"])
+active_section = st.segmented_control(
+    "訓練資料類型",
+    ["TTS 錄音提交", "LLM 文字資料提交"],
+    default="TTS 錄音提交",
+    key="ai_training_active_section",
+    label_visibility="collapsed",
+    width="stretch",
+)
 
-with tts_tab:
+if active_section == "TTS 錄音提交":
     if not is_allowed and not is_admin:
         st.info("你暫時未獲加入 TTS 錄音收集名單。你仍可到 LLM 文字資料提交分頁提交辯論文字資料。")
     else:
@@ -1489,8 +1496,7 @@ with tts_tab:
         if is_admin:
             _render_review_panel(user_id)
             _render_admin_scripts(user_id, active_scripts)
-
-with llm_tab:
+else:
     _render_llm_submission(user_id)
     _render_my_llm_submissions(user_id)
     if is_admin:
