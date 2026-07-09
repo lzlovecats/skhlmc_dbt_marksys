@@ -32,6 +32,7 @@ TABLE_MATCH_PHOTOS = "match_photos"
 TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
 TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
 TABLE_TTS_SCRIPTS = "tts_scripts"
+TABLE_LLM_TRAINING_SUBMISSIONS = "llm_training_submissions"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
@@ -528,7 +529,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
 
 # Table: TTS_SCRIPTS
 # Recording script bank, editable by TTS recording admins. Seeded from the
-# built-in default bank in tts_recording.py when empty.
+# built-in default bank in ai_training.py when empty.
 CREATE_TTS_SCRIPTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TTS_SCRIPTS} (
     script_id   TEXT        PRIMARY KEY,
@@ -539,6 +540,37 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_SCRIPTS} (
     created_by  TEXT,
     created_at  TIMESTAMP   DEFAULT NOW(),
     updated_at  TIMESTAMP   DEFAULT NOW()
+);
+"""
+
+# Table: LLM_TRAINING_SUBMISSIONS
+# Text examples submitted by committee members for debate LLM / RAG training.
+CREATE_LLM_TRAINING_SUBMISSIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_LLM_TRAINING_SUBMISSIONS} (
+    id                    SERIAL      PRIMARY KEY,
+    submitted_by          TEXT,
+    data_type             TEXT        NOT NULL,
+    title                 TEXT,
+    topic_text            TEXT,
+    side                  TEXT,
+    content_text          TEXT        NOT NULL,
+    source_note           TEXT,
+    anonymized            BOOLEAN     DEFAULT FALSE,
+    permission_confirmed  BOOLEAN     DEFAULT FALSE,
+    ai_review_status      TEXT        CHECK (ai_review_status IN ('passed', 'failed', 'error')),
+    ai_review_json        TEXT,
+    status                TEXT        DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn')),
+    review_note           TEXT,
+    reviewed_by           TEXT,
+    reviewed_at           TIMESTAMP,
+    created_at            TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT fk_llm_training_submissions_submitter
+        FOREIGN KEY (submitted_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_llm_training_submissions_reviewer
+        FOREIGN KEY (reviewed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
 );
 """
 
@@ -911,6 +943,7 @@ ALL_SCHEMAS = [
     CREATE_TTS_VOICE_CONSENTS,        # → accounts
     CREATE_TTS_VOICE_RECORDINGS,      # → accounts
     CREATE_TTS_SCRIPTS,               # → (standalone)
+    CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts

@@ -333,10 +333,10 @@ def _load_system_json_list(config_key):
 
 
 st.divider()
-st.subheader("TTS 錄音收集設定")
-st.caption("控制邊啲委員做「錄音委員」，以及邊啲委員做「錄音管理員」（可審核錄音、管理句庫、下載 dataset）。")
+st.subheader("聖呂中辯AI訓練設定")
+st.caption("控制邊啲委員做「TTS 錄音委員」，以及邊啲委員做「AI 訓練管理員」（可審核 TTS/LLM 資料、管理句庫、下載 dataset）。")
 
-with st.expander("指定 TTS 錄音委員及管理員", expanded=False):
+with st.expander("指定 TTS 錄音委員及 AI 訓練管理員", expanded=False):
     tts_accounts_df = query_params(
         f"""
         SELECT user_id
@@ -364,7 +364,7 @@ with st.expander("指定 TTS 錄音委員及管理員", expanded=False):
             key="tts_recording_allowed_select",
         )
         selected_reviewers = st.multiselect(
-            "TTS 錄音管理員（審核錄音、管理句庫、export）",
+            "AI 訓練管理員（審核 TTS/LLM 資料、管理句庫、export）",
             options=tts_account_options,
             default=current_reviewers,
             key="tts_recording_reviewers_select",
@@ -385,7 +385,7 @@ with st.expander("指定 TTS 錄音委員及管理員", expanded=False):
                         "updated_at": updated_at,
                     },
                 )
-            st.success("TTS 錄音設定已更新。")
+            st.success("AI 訓練設定已更新。")
             st.rerun()
 
 st.divider()
