@@ -25,15 +25,18 @@ from schema import (
     TABLE_TTS_VOICE_CONSENTS,
     TABLE_TTS_VOICE_RECORDINGS,
     TABLE_TTS_SCRIPTS,
+    TABLE_TTS_LEXICON,
 )
 from speech_recorder_component import render_speech_recorder
 from prompts import (
     LLM_TEXT_REVIEW_SYSTEM_PROMPT,
     TTS_AUDIO_REVIEW_SYSTEM_PROMPT,
     TTS_COVERAGE_SYSTEM_PROMPT,
+    TTS_REGENERATE_SYSTEM_PROMPT,
     build_llm_text_review_prompt,
     build_tts_audio_review_prompt,
     build_tts_coverage_prompt,
+    build_tts_regenerate_prompt,
 )
 
 
@@ -177,6 +180,35 @@ DEFAULT_SCRIPT_BANK = [
 ]
 
 
+CUSTOM_CATEGORY_SENTINEL = "＋ 自訂新類別…"
+SCRIPT_CATEGORY_OPTIONS = [
+    "Free De", "Mock", "追問", "反駁", "數字讀法", "日期時間",
+    "術語/英文", "多音字", "聲調覆蓋", "長句韻律", "評語",
+]
+LEXICON_CATEGORY_OPTIONS = [
+    "多音字", "人名／地名", "校名", "比賽名稱", "辯論術語", "英文縮寫", "數字／日期", "其他",
+]
+
+
+def _category_selectbox(label, base_options, existing, key, default=None):
+    """類別下拉選單：合併預設類別、資料庫現有類別及（編輯時）當前值，
+    並提供「自訂新類別」選項。回傳已選定／自訂的類別字串。"""
+    seen, options = set(), []
+    for cat in list(base_options) + list(existing) + ([default] if default else []):
+        cat = (cat or "").strip()
+        if cat and cat not in seen:
+            seen.add(cat)
+            options.append(cat)
+    options.append(CUSTOM_CATEGORY_SENTINEL)
+    index = options.index(default) if (default and default in options) else 0
+    choice = st.selectbox(label, options=options, index=index, key=key)
+    if choice == CUSTOM_CATEGORY_SENTINEL:
+        return st.text_input(
+            "自訂類別名稱", key=f"{key}_custom", placeholder="請輸入新的類別名稱",
+        ).strip()
+    return (choice or "").strip()
+
+
 def _now_hk():
     return datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
 
@@ -235,15 +267,24 @@ def _seed_scripts_if_empty():
         )
 
 
-def _load_scripts(active_only=True):
-    where = "WHERE is_active = TRUE" if active_only else ""
+def _load_scripts(active_only=True, script_type=None):
+    clauses = []
+    params = {}
+    if active_only:
+        clauses.append("is_active = TRUE")
+    if script_type:
+        clauses.append("COALESCE(script_type, 'short') = :stype")
+        params["stype"] = script_type
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     rows = query_params(
         f"""
-        SELECT script_id, category, text, is_active, sort_order
+        SELECT script_id, category, text, is_active, sort_order,
+               COALESCE(script_type, 'short') AS script_type, manuscript_id, manuscript_title
         FROM {TABLE_TTS_SCRIPTS}
         {where}
-        ORDER BY category, sort_order, script_id
-        """
+        ORDER BY COALESCE(manuscript_id, category), sort_order, script_id
+        """,
+        params,
     )
     scripts = []
     for _, row in rows.iterrows():
@@ -253,6 +294,9 @@ def _load_scripts(active_only=True):
             "text": row["text"],
             "is_active": bool(row["is_active"]),
             "sort_order": int(row["sort_order"] or 0),
+            "script_type": row["script_type"] or "short",
+            "manuscript_id": row["manuscript_id"] or "",
+            "manuscript_title": row["manuscript_title"] or "",
         })
     return scripts
 
@@ -296,6 +340,201 @@ def _set_script_active(script_id, is_active):
     execute_query(
         f"UPDATE {TABLE_TTS_SCRIPTS} SET is_active = :active, updated_at = :now WHERE script_id = :script_id",
         {"active": bool(is_active), "script_id": script_id, "now": _now_hk()},
+    )
+
+
+# ---------------------------------------------------------------------------
+# 順序錄音：系統挑錄音者未錄過的句子，錄一句跳一句。分「短句」與「完整稿」兩模式；
+# 完整稿由管理員貼全文、系統自動分段（見 _split_manuscript / _save_manuscript）。
+# ---------------------------------------------------------------------------
+def _user_recorded_ids(user_id):
+    """該用戶已有 accepted / pending 錄音的 script_id（視為已錄，不再派給他）。"""
+    rows = query_params(
+        f"""
+        SELECT DISTINCT script_id FROM {TABLE_TTS_VOICE_RECORDINGS}
+        WHERE speaker_user_id = :user_id AND status IN ('accepted', 'pending')
+        """,
+        {"user_id": user_id},
+    )
+    return {str(row["script_id"]) for _, row in rows.iterrows()}
+
+
+def _mode_progress(scripts, recorded_ids):
+    """回傳 (total, done)：此模式的句子總數，及該用戶已錄的數目。"""
+    total = len(scripts)
+    done = sum(1 for s in scripts if s["id"] in recorded_ids)
+    return total, done
+
+
+def _next_unrecorded_script(scripts, recorded_ids, skipped_ids):
+    """依已排序的句子，挑第一句未錄且未在本次跳過的。全部錄畢回傳 None。"""
+    for s in scripts:
+        if s["id"] not in recorded_ids and s["id"] not in skipped_ids:
+            return s
+    return None
+
+
+def _next_manuscript_id():
+    rows = query_params(
+        f"SELECT DISTINCT manuscript_id FROM {TABLE_TTS_SCRIPTS} WHERE manuscript_id LIKE :like",
+        {"like": "ms\\_%"},
+    )
+    max_n = 0
+    for _, row in rows.iterrows():
+        match = re.search(r"^ms_(\d+)$", str(row["manuscript_id"] or ""))
+        if match:
+            max_n = max(max_n, int(match.group(1)))
+    return f"ms_{max_n + 1:04d}"
+
+
+def _split_manuscript(text_value, max_len=45):
+    """把完整稿切成一段段（每段合併數句、約 max_len 字以內，貼近 1–60 秒一個 clip）。"""
+    cleaned = (text_value or "").replace("\r", "\n")
+    # 先按換行分大段，再在每大段內按句末標點併句
+    segments = []
+    for block in cleaned.split("\n"):
+        parts = re.split(r"(?<=[。！？!?…])", block)
+        buf = ""
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if buf and len(buf) + len(part) > max_len:
+                segments.append(buf)
+                buf = part
+            else:
+                buf = (buf + part) if buf else part
+        if buf:
+            segments.append(buf)
+    return segments
+
+
+def _load_manuscripts():
+    """回傳每份完整稿的摘要：{manuscript_id, title, segments, active}。"""
+    rows = query_params(
+        f"""
+        SELECT manuscript_id, manuscript_title, script_id, text, is_active, sort_order
+        FROM {TABLE_TTS_SCRIPTS}
+        WHERE COALESCE(script_type, 'short') = 'full' AND manuscript_id IS NOT NULL
+        ORDER BY manuscript_id, sort_order, script_id
+        """
+    )
+    grouped = {}
+    for _, row in rows.iterrows():
+        mid = str(row["manuscript_id"])
+        entry = grouped.setdefault(mid, {
+            "manuscript_id": mid,
+            "title": row["manuscript_title"] or "（無標題）",
+            "segments": [],
+        })
+        entry["segments"].append({
+            "id": row["script_id"], "text": row["text"],
+            "is_active": bool(row["is_active"]), "sort_order": int(row["sort_order"] or 0),
+        })
+    return list(grouped.values())
+
+
+def _save_manuscript(title, segments, created_by):
+    mid = _next_manuscript_id()
+    for order, seg in enumerate(segments):
+        seg = (seg or "").strip()
+        if not seg:
+            continue
+        execute_query(
+            f"""
+            INSERT INTO {TABLE_TTS_SCRIPTS}
+                (script_id, category, text, is_active, sort_order,
+                 script_type, manuscript_id, manuscript_title, created_by, updated_at)
+            VALUES (:sid, '完整稿', :text, TRUE, :sort_order,
+                    'full', :mid, :title, :created_by, :now)
+            ON CONFLICT (script_id) DO NOTHING
+            """,
+            {
+                "sid": f"{mid}_{order + 1:03d}",
+                "text": seg,
+                "sort_order": order,
+                "mid": mid,
+                "title": (title or "").strip() or "（無標題）",
+                "created_by": created_by,
+                "now": _now_hk(),
+            },
+        )
+    return mid
+
+
+# ---------------------------------------------------------------------------
+# 讀音字典（tts_lexicon）：管理員維護讀音覆寫規則。runtime 由 deploy/proxy.py
+# `_preprocess_tts_text` 讀 active 條目，合成前把 term → reading 覆寫（單人 + 聯機共用）。
+# ---------------------------------------------------------------------------
+def _load_lexicon(active_only=False):
+    where = "WHERE is_active = TRUE" if active_only else ""
+    rows = query_params(
+        f"""
+        SELECT lexicon_id, term, reading, jyutping, example, note, category, is_active
+        FROM {TABLE_TTS_LEXICON}
+        {where}
+        ORDER BY category, term, lexicon_id
+        """
+    )
+    entries = []
+    for _, row in rows.iterrows():
+        entries.append({
+            "id": row["lexicon_id"],
+            "term": row["term"],
+            "reading": row["reading"],
+            "jyutping": row["jyutping"] or "",
+            "example": row["example"] or "",
+            "note": row["note"] or "",
+            "category": row["category"] or "",
+            "is_active": bool(row["is_active"]),
+        })
+    return entries
+
+
+def _next_lexicon_id():
+    rows = query_params(f"SELECT lexicon_id FROM {TABLE_TTS_LEXICON} WHERE lexicon_id LIKE :like",
+                        {"like": "lex\\_%"})
+    max_n = 0
+    for _, row in rows.iterrows():
+        match = re.search(r"^lex_(\d+)$", str(row["lexicon_id"]))
+        if match:
+            max_n = max(max_n, int(match.group(1)))
+    return f"lex_{max_n + 1:04d}"
+
+
+def _upsert_lexicon_entry(lexicon_id, term, reading, jyutping, example, note, category, created_by):
+    execute_query(
+        f"""
+        INSERT INTO {TABLE_TTS_LEXICON}
+            (lexicon_id, term, reading, jyutping, example, note, category, is_active, created_by, updated_at)
+        VALUES (:id, :term, :reading, :jyutping, :example, :note, :category, TRUE, :created_by, :now)
+        ON CONFLICT (lexicon_id) DO UPDATE SET
+            term = EXCLUDED.term,
+            reading = EXCLUDED.reading,
+            jyutping = EXCLUDED.jyutping,
+            example = EXCLUDED.example,
+            note = EXCLUDED.note,
+            category = EXCLUDED.category,
+            updated_at = EXCLUDED.updated_at
+        """,
+        {
+            "id": lexicon_id,
+            "term": term.strip(),
+            "reading": reading.strip(),
+            "jyutping": (jyutping or "").strip(),
+            "example": (example or "").strip(),
+            "note": (note or "").strip(),
+            "category": (category or "").strip(),
+            "created_by": created_by,
+            "now": _now_hk(),
+        },
+    )
+
+
+def _set_lexicon_active(lexicon_id, is_active):
+    execute_query(
+        f"UPDATE {TABLE_TTS_LEXICON} SET is_active = :active, updated_at = :now WHERE lexicon_id = :id",
+        {"active": bool(is_active), "id": lexicon_id, "now": _now_hk()},
     )
 
 
@@ -516,6 +755,56 @@ def analyze_script_coverage(scripts, counts):
         return {"ok": False, "message": f"AI 缺口分析失敗：{e}", "analysis": None}
 
 
+def _scripts_with_recordings():
+    """有 accepted / pending 錄音嘅 script_id（已鎖，AI 重出時不可改動或停用）。"""
+    rows = query_params(
+        f"""
+        SELECT DISTINCT script_id
+        FROM {TABLE_TTS_VOICE_RECORDINGS}
+        WHERE status IN ('accepted', 'pending')
+        """
+    )
+    return {str(row["script_id"]) for _, row in rows.iterrows()}
+
+
+def regenerate_script_bank(scripts, locked_ids, counts):
+    """AI 重新規劃句庫：建議新增句子 + 建議停用（只限未錄音）。結果只回傳建議，
+    唔會寫 DB —— 由管理員審核後先套用。已鎖（有錄音）句子絕不列入停用建議。"""
+    if "GEMINI_API_KEY" not in st.secrets:
+        return {"ok": False, "message": "未設定 GEMINI_API_KEY，未能重出句庫。", "plan": None}
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return {"ok": False, "message": "Gemini SDK 尚未安裝，未能重出句庫。", "plan": None}
+
+    locked_lines, unlocked_lines = [], []
+    for s in scripts:
+        c = counts.get(s["category"], {})
+        line = f"[{s['category']}] {s['id']}｜accepted={c.get('accepted', 0)}｜pending={c.get('pending', 0)}｜{s['text']}"
+        (locked_lines if s["id"] in locked_ids else unlocked_lines).append(line)
+    locked_summary = "\n".join(locked_lines) if locked_lines else "（暫時冇已錄音句子）"
+    unlocked_summary = "\n".join(unlocked_lines) if unlocked_lines else "（暫時冇未錄音句子）"
+
+    try:
+        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[types.Content(role="user", parts=[types.Part.from_text(
+                text=build_tts_regenerate_prompt(locked_summary, unlocked_summary))])],
+            config=types.GenerateContentConfig(system_instruction=TTS_REGENERATE_SYSTEM_PROMPT, temperature=0.5),
+        )
+        plan = _extract_json(response.text or "{}")
+        # 安全網：無論 AI 點答，已鎖句子都唔可以成為停用候選
+        plan["deactivate_candidates"] = [
+            d for d in (plan.get("deactivate_candidates") or [])
+            if str(d.get("script_id")) not in locked_ids
+        ]
+        return {"ok": True, "message": "已生成建議。", "plan": plan}
+    except Exception as e:
+        return {"ok": False, "message": f"AI 重出句庫失敗：{e}", "plan": None}
+
+
 def review_llm_training_text(data_type, side, title, topic_text, source_note, content_text):
     if "GEMINI_API_KEY" not in st.secrets:
         return {
@@ -629,21 +918,59 @@ def _record_key(script_id, audio_data):
     return f"{script_id}:{audio_data.get('recorded_at')}:{audio_data.get('size')}"
 
 
-def _render_recorder(user_id, all_scripts):
-    if not all_scripts:
-        st.info("句庫暫時未有可錄音句子，請聯絡管理員。")
-        return
-    categories = sorted({s["category"] for s in all_scripts})
-    selected_category = st.selectbox("句子類別", options=categories)
-    scripts = [s for s in all_scripts if s["category"] == selected_category]
-    script_id = st.selectbox(
-        "錄音句子",
-        options=[s["id"] for s in scripts],
-        format_func=lambda sid: _script_by_id(scripts, sid)["text"],
+def _render_recorder(user_id):
+    mode = st.radio(
+        "錄音模式",
+        options=["short", "full"],
+        format_func=lambda m: "短句練習" if m == "short" else "完整稿",
+        horizontal=True,
+        key="tts_rec_mode",
     )
-    script = _script_by_id(scripts, script_id)
+    if mode == "short":
+        st.caption("系統會依次顯示你尚未錄製的練習短句，錄好一句便自動跳至下一句。")
+    else:
+        st.caption("系統會依次顯示完整稿的一段段內容，逐段錄製、逐段提交。")
+
+    scripts = _load_scripts(active_only=True, script_type=mode)
+    if not scripts:
+        st.info("此模式暫時未有可錄製的內容，請聯絡管理員。")
+        return
+
+    recorded_ids = _user_recorded_ids(user_id)
+    skip_key = f"tts_skipped_{mode}"
+    skipped_ids = st.session_state.setdefault(skip_key, set())
+    script = _next_unrecorded_script(scripts, recorded_ids, skipped_ids)
+
+    total, done = _mode_progress(scripts, recorded_ids)
+    st.progress(done / total if total else 0.0)
+    st.caption(f"已錄 {done} / {total} 句")
+
+    if script is None:
+        if skipped_ids:
+            st.info(f"其餘內容已全部錄畢；你本次跳過了 {len(skipped_ids)} 句。")
+            if st.button("重新錄製跳過的句子"):
+                st.session_state[skip_key] = set()
+                st.rerun()
+        else:
+            st.success("此模式的內容你已全部錄畢，感謝參與。")
+        return
+
+    if mode == "full":
+        seg_list = [s for s in scripts if s["manuscript_id"] == script["manuscript_id"]]
+        seg_pos = next((i for i, s in enumerate(seg_list) if s["id"] == script["id"]), 0) + 1
+        st.caption(f"稿件：{script['manuscript_title']}　·　第 {seg_pos} / {len(seg_list)} 段")
 
     st.markdown(f"**請照讀：** {script['text']}")
+
+    skip_col, _spacer = st.columns([1, 3])
+    with skip_col:
+        if st.button("跳過此句", use_container_width=True):
+            skipped_ids.add(script["id"])
+            st.session_state[skip_key] = skipped_ids
+            st.session_state.pop("tts_recording_ai_review", None)
+            st.rerun()
+
+    script_id = script["id"]
     audio_data = render_speech_recorder(
         key=f"tts_recording_{script_id}",
         output_format="wav",
@@ -670,7 +997,7 @@ def _render_recorder(user_id, all_scripts):
         st.warning("錄音太長，請控制在 60 秒內。")
         return
     if size > 10 * 1024 * 1024:
-        st.warning("錄音太大，請重新錄短一點。")
+        st.warning("錄音檔案過大，請重新錄製較短的片段。")
         return
 
     key = _record_key(script_id, audio_data)
@@ -689,10 +1016,10 @@ def _render_recorder(user_id, all_scripts):
     result = cached.get("result") or {}
     review = result.get("review") or {}
     if result.get("status") == "passed":
-        st.success("AI 預檢通過，可以提交入待審核資料集。")
+        st.success("AI 預檢通過，可提交至待審核資料集。")
         if review.get("transcript"):
             st.caption(f"AI 聽到：{review['transcript']}")
-        if st.button("提交入待審核資料集", type="primary", use_container_width=True):
+        if st.button("提交並繼續下一句", type="primary", use_container_width=True):
             _insert_recording(user_id, script, audio_bytes, audio_data, review)
             st.session_state.pop("tts_recording_ai_review", None)
             st.success("錄音已提交，等待人工審核。")
@@ -703,9 +1030,9 @@ def _render_recorder(user_id, all_scripts):
             st.json(review)
     elif result.get("status") == "error":
         message = result.get("message") or "AI 預檢暫時未能完成。"
-        st.warning(f"{message}\n\n你可以自行確認錄音合適後，略過 AI 檢查直接提交，交由管理員人手審核。")
+        st.warning(f"{message}\n\n可自行確認錄音合適後，略過 AI 檢查直接提交，交由管理員人手審核。")
         manual_confirm = st.checkbox(
-            "我確認呢段錄音清晰、讀音正確、內容與稿件一致",
+            "我確認此段錄音清晰、讀音正確、內容與稿件一致",
             key=f"tts_manual_confirm_{key}",
         )
         if st.button(
@@ -1074,7 +1401,7 @@ def _render_llm_manual_fallback(user_id):
     payload = pending["payload"]
     with st.container(border=True):
         st.warning(
-            f"{pending['message']}\n\n你可以自行確認資料合適後，略過 AI 檢查直接提交，交由管理員人手審核。"
+            f"{pending['message']}\n\n可自行確認資料合適後，略過 AI 檢查直接提交，交由管理員人手審核。"
         )
         st.caption(f"待提交：{payload['data_type']}｜{payload.get('title') or '（無標題）'}")
         manual_confirm = st.checkbox(
@@ -1186,7 +1513,7 @@ def _render_llm_submission(user_id):
             }
             fingerprint = _llm_submission_fingerprint(payload)
             if fingerprint in st.session_state.get("llm_submitted_fingerprints", set()):
-                st.info("呢份資料已經提交咗，請勿重複提交。")
+                st.info("此資料已提交，請勿重複提交。")
             else:
                 with st.spinner("AI 正在預檢文字資料..."):
                     result = review_llm_training_text(data_type, side, title, topic_text, source_note, content_text)
@@ -1413,7 +1740,7 @@ def _render_admin_scripts(user_id, all_scripts):
                     st.markdown(f"- ⚠️ **{gap.get('area', '')}**：{gap.get('why', '')}")
                 suggestions = analysis.get("suggested_scripts") or []
                 if suggestions:
-                    st.markdown("**建議新增句子**（剔選後一次過加入句庫）：")
+                    st.markdown("**建議新增句子**（勾選後一併加入句庫）：")
                     chosen = []
                     for i, sug in enumerate(suggestions):
                         cat = str(sug.get("category") or "AI建議").strip()
@@ -1429,41 +1756,112 @@ def _render_admin_scripts(user_id, all_scripts):
                         st.success(f"已加入 {len(chosen)} 句。")
                         st.rerun()
 
+    # --- AI 重出句庫（審核後先套用；已錄音句子鎖住不改）---
+    with st.expander("🔄 AI 重出句庫", expanded=False):
+        locked_ids = _scripts_with_recordings()
+        st.caption(
+            f"AI 會重新規劃句庫並建議新增／停用。已錄音的句子（{len(locked_ids)} 句）會被鎖定，"
+            "不會被改動或停用；所有建議均須勾選並按「套用」後，才會更新句庫。"
+        )
+        if st.button("執行 AI 重出句庫", use_container_width=True):
+            with st.spinner("AI 正在重新規劃句庫..."):
+                st.session_state["tts_regenerate_plan"] = regenerate_script_bank(all_scripts, locked_ids, counts)
+        regen = st.session_state.get("tts_regenerate_plan")
+        if regen:
+            if not regen.get("ok"):
+                st.error(regen.get("message") or "重出失敗。")
+            else:
+                plan = regen.get("plan") or {}
+                if plan.get("overall"):
+                    st.info(plan["overall"])
+
+                new_scripts = plan.get("new_scripts") or []
+                chosen_new = []
+                if new_scripts:
+                    st.markdown("**建議新增句子**（預設全部勾選）：")
+                    for i, sug in enumerate(new_scripts):
+                        cat = str(sug.get("category") or "AI建議").strip()
+                        txt = str(sug.get("text") or "").strip()
+                        if not txt:
+                            continue
+                        if st.checkbox(f"[{cat}] {txt}", value=True, key=f"tts_regen_new_{i}"):
+                            chosen_new.append((cat, txt))
+
+                script_by_id = {s["id"]: s for s in all_scripts}
+                deact = plan.get("deactivate_candidates") or []
+                chosen_deact = []
+                shown_deact = [d for d in deact
+                               if str(d.get("script_id")) in script_by_id
+                               and str(d.get("script_id")) not in locked_ids]
+                if shown_deact:
+                    st.markdown("**建議停用（只限未錄音句子）：**")
+                    for i, d in enumerate(shown_deact):
+                        sid = str(d.get("script_id"))
+                        s = script_by_id[sid]
+                        reason = str(d.get("reason") or "").strip()
+                        label = f'停用 [{s["category"]}] {s["text"]}' + (f"｜{reason}" if reason else "")
+                        if st.checkbox(label, value=False, key=f"tts_regen_deact_{i}"):
+                            chosen_deact.append(sid)
+
+                if st.button("套用所選變更", type="primary",
+                             disabled=not (chosen_new or chosen_deact)):
+                    for cat, txt in chosen_new:
+                        _upsert_script(_next_script_id(cat), cat, txt, user_id)
+                    for sid in chosen_deact:
+                        if sid not in locked_ids:  # 套用前再確認未鎖
+                            _set_script_active(sid, False)
+                    st.session_state.pop("tts_regenerate_plan", None)
+                    st.success(f"已新增 {len(chosen_new)} 句、停用 {len(chosen_deact)} 句。")
+                    st.rerun()
+
     # --- 新增／編輯 ---
     with st.expander("➕ 新增句子", expanded=False):
         existing_categories = sorted({s["category"] for s in all_scripts})
-        new_category = st.text_input(
-            "類別（可用現有或自訂新類別）",
-            key="tts_new_script_category",
-            placeholder="例如：多音字、數字讀法、追問…",
+        cat = _category_selectbox("類別", SCRIPT_CATEGORY_OPTIONS, existing_categories,
+                                  key="tts_new_script_category_select")
+        new_text = st.text_area(
+            "句子內容", key="tts_new_script_text",
+            placeholder="例如：多謝主席，各位評判、各位同學，今日我方立場非常清晰。",
         )
-        if existing_categories:
-            st.caption("現有類別：" + "、".join(existing_categories))
-        new_text = st.text_area("句子內容（書面粵語）", key="tts_new_script_text")
         if st.button("新增句子", type="primary"):
-            cat = (new_category or "").strip()
             txt = (new_text or "").strip()
             if not cat or not txt:
-                st.warning("類別同句子內容都要填。")
+                st.warning("類別與句子內容都必須填寫。")
             else:
                 _upsert_script(_next_script_id(cat), cat, txt, user_id)
-                clear_field_draft("tts_new_script_category", "tts_new_script_text")
+                clear_field_draft("tts_new_script_text")
                 st.success("已新增句子。")
                 st.rerun()
 
-    # --- 現有句子列表：編輯 / 停用 ---
+    # --- 現有句子列表：編輯 / 停用（每頁 5 句）---
     with st.expander("✏️ 編輯 / 停用現有句子", expanded=False):
-        full_scripts = _load_scripts(active_only=False)
+        full_scripts = _load_scripts(active_only=False, script_type="short")
         if not full_scripts:
             st.info("句庫為空。")
         else:
-            for s in full_scripts:
+            page_size = 5
+            total = len(full_scripts)
+            total_pages = (total + page_size - 1) // page_size
+            page = 1
+            if total_pages > 1:
+                page = int(st.number_input(
+                    "頁數", min_value=1, max_value=total_pages, value=1, step=1,
+                    key="tts_edit_page",
+                ))
+            start = (page - 1) * page_size
+            page_scripts = full_scripts[start:start + page_size]
+            st.caption(f"共 {total} 句，每頁顯示 {page_size} 句；現為第 {page}／{total_pages} 頁。")
+            for s in page_scripts:
                 with st.container(border=True):
                     c = counts.get(s["category"], {})
                     status_tag = "🟢 啟用中" if s["is_active"] else "⚪ 已停用"
                     st.caption(f"{s['id']}｜{s['category']}｜{status_tag}｜accepted={c.get('accepted', 0)}")
                     edit_text = st.text_area("內容", value=s["text"], key=f"tts_edit_text_{s['id']}")
-                    edit_cat = st.text_input("類別", value=s["category"], key=f"tts_edit_cat_{s['id']}")
+                    edit_existing_cats = sorted({x["category"] for x in full_scripts if x["category"]})
+                    edit_cat = _category_selectbox(
+                        "類別", SCRIPT_CATEGORY_OPTIONS, edit_existing_cats,
+                        key=f"tts_edit_cat_{s['id']}", default=s["category"],
+                    )
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.button("儲存修改", key=f"tts_save_{s['id']}", use_container_width=True):
@@ -1472,12 +1870,173 @@ def _render_admin_scripts(user_id, all_scripts):
                                 st.success("已儲存。")
                                 st.rerun()
                             else:
-                                st.warning("類別同內容都要填。")
+                                st.warning("類別與內容都必須填寫。")
                     with col2:
                         toggle_label = "停用" if s["is_active"] else "重新啟用"
                         if st.button(toggle_label, key=f"tts_toggle_{s['id']}", use_container_width=True):
                             _set_script_active(s["id"], not s["is_active"])
                             st.rerun()
+
+
+def _render_lexicon_view(user_id):
+    st.subheader("讀音字典")
+    st.caption(
+        "本字典用於修正 TTS 讀錯的字詞（多音字、人名、校名、英文縮寫、數字等）。"
+        "系統在合成前會將「原文」覆寫為「讀法」，單人 Free De／Mock 及聯機多人對 AI 均會生效。"
+    )
+    active_entries = _load_lexicon(active_only=True)
+    if active_entries:
+        st.dataframe(
+            [{"原文": e["term"], "讀法": e["reading"], "粵拼": e["jyutping"],
+              "類別": e["category"], "例句": e["example"]} for e in active_entries],
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.info("字典暫時沒有生效的條目。")
+    st.caption("如發現 AI 讀錯字詞，可通知管理員補充至字典。")
+
+
+def _render_lexicon_admin(user_id):
+    st.divider()
+    st.subheader("讀音字典管理（管理員）")
+
+    entries = _load_lexicon(active_only=False)
+    active_entries = [e for e in entries if e["is_active"]]
+
+    with st.expander("➕ 新增讀音", expanded=not active_entries):
+        existing_categories = sorted({e["category"] for e in entries if e["category"]})
+        term = st.text_input(
+            "原文（TTS 讀錯的字詞）", key="lex_new_term", placeholder="例如：基本法盃",
+        )
+        reading = st.text_input(
+            "讀法（希望 TTS 讀出的寫法）", key="lex_new_reading", placeholder="例如：基本法杯",
+            help="合成前會直接以此替換原文；例如把讀錯的英文縮寫寫成分開字母，或改用正確的諧音。",
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            jyutping = st.text_input(
+                "粵拼（可留空，備註用）", key="lex_new_jyutping", placeholder="例如：bui1",
+            )
+            category = _category_selectbox(
+                "類別", LEXICON_CATEGORY_OPTIONS, existing_categories, key="lex_new_category_select",
+            )
+        with col2:
+            example = st.text_input(
+                "例句（可留空）", key="lex_new_example", placeholder="例如：我方今年出戰基本法盃。",
+            )
+            note = st.text_input(
+                "備註（可留空）", key="lex_new_note", placeholder="例如：「盃」字常被誤讀為「不」。",
+            )
+        if st.button("加入字典", type="primary", disabled=not (term.strip() and reading.strip())):
+            _upsert_lexicon_entry(_next_lexicon_id(), term, reading, jyutping, example, note, category, user_id)
+            for k in ("lex_new_term", "lex_new_reading", "lex_new_jyutping",
+                      "lex_new_category_select", "lex_new_category_select_custom",
+                      "lex_new_example", "lex_new_note"):
+                st.session_state.pop(k, None)
+            st.success("已加入字典。")
+            st.rerun()
+
+    if entries:
+        with st.expander("✏️ 編輯 / 停用", expanded=False):
+            options = [e["id"] for e in entries]
+
+            def _fmt(eid):
+                e = next((x for x in entries if x["id"] == eid), None)
+                if not e:
+                    return eid
+                tag = "" if e["is_active"] else "（已停用）"
+                return f'{e["term"]} → {e["reading"]}{tag}'
+
+            selected = st.selectbox("選擇條目", options=options, format_func=_fmt, key="lex_edit_select")
+            sel = next((x for x in entries if x["id"] == selected), None)
+            if sel:
+                # keys scoped by id so switching entry re-fills the fields
+                sid = sel["id"]
+                e_term = st.text_input("原文", value=sel["term"], key=f"lex_edit_term_{sid}")
+                e_reading = st.text_input("讀法", value=sel["reading"], key=f"lex_edit_reading_{sid}")
+                c1, c2 = st.columns(2)
+                with c1:
+                    e_jyutping = st.text_input("粵拼", value=sel["jyutping"], key=f"lex_edit_jyutping_{sid}")
+                    e_existing_cats = sorted({e["category"] for e in entries if e["category"]})
+                    e_category = _category_selectbox(
+                        "類別", LEXICON_CATEGORY_OPTIONS, e_existing_cats,
+                        key=f"lex_edit_category_{sid}", default=sel["category"],
+                    )
+                with c2:
+                    e_example = st.text_input("例句", value=sel["example"], key=f"lex_edit_example_{sid}")
+                    e_note = st.text_input("備註", value=sel["note"], key=f"lex_edit_note_{sid}")
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("儲存修改", type="primary",
+                                 disabled=not (e_term.strip() and e_reading.strip())):
+                        _upsert_lexicon_entry(sid, e_term, e_reading, e_jyutping,
+                                              e_example, e_note, e_category, user_id)
+                        st.success("已更新。")
+                        st.rerun()
+                with bc2:
+                    if sel["is_active"]:
+                        if st.button("停用此條目"):
+                            _set_lexicon_active(sid, False)
+                            st.rerun()
+                    elif st.button("重新啟用"):
+                        _set_lexicon_active(sid, True)
+                        st.rerun()
+
+
+def _render_manuscript_admin(user_id):
+    st.divider()
+    st.subheader("完整稿管理（管理員）")
+    st.caption("貼上一份完整發言稿，系統會自動切成一段段，供錄音者於「完整稿」模式逐段錄製。")
+
+    with st.expander("➕ 新增完整稿", expanded=False):
+        ms_title = st.text_input(
+            "稿件標題", key="ms_new_title", placeholder="例如：基本法盃初賽・正方立論稿",
+        )
+        ms_text = st.text_area(
+            "完整稿內容", key="ms_new_text", height=240,
+            placeholder="貼上整份發言稿；系統會按句號與換行自動分段。",
+        )
+        if st.button("預覽分段", key="ms_preview_btn"):
+            st.session_state["ms_preview"] = _split_manuscript(ms_text or "")
+        preview = st.session_state.get("ms_preview")
+        if preview:
+            st.caption(f"共分成 {len(preview)} 段：")
+            for i, seg in enumerate(preview):
+                st.markdown(f"{i + 1}. {seg}")
+            if st.button("確認儲存此完整稿", type="primary",
+                         disabled=not ((ms_title or "").strip() and preview)):
+                _save_manuscript(ms_title, preview, user_id)
+                for k in ("ms_preview", "ms_new_title", "ms_new_text"):
+                    st.session_state.pop(k, None)
+                st.success("完整稿已儲存，錄音者可於「完整稿」模式錄製。")
+                st.rerun()
+
+    manuscripts = _load_manuscripts()
+    if manuscripts:
+        with st.expander("📄 現有完整稿", expanded=False):
+            for m in manuscripts:
+                active_n = sum(1 for s in m["segments"] if s["is_active"])
+                st.markdown(f"**{m['title']}**（{active_n} / {len(m['segments'])} 段生效）")
+                if active_n > 0:
+                    if st.button("停用整份", key=f"ms_off_{m['manuscript_id']}"):
+                        for s in m["segments"]:
+                            _set_script_active(s["id"], False)
+                        st.rerun()
+                elif st.button("重新啟用整份", key=f"ms_on_{m['manuscript_id']}"):
+                    for s in m["segments"]:
+                        _set_script_active(s["id"], True)
+                    st.rerun()
+
+
+def _render_admin_tab(user_id):
+    st.subheader("管理員")
+    st.caption("集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。")
+    short_scripts = _load_scripts(active_only=True, script_type="short")
+    _render_review_panel(user_id)
+    _render_admin_scripts(user_id, short_scripts)
+    _render_manuscript_admin(user_id)
+    _render_lexicon_admin(user_id)
+    _render_llm_admin_panel(user_id)
 
 
 st.header("聖呂中辯AI訓練")
@@ -1499,13 +2058,18 @@ is_admin = user_id in reviewers
 with st.expander("📖 聖呂中辯自家讀音模型研發計劃書", expanded=False):
     st.markdown(_load_rd_plan())
 
-_tab_options = ["tts", "llm"]
+_tab_options = ["tts", "lexicon", "llm"]
+if is_admin:
+    _tab_options.append("admin")
 
 
 def format_training_tab_label(tab_name):
-    if tab_name == "tts":
-        return "🎙️ TTS 錄音提交"
-    return "📝 LLM 文字資料提交"
+    return {
+        "tts": "🎙️ TTS 錄音提交",
+        "lexicon": "📖 讀音字典",
+        "llm": "📝 LLM 文字資料提交",
+        "admin": "🛠️ 管理員",
+    }.get(tab_name, tab_name)
 
 
 if hasattr(st, "segmented_control"):
@@ -1532,37 +2096,38 @@ if selected_tab is None:
     selected_tab = "tts"
 
 if selected_tab == "tts":
-    if not is_allowed and not is_admin:
-        st.info("你暫時未獲加入 TTS 錄音收集名單。你仍可到 LLM 文字資料提交分頁提交辯論文字資料。")
-    else:
-        active_scripts = _load_scripts(active_only=True)
-
-        if is_allowed:
-            st.subheader("錄音提交")
-            if not _active_consent(user_id):
-                with st.container(border=True):
-                    st.write(CONSENT_TEXT)
-                    agree = st.checkbox("我已閱讀並同意以上錄音用途及授權安排")
-                    if st.button("確認同意", type="primary", disabled=not agree):
-                        _record_consent(user_id)
-                        st.success("已記錄同意。")
-                        st.rerun()
-            else:
-                with st.expander("撤回同意", expanded=False):
-                    st.warning("撤回後，你已提交的錄音會標記為 withdrawn，並不再列入 export。")
-                    if st.button("撤回 TTS 錄音使用同意"):
-                        _withdraw_consent(user_id)
-                        st.success("已撤回同意並標記既有錄音。")
-                        st.rerun()
-
-                _render_recorder(user_id, active_scripts)
-                _render_my_records(user_id)
-
+    if not is_allowed:
         if is_admin:
-            _render_review_panel(user_id)
-            _render_admin_scripts(user_id, active_scripts)
-else:
+            st.info("你並非 TTS 錄音收集名單成員；如需管理錄音資料，請前往「管理員」分頁。")
+        else:
+            st.info("你暫時未獲加入 TTS 錄音收集名單；仍可於「LLM 文字資料提交」分頁提交辯論文字資料。")
+    else:
+        st.subheader("錄音提交")
+        if not _active_consent(user_id):
+            with st.container(border=True):
+                st.write(CONSENT_TEXT)
+                agree = st.checkbox("我已閱讀並同意以上錄音用途及授權安排")
+                if st.button("確認同意", type="primary", disabled=not agree):
+                    _record_consent(user_id)
+                    st.success("已記錄同意。")
+                    st.rerun()
+        else:
+            with st.expander("撤回同意", expanded=False):
+                st.warning("撤回後，你已提交的錄音會標記為 withdrawn，並不再列入匯出。")
+                if st.button("撤回 TTS 錄音使用同意"):
+                    _withdraw_consent(user_id)
+                    st.success("已撤回同意並標記既有錄音。")
+                    st.rerun()
+
+            _render_recorder(user_id)
+            _render_my_records(user_id)
+elif selected_tab == "lexicon":
+    _render_lexicon_view(user_id)
+elif selected_tab == "llm":
     _render_llm_submission(user_id)
     _render_my_llm_submissions(user_id)
+elif selected_tab == "admin":
     if is_admin:
-        _render_llm_admin_panel(user_id)
+        _render_admin_tab(user_id)
+    else:
+        st.info("此分頁僅供管理員使用。")

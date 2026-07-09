@@ -531,6 +531,42 @@ def build_tts_coverage_prompt(bank_summary: str) -> str:
 """
 
 
+TTS_REGENERATE_SYSTEM_PROMPT = (
+    "你係廣東話 TTS 訓練資料規劃專家。請只回傳 JSON，唔好加 markdown。"
+    "你要為一個高質廣東話讀音模型重新規劃錄音句庫。"
+    "有錄音嘅句子（已鎖）絕對唔可以改動、刪除或建議停用，你只可以圍繞佢哋補充；"
+    "只可以針對未錄音句子建議停用（例如重複、低質、覆蓋度已足）。"
+)
+
+
+def build_tts_regenerate_prompt(locked_summary: str, unlocked_summary: str) -> str:
+    return f"""
+以下係現有句庫，每行格式為 [類別] 稿件id｜已接受錄音數｜待審核數｜句子內容。
+
+【已鎖句子（有錄音，必須保留，不可改動 / 停用）】
+{locked_summary}
+
+【未錄音句子（可建議停用）】
+{unlocked_summary}
+
+請以廣東話 TTS 訓練角度重新規劃句庫，並回傳 JSON：
+{{
+  "overall": "一兩句總結重新規劃嘅方向",
+  "new_scripts": [
+    {{"category": "類別", "text": "建議新增嘅廣東話句子（書面粵語，口語化，貼近辯論情境）"}}
+  ],
+  "deactivate_candidates": [
+    {{"script_id": "只可以係未錄音句子嘅 id", "reason": "點解建議停用（例如重複、低質、已足夠）"}}
+  ]
+}}
+
+要求：
+- new_scripts 提供 10 至 20 句，補齊聲調、韻母、英文夾雜、數字、長句韻律等讀音難點。
+- deactivate_candidates 只可以引用【未錄音句子】嘅 id；如果冇合適嘅就回傳空 list。
+- 絕對唔好將已鎖句子放入 deactivate_candidates。
+"""
+
+
 LLM_TEXT_REVIEW_SYSTEM_PROMPT = (
     "你是香港中學辯論 AI 訓練資料審核員。請只回傳 JSON，不能加 markdown。"
     "你要判斷提交的文字資料是否適合放入聖呂中辯內部辯論 LLM / RAG dataset。"
