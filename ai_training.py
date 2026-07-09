@@ -1457,16 +1457,39 @@ is_admin = user_id in reviewers
 with st.expander("📖 聖呂中辯自家讀音模型研發計劃書", expanded=False):
     st.markdown(_load_rd_plan())
 
-active_section = st.segmented_control(
-    "訓練資料類型",
-    ["TTS 錄音提交", "LLM 文字資料提交"],
-    default="TTS 錄音提交",
-    key="ai_training_active_section",
-    label_visibility="collapsed",
-    width="stretch",
-)
+_tab_options = ["tts", "llm"]
 
-if active_section == "TTS 錄音提交":
+
+def format_training_tab_label(tab_name):
+    if tab_name == "tts":
+        return "🎙️ TTS 錄音提交"
+    return "📝 LLM 文字資料提交"
+
+
+if hasattr(st, "segmented_control"):
+    selected_tab = st.segmented_control(
+        "頁面",
+        options=_tab_options,
+        default="tts",
+        format_func=format_training_tab_label,
+        key="ai_training_selected_tab",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+else:
+    selected_tab = st.radio(
+        "頁面",
+        options=_tab_options,
+        format_func=format_training_tab_label,
+        key="ai_training_selected_tab",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+if selected_tab is None:
+    selected_tab = "tts"
+
+if selected_tab == "tts":
     if not is_allowed and not is_admin:
         st.info("你暫時未獲加入 TTS 錄音收集名單。你仍可到 LLM 文字資料提交分頁提交辯論文字資料。")
     else:
