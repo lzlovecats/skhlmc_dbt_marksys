@@ -3,7 +3,7 @@ import math
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, DIFFICULTY_CRITERIA, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, get_system_config
+from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, DIFFICULTY_CRITERIA, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, get_system_config, clear_field_draft
 from auth import require_committee, del_cookie, committee_cookie_manager, render_committee_auth_bridge, _sign_cookie
 from ai_coach_helpers import generate_general_ai_reply, is_successful_ai_result
 from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
@@ -386,6 +386,7 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                     "VALUES (:type, :key, :uid, :text, :now)",
                     {"type": motion_type, "key": motion_key, "uid": user_id, "text": comment_text, "now": hk_now},
                 )
+                clear_field_draft(f"comment_{motion_type}_{idx}")
                 snippet = comment_text if len(comment_text) <= 40 else comment_text[:40] + "⋯"
                 topic_label = motion_key if len(str(motion_key)) <= 20 else str(motion_key)[:20] + "⋯"
                 notify_vote_event(
@@ -1156,6 +1157,7 @@ def cast_against_vote_dialog(topic, user_id, against_reason_map, is_switch=False
                     {"topic_text": topic, "user_id": user_id, "reasons": dump_json(reasons)}
                 )
                 queue_toast("已轉投不同意票！" if is_switch else "已投下不同意票！", icon="↪️️" if is_switch else "☑️")
+                clear_field_draft(f"against_other_{topic}")
                 _clear_vote_cache_only()
                 st.rerun()
 
@@ -1309,7 +1311,7 @@ if selected_tab == "proposal":
         st.caption(f"目前活躍成員：{_active_count} 人 ｜ 入庫門檻：{ENTRY_THRESHOLD} 票")
         st.caption("甲乙辯題格式：（甲）XXX／（乙）YYY，請使用全形中文符號。")
         st.caption("")
-        new_topic = st.text_input("請輸入完整辯題")
+        new_topic = st.text_input("請輸入完整辯題", key="new_topic_input")
         new_category = st.selectbox("辯題類別", options=CATEGORIES)
         st.caption("辯題難度標準：")
         for _lvl in (1, 2, 3):
@@ -1413,6 +1415,7 @@ if selected_tab == "proposal":
                         tag=f"topic-vote-new-{new_topic}",
                     )
                     clear_caches()
+                    clear_field_draft("new_topic_input")
                     st.success("辯題已加入投票區！")
 
     if st.session_state.get("confirm_imbalance"):
@@ -1441,6 +1444,7 @@ if selected_tab == "proposal":
                 )
                 clear_caches()
                 st.session_state["confirm_imbalance"] = False
+                clear_field_draft("new_topic_input")
                 st.success("辯題已加入投票區！")
         with col2:
             if st.button("❌ 取消"):
@@ -1523,6 +1527,7 @@ if selected_tab == "proposal":
                             tag=f"topic-removal-new-{t}",
                         )
                 clear_caches()
+                clear_field_draft("depose_reason_other")
                 if proposed:
                     st.success("罷免動議已提出！")
                 else:

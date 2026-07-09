@@ -9,6 +9,7 @@ import streamlit.components.v1 as components
 
 from auth import require_committee, _sign_cookie
 from functions import (
+    clear_field_draft,
     ensure_video_interaction_tables,
     execute_query,
     query_params,
@@ -633,7 +634,7 @@ with comment_col:
     )
     st.subheader(f"留言區（{len(comments_df)}）")
     with st.form("video_comment_form", clear_on_submit=True):
-        comment_text = st.text_area("留言", placeholder="就此片段發表意見。")
+        comment_text = st.text_area("留言", placeholder="就此片段發表意見。", key="video_comment_text")
         submit_comment = st.form_submit_button("發表留言", type="primary")
     if submit_comment:
         if not comment_text.strip():
@@ -651,6 +652,7 @@ with comment_col:
                     "created_at": datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None),
                 },
             )
+            clear_field_draft("video_comment_text")
             _queue_replay_toast("已成功留言", icon="☑️")
             st.rerun()
 

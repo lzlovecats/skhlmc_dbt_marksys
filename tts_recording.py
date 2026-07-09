@@ -11,6 +11,7 @@ import streamlit as st
 
 from auth import require_committee
 from functions import (
+    clear_field_draft,
     ensure_tts_recording_tables,
     execute_query,
     get_system_config,
@@ -846,6 +847,7 @@ def _render_admin_scripts(user_id, all_scripts):
                 st.warning("類別同句子內容都要填。")
             else:
                 _upsert_script(_next_script_id(cat), cat, txt, user_id)
+                clear_field_draft("tts_new_script_category", "tts_new_script_text")
                 st.success("已新增句子。")
                 st.rerun()
 

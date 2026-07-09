@@ -5,6 +5,7 @@ import streamlit as st
 
 from auth import require_committee
 from functions import (
+    clear_field_draft,
     ensure_match_photos_table,
     execute_query,
     query_params,
@@ -106,8 +107,9 @@ with st.container(border=True):
     st.subheader("上載精華圖片")
     with st.form("photo_upload_form", clear_on_submit=True):
         selected_album = st.selectbox("所屬場次", options=album_labels)
-        photo_title = st.text_input("圖片標題（可留空）")
-        caption = st.text_area("圖片說明（可留空）")
+        photo_date = st.date_input("相片日期（可留空）", value=None, format="YYYY-MM-DD")
+        photo_title = st.text_input("圖片標題（可留空）", key="photo_upload_title")
+        caption = st.text_area("圖片說明（可留空）", key="photo_upload_caption")
         uploaded_files = st.file_uploader(
             "選擇圖片",
             type=["jpg", "jpeg", "png", "webp"],
@@ -124,17 +126,18 @@ with st.container(border=True):
                 execute_query(
                     f"""
                     INSERT INTO {TABLE_MATCH_PHOTOS} (
-                        match_video_id, album_label, photo_title, caption,
+                        match_video_id, album_label, photo_date, photo_title, caption,
                         file_name, mime_type, image_data, uploaded_by, created_at
                     )
                     VALUES (
-                        :match_video_id, :album_label, :photo_title, :caption,
+                        :match_video_id, :album_label, :photo_date, :photo_title, :caption,
                         :file_name, :mime_type, :image_data, :uploaded_by, :created_at
                     )
                     """,
                     {
                         "match_video_id": album_video_ids.get(selected_album),
                         "album_label": selected_album,
+                        "photo_date": photo_date,
                         "photo_title": photo_title.strip() or None,
                         "caption": caption.strip() or None,
                         "file_name": uploaded_file.name,
@@ -144,6 +147,7 @@ with st.container(border=True):
                         "created_at": now_hk,
                     },
                 )
+            clear_field_draft("photo_upload_title", "photo_upload_caption")
             _queue_photo_toast("圖片已成功上載。", icon="☑️")
             st.rerun()
 
@@ -155,6 +159,7 @@ photos_df = query_params(
     SELECT
         id,
         album_label,
+        photo_date,
         photo_title,
         caption,
         file_name,
@@ -164,6 +169,7 @@ photos_df = query_params(
         created_at
     FROM {TABLE_MATCH_PHOTOS}
     ORDER BY
+        photo_date DESC NULLS LAST,
         CASE WHEN album_label = :other_album THEN 1 ELSE 0 END,
         album_label ASC,
         created_at DESC
@@ -199,7 +205,9 @@ for index, (_, photo) in enumerate(filtered_df.iterrows()):
         image_bytes = _to_bytes(photo["image_data"])
         title = _format_value(photo["photo_title"], photo["file_name"])
         st.image(image_bytes, caption=title, use_container_width=True)
-        st.caption(f"{photo['album_label']} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
+        photo_date = _format_value(photo["photo_date"], "")
+        date_text = f" ｜ {photo_date}" if photo_date else ""
+        st.caption(f"{photo['album_label']}{date_text} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
         if photo["caption"]:
             st.write(photo["caption"])
         with st.popover("下載", use_container_width=True):

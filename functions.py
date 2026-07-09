@@ -232,9 +232,14 @@ def ensure_match_photos_table():
         conn = get_connection()
         with conn.session as s:
             s.execute(text(CREATE_MATCH_PHOTOS))
+            s.execute(text(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS photo_date DATE"))
             s.execute(text(
                 f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created "
                 f"ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_match_photos_date_created "
+                f"ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC)"
             ))
             s.commit()
         st.session_state["_match_photos_table_ready"] = True
@@ -1479,6 +1484,27 @@ def render_page_guidance(steps, title="首次使用指南"):
     with st.expander(f"ℹ️ {title}", expanded=False):
         for step in steps:
             st.markdown(f"- {step}")
+
+
+def clear_field_draft(*keys):
+    """清走全域 draft autosave（見 main.py `render_draft_autosave`）為指定 widget key
+    儲落 localStorage 嘅草稿。
+
+    成功送出（例如發表留言、提交辯題）之後呼叫，避免已提交嘅內容因為欄位被重設為空
+    而又被自動還原（「殭屍草稿」）。只對有明確 `key=` 嘅 widget 有效。
+
+    注意：呢度只將 key 排入 `st.session_state` 佇列，唔即時 render 組件 —— 因為呼叫位通常
+    緊接住 `st.rerun()`，而 rerun 之前 render 嘅 UI 會被丟棄（同 `_queue_replay_toast` 一樣）。
+    真正嘅清除組件由 `main.py` `flush_pending_draft_clears()` 喺下一個完整 run 頂部先 render，
+    確保一定送到瀏覽器，並喺 restore 之前執行。
+    """
+    keys = [k for k in keys if k]
+    if not keys:
+        return
+    pending = st.session_state.setdefault("_pending_draft_clears", [])
+    for k in keys:
+        if k not in pending:
+            pending.append(k)
 
 
 def hash_password(plain: str) -> str:
