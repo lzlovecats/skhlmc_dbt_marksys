@@ -239,7 +239,7 @@ username = "your_user"
 password = "your_password"
 ```
 
-`GEMINI_API_KEY` 用於 Gemini 模型及 Gemini Live 練習；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4；`AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` 用於單人 Free De / Mock 的 Azure TTS 廣東話播放，未設定時會 fallback 用 Gemini Live 原生聲音。連線練習的多人對 AI 房間直接播放 Gemini Live 原生聲音，不依賴 Azure TTS。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
+`GEMINI_API_KEY` 用於 Gemini 模型及 Gemini Live 練習；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4；`AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` 用於單人 Free De / Mock 及連線多人對 AI 的 Azure TTS 廣東話播放，未設定時會 fallback 用 Gemini Live 原生聲音。連線多人對 AI 房間由伺服器合成後同步廣播給全房（逐句合成、全房共用同一段音），可用 `ROOM_TTS_ENABLED=0` 關閉而維持原生聲音。TTS provider 由 `TTS_PROVIDER`（預設 `azure`，將來 `custom`）切換，自家粵語模型端點為 `CUSTOM_TTS_URL`，切換後單人與聯機同時生效。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
 
 Gemini Live 自由辯論、完整 Mock 及多人對 AI 連線房間會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
 

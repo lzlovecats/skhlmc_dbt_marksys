@@ -31,6 +31,7 @@ from schema import (
     CREATE_TTS_VOICE_CONSENTS,
     CREATE_TTS_VOICE_RECORDINGS,
     CREATE_TTS_SCRIPTS,
+    CREATE_TTS_LEXICON,
     CREATE_LLM_TRAINING_SUBMISSIONS,
     CREATE_MATCH_ROSTER_LINKS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
@@ -48,6 +49,7 @@ from schema import (
     TABLE_TTS_VOICE_CONSENTS,
     TABLE_TTS_VOICE_RECORDINGS,
     TABLE_TTS_SCRIPTS,
+    TABLE_TTS_LEXICON,
     TABLE_LLM_TRAINING_SUBMISSIONS,
     TABLE_MATCH_ROSTER_LINKS,
     TABLE_NOTIFICATION_READS,
@@ -252,7 +254,7 @@ def ensure_match_photos_table():
 
 
 def ensure_tts_recording_tables():
-    if st.session_state.get("_ai_training_tables_ready_v3"):
+    if st.session_state.get("_ai_training_tables_ready_v5"):
         return True
 
     try:
@@ -261,7 +263,19 @@ def ensure_tts_recording_tables():
             s.execute(text(CREATE_TTS_VOICE_CONSENTS))
             s.execute(text(CREATE_TTS_VOICE_RECORDINGS))
             s.execute(text(CREATE_TTS_SCRIPTS))
+            s.execute(text(CREATE_TTS_LEXICON))
             s.execute(text(CREATE_LLM_TRAINING_SUBMISSIONS))
+            # Retrofit script_type / manuscript columns onto existing DBs (short/full modes).
+            s.execute(text(
+                f"ALTER TABLE {TABLE_TTS_SCRIPTS} "
+                f"ADD COLUMN IF NOT EXISTS script_type TEXT DEFAULT 'short'"
+            ))
+            s.execute(text(
+                f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_id TEXT"
+            ))
+            s.execute(text(
+                f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_title TEXT"
+            ))
             s.execute(text(
                 f"CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created "
                 f"ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC)"
@@ -275,6 +289,14 @@ def ensure_tts_recording_tables():
                 f"ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order)"
             ))
             s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active "
+                f"ON {TABLE_TTS_LEXICON}(is_active, category)"
+            ))
+            s.execute(text(
+                f"CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript "
+                f"ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order)"
+            ))
+            s.execute(text(
                 f"CREATE INDEX IF NOT EXISTS idx_llm_training_status_created "
                 f"ON {TABLE_LLM_TRAINING_SUBMISSIONS}(status, created_at DESC)"
             ))
@@ -283,7 +305,7 @@ def ensure_tts_recording_tables():
                 f"ON {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by, created_at DESC)"
             ))
             s.commit()
-        st.session_state["_ai_training_tables_ready_v3"] = True
+        st.session_state["_ai_training_tables_ready_v5"] = True
         return True
     except Exception as e:
         logger.warning("ensure_tts_recording_tables failed: %s", e)

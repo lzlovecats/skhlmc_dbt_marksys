@@ -288,6 +288,55 @@
     src.start(playAt);
     playAt += buffer.duration;
   }
+
+  // ── mode B server-side TTS: play the shared Azure/custom voice blobs, in the
+  // order the server sent them (one queue, one <audio> at a time), so every
+  // member hears the same synthesized sentences. Cleared on barge-in/interrupt.
+  let ttsQueue = [], ttsPlaying = false, ttsCurrentAudio = null, ttsCurrentUrl = "";
+  function base64ToBlob(b64, mime) {
+    const bin = atob(b64 || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime || "audio/mpeg" });
+  }
+  function enqueueTtsAudio(b64, mime) {
+    if (!b64) return;
+    ttsQueue.push(base64ToBlob(b64, mime));
+    processTtsQueue();
+  }
+  function processTtsQueue() {
+    if (ttsPlaying) return;
+    const blob = ttsQueue.shift();
+    if (!blob) return;
+    ttsPlaying = true;
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    ttsCurrentAudio = audio;
+    ttsCurrentUrl = url;
+    const done = () => {
+      URL.revokeObjectURL(url);
+      if (ttsCurrentAudio === audio) ttsCurrentAudio = null;
+      if (ttsCurrentUrl === url) ttsCurrentUrl = "";
+      ttsPlaying = false;
+      processTtsQueue();
+    };
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+  }
+  function clearTtsQueue() {
+    ttsQueue = [];
+    if (ttsCurrentAudio) {
+      try { ttsCurrentAudio.pause(); } catch (e) {}
+    }
+    if (ttsCurrentUrl) {
+      try { URL.revokeObjectURL(ttsCurrentUrl); } catch (e) {}
+    }
+    ttsCurrentAudio = null;
+    ttsCurrentUrl = "";
+    ttsPlaying = false;
+  }
+
   function setNetworkTest(text) {
     $("networkTestResult").textContent = text;
   }
@@ -688,7 +737,10 @@
   // ── mode B: play the shared AI (Gemini Live) native audio, synced to all ──
   function handleServerContent(sc) {
     if (!sc) return;
-    if (sc.interrupted && outputCtx) playAt = outputCtx.currentTime;
+    if (sc.interrupted) {
+      if (outputCtx) playAt = outputCtx.currentTime;
+      clearTtsQueue();  // barge-in: drop any queued/playing synthesized speech
+    }
     const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
     parts.forEach(part => {
       if (part.inlineData && part.inlineData.data) {
@@ -767,6 +819,8 @@
         }
         break;
       case "serverContent": handleServerContent(msg.serverContent); break;  // mode B: AI audio
+      case "tts_audio": enqueueTtsAudio(msg.data, msg.mime); break;          // mode B: shared Azure/自家 voice
+      case "tts_fallback_hint": log("AI 讀音暫時改用 Gemini 原生聲音。"); break;
       case "ai_ready": log("AI 對手已就緒。"); break;
       case "speaking":
         if (msg.user_id === "AI") { aiSpeaking = !!msg.speaking; refreshTalk(); }

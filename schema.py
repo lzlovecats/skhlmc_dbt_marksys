@@ -32,6 +32,7 @@ TABLE_MATCH_PHOTOS = "match_photos"
 TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
 TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
 TABLE_TTS_SCRIPTS = "tts_scripts"
+TABLE_TTS_LEXICON = "tts_lexicon"
 TABLE_LLM_TRAINING_SUBMISSIONS = "llm_training_submissions"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
@@ -532,11 +533,34 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
 # built-in default bank in ai_training.py when empty.
 CREATE_TTS_SCRIPTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TTS_SCRIPTS} (
-    script_id   TEXT        PRIMARY KEY,
-    category    TEXT        NOT NULL,
-    text        TEXT        NOT NULL,
+    script_id        TEXT        PRIMARY KEY,
+    category         TEXT        NOT NULL,
+    text             TEXT        NOT NULL,
+    is_active        BOOLEAN     DEFAULT TRUE,
+    sort_order       INTEGER     DEFAULT 0,
+    script_type      TEXT        DEFAULT 'short',
+    manuscript_id    TEXT,
+    manuscript_title TEXT,
+    created_by       TEXT,
+    created_at       TIMESTAMP   DEFAULT NOW(),
+    updated_at       TIMESTAMP   DEFAULT NOW()
+);
+"""
+
+# Pronunciation override dictionary (讀音層 / RD plan 二). Runtime reads active
+# rows in deploy/proxy.py `_preprocess_tts_text` and rewrites `term` → `reading`
+# before synthesis (single-player + live-room share the same path). Distinct from
+# tts_scripts (which is the recording sentence bank), this holds reading rules.
+CREATE_TTS_LEXICON = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_TTS_LEXICON} (
+    lexicon_id  TEXT        PRIMARY KEY,
+    term        TEXT        NOT NULL,
+    reading     TEXT        NOT NULL,
+    jyutping    TEXT,
+    example     TEXT,
+    note        TEXT,
+    category    TEXT        DEFAULT '',
     is_active   BOOLEAN     DEFAULT TRUE,
-    sort_order  INTEGER     DEFAULT 0,
     created_by  TEXT,
     created_at  TIMESTAMP   DEFAULT NOW(),
     updated_at  TIMESTAMP   DEFAULT NOW()
@@ -884,6 +908,8 @@ CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
     ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
+CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active
+    ON {TABLE_TTS_LEXICON}(is_active, category);
 CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
     ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
@@ -943,6 +969,7 @@ ALL_SCHEMAS = [
     CREATE_TTS_VOICE_CONSENTS,        # → accounts
     CREATE_TTS_VOICE_RECORDINGS,      # → accounts
     CREATE_TTS_SCRIPTS,               # → (standalone)
+    CREATE_TTS_LEXICON,               # → (standalone)
     CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
@@ -970,6 +997,13 @@ ALL_SCHEMAS = [
 # ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
 # that deleting/removing a topic also clears its removal-vote row and ballots.
 MIGRATIONS = [
+    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS script_type TEXT DEFAULT 'short'",
+    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_id TEXT",
+    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_title TEXT",
+    f"""
+    CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
+        ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order)
+    """,
     f"""
     DO $$
     DECLARE cname text;

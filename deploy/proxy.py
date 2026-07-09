@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -412,6 +413,147 @@ def _build_azure_tts_ssml(text_value: str, voice: str, rate: str) -> str:
     )
 
 
+class TtsUnavailable(Exception):
+    """Raised when TTS cannot synthesize (unconfigured, upstream error, etc.).
+
+    ``status`` mirrors the HTTP code the /api/tts/azure endpoint should surface:
+    503 = provider not configured, 502 = upstream synth failed.
+    """
+
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.status = status
+
+
+def tts_provider_configured() -> bool:
+    """Whether the active TTS provider has the secrets it needs. Drives whether
+    live-room server-side TTS turns on (else the room stays on Gemini native audio)."""
+    provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
+    if provider == "custom":
+        return bool(_get_proxy_secret("CUSTOM_TTS_URL").strip())
+    return bool(
+        _get_proxy_secret("AZURE_SPEECH_KEY").strip()
+        and _get_proxy_secret("AZURE_SPEECH_REGION").strip()
+    )
+
+
+_LEXICON_TTL = 60.0  # seconds; dictionary edits in ai_training.py take effect within this
+_lexicon_cache = {"rows": None, "at": 0.0}
+
+
+def _load_lexicon_overrides():
+    """Active (term, reading) pairs from tts_lexicon, longest term first so
+    overlapping terms don't partially clobber. Cached with a short TTL; on DB
+    error, keep the last good snapshot rather than dropping overrides."""
+    now = time.monotonic()
+    cached = _lexicon_cache["rows"]
+    if cached is not None and (now - _lexicon_cache["at"]) < _LEXICON_TTL:
+        return cached
+    rows = []
+    try:
+        engine = _get_db_engine()
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("SELECT term, reading FROM tts_lexicon WHERE is_active = TRUE")
+            )
+            for term_value, reading_value in result:
+                term_value = (term_value or "").strip()
+                reading_value = (reading_value or "").strip()
+                if term_value and reading_value:
+                    rows.append((term_value, reading_value))
+        rows.sort(key=lambda pair: len(pair[0]), reverse=True)
+    except Exception as e:
+        logger.info("lexicon load failed, keeping previous overrides: %s", e)
+        if cached is not None:
+            return cached
+        rows = []
+    _lexicon_cache["rows"] = rows
+    _lexicon_cache["at"] = now
+    return rows
+
+
+def _preprocess_tts_text(text_value: str) -> str:
+    """讀音字典前處理 (tts_rd_plan.md 第二節「讀音層」). 合成前把 tts_lexicon 嘅
+    term → reading 覆寫。單人 (/api/tts/azure) 同聯機 (_room_gemini_pump) 都經呢度,
+    改字典一次兩邊生效。將來可喺呢度加 G2P (ToJyutping/PyCantonese)。"""
+    processed = (text_value or "").strip()
+    if not processed:
+        return processed
+    replacements = {}
+    for term_value, reading_value in _load_lexicon_overrides():
+        replacements.setdefault(term_value, reading_value)
+    if not replacements:
+        return processed
+    pattern = re.compile("|".join(re.escape(term) for term in replacements))
+    return pattern.sub(lambda match: replacements[match.group(0)], processed)
+
+
+async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
+    speech_key = _get_proxy_secret("AZURE_SPEECH_KEY").strip()
+    speech_region = _get_proxy_secret("AZURE_SPEECH_REGION").strip()
+    if not speech_key or not speech_region:
+        raise TtsUnavailable("Azure TTS is not configured", status=503)
+
+    voice = _get_proxy_secret("AZURE_TTS_VOICE", "zh-HK-HiuMaanNeural").strip() or "zh-HK-HiuMaanNeural"
+    rate = _get_proxy_secret("AZURE_TTS_RATE", "0%").strip() or "0%"
+    output_format = (
+        _get_proxy_secret("AZURE_TTS_OUTPUT_FORMAT", "audio-24khz-48kbitrate-mono-mp3").strip()
+        or "audio-24khz-48kbitrate-mono-mp3"
+    )
+    ssml = _build_azure_tts_ssml(text_value, voice, rate)
+    endpoint = f"https://{speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            azure_response = await client.post(
+                endpoint,
+                content=ssml.encode("utf-8"),
+                headers={
+                    "Ocp-Apim-Subscription-Key": speech_key,
+                    "Content-Type": "application/ssml+xml; charset=utf-8",
+                    "X-Microsoft-OutputFormat": output_format,
+                    "User-Agent": "skhlmc-dbt-marksys",
+                },
+            )
+    except httpx.HTTPError as e:
+        logger.warning("Azure TTS request failed: %s", e)
+        raise TtsUnavailable("Azure TTS request failed", status=502)
+
+    if azure_response.status_code != 200:
+        logger.warning(
+            "Azure TTS returned %s: %s",
+            azure_response.status_code,
+            azure_response.text[:300],
+        )
+        raise TtsUnavailable("Azure TTS request failed", status=502)
+
+    return (
+        azure_response.content,
+        azure_response.headers.get("content-type") or "audio/mpeg",
+    )
+
+
+async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
+    """自家粵語 TTS (tts_rd_plan.md 第三節). 待 v0 checkpoint 出咗先實作:
+    call CUSTOM_TTS_URL、回傳音 bytes + mime。而家先 stub。"""
+    custom_url = _get_proxy_secret("CUSTOM_TTS_URL").strip()
+    if not custom_url:
+        raise TtsUnavailable("Custom TTS is not configured", status=503)
+    raise TtsUnavailable("Custom TTS is not implemented yet", status=503)
+
+
+async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
+    """統一 TTS 入口:單人 (/api/tts/azure route)、聯機 (_room_gemini_pump)、
+    將來 custom model 全部行呢度。換 provider = 改 TTS_PROVIDER secret。"""
+    processed = _preprocess_tts_text(text_value)
+    if not processed:
+        raise TtsUnavailable("Missing text", status=400)
+    provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
+    if provider == "custom":
+        return await _synthesize_custom(processed)
+    return await _synthesize_azure(processed)
+
+
 @app.post("/api/tts/azure")
 async def azure_tts(request: Request):
     _require_committee_user(request)
@@ -429,47 +571,14 @@ async def azure_tts(request: Request):
     if len(tts_text) > 1200:
         raise HTTPException(status_code=400, detail="Text is too long")
 
-    speech_key = _get_proxy_secret("AZURE_SPEECH_KEY").strip()
-    speech_region = _get_proxy_secret("AZURE_SPEECH_REGION").strip()
-    if not speech_key or not speech_region:
-        raise HTTPException(status_code=503, detail="Azure TTS is not configured")
-
-    voice = _get_proxy_secret("AZURE_TTS_VOICE", "zh-HK-HiuMaanNeural").strip() or "zh-HK-HiuMaanNeural"
-    rate = _get_proxy_secret("AZURE_TTS_RATE", "0%").strip() or "0%"
-    output_format = (
-        _get_proxy_secret("AZURE_TTS_OUTPUT_FORMAT", "audio-24khz-48kbitrate-mono-mp3").strip()
-        or "audio-24khz-48kbitrate-mono-mp3"
-    )
-    ssml = _build_azure_tts_ssml(tts_text, voice, rate)
-    endpoint = f"https://{speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
-
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            azure_response = await client.post(
-                endpoint,
-                content=ssml.encode("utf-8"),
-                headers={
-                    "Ocp-Apim-Subscription-Key": speech_key,
-                    "Content-Type": "application/ssml+xml; charset=utf-8",
-                    "X-Microsoft-OutputFormat": output_format,
-                    "User-Agent": "skhlmc-dbt-marksys",
-                },
-            )
-    except httpx.HTTPError as e:
-        logger.warning("Azure TTS request failed: %s", e)
-        raise HTTPException(status_code=502, detail="Azure TTS request failed")
-
-    if azure_response.status_code != 200:
-        logger.warning(
-            "Azure TTS returned %s: %s",
-            azure_response.status_code,
-            azure_response.text[:300],
-        )
-        raise HTTPException(status_code=502, detail="Azure TTS request failed")
+        audio_bytes, mime = await _synthesize_tts(tts_text)
+    except TtsUnavailable as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
 
     return Response(
-        content=azure_response.content,
-        media_type=azure_response.headers.get("content-type") or "audio/mpeg",
+        content=audio_bytes,
+        media_type=mime or "audio/mpeg",
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1221,6 +1330,10 @@ class Room:
         self.gemini_ws = None
         self.gemini_task = None
         self.tick_task = None
+        # Server-side TTS: when on, the pump synthesizes the AI's transcript via
+        # _synthesize_tts and broadcasts one audio blob to the whole room (synced,
+        # one call/turn), keeping Gemini native audio as fallback. Set at gemini start.
+        self.tts_enabled = False
         self.lock = asyncio.Lock()
 
     def position_labels(self):
@@ -1475,6 +1588,13 @@ async def _room_start_gemini_if_needed(room):
         return
 
     room.gemini_ws = gws
+    # Decide once per session whether to re-voice the AI via server-side TTS.
+    # Off by default when the provider is unconfigured or ROOM_TTS_ENABLED=0, so
+    # the room degrades to Gemini native "Kore" audio (existing behaviour).
+    room.tts_enabled = (
+        tts_provider_configured()
+        and _get_proxy_secret("ROOM_TTS_ENABLED", "1").strip() != "0"
+    )
     setup = {
         "setup": {
             "model": "models/" + model,
@@ -1497,12 +1617,117 @@ async def _room_start_gemini_if_needed(room):
     room.gemini_task = asyncio.create_task(_room_gemini_pump(room, gws))
 
 
+# --- Server-side TTS for the room (mode B) -----------------------------------
+#
+# When room.tts_enabled, the pump re-voices the AI: instead of forwarding
+# Gemini's native audio, it synthesizes the AI's transcript once (via the shared
+# _synthesize_tts) and broadcasts the same audio blob to every member — synced,
+# and one synth per sentence for the whole room (not per-member). If synth fails
+# mid-turn it flips to broadcasting Gemini's buffered native audio (Kore) so the
+# room never goes silent. State is a per-turn dict, reset on turnComplete.
+
+_TTS_SENTENCE_END = "。！？!?…\n"
+
+
+def _tts_new_turn_state():
+    # pending: transcript not yet synthesized; native: raw serverContents with
+    # audio held in reserve for fallback; fallback: Azure gave up this turn.
+    return {"pending": "", "native": [], "fallback": False}
+
+
+def _tts_take_sentences(buf, force=False):
+    """Split a transcript buffer into (ready_sentences, remainder). Sentences end
+    on _TTS_SENTENCE_END; on force (turn end) the trailing remainder flushes too."""
+    chunks, start = [], 0
+    for i, ch in enumerate(buf):
+        if ch in _TTS_SENTENCE_END:
+            piece = buf[start:i + 1].strip()
+            if piece:
+                chunks.append(piece)
+            start = i + 1
+    remainder = buf[start:]
+    if force:
+        piece = remainder.strip()
+        if piece:
+            chunks.append(piece)
+        remainder = ""
+    return chunks, remainder
+
+
+def _strip_audio_parts(sc):
+    """Copy serverContent with inlineData audio parts removed, so interrupt/turn
+    signalling still reaches clients without the native audio playing."""
+    mt = sc.get("modelTurn")
+    if not isinstance(mt, dict):
+        return sc
+    parts = mt.get("parts") or []
+    kept = [p for p in parts if not (p.get("inlineData") or {}).get("data")]
+    if len(kept) == len(parts):
+        return sc
+    new_sc = dict(sc)
+    new_mt = dict(mt)
+    new_mt["parts"] = kept
+    new_sc["modelTurn"] = new_mt
+    return new_sc
+
+
+async def _room_tts_fallback(room, state):
+    """Give up TTS for the rest of the turn; replay the native audio held so far
+    so the room hears the AI's own voice."""
+    state["fallback"] = True
+    await _room_broadcast(room, {"type": "tts_fallback_hint"})
+    for sc in state["native"]:
+        await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
+    state["native"] = []
+
+
+async def _room_tts_synth(room, chunk, state):
+    """Synthesize one sentence and broadcast it to the whole room. On failure,
+    flip to native-audio fallback. Returns False once fallback is active."""
+    try:
+        audio_bytes, mime = await _synthesize_tts(chunk)
+    except Exception as e:
+        logger.info("room TTS synth failed (%s), using native audio: %s", room.code, e)
+        await _room_tts_fallback(room, state)
+        return False
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    await _room_broadcast(room, {"type": "tts_audio", "data": b64, "mime": mime})
+    return True
+
+
+async def _room_pump_tts(room, sc, state, final=False):
+    """Handle one serverContent under server-side TTS. Broadcasts audio-stripped
+    serverContent (for interrupt/turn signals), buffers native audio for
+    fallback, and synthesizes complete sentences from the transcript."""
+    if state["fallback"]:
+        await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
+    elif sc.get("interrupted"):
+        # barge-in: drop pending TTS and reserved native audio for this turn
+        state["pending"] = ""
+        state["native"] = []
+        await _room_broadcast(room, {"type": "serverContent", "serverContent": _strip_audio_parts(sc)})
+    else:
+        parts = ((sc.get("modelTurn") or {}).get("parts")) or []
+        if any((p.get("inlineData") or {}).get("data") for p in parts):
+            state["native"].append(sc)
+        await _room_broadcast(room, {"type": "serverContent", "serverContent": _strip_audio_parts(sc)})
+        ot = sc.get("outputTranscription") or {}
+        if ot.get("text"):
+            state["pending"] += ot["text"]
+        chunks, state["pending"] = _tts_take_sentences(state["pending"], force=final)
+        for chunk in chunks:
+            if not await _room_tts_synth(room, chunk, state):
+                break
+
+
 async def _room_gemini_pump(room, gws):
     """Read the room's Gemini Live socket and fan its serverContent out to every
-    member (they play the AI's native audio locally, in sync). Also accumulate
-    the AI's transcript into room.transcript so the 評判 covers the AI side."""
+    member. When room.tts_enabled, re-voice the AI via server-side TTS (synced,
+    shared, with native-audio fallback); otherwise forward native audio verbatim.
+    Also accumulate the AI's transcript into room.transcript so 評判 covers the AI."""
     ai_side = "反方" if room.human_side == "正方" else "正方"
     ai_buffer = {"text": ""}
+    tts_state = _tts_new_turn_state()
     try:
         async for raw in gws:
             if isinstance(raw, bytes):
@@ -1528,11 +1753,17 @@ async def _room_gemini_pump(room, gws):
             sc = msg.get("serverContent")
             if sc is None:
                 continue
-            await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
+            turn_complete = bool(sc.get("turnComplete"))
+            if room.tts_enabled:
+                await _room_pump_tts(room, sc, tts_state, final=turn_complete)
+            else:
+                await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
             ot = sc.get("outputTranscription") or {}
             if ot.get("text"):
                 ai_buffer["text"] += ot["text"]
-            if sc.get("turnComplete"):
+            if turn_complete:
+                if room.tts_enabled:
+                    tts_state = _tts_new_turn_state()
                 text_value = ai_buffer["text"].strip()
                 ai_buffer["text"] = ""
                 if text_value:
