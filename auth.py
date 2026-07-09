@@ -114,6 +114,20 @@ def render_committee_auth_restore_bridge():
         const lastReload = Number(win.sessionStorage.getItem(reloadKey) || "0");
         if (now - lastReload > 3000) {
             win.sessionStorage.setItem(reloadKey, String(now));
+            // reload 之前蓋一個全屏「恢復緊登入」遮罩，避免用戶見到登入表單閃過。
+            // reload 後係全新 document，遮罩自然消失。
+            try {
+                const doc = win.document;
+                if (!doc.getElementById("skh-auth-restoring-overlay")) {
+                    const overlay = doc.createElement("div");
+                    overlay.id = "skh-auth-restoring-overlay";
+                    overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;"
+                        + "align-items:center;justify-content:center;background:#0e1117;color:#fafafa;"
+                        + "font-size:1rem;font-family:'Source Sans Pro',sans-serif;";
+                    overlay.textContent = "🔄 正在恢復登入狀態，請稍候…";
+                    doc.body.appendChild(overlay);
+                }
+            } catch (e) {}
             setTimeout(function () { win.location.reload(); }, 80);
         }
     })();

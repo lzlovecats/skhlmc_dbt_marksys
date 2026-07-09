@@ -465,6 +465,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_PHOTOS} (
     id              SERIAL      PRIMARY KEY,
     match_video_id  INTEGER,
     album_label     TEXT        NOT NULL,
+    photo_date      DATE,
     photo_title     TEXT,
     caption         TEXT,
     file_name       TEXT,
@@ -843,6 +844,8 @@ CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
     ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_photos_album_created
     ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_match_photos_date_created
+    ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
