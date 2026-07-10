@@ -26,7 +26,11 @@ def render_pwa_install_listener():
                 viewport.setAttribute("name", "viewport");
                 win.document.head.appendChild(viewport);
             }
-            viewport.setAttribute("content", "width=device-width, initial-scale=1, viewport-fit=cover");
+            // Lock zoom at 1. On iOS standalone PWA, allowing zoom desyncs the
+            // paint vs. hit-test position of BaseWeb's fixed dropdown popovers,
+            // which is why mobile drop-downs "撳唔到" / tap the wrong option.
+            // Inputs still don't auto-zoom because their font-size is >= 16px.
+            viewport.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover");
             if (!win.document.getElementById("skh-mobile-input-zoom-fix")) {
                 const style = win.document.createElement("style");
                 style.id = "skh-mobile-input-zoom-fix";
@@ -34,6 +38,7 @@ def render_pwa_install_listener():
                     input, textarea, select { font-size: 16px !important; }
 
                     @media (max-width: 640px) {
+                        /* ">>" open-sidebar button, pinned clear of the notch. */
                         [data-testid="stExpandSidebarButton"] {
                             position: fixed !important;
                             top: max(1.25rem, calc(env(safe-area-inset-top) + 0.75rem)) !important;
@@ -41,13 +46,6 @@ def render_pwa_install_listener():
                             z-index: 999999 !important;
                         }
 
-                        /* Reserve space so the fixed expand button never overlaps
-                           the page title/content on mobile. */
-                        .block-container {
-                            padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
-                        }
-
-                        [data-testid="collapsedControl"],
                         [data-testid="stExpandSidebarButton"],
                         button[aria-label="Open sidebar"] {
                             width: 3rem !important;
@@ -59,33 +57,38 @@ def render_pwa_install_listener():
                             justify-content: center !important;
                         }
 
-                        [data-testid="stHeader"] {
-                            min-height: calc(env(safe-area-inset-top) + 3.5rem) !important;
-                            overflow: visible !important;
+                        /* Reserve space so the fixed expand button never overlaps
+                           the page title/content on mobile. */
+                        .block-container {
+                            padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
                         }
 
-                        [data-testid="stToolbar"] {
-                            top: calc(env(safe-area-inset-top) + 0.45rem) !important;
-                            right: 0.5rem !important;
-                            max-width: calc(100vw - 4.5rem) !important;
-                            min-height: 2.75rem !important;
-                            align-items: center !important;
-                            overflow: visible !important;
-                            z-index: 999998 !important;
+                        /* Hide Streamlit's toolbar entirely on mobile — the
+                           running-man status widget and the "⋯" main menu are
+                           not needed by users, sit at an awkward height, and
+                           overlap the sidebar button. */
+                        [data-testid="stToolbar"],
+                        [data-testid="stStatusWidget"],
+                        [data-testid="stMainMenu"] {
+                            display: none !important;
                         }
 
-                        [data-testid="stStatusWidget"] {
-                            max-width: 45vw !important;
-                            overflow: hidden !important;
+                        /* "<<" collapse button lives in the sidebar header; push
+                           the header below the notch so it stays tappable in the
+                           standalone PWA. */
+                        [data-testid="stSidebarHeader"] {
+                            padding-top: calc(env(safe-area-inset-top) + 0.75rem) !important;
                         }
 
-                        [data-baseweb="popover"],
-                        [data-baseweb="menu"] {
-                            z-index: 1000000 !important;
-                            pointer-events: auto !important;
-                            touch-action: manipulation !important;
+                        [data-testid="stSidebarCollapseButton"] {
+                            width: 3rem !important;
+                            height: 3rem !important;
+                            min-width: 3rem !important;
+                            min-height: 3rem !important;
+                            z-index: 999999 !important;
                         }
 
+                        /* Keep long drop-down menus scrollable on small screens. */
                         [data-baseweb="popover"] ul,
                         [data-baseweb="menu"] ul {
                             max-height: min(60vh, 24rem) !important;
