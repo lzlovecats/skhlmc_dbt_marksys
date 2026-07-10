@@ -55,6 +55,7 @@ from core.vote_logic import (
 )
 
 st.header("辯題徵集、投票及罷免")
+st.link_button("🆕 前往新版投票頁（將取代此頁）", "/vote", type="primary", width="stretch")
 render_page_guidance(
     [
         "請先使用內部委員會成員帳戶登入，再按需要切換至提出辯題、辯題投票、罷免投票或帳戶管理分頁。",

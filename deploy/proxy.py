@@ -1102,12 +1102,12 @@ async def appliance_practice_page():
                         headers=_cache_headers(CACHE_HTML))
 
 
-@app.get("/vote-beta")
+@app.get("/vote")
 async def vote_page():
-    # New HTML voting page (Phase 2). Served at /vote-beta — NOT /vote — because
-    # the Streamlit vote page already owns /vote (st.Page url_path="vote"). A
-    # separate path keeps the two genuinely parallel during testing and leaves
-    # vote push-notification links (url="/vote") on the stable Streamlit page.
+    # New HTML voting page — the primary vote URL, set to replace Streamlit. The
+    # legacy Streamlit page now lives at /vote-classic (st.Page url_path
+    # "vote-classic"), so this proxy route no longer shadows it. Vote push links
+    # (url="/vote") intentionally land here.
     return FileResponse(BASE_DIR / "frontend" / "vote" / "index.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_HTML))
