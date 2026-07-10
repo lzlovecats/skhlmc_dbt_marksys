@@ -369,13 +369,13 @@ with st.expander("年度結餘設定", expanded=False):
     )
     bd_col1, bd_col2 = st.columns(2)
     with bd_col1:
-        if st.button("儲存Bal b/d", use_container_width=True):
+        if st.button("儲存Bal b/d", width="stretch"):
             set_period_opening(selected_label, bd_input)
             st.success(f"已更新 {selected_label} 年度 Bal b/d。")
             st.rerun()
     with bd_col2:
         prev_label = _fy_label(selected_year - 1)
-        if st.button(f"沿用上一年度（{prev_label}）結餘", use_container_width=True):
+        if st.button(f"沿用上一年度（{prev_label}）結餘", width="stretch"):
             prev_start, prev_end = _fy_range(selected_year - 1)
             if not records_df.empty:
                 prev_records = records_df[
@@ -404,7 +404,7 @@ with overview_tab:
     if summary_df.empty:
         st.info("本年度暫無遲到紀錄。")
     else:
-        st.dataframe(prepare_summary_display(summary_df), use_container_width=True, hide_index=True)
+        st.dataframe(prepare_summary_display(summary_df), width="stretch", hide_index=True)
 
         with st.container(border=True):
             st.markdown("##### 發送遲到罰款通知")
@@ -426,7 +426,7 @@ with overview_tab:
                 key="lateness_notify_msg",
                 placeholder="例：請盡快找數！",
             )
-            if st.button("發送通知", type="primary", use_container_width=True, key="lateness_notify_send"):
+            if st.button("發送通知", type="primary", width="stretch", key="lateness_notify_send"):
                 custom_text = custom_notify_msg.strip()
                 if notify_target == "outstanding":
                     targets = {
@@ -488,7 +488,7 @@ with overview_tab:
         member_records = year_records[year_records["member_user_id"] == selected_member]
         st.dataframe(
             prepare_records_display(member_records),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -498,7 +498,7 @@ with overview_tab:
     else:
         st.dataframe(
             prepare_expenses_display(year_expenses.drop(columns=["expense_date_d"], errors="ignore")),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -539,7 +539,7 @@ with input_tab:
         f"{next_late_no} 次遲到，應繳 {_format_hkd(preview_penalty)}。"
     )
 
-    if st.button("新增遲到紀錄", type="primary", use_container_width=True, disabled=not member_options):
+    if st.button("新增遲到紀錄", type="primary", width="stretch", disabled=not member_options):
         if not member_user_id:
             st.warning("請選擇帳戶。")
         else:
@@ -612,13 +612,13 @@ with history_tab:
         st.info("本年度暫無遲到紀錄。")
     else:
         records_display = prepare_records_display(year_records.drop(columns=["late_date_d"], errors="ignore"))
-        st.dataframe(records_display, use_container_width=True, hide_index=True)
+        st.dataframe(records_display, width="stretch", hide_index=True)
         st.download_button(
             "下載本年度遲到紀錄 CSV",
             data=records_display.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"遲到罰款基金_遲到紀錄_{selected_label}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
         st.markdown("#### 更新已繳金額")
@@ -640,7 +640,7 @@ with history_tab:
             format="%.2f",
             key=f"lateness_update_paid_{selected_record_id}",
         )
-        if st.button("更新已繳金額", use_container_width=True):
+        if st.button("更新已繳金額", width="stretch"):
             updated = execute_query_count(
                 f"""
                 UPDATE {TABLE_LATENESS_FUND_RECORDS}
@@ -671,7 +671,7 @@ with history_tab:
         )
         if st.button(
             "刪除遲到紀錄",
-            use_container_width=True,
+            width="stretch",
             disabled=not confirm_delete_record,
             key="lateness_delete_record_btn",
         ):
@@ -689,13 +689,13 @@ with history_tab:
         st.info("本年度暫無支出紀錄。")
     else:
         expenses_display = prepare_expenses_display(year_expenses.drop(columns=["expense_date_d"], errors="ignore"))
-        st.dataframe(expenses_display, use_container_width=True, hide_index=True)
+        st.dataframe(expenses_display, width="stretch", hide_index=True)
         st.download_button(
             "下載本年度支出紀錄 CSV",
             data=expenses_display.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"遲到罰款基金_支出紀錄_{selected_label}.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
         st.markdown("#### 刪除支出紀錄")
@@ -716,7 +716,7 @@ with history_tab:
         )
         if st.button(
             "刪除支出紀錄",
-            use_container_width=True,
+            width="stretch",
             disabled=not confirm_delete_expense,
             key="lateness_delete_expense_btn",
         ):

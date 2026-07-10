@@ -964,7 +964,7 @@ def _render_recorder(user_id):
 
     skip_col, _spacer = st.columns([1, 3])
     with skip_col:
-        if st.button("跳過此句", use_container_width=True):
+        if st.button("跳過此句", width="stretch"):
             skipped_ids.add(script["id"])
             st.session_state[skip_key] = skipped_ids
             st.session_state.pop("tts_recording_ai_review", None)
@@ -1001,7 +1001,7 @@ def _render_recorder(user_id):
         return
 
     key = _record_key(script_id, audio_data)
-    if st.button("AI 檢查音質", type="primary", use_container_width=True):
+    if st.button("AI 檢查音質", type="primary", width="stretch"):
         with st.spinner("AI 正在檢查錄音音質..."):
             result = review_tts_recording_audio(audio_bytes, script["text"])
         st.session_state["tts_recording_ai_review"] = {
@@ -1019,7 +1019,7 @@ def _render_recorder(user_id):
         st.success("AI 預檢通過，可提交至待審核資料集。")
         if review.get("transcript"):
             st.caption(f"AI 聽到：{review['transcript']}")
-        if st.button("提交並繼續下一句", type="primary", use_container_width=True):
+        if st.button("提交並繼續下一句", type="primary", width="stretch"):
             _insert_recording(user_id, script, audio_bytes, audio_data, review)
             st.session_state.pop("tts_recording_ai_review", None)
             st.success("錄音已提交，等待人工審核。")
@@ -1039,7 +1039,7 @@ def _render_recorder(user_id):
             "略過 AI 檢查並提交待人工審核",
             type="primary",
             disabled=not manual_confirm,
-            use_container_width=True,
+            width="stretch",
         ):
             fallback_review = {
                 "passed": False,
@@ -1068,7 +1068,7 @@ def _render_my_records(user_id):
     if rows.empty:
         st.info("你暫時未提交任何錄音。")
         return
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def _render_review_panel(user_id):
@@ -1126,11 +1126,11 @@ def _render_review_panel(user_id):
                 note = st.text_area("審核備註", value=row["review_note"] or "", key=f"tts_note_{row['id']}")
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("接受", key=f"tts_accept_{row['id']}", use_container_width=True):
+                    if st.button("接受", key=f"tts_accept_{row['id']}", width="stretch"):
                         _update_recording_status(row["id"], "accepted", user_id, note)
                         st.rerun()
                 with col2:
-                    if st.button("拒絕", key=f"tts_reject_{row['id']}", use_container_width=True):
+                    if st.button("拒絕", key=f"tts_reject_{row['id']}", width="stretch"):
                         _update_recording_status(row["id"], "rejected", user_id, note)
                         st.rerun()
 
@@ -1151,7 +1151,7 @@ def _render_review_panel(user_id):
         data=export_bytes or b"",
         file_name=export_name,
         mime="application/zip",
-        use_container_width=True,
+        width="stretch",
         disabled=export_bytes is None,
     )
 
@@ -1208,7 +1208,7 @@ def _render_all_recording_status_table():
             st.info("暫時未有提交紀錄。")
             return
         st.caption("只顯示最近 300 段 metadata；詳細試聽請用下面審核列表。")
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def _accepted_speaker_options():
@@ -1258,7 +1258,7 @@ def _render_accepted_dataset_preview(speaker_user_id=None):
                 "id", "speaker_user_id", "script_id", "prompt_text", "audio_file",
                 "mime_type", "size_bytes", "duration_seconds", "ai_transcript", "created_at",
             ]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1414,7 +1414,7 @@ def _render_llm_manual_fallback(user_id):
                 "略過 AI 檢查並提交待人工審核",
                 type="primary",
                 disabled=not manual_confirm,
-                use_container_width=True,
+                width="stretch",
             ):
                 fallback_review = {
                     "passed": False,
@@ -1428,7 +1428,7 @@ def _render_llm_manual_fallback(user_id):
                 st.success("資料已提交，等待人工審核。")
                 st.rerun()
         with col2:
-            if st.button("取消", use_container_width=True):
+            if st.button("取消", width="stretch"):
                 st.session_state.pop("llm_pending_submission", None)
                 st.rerun()
 
@@ -1483,11 +1483,11 @@ def _render_llm_submission(user_id):
         )
         submit_col, clear_col = st.columns(2)
         with submit_col:
-            submitted = st.form_submit_button("提交 LLM 訓練資料", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("提交 LLM 訓練資料", type="primary", width="stretch")
         with clear_col:
             cleared = st.form_submit_button(
                 "清空欄位",
-                use_container_width=True,
+                width="stretch",
                 on_click=_clear_llm_submission_fields,
             )
 
@@ -1556,7 +1556,7 @@ def _render_my_llm_submissions(user_id):
     if rows.empty:
         st.info("你暫時未提交任何 LLM 文字資料。")
         return
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
     withdrawable = rows[rows["status"].isin(["pending", "accepted"])] if "status" in rows else rows
     if withdrawable.empty:
@@ -1642,11 +1642,11 @@ def _render_llm_admin_panel(user_id):
                 note = st.text_area("審核備註", value=row["review_note"] or "", key=f"llm_note_{row['id']}")
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("接受", key=f"llm_accept_{row['id']}", use_container_width=True):
+                    if st.button("接受", key=f"llm_accept_{row['id']}", width="stretch"):
                         _update_llm_submission_status(row["id"], "accepted", user_id, note)
                         st.rerun()
                 with col2:
-                    if st.button("拒絕", key=f"llm_reject_{row['id']}", use_container_width=True):
+                    if st.button("拒絕", key=f"llm_reject_{row['id']}", width="stretch"):
                         _update_llm_submission_status(row["id"], "rejected", user_id, note)
                         st.rerun()
 
@@ -1656,7 +1656,7 @@ def _render_llm_admin_panel(user_id):
         data=export_bytes or b"",
         file_name="llm_training_dataset.jsonl",
         mime="application/jsonl",
-        use_container_width=True,
+        width="stretch",
         disabled=export_bytes is None,
     )
 
@@ -1723,7 +1723,7 @@ def _render_admin_scripts(user_id, all_scripts):
     # --- AI 缺口分析 ---
     with st.expander("🤖 AI 句庫缺口分析", expanded=False):
         st.caption("AI 會分析現有句庫和已收錄音，指出仍欠缺哪些讀音類型，並建議新句子。")
-        if st.button("執行 AI 缺口分析", use_container_width=True):
+        if st.button("執行 AI 缺口分析", width="stretch"):
             with st.spinner("AI 正在分析句庫覆蓋..."):
                 st.session_state["tts_coverage_analysis"] = analyze_script_coverage(all_scripts, counts)
         coverage = st.session_state.get("tts_coverage_analysis")
@@ -1763,7 +1763,7 @@ def _render_admin_scripts(user_id, all_scripts):
             f"AI 會重新規劃句庫並建議新增／停用。已錄音的句子（{len(locked_ids)} 句）會被鎖定，"
             "不會被改動或停用；所有建議均須勾選並按「套用」後，才會更新句庫。"
         )
-        if st.button("執行 AI 重出句庫", use_container_width=True):
+        if st.button("執行 AI 重出句庫", width="stretch"):
             with st.spinner("AI 正在重新規劃句庫..."):
                 st.session_state["tts_regenerate_plan"] = regenerate_script_bank(all_scripts, locked_ids, counts)
         regen = st.session_state.get("tts_regenerate_plan")
@@ -1864,7 +1864,7 @@ def _render_admin_scripts(user_id, all_scripts):
                     )
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("儲存修改", key=f"tts_save_{s['id']}", use_container_width=True):
+                        if st.button("儲存修改", key=f"tts_save_{s['id']}", width="stretch"):
                             if edit_text.strip() and edit_cat.strip():
                                 _upsert_script(s["id"], edit_cat, edit_text, user_id, s["sort_order"])
                                 st.success("已儲存。")
@@ -1873,7 +1873,7 @@ def _render_admin_scripts(user_id, all_scripts):
                                 st.warning("類別與內容都必須填寫。")
                     with col2:
                         toggle_label = "停用" if s["is_active"] else "重新啟用"
-                        if st.button(toggle_label, key=f"tts_toggle_{s['id']}", use_container_width=True):
+                        if st.button(toggle_label, key=f"tts_toggle_{s['id']}", width="stretch"):
                             _set_script_active(s["id"], not s["is_active"])
                             st.rerun()
 
@@ -1889,7 +1889,7 @@ def _render_lexicon_view(user_id):
         st.dataframe(
             [{"原文": e["term"], "讀法": e["reading"], "粵拼": e["jyutping"],
               "類別": e["category"], "例句": e["example"]} for e in active_entries],
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
     else:
         st.info("字典暫時沒有生效的條目。")

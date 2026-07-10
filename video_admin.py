@@ -270,7 +270,7 @@ def render_video_admin():
                 on_change=_clear_add_video_fields,
             )
         else:
-            st.button("清除新增欄位內容", use_container_width=True, on_click=_clear_add_video_fields)
+            st.button("清除新增欄位內容", width="stretch", on_click=_clear_add_video_fields)
 
         with st.form("add_video_form"):
             match_label = ""
@@ -291,7 +291,7 @@ def render_video_admin():
             youtube_url = st.text_input("YouTube 連結", key="add_youtube_url")
             display_order = st.number_input("排序", min_value=0, step=1, value=0, key="add_display_order")
             is_visible = st.checkbox("在會員重溫頁顯示", value=True, key="add_is_visible")
-            add_video = st.form_submit_button("新增片段", type="primary", use_container_width=True)
+            add_video = st.form_submit_button("新增片段", type="primary", width="stretch")
 
         if add_video:
             errors = _validate_video_input(video_title, youtube_url, add_source, match_label)
@@ -364,7 +364,7 @@ def render_video_admin():
             value=True,
             key="video_import_parse_title",
         )
-        if st.button("匯入片段", type="primary", use_container_width=True):
+        if st.button("匯入片段", type="primary", width="stretch"):
             rows = _read_import_rows(uploaded_csv, pasted_csv)
             if not rows:
                 st.warning("請先上載或貼上 CSV。")
@@ -520,7 +520,7 @@ def render_video_admin():
     })
     st.dataframe(
         display_df[["編號", "類型", "場次", "片段標題", "狀態", "排序", "辯題", "正方", "反方", "YouTube 連結", "建立時間", "更新時間"]],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -585,7 +585,7 @@ def render_video_admin():
                 value=_to_int(selected_row["display_order"]),
             )
             edit_visible = st.checkbox("在會員重溫頁顯示", value=bool(selected_row["is_visible"]))
-            update_video = st.form_submit_button("儲存片段資料", type="primary", use_container_width=True)
+            update_video = st.form_submit_button("儲存片段資料", type="primary", width="stretch")
 
         if update_video:
             errors = _validate_video_input(edit_title, edit_url, edit_source, edit_match_label)
@@ -665,7 +665,7 @@ def render_video_admin():
                         placeholder="例：12:34",
                     )
                 chapter_inputs.append((chapter_label, chapter_index, enabled, time_text))
-            save_chapters = st.form_submit_button("儲存章節時間表", type="primary", use_container_width=True)
+            save_chapters = st.form_submit_button("儲存章節時間表", type="primary", width="stretch")
 
         if save_chapters:
             chapter_values = []
@@ -710,13 +710,13 @@ def render_video_admin():
     with st.expander("危險操作", expanded=st.session_state["delete_confirm_video_id"] == selected_video_id):
         st.warning(f"刪除片段「{selected_row['video_title']}」後無法復原。")
         if st.session_state["delete_confirm_video_id"] != selected_video_id:
-            if st.button("刪除片段", type="secondary", key="delete_video_btn", use_container_width=True):
+            if st.button("刪除片段", type="secondary", key="delete_video_btn", width="stretch"):
                 st.session_state["delete_confirm_video_id"] = selected_video_id
                 st.rerun()
         else:
             del_col1, del_col2 = st.columns(2)
             with del_col1:
-                if st.button("確定刪除", type="primary", key="confirm_delete_video_btn", use_container_width=True):
+                if st.button("確定刪除", type="primary", key="confirm_delete_video_btn", width="stretch"):
                     execute_query(
                         f"DELETE FROM {TABLE_MATCH_VIDEOS} WHERE id = :id",
                         {"id": int(selected_video_id)},
@@ -725,7 +725,7 @@ def render_video_admin():
                     st.session_state["delete_confirm_video_id"] = None
                     st.rerun()
             with del_col2:
-                if st.button("取消", type="secondary", key="cancel_delete_video_btn", use_container_width=True):
+                if st.button("取消", type="secondary", key="cancel_delete_video_btn", width="stretch"):
                     st.session_state["delete_confirm_video_id"] = None
                     st.rerun()
 

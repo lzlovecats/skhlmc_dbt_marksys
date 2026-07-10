@@ -82,7 +82,7 @@ def render_match_info():
             new_match_id = st.text_input("輸入比賽場次")
         with new_match_col2:
             st.write("")
-            create_match = st.button("新增比賽場次", use_container_width=True)
+            create_match = st.button("新增比賽場次", width="stretch")
 
         if create_match:
             if new_match_id:
@@ -147,12 +147,12 @@ def render_match_info():
 
                 action_col1, action_col2 = st.columns(2)
                 with action_col1:
-                    if st.button("重開填寫", key=f"reopen_roster_{selected_match}_{side}", disabled=not submitted, use_container_width=True):
+                    if st.button("重開填寫", key=f"reopen_roster_{selected_match}_{side}", disabled=not submitted, width="stretch"):
                         reopen_match_roster_link(selected_match, side)
                         st.session_state["match_action_message"] = {"type": "success", "content": f"已重開{side_label}填寫連結。"}
                         st.rerun()
                 with action_col2:
-                    if st.button("重新生成連結", key=f"regen_roster_{selected_match}_{side}", use_container_width=True):
+                    if st.button("重新生成連結", key=f"regen_roster_{selected_match}_{side}", width="stretch"):
                         regenerate_match_roster_link(selected_match, side)
                         st.session_state["match_action_message"] = {"type": "warning", "content": f"已重新生成{side_label}填寫連結，舊連結將不能使用。"}
                         st.rerun()
@@ -171,7 +171,7 @@ def render_match_info():
                     key=f"diff_filter_{selected_match}"
                 )
                 st.caption("從辯題庫抽取一條辯題，結果會自動填入下方場次資料。")
-                if st.button("抽辯題", key=f"draw_topic_{selected_match}", use_container_width=True):
+                if st.button("抽辯題", key=f"draw_topic_{selected_match}", width="stretch"):
                     drawn_topic = draw_a_topic(difficulty=diff_filter if diff_filter != 0 else None)
                     if drawn_topic != "":
                         st.success(f"已抽取辯題：{drawn_topic}")
@@ -182,7 +182,7 @@ def render_match_info():
                 st.markdown("### 抽站方")
                 st.caption("輸入兩隊名稱後抽出正反方，結果會自動填入下方場次資料。")
                 if not st.session_state["show_draw_side_ui"]:
-                    if st.button("開始抽站方", use_container_width=True):
+                    if st.button("開始抽站方", width="stretch"):
                         st.session_state["show_draw_side_ui"] = True
                         st.rerun()
                 else:
@@ -191,7 +191,7 @@ def render_match_info():
 
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("確定抽籤", use_container_width=True):
+                        if st.button("確定抽籤", width="stretch"):
                             if team1 and team2:
                                 pro_team, con_team = draw_pro_con(team1, team2)
                                 st.session_state["all_matches"][selected_match]["pro_team"] = pro_team
@@ -202,7 +202,7 @@ def render_match_info():
                             else:
                                 st.error("請輸入兩隊隊伍名稱。")
                     with col2:
-                        if st.button("取消", use_container_width=True):
+                        if st.button("取消", width="stretch"):
                             st.session_state["show_draw_side_ui"] = False
                             st.rerun()
 
@@ -275,7 +275,7 @@ def render_match_info():
                 st.caption("目前狀態：已設定" if has_review_password else "目前狀態：未設定")
                 clear_review_password = st.checkbox("清除查閱分紙密碼", value=False, disabled=not has_review_password)
 
-            if st.form_submit_button("儲存場次資料", use_container_width=True):
+            if st.form_submit_button("儲存場次資料", width="stretch"):
                 if clear_access_code and access_code:
                     st.error("如需清除評判入場密碼，請將密碼欄留空。")
                     st.stop()
@@ -301,13 +301,13 @@ def render_match_info():
     with st.expander("危險操作", expanded=st.session_state["delete_confirm_id"] == selected_match):
         st.warning(f"刪除場次會一併移除「{selected_match}」的正式評分與暫存資料，且無法復原。")
         if st.session_state["delete_confirm_id"] != selected_match:
-            if st.button("刪除場次", type="secondary", key="delete_match_btn", use_container_width=True):
+            if st.button("刪除場次", type="secondary", key="delete_match_btn", width="stretch"):
                 st.session_state["delete_confirm_id"] = selected_match
                 st.rerun()
         else:
             col_del_1, col_del_2 = st.columns(2)
             with col_del_1:
-                if st.button("確定刪除", type="primary", key="confirm_delete_btn", use_container_width=True):
+                if st.button("確定刪除", type="primary", key="confirm_delete_btn", width="stretch"):
                     try:
                         execute_query(f"DELETE FROM {TABLE_MATCHES} WHERE match_id = :match_id", {"match_id": selected_match})
 
@@ -319,7 +319,7 @@ def render_match_info():
                     except Exception as e:
                         st.error(f"刪除失敗: {e}")
             with col_del_2:
-                if st.button("取消", type="secondary", key="cancel_delete_btn", use_container_width=True):
+                if st.button("取消", type="secondary", key="cancel_delete_btn", width="stretch"):
                     st.session_state["delete_confirm_id"] = None
                     st.rerun()
 

@@ -222,7 +222,7 @@ def render_password_gate(title, description, field_label, button_label, form_key
         st.caption(description)
         with st.form(form_key):
             pwd = st.text_input(field_label, type="password")
-            submitted = st.form_submit_button(button_label, use_container_width=True)
+            submitted = st.form_submit_button(button_label, width="stretch")
         if submitted:
             return pwd
     return None
@@ -364,7 +364,7 @@ def require_committee() -> str:
     user_id = st.session_state["committee_user"]
     if user_id == "admin":
         st.error("賽會人員帳戶不能使用此頁面。請改用內部委員會成員帳戶登入。")
-        if st.button("登出", use_container_width=True):
+        if st.button("登出", width="stretch"):
             st.session_state["committee_user"] = None
             del_cookie(committee_cookie_manager(), "committee_user")
             render_committee_auth_bridge(clear=True)

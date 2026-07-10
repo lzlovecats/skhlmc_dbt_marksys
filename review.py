@@ -97,7 +97,7 @@ best_table, best_one = get_best_debater_results(selected_match, match_results)
 if best_one is not None:
     st.info(f"本場最佳辯論員：**{best_one['辯位']}** (名次總和：{best_one['名次總和']} | 平均分：{best_one['平均得分']})")
     with st.expander("查看最佳辯論員排名"):
-        st.dataframe(best_table, use_container_width=True, hide_index=True)
+        st.dataframe(best_table, width="stretch", hide_index=True)
 else:
     st.caption("最佳辯論員資料暫時不可用。")
 
@@ -126,14 +126,14 @@ def display_team_scores(side_label, team_name, record, detail_a, detail_b):
         st.caption("（詳細評分資料不可用）")
     else:
         detail_a["總分（100）"] = sum(detail_a[speech_col(c)] * c["weight"] for c in SPEECH_CRITERIA)
-        st.dataframe(detail_a, use_container_width=True, hide_index=True)
+        st.dataframe(detail_a, width="stretch", hide_index=True)
 
     st.write("#### 乙：自由辯論")
     if detail_b.empty:
         st.caption("（詳細評分資料不可用）")
     else:
         detail_b[f"總分（{FREE_DEBATE_MAX}）"] = detail_b.sum(axis=1)
-        st.dataframe(detail_b, use_container_width=True, hide_index=True)
+        st.dataframe(detail_b, width="stretch", hide_index=True)
 
     if side_label == "正方":
         deduction_key, coherence_key, total = "pro_deduction_points", "pro_coherence_score", "pro_total_score"
@@ -214,7 +214,7 @@ elif pro_data is not None and con_data is not None:
             data=pdf_bytes,
             file_name=f"{safe_match}_{safe_judge}_評判評分表.pdf",
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
         )
 
 tab_pro, tab_con = st.tabs([f"正方：{judge_record['pro_team']}", f"反方：{judge_record['con_team']}"])

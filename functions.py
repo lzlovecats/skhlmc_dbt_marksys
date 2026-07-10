@@ -1505,11 +1505,11 @@ def render_home_reference():
         manual_col, rules_col = st.columns(2)
 
         with manual_col:
-            if st.button("📖 閱讀使用手冊", use_container_width=True, key="ref_show_manual"):
+            if st.button("📖 閱讀使用手冊", width="stretch", key="ref_show_manual"):
                 show_manual()
 
         with rules_col:
-            if st.button("📋 查看賽規", use_container_width=True, key="ref_show_rules"):
+            if st.button("📋 查看賽規", width="stretch", key="ref_show_rules"):
                 show_rules()
 
 
@@ -1718,7 +1718,7 @@ def show_noti_popup(user_id: str) -> None:
     @st.dialog(noti_title)
     def _render():
         st.markdown(content)
-        if st.button("我已閱讀 ✓", type="primary", use_container_width=True):
+        if st.button("我已閱讀 ✓", type="primary", width="stretch"):
             seen_at = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
             execute_query(
                 f"INSERT INTO {TABLE_NOTIFICATION_READS} (notification_id, notification_title, user_id, read_at) "

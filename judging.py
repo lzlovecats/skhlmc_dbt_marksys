@@ -86,7 +86,7 @@ def confirm_match_switch_dialog(new_match_id):
     st.warning("切換場次後，目前未提交的評分進度將會清除。請確保已暫存至雲端。")
     col_confirm, col_cancel = st.columns(2)
     with col_confirm:
-        if st.button("確認切換", type="primary", use_container_width=True):
+        if st.button("確認切換", type="primary", width="stretch"):
             _clear_side_input_state(st.session_state["active_match_id"])
             st.session_state["temp_scores"] = {"正方": None, "反方": None}
             st.session_state["active_match_id"] = new_match_id
@@ -95,7 +95,7 @@ def confirm_match_switch_dialog(new_match_id):
             st.session_state["_final_submission_cache"] = None
             st.rerun()
     with col_cancel:
-        if st.button("取消", use_container_width=True):
+        if st.button("取消", width="stretch"):
             st.session_state["_pending_match_switch"] = None
             st.rerun()
 
@@ -229,7 +229,7 @@ def render_post_submit_receipt():
     col1.metric("正方總分", f"{receipt['pro_total']} / {GRAND_TOTAL}")
     col2.metric("反方總分", f"{receipt['con_total']} / {GRAND_TOTAL}")
     st.info("如要讓下一位評判使用此裝置，請按下方按鈕返回登入。")
-    if st.button("返回評判登入", type="primary", use_container_width=True):
+    if st.button("返回評判登入", type="primary", width="stretch"):
         st.session_state["post_submit_receipt"] = None
         st.rerun()
     st.stop()
@@ -276,7 +276,7 @@ def render_best_debater_ranking_page():
 
     rank_options = list(range(1, 9))
 
-    if st.button("📊 自動根據發言分數填入排名", use_container_width=True):
+    if st.button("📊 自動根據發言分數填入排名", width="stretch"):
         auto = auto_derive_ranking_order(pending["pro_ind_scores"], pending["con_ind_scores"])
         for side, pos, _ in DEBATER_SLOTS:
             st.session_state[f"_bdr_sel_{side}_{pos}"] = auto[(side, pos)]
@@ -292,7 +292,7 @@ def render_best_debater_ranking_page():
 
     col_submit, col_skip = st.columns(2)
     with col_submit:
-        if st.button("提交排名", type="primary", use_container_width=True):
+        if st.button("提交排名", type="primary", width="stretch"):
             rankings = []
             assigned_ranks = []
             for side, pos, _ in DEBATER_SLOTS:
@@ -308,7 +308,7 @@ def render_best_debater_ranking_page():
                 _finish_ranking_and_show_receipt(pending)
 
     with col_skip:
-        if st.button("略過", use_container_width=True):
+        if st.button("略過", width="stretch"):
             _finish_ranking_and_show_receipt(pending)
 
     st.stop()
@@ -355,7 +355,7 @@ def render_side_editor(team_side, selected_match_id, current_match):
                for c in SPEECH_CRITERIA}
         },
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         key=f"editor_a_{selected_match_id}_{team_side}"
     )
 
@@ -377,7 +377,7 @@ def render_side_editor(team_side, selected_match_id, current_match):
             for c in FREE_DEBATE_CRITERIA
         },
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         key=f"editor_b_{selected_match_id}_{team_side}"
     )
     total_score_b = edited_df_b.sum().sum()
@@ -404,7 +404,7 @@ def render_side_editor(team_side, selected_match_id, current_match):
 
     final_total = total_score_a + total_score_b - deduction + coherence
     st.metric("目前總分", f"{final_total} / {GRAND_TOTAL}")
-    save_requested = st.button(f"暫存{team_side}評分", key=f"save_{team_side}", use_container_width=True)
+    save_requested = st.button(f"暫存{team_side}評分", key=f"save_{team_side}", width="stretch")
 
     return {
         "team_name": team_name,
@@ -490,7 +490,7 @@ with st.container(border=True):
         st.success(f"已進入場次：{selected_match_id}")
         st.write(f"**辯題：** {motion}")
     with summary_col2:
-        if st.button("登出評判帳戶", use_container_width=True):
+        if st.button("登出評判帳戶", width="stretch"):
             confirm_logout_dialog()
     judge_name_input = st.text_input("評判姓名", value=default_judge_name)
     st.caption("請輸入中文全名。系統會自動統一空格及英文大小寫，以避免重複身份。")
@@ -541,7 +541,7 @@ with st.container(border=True):
     submit_requested = st.button(
         "正式提交評分",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         disabled=not ready_to_submit or not judge_name_raw,
     )
 
@@ -557,7 +557,7 @@ with tab_con:
 submit_requested_bottom = st.button(
     "正式提交評分",
     type="primary",
-    use_container_width=True,
+    width="stretch",
     disabled=not ready_to_submit or not judge_name_raw,
     key="submit_bottom",
 )

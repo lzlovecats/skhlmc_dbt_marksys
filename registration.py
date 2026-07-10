@@ -46,7 +46,7 @@ with st.container(border=True):
 if st.session_state.get("registration_submitted"):
     submitted_team = st.session_state["registration_submitted"]
     st.success(f"已收到「{submitted_team}」的報名。賽會人員稍後會按聯絡資料跟進。")
-    if st.button("提交另一隊報名", use_container_width=True):
+    if st.button("提交另一隊報名", width="stretch"):
         st.session_state["registration_submitted"] = None
         st.rerun()
     st.stop()
@@ -72,7 +72,7 @@ with st.form("competition_registration_form"):
     with contact_col3:
         contact_phone = st.text_input("聯絡電話號碼")
 
-    submitted = st.form_submit_button("提交報名", type="primary", use_container_width=True)
+    submitted = st.form_submit_button("提交報名", type="primary", width="stretch")
 
 if submitted:
     form_data = {

@@ -3,6 +3,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from urllib.parse import urlparse
 from functions import get_registration_status, is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
+from version import APP_VERSION
 
 # Set up basic structure of the webpage
 st.set_page_config(page_title="聖呂中辯電子賽務系統", layout="wide", page_icon="📑")
@@ -25,7 +26,7 @@ def render_pwa_install_listener():
                 viewport.setAttribute("name", "viewport");
                 win.document.head.appendChild(viewport);
             }
-            viewport.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover");
+            viewport.setAttribute("content", "width=device-width, initial-scale=1, viewport-fit=cover");
             if (!win.document.getElementById("skh-mobile-input-zoom-fix")) {
                 const style = win.document.createElement("style");
                 style.id = "skh-mobile-input-zoom-fix";
@@ -43,7 +44,7 @@ def render_pwa_install_listener():
                         /* Reserve space so the fixed expand button never overlaps
                            the page title/content on mobile. */
                         .block-container {
-                            padding-top: calc(env(safe-area-inset-top) + 4.75rem) !important;
+                            padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
                         }
 
                         [data-testid="collapsedControl"],
@@ -56,6 +57,40 @@ def render_pwa_install_listener():
                             padding: 0.65rem !important;
                             align-items: center !important;
                             justify-content: center !important;
+                        }
+
+                        [data-testid="stHeader"] {
+                            min-height: calc(env(safe-area-inset-top) + 3.5rem) !important;
+                            overflow: visible !important;
+                        }
+
+                        [data-testid="stToolbar"] {
+                            top: calc(env(safe-area-inset-top) + 0.45rem) !important;
+                            right: 0.5rem !important;
+                            max-width: calc(100vw - 4.5rem) !important;
+                            min-height: 2.75rem !important;
+                            align-items: center !important;
+                            overflow: visible !important;
+                            z-index: 999998 !important;
+                        }
+
+                        [data-testid="stStatusWidget"] {
+                            max-width: 45vw !important;
+                            overflow: hidden !important;
+                        }
+
+                        [data-baseweb="popover"],
+                        [data-baseweb="menu"] {
+                            z-index: 1000000 !important;
+                            pointer-events: auto !important;
+                            touch-action: manipulation !important;
+                        }
+
+                        [data-baseweb="popover"] ul,
+                        [data-baseweb="menu"] ul {
+                            max-height: min(60vh, 24rem) !important;
+                            overflow-y: auto !important;
+                            -webkit-overflow-scrolling: touch !important;
                         }
                     }
                 `;
@@ -343,6 +378,7 @@ page_video_admin = st.Page("video_admin.py", title="比賽片段管理")
 page_registration = st.Page("registration.py", title="比賽報名", url_path="registration")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫")
 page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免", url_path="vote")
+page_bug_report = st.Page("bug_report.py", title="Bug回報", url_path="bug-report")
 page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
 page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admin-hub")
 page_chairperson = st.Page("chairperson.py", title="主席主持易", url_path="chairperson")
@@ -377,30 +413,68 @@ pg = st.navigation({
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_vote, page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_lateness_fund],
+    "內部委員會成員": [page_vote, page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_lateness_fund, page_bug_report],
     "開發者": [page_dev_settings],
 })
+
+if st.session_state.get("committee_user"):
+    with st.sidebar:
+        components.html(
+            """
+            <button id="skh-update-app-button" type="button" style="
+                width:100%; min-height:2.75rem; border:1px solid rgba(148,163,184,.45);
+                border-radius:8px; background:#111827; color:white; font-weight:700;
+                cursor:pointer; margin:.25rem 0 .5rem;
+            ">更新應用程式</button>
+            <div id="skh-update-app-status" style="font-size:13px;color:#94a3b8;"></div>
+            <script>
+            (function () {
+                const win = window.parent;
+                const doc = document;
+                const btn = doc.getElementById("skh-update-app-button");
+                const status = doc.getElementById("skh-update-app-status");
+                if (!btn) return;
+                btn.addEventListener("click", async function () {
+                    btn.disabled = true;
+                    status.textContent = "正在更新...";
+                    try {
+                        if ("serviceWorker" in win.navigator) {
+                            const regs = await win.navigator.serviceWorker.getRegistrations();
+                            await Promise.all(regs.map(function (reg) { return reg.update(); }));
+                        }
+                        const url = new URL(win.location.href);
+                        url.searchParams.set("_app_refresh", Date.now().toString());
+                        win.location.replace(url.toString());
+                    } catch (e) {
+                        win.location.reload();
+                    }
+                });
+            })();
+            </script>
+            """,
+            height=74,
+        )
 
 # Show logout when admin logged in
 if st.session_state.get("admin_logged_in"):
     with st.sidebar:
         st.write("")
-        if st.button("登出賽會人員帳戶", use_container_width=True):
+        if st.button("登出賽會人員帳戶", width="stretch"):
             st.session_state["admin_logged_in"] = False
             st.rerun()
 
 # Show manual
 with st.sidebar:
-    if st.button("📖 閱讀使用手冊", use_container_width=True):
+    if st.button("📖 閱讀使用手冊", width="stretch"):
         show_manual()
 
 with st.sidebar:
-    if st.button("📋 查看賽規", use_container_width=True):
+    if st.button("📋 查看賽規", width="stretch"):
         show_rules()
 
 # Show caption
 with st.sidebar:
-    st.caption("🛠️ 系統版本：3.7.12")
+    st.caption(f"🛠️ 系統版本：{APP_VERSION}")
     st.caption("🛜 開發及維護：[lzlovecats](https://github.com/lzlovecats) @ 2026")
 
 pg.run()

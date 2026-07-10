@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import pandas as pd
 import streamlit as st
@@ -350,9 +351,19 @@ def _get_comment_counts(motion_type):
     return dict(zip(df["motion_key"], df["cnt"].astype(int)))
 
 
+def _discussion_comment_key(motion_type, motion_key):
+    raw = f"{motion_type}:{motion_key}".encode("utf-8")
+    return f"comment_{motion_type}_{hashlib.sha1(raw).hexdigest()[:12]}"
+
+
 def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
+    comment_key = _discussion_comment_key(motion_type, motion_key)
+    clear_key = f"{comment_key}_clear_pending"
+    if st.session_state.pop(clear_key, False):
+        st.session_state[comment_key] = ""
+
     label = f"💬 討論區 ({comment_count})" if comment_count else "💬 討論區"
-    with st.expander(label, expanded=False):
+    with st.expander(label, expanded=bool(st.session_state.get(comment_key, "").strip())):
         comments = query_params(
             f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
             "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
@@ -369,14 +380,14 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
             st.caption("暫時未有討論。")
         new_comment = st.text_area(
             "發表意見",
-            key=f"comment_{motion_type}_{idx}",
+            key=comment_key,
             placeholder="就此議案發表意見。如要問 AI，可喺留言加「@Gemini 你的問題」（例如：@Gemini 呢條辯題嘅難度應否調高？），或按 Tag Gemini 取得中立分析。",
         )
         post_col, ai_col = st.columns(2)
         with post_col:
-            post_comment = st.button("發表", key=f"post_comment_{motion_type}_{idx}", use_container_width=True)
+            post_comment = st.button("發表", key=f"post_comment_{motion_type}_{idx}", width="stretch")
         with ai_col:
-            tag_ai = st.button("Tag Gemini", key=f"tag_ai_{motion_type}_{idx}", use_container_width=True)
+            tag_ai = st.button("Tag Gemini", key=f"tag_ai_{motion_type}_{idx}", width="stretch")
         if post_comment:
             if new_comment.strip():
                 comment_text = new_comment.strip()
@@ -386,7 +397,8 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                     "VALUES (:type, :key, :uid, :text, :now)",
                     {"type": motion_type, "key": motion_key, "uid": user_id, "text": comment_text, "now": hk_now},
                 )
-                clear_field_draft(f"comment_{motion_type}_{idx}")
+                clear_field_draft(comment_key)
+                st.session_state[clear_key] = True
                 snippet = comment_text if len(comment_text) <= 40 else comment_text[:40] + "⋯"
                 topic_label = motion_key if len(str(motion_key)) <= 20 else str(motion_key)[:20] + "⋯"
                 notify_vote_event(
@@ -435,6 +447,8 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                     "VALUES (:type, :key, :uid, :text, :now)",
                     {"type": motion_type, "key": motion_key, "uid": user_id, "text": new_comment.strip(), "now": hk_now},
                 )
+                clear_field_draft(comment_key)
+                st.session_state[clear_key] = True
                 comments = query_params(
                     f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
                     "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
@@ -521,7 +535,7 @@ def _confirm_agree_category_warning(topic, user_id, category, ratio, cat_count, 
     )
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("✅ 確認投同意票", use_container_width=True):
+        if st.button("✅ 確認投同意票", width="stretch"):
             with st.spinner("處理你的投票中，請稍等⋯"):
                 if is_switch:
                     _ballot_switch_agree(table, topic, user_id)
@@ -531,7 +545,7 @@ def _confirm_agree_category_warning(topic, user_id, category, ratio, cat_count, 
                     queue_toast("已投下同意票！", icon="☑️")
                 after_vote_fn()
     with col2:
-        if st.button("❌ 取消", use_container_width=True):
+        if st.button("❌ 取消", width="stretch"):
             st.rerun()
 
 
@@ -1851,7 +1865,7 @@ elif selected_tab == "member_stats":
             st.divider()
 
     if member_stats:
-        st.dataframe(member_stats, use_container_width=True, hide_index=True)
+        st.dataframe(member_stats, width="stretch", hide_index=True)
     else:
         st.info("暫無成員資料。")
 

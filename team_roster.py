@@ -66,7 +66,7 @@ with st.form("team_roster_form"):
         debater_3 = st.text_input(f"{side_label}二副", value=roster_link.get("debater_3", "") or "")
         debater_4 = st.text_input(f"{side_label}結辯", value=roster_link.get("debater_4", "") or "")
 
-    submitted = st.form_submit_button("提交名單", type="primary", use_container_width=True)
+    submitted = st.form_submit_button("提交名單", type="primary", width="stretch")
 
 if submitted:
     form_data = {

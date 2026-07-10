@@ -56,7 +56,7 @@ def render_registration_admin():
             with end_col2:
                 end_time = st.time_input("報名截止時間", value=default_end.time().replace(second=0, microsecond=0))
 
-            save_settings = st.form_submit_button("儲存報名設定", type="primary", use_container_width=True)
+            save_settings = st.form_submit_button("儲存報名設定", type="primary", width="stretch")
 
         if save_settings:
             registration_start = datetime.datetime.combine(start_date, start_time)
@@ -175,7 +175,7 @@ def render_registration_admin():
         "submitted_at": "提交時間",
         "updated_at": "更新時間",
     })
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
     csv_bytes = display_df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
@@ -183,7 +183,7 @@ def render_registration_admin():
         data=csv_bytes,
         file_name=f"competition_registrations_{selected_edition}.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
     st.divider()
@@ -207,7 +207,7 @@ def render_registration_admin():
         format_func=lambda x: STATUS_LABELS.get(x, x),
     )
 
-    if st.button("更新狀態", type="primary", use_container_width=True):
+    if st.button("更新狀態", type="primary", width="stretch"):
         execute_query(
             f"""
             UPDATE {TABLE_COMPETITION_REGISTRATIONS}

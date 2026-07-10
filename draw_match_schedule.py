@@ -221,7 +221,7 @@ def render_draw_schedule():
 
     with st.form("draw_schedule_form"):
         st.write(f"目前已輸入 **{len(current_teams)}** 隊隊伍。")
-        draw_btn = st.form_submit_button("🎲 抽取賽程", type="primary", use_container_width=True)
+        draw_btn = st.form_submit_button("🎲 抽取賽程", type="primary", width="stretch")
 
     if draw_btn:
         if len(current_teams) < 2:
@@ -236,7 +236,7 @@ def render_draw_schedule():
     if st.session_state["draw_result"]:
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("🔄 重新抽取", use_container_width=True):
+            if st.button("🔄 重新抽取", width="stretch"):
                 if len(current_teams) < 2:
                     st.error("至少需要 2 隊隊伍。")
                 elif len(current_teams) != len(set(current_teams)):
@@ -246,7 +246,7 @@ def render_draw_schedule():
                     st.session_state["draw_input_snapshot"] = current_teams[:]
                     st.session_state["draw_result_invalidated"] = False
         with col2:
-            if st.button("🧹 清空結果", use_container_width=True):
+            if st.button("🧹 清空結果", width="stretch"):
                 st.session_state["draw_result"] = None
                 st.session_state["draw_input_snapshot"] = None
                 st.session_state["draw_result_invalidated"] = False
@@ -263,7 +263,7 @@ def render_draw_schedule():
         with snap_col2:
             st.dataframe(
                 pd.DataFrame({"隊伍名稱": result["teams"]}),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -326,7 +326,7 @@ def render_draw_schedule():
         summary_df = pd.DataFrame(result["summary_rows"])
         st.dataframe(
             summary_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
         csv_bytes = summary_df.to_csv(index=False).encode("utf-8-sig")
@@ -335,7 +335,7 @@ def render_draw_schedule():
             data=csv_bytes,
             file_name="draw_schedule.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
 

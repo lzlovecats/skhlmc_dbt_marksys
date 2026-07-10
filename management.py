@@ -55,7 +55,7 @@ else:
 
 df_final_best, best_one = get_best_debater_results(selected_match, match_results)
 if df_final_best is not None and best_one is not None:
-    st.dataframe(df_final_best, use_container_width=True, hide_index=True)
+    st.dataframe(df_final_best, width="stretch", hide_index=True)
     st.info(f"本場最佳辯論員：**{best_one['辯位']}** (名次總和：{best_one['名次總和']} | 平均分：{best_one['平均得分']})")
 else:
     st.warning("最佳辯論員資料暫時不可用。")

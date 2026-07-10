@@ -4,7 +4,8 @@ import datetime
 from zoneinfo import ZoneInfo
 import json
 from functions import get_connection, get_system_config, _verify_config_password, execute_query, hash_password, query_params, get_bypass_active_until, _parse_bypass_data, ensure_push_subscriptions_table, get_vapid_public_key, notify_committee_vote_event
-from schema import TABLE_ACCOUNTS, TABLE_PUSH_SUBSCRIPTIONS, init_db, run_migrations
+from schema import CREATE_BUG_REPORTS, TABLE_ACCOUNTS, TABLE_BUG_REPORTS, TABLE_PUSH_SUBSCRIPTIONS, init_db, run_migrations
+from version import APP_VERSION
 from ai_coach_helpers import (
     AI_MODEL_OPTIONS,
     AI_PROVIDER_LABELS,
@@ -51,10 +52,138 @@ if not st.session_state["dev_logged_in"]:
 
 with st.sidebar:
     st.write("")
-    if st.button("登出開發者帳戶", use_container_width=True):
+    if st.button("登出開發者帳戶", width="stretch"):
         st.session_state["dev_logged_in"] = False
         st.rerun()
 
+st.subheader("Bug 回報管理")
+st.caption("回覆委員回報。標記已修正時請填寫修正版本，委員會在 Bug回報 頁看到回覆。")
+
+try:
+    execute_query(CREATE_BUG_REPORTS)
+except Exception as e:
+    st.error(f"未能確認 Bug 回報資料表：{e}")
+    st.stop()
+
+current_app_version = APP_VERSION
+st.info(f"目前系統版本：**{current_app_version}**（於 `version.py` 設定，隨程式碼發佈更新）")
+
+BUG_STATUS_LABELS = {
+    "open": "待處理",
+    "investigating": "跟進中",
+    "fixed": "已修正",
+    "not_reproducible": "未能重現",
+    "duplicate": "重複回報",
+    "closed": "已關閉",
+}
+
+bug_reports = query_params(
+    f"""
+    SELECT id, reporter_user_id, affected_page, device_info, reproduction_steps,
+           expected_result, actual_result, extra_notes, status, developer_reply,
+           fixed_version, created_at, updated_at, resolved_at
+    FROM {TABLE_BUG_REPORTS}
+    ORDER BY
+        CASE status
+            WHEN 'open' THEN 0
+            WHEN 'investigating' THEN 1
+            WHEN 'not_reproducible' THEN 2
+            WHEN 'fixed' THEN 3
+            WHEN 'duplicate' THEN 4
+            ELSE 5
+        END,
+        created_at DESC
+    LIMIT 100
+    """
+)
+
+if bug_reports.empty:
+    st.info("暫時未有 Bug 回報。")
+else:
+    for _, report in bug_reports.iterrows():
+        report_id = int(report["id"])
+        status = str(report.get("status") or "open")
+        title = (
+            f"#{report_id} {report['affected_page']}｜"
+            f"{BUG_STATUS_LABELS.get(status, status)}｜{report['reporter_user_id'] or '未知委員'}"
+        )
+        with st.expander(title, expanded=status in ("open", "investigating")):
+            st.caption(f"提交：{str(report['created_at'])[:16]}｜更新：{str(report['updated_at'])[:16]}")
+            if report.get("device_info"):
+                st.write(f"**裝置及瀏覽器：** {report['device_info']}")
+            st.write("**重現步驟**")
+            st.write(report["reproduction_steps"])
+            st.write("**預期結果**")
+            st.write(report["expected_result"] or "未提供")
+            st.write("**實際結果**")
+            st.write(report["actual_result"])
+            if report.get("extra_notes"):
+                st.write("**補充資料**")
+                st.write(report["extra_notes"])
+
+            with st.form(f"bug_report_update_{report_id}"):
+                status_options = list(BUG_STATUS_LABELS.keys())
+                status_index = status_options.index(status) if status in status_options else 0
+                new_status = st.selectbox(
+                    "處理狀態",
+                    options=status_options,
+                    index=status_index,
+                    format_func=lambda key: BUG_STATUS_LABELS.get(key, key),
+                    key=f"bug_status_{report_id}",
+                )
+                fixed_version = st.text_input(
+                    "修正版本",
+                    value=str(report.get("fixed_version") or current_app_version or ""),
+                    placeholder="例如：v2026.07.10-1",
+                    key=f"bug_fixed_version_{report_id}",
+                )
+                developer_reply = st.text_area(
+                    "回覆委員",
+                    value=str(report.get("developer_reply") or ""),
+                    placeholder="例如：已於 v2026.07.10-1 修正手機 dropdown 點擊位置錯誤。",
+                    key=f"bug_reply_{report_id}",
+                )
+                update_bug = st.form_submit_button("更新回覆", type="primary", width="stretch")
+
+            if update_bug:
+                if new_status == "fixed" and not fixed_version.strip():
+                    st.warning("標記已修正時必須填寫修正版本。")
+                elif new_status in ("fixed", "closed", "duplicate", "not_reproducible") and not developer_reply.strip():
+                    st.warning("請填寫回覆，讓委員知道處理結果。")
+                else:
+                    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+                    resolved_at = now if new_status in ("fixed", "closed", "duplicate", "not_reproducible") else None
+                    execute_query(
+                        f"""
+                        UPDATE {TABLE_BUG_REPORTS}
+                        SET status = :status,
+                            developer_reply = :reply,
+                            fixed_version = :fixed_version,
+                            updated_at = :updated_at,
+                            resolved_at = :resolved_at
+                        WHERE id = :id
+                        """,
+                        {
+                            "status": new_status,
+                            "reply": developer_reply.strip(),
+                            "fixed_version": fixed_version.strip(),
+                            "updated_at": now,
+                            "resolved_at": resolved_at,
+                            "id": report_id,
+                        },
+                    )
+                    notify_committee_vote_event(
+                        "Bug 回報已更新",
+                        f"#{report_id} {BUG_STATUS_LABELS.get(new_status, new_status)}"
+                        + (f"｜修正版本：{fixed_version.strip()}" if fixed_version.strip() else ""),
+                        target_user=report.get("reporter_user_id"),
+                        tag=f"bug-report-{report_id}",
+                        url="/bug-report",
+                    )
+                    st.success(f"已更新 #{report_id}。")
+                    st.rerun()
+
+st.divider()
 st.subheader("更改賽會人員登入密碼")
 st.caption("此密碼用於所有需要賽會人員身份的頁面登入。")
 

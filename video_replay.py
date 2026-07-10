@@ -446,7 +446,7 @@ with player_col:
         with resume_col1:
             st.caption(f"⏱ 你上次看到：{_seconds_to_label(resume_seconds)}")
         with resume_col2:
-            if start_seconds and st.button("從頭播放", key="restart_video", use_container_width=True):
+            if start_seconds and st.button("從頭播放", key="restart_video", width="stretch"):
                 _select_video(selected_video_id, 0)
 
     chapter_rows = query_params(
@@ -474,7 +474,7 @@ with player_col:
                     if st.button(
                         f"{chapter['chapter_label']} {_seconds_to_label(chapter['start_seconds'])}",
                         key=f"chapter_{selected_video_id}_{chapter['chapter_label']}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _select_video(selected_video_id, int(chapter["start_seconds"]))
     else:
@@ -507,7 +507,7 @@ with player_col:
                         placeholder="例：12:34",
                     )
                 chapter_inputs.append((chapter_label, chapter_index, enabled, time_text))
-            save_chapters = st.form_submit_button("儲存章節時間表", type="primary", use_container_width=True)
+            save_chapters = st.form_submit_button("儲存章節時間表", type="primary", width="stretch")
 
         if save_chapters:
             chapter_values = []
@@ -550,7 +550,7 @@ with player_col:
                 _queue_replay_toast("章節時間表已更新。", icon="✅")
                 st.rerun()
 
-    with st.popover("🔗 分享此片段連結", use_container_width=True):
+    with st.popover("🔗 分享此片段連結", width="stretch"):
         st.caption("複製以下連結，一按即可開啟本片段：")
         st.code(_current_url_for_video(selected_video_id, start_seconds), language=None)
 
@@ -570,7 +570,7 @@ with list_col:
                     caption += f"　⏱ {_seconds_to_label(watched_seconds)}"
                 st.caption(caption)
                 if not is_current:
-                    if st.button("播放", key=f"select_video_{video_id}", use_container_width=True):
+                    if st.button("播放", key=f"select_video_{video_id}", width="stretch"):
                         _select_video(video_id)
 
 st.divider()
@@ -592,7 +592,7 @@ with vote_col:
     )
     if current_vote:
         st.caption(f"你目前投：{VOTE_LABELS.get(current_vote, current_vote)}")
-    if st.button("提交投票", type="primary", use_container_width=True):
+    if st.button("提交投票", type="primary", width="stretch"):
         execute_query(
             f"""
             INSERT INTO {TABLE_VIDEO_VOTES} (video_id, user_id, vote_choice, updated_at)
