@@ -4,7 +4,9 @@ import datetime
 import hashlib
 import io
 import json
+import os
 import re
+import tempfile
 import zipfile
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +14,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
+from ai_coach_helpers import log_gemini_usage_from_response
 from auth import require_committee
 from functions import (
     clear_field_draft,
@@ -413,11 +416,17 @@ def _fully_recorded_manuscripts(allowed_users):
 
 
 def _deactivate_scripts(script_ids):
-    changed = 0
-    for script_id in script_ids:
-        _set_script_active(script_id, False)
-        changed += 1
-    return changed
+    ids = [str(sid) for sid in script_ids]
+    if not ids:
+        return 0
+    # Single batched UPDATE instead of one transaction per script — avoids the
+    # CPU/round-trip spike when disabling large fully-recorded sets.
+    execute_query(
+        f"UPDATE {TABLE_TTS_SCRIPTS} SET is_active = FALSE, updated_at = :now "
+        "WHERE script_id = ANY(:ids)",
+        {"ids": ids, "now": _now_hk()},
+    )
+    return len(ids)
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +727,7 @@ def _is_ai_quota_error(error):
     return "429" in error_text or "RESOURCE_EXHAUSTED" in error_text or "quota" in error_text.lower()
 
 
-def review_tts_recording_audio(audio_bytes, prompt_text):
+def review_tts_recording_audio(audio_bytes, prompt_text, user_id):
     if "GEMINI_API_KEY" not in st.secrets:
         return {
             "ok": False,
@@ -769,6 +778,9 @@ def review_tts_recording_audio(audio_bytes, prompt_text):
             )
             review["passed"] = bool(required_ok)
             review["model"] = model_name
+            log_gemini_usage_from_response(
+                user_id, "tts_review", model_name, response, True, has_audio=True
+            )
             return {
                 "ok": True,
                 "status": "passed" if required_ok else "failed",
@@ -803,7 +815,7 @@ def review_tts_recording_audio(audio_bytes, prompt_text):
     }
 
 
-def analyze_script_coverage(scripts, counts):
+def analyze_script_coverage(scripts, counts, user_id):
     """讓 AI 分析現有句庫和錄音覆蓋，指出仍需收集的內容，並建議新句子。"""
     if "GEMINI_API_KEY" not in st.secrets:
         return {"ok": False, "message": "未設定 GEMINI_API_KEY，未能進行 AI 缺口分析。", "analysis": None}
@@ -827,8 +839,12 @@ def analyze_script_coverage(scripts, counts):
             config=types.GenerateContentConfig(system_instruction=TTS_COVERAGE_SYSTEM_PROMPT, temperature=0.4),
         )
         analysis = _extract_json(response.text or "{}")
+        log_gemini_usage_from_response(user_id, "tts_script_analysis", "gemini-2.5-flash", response, True)
         return {"ok": True, "message": "分析完成。", "analysis": analysis}
     except Exception as e:
+        log_gemini_usage_from_response(
+            user_id, "tts_script_analysis", "gemini-2.5-flash", None, False, error_message=str(e)
+        )
         return {"ok": False, "message": f"AI 缺口分析失敗：{e}", "analysis": None}
 
 
@@ -844,7 +860,7 @@ def _scripts_with_recordings():
     return {str(row["script_id"]) for _, row in rows.iterrows()}
 
 
-def regenerate_script_bank(scripts, locked_ids, counts):
+def regenerate_script_bank(scripts, locked_ids, counts, user_id):
     """AI 重新規劃句庫：建議新增句子 + 建議停用（只限未錄音）。結果只回傳建議，
     唔會寫 DB —— 由管理員審核後先套用。已鎖（有錄音）句子絕不列入停用建議。"""
     if "GEMINI_API_KEY" not in st.secrets:
@@ -877,12 +893,16 @@ def regenerate_script_bank(scripts, locked_ids, counts):
             d for d in (plan.get("deactivate_candidates") or [])
             if str(d.get("script_id")) not in locked_ids
         ]
+        log_gemini_usage_from_response(user_id, "tts_script_analysis", "gemini-2.5-flash", response, True)
         return {"ok": True, "message": "已生成建議。", "plan": plan}
     except Exception as e:
+        log_gemini_usage_from_response(
+            user_id, "tts_script_analysis", "gemini-2.5-flash", None, False, error_message=str(e)
+        )
         return {"ok": False, "message": f"AI 重出句庫失敗：{e}", "plan": None}
 
 
-def review_llm_training_text(data_type, side, title, topic_text, source_note, content_text):
+def review_llm_training_text(data_type, side, title, topic_text, source_note, content_text, user_id):
     if "GEMINI_API_KEY" not in st.secrets:
         return {
             "ok": False,
@@ -925,6 +945,7 @@ def review_llm_training_text(data_type, side, title, topic_text, source_note, co
             )
             review["passed"] = bool(required_ok)
             review["model"] = model_name
+            log_gemini_usage_from_response(user_id, "llm_review", model_name, response, True)
             return {
                 "ok": True,
                 "status": "passed" if required_ok else "failed",
@@ -1080,7 +1101,7 @@ def _render_recorder(user_id):
     key = _record_key(script_id, audio_data)
     if st.button("AI 檢查音質", type="primary", width="stretch"):
         with st.spinner("AI 正在檢查錄音音質..."):
-            result = review_tts_recording_audio(audio_bytes, script["text"])
+            result = review_tts_recording_audio(audio_bytes, script["text"], user_id)
         st.session_state["tts_recording_ai_review"] = {
             "key": key,
             "result": result,
@@ -1221,16 +1242,33 @@ def _render_review_panel(user_id):
 
     _render_accepted_dataset_preview(speaker_filter)
 
-    export_bytes = _build_export_zip(speaker_filter)
+    # Build the zip ONLY when explicitly requested. Building it on every render
+    # loads every accepted audio BLOB into memory and blows past the 512 MB
+    # limit whenever an unrelated action (e.g. 停用全員錄製內容) triggers a rerun.
     export_name = "tts_voice_dataset.zip" if not speaker_filter else f"tts_voice_dataset_{speaker_filter}.zip"
-    st.download_button(
-        "下載 accepted dataset zip",
-        data=export_bytes or b"",
-        file_name=export_name,
-        mime="application/zip",
-        width="stretch",
-        disabled=export_bytes is None,
-    )
+    # Any change of speaker filter invalidates a previously built zip.
+    if st.session_state.get("tts_export_speaker") != selected_speaker:
+        _discard_tts_export()
+    if st.button("準備匯出 accepted dataset zip", width="stretch"):
+        _discard_tts_export()  # drop any previous temp file before rebuilding
+        with st.spinner("正在打包錄音，請稍候⋯"):
+            export_path = _build_export_zip(speaker_filter)
+            st.session_state["tts_export_speaker"] = selected_speaker
+        if export_path is None:
+            st.info("accepted dataset 暫時未有錄音，無法匯出。")
+        else:
+            st.session_state["tts_export_zip"] = export_path
+    export_path = st.session_state.get("tts_export_zip")
+    if export_path and os.path.exists(export_path):
+        with open(export_path, "rb") as export_file:
+            st.download_button(
+                "下載 accepted dataset zip",
+                data=export_file,
+                file_name=export_name,
+                mime="application/zip",
+                width="stretch",
+                on_click=_discard_tts_export,
+            )
 
 
 def _count_recordings(status):
@@ -1358,6 +1396,17 @@ def _update_recording_status(recording_id, status, reviewer, note):
             "now": _now_hk(),
         },
     )
+    _discard_tts_export()
+
+
+def _discard_tts_export():
+    """Drop the pending export from session and delete its temp file from disk."""
+    path = st.session_state.pop("tts_export_zip", None)
+    if isinstance(path, str) and path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def _build_export_zip(speaker_user_id=None):
@@ -1366,9 +1415,12 @@ def _build_export_zip(speaker_user_id=None):
     if speaker_user_id:
         where += " AND speaker_user_id = :speaker_user_id"
         params["speaker_user_id"] = speaker_user_id
-    rows = query_params(
+    # Fetch metadata only (NO audio_data) so we never hold every BLOB in one
+    # DataFrame — that alone can exceed the 512 MB limit. Audio is streamed in
+    # one row at a time below.
+    meta = query_params(
         f"""
-        SELECT id, speaker_user_id, script_id, prompt_text, audio_data, mime_type,
+        SELECT id, speaker_user_id, script_id, prompt_text, mime_type,
                file_ext, size_bytes, duration_seconds, ai_transcript, created_at
         FROM {TABLE_TTS_VOICE_RECORDINGS}
         {where}
@@ -1376,28 +1428,45 @@ def _build_export_zip(speaker_user_id=None):
         """,
         params,
     )
-    if rows.empty:
+    if meta.empty:
         return None
 
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        metadata_io = io.StringIO()
-        writer = csv.writer(metadata_io)
-        writer.writerow([
-            "id", "speaker_user_id", "script_id", "prompt_text", "audio_file",
-            "mime_type", "size_bytes", "duration_seconds", "ai_transcript", "created_at",
-        ])
-        for _, row in rows.iterrows():
-            ext = row["file_ext"] or "wav"
-            audio_name = f"audio/{row['speaker_user_id']}_{int(row['id']):04d}.{ext}"
-            zf.writestr(audio_name, _to_bytes(row["audio_data"]))
+    # Build the zip on disk, not in an in-RAM io.BytesIO. A BytesIO holds the
+    # whole compressed archive in memory (and getvalue() briefly doubles it),
+    # which would push a large accepted dataset past the 512 MB limit. Writing
+    # straight to a temp file keeps peak RAM at ~one audio BLOB at a time.
+    tmp = tempfile.NamedTemporaryFile(prefix="tts_export_", suffix=".zip", delete=False)
+    try:
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            metadata_io = io.StringIO()
+            writer = csv.writer(metadata_io)
             writer.writerow([
-                row["id"], row["speaker_user_id"], row["script_id"], row["prompt_text"],
-                audio_name, row["mime_type"], row["size_bytes"], row["duration_seconds"],
-                row["ai_transcript"], row["created_at"],
+                "id", "speaker_user_id", "script_id", "prompt_text", "audio_file",
+                "mime_type", "size_bytes", "duration_seconds", "ai_transcript", "created_at",
             ])
-        zf.writestr("metadata.csv", metadata_io.getvalue().encode("utf-8-sig"))
-    return buffer.getvalue()
+            for _, row in meta.iterrows():
+                rec_id = int(row["id"])
+                ext = row["file_ext"] or "wav"
+                audio_name = f"audio/{row['speaker_user_id']}_{rec_id:04d}.{ext}"
+                # Pull this single recording's BLOB, write it, then let it be freed
+                # before the next iteration.
+                one = query_params(
+                    f"SELECT audio_data FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id = :id",
+                    {"id": rec_id},
+                )
+                if not one.empty:
+                    zf.writestr(audio_name, _to_bytes(one.iloc[0]["audio_data"]))
+                del one
+                writer.writerow([
+                    row["id"], row["speaker_user_id"], row["script_id"], row["prompt_text"],
+                    audio_name, row["mime_type"], row["size_bytes"], row["duration_seconds"],
+                    row["ai_transcript"], row["created_at"],
+                ])
+            zf.writestr("metadata.csv", metadata_io.getvalue().encode("utf-8-sig"))
+    finally:
+        tmp.close()
+    # Return the path; the caller streams it to the download button and cleans up.
+    return tmp.name
 
 
 def _insert_llm_submission(
@@ -1593,7 +1662,7 @@ def _render_llm_submission(user_id):
                 st.info("此資料已提交，請勿重複提交。")
             else:
                 with st.spinner("AI 正在預檢文字資料..."):
-                    result = review_llm_training_text(data_type, side, title, topic_text, source_note, content_text)
+                    result = review_llm_training_text(data_type, side, title, topic_text, source_note, content_text, user_id)
                 review = result.get("review") or {}
                 status = result.get("status")
                 if status == "failed":
@@ -1657,6 +1726,7 @@ def _withdraw_llm_submission(submission_id, user_id):
         """,
         {"id": int(submission_id), "user_id": user_id},
     )
+    st.session_state.pop("llm_export_jsonl", None)
 
 
 def _render_llm_admin_panel(user_id):
@@ -1680,6 +1750,22 @@ def _render_llm_admin_panel(user_id):
         col.metric(status, f"{summary.get(status, 0)} 份")
 
     status_filter = st.selectbox("LLM 資料狀態", ["pending", "accepted", "rejected", "withdrawn"])
+    # Paginate like the recording panel: rendering every submission's full
+    # content_text as a text_area (plus a JSON parse each) is what makes accept
+    # feel slow on rerun, so only load one page of heavy widgets at a time.
+    total_rows = summary.get(status_filter, 0)
+    total_pages = max(1, (total_rows + REVIEW_PAGE_SIZE - 1) // REVIEW_PAGE_SIZE)
+    page_key = f"llm_review_page_{status_filter}"
+    page = st.number_input(
+        "頁數",
+        min_value=1,
+        max_value=total_pages,
+        value=min(int(st.session_state.get(page_key, 1)), total_pages),
+        step=1,
+        key=page_key,
+    )
+    offset = (int(page) - 1) * REVIEW_PAGE_SIZE
+    st.caption(f"共 {total_rows} 份 {status_filter} 資料｜每頁 {REVIEW_PAGE_SIZE} 份｜第 {int(page)} / {total_pages} 頁")
     submissions = query_params(
         f"""
         SELECT id, submitted_by, data_type, title, topic_text, side, content_text,
@@ -1688,9 +1774,9 @@ def _render_llm_admin_panel(user_id):
         FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
         WHERE status = :status
         ORDER BY created_at DESC
-        LIMIT 50
+        LIMIT :limit OFFSET :offset
         """,
-        {"status": status_filter},
+        {"status": status_filter, "limit": REVIEW_PAGE_SIZE, "offset": offset},
     )
     if submissions.empty:
         st.info("沒有相關 LLM 資料。")
@@ -1727,15 +1813,21 @@ def _render_llm_admin_panel(user_id):
                         _update_llm_submission_status(row["id"], "rejected", user_id, note)
                         st.rerun()
 
-    export_bytes = _build_llm_export_jsonl()
-    st.download_button(
-        "下載 accepted LLM dataset JSONL",
-        data=export_bytes or b"",
-        file_name="llm_training_dataset.jsonl",
-        mime="application/jsonl",
-        width="stretch",
-        disabled=export_bytes is None,
-    )
+    if st.button("準備匯出 accepted LLM dataset JSONL", width="stretch"):
+        with st.spinner("正在整理資料集⋯"):
+            st.session_state["llm_export_jsonl"] = _build_llm_export_jsonl()
+        if st.session_state["llm_export_jsonl"] is None:
+            st.info("暫時未有符合條件的 accepted 資料，無法匯出。")
+    llm_export_bytes = st.session_state.get("llm_export_jsonl")
+    if llm_export_bytes:
+        st.download_button(
+            "下載 accepted LLM dataset JSONL",
+            data=llm_export_bytes,
+            file_name="llm_training_dataset.jsonl",
+            mime="application/jsonl",
+            width="stretch",
+            on_click=lambda: st.session_state.pop("llm_export_jsonl", None),
+        )
 
 
 def _update_llm_submission_status(submission_id, status, reviewer, note):
@@ -1756,6 +1848,7 @@ def _update_llm_submission_status(submission_id, status, reviewer, note):
             "now": _now_hk(),
         },
     )
+    st.session_state.pop("llm_export_jsonl", None)
 
 
 def _build_llm_export_jsonl():
@@ -1848,7 +1941,7 @@ def _render_admin_scripts(user_id, all_scripts):
         st.caption("AI 會分析現有句庫和已收錄音，指出仍欠缺哪些讀音類型，並建議新句子。")
         if st.button("執行 AI 缺口分析", width="stretch"):
             with st.spinner("AI 正在分析句庫覆蓋..."):
-                st.session_state["tts_coverage_analysis"] = analyze_script_coverage(all_scripts, counts)
+                st.session_state["tts_coverage_analysis"] = analyze_script_coverage(all_scripts, counts, user_id)
         coverage = st.session_state.get("tts_coverage_analysis")
         if coverage:
             if not coverage.get("ok"):
@@ -1888,7 +1981,7 @@ def _render_admin_scripts(user_id, all_scripts):
         )
         if st.button("執行 AI 重出句庫", width="stretch"):
             with st.spinner("AI 正在重新規劃句庫..."):
-                st.session_state["tts_regenerate_plan"] = regenerate_script_bank(all_scripts, locked_ids, counts)
+                st.session_state["tts_regenerate_plan"] = regenerate_script_bank(all_scripts, locked_ids, counts, user_id)
         regen = st.session_state.get("tts_regenerate_plan")
         if regen:
             if not regen.get("ok"):
@@ -2151,15 +2244,55 @@ def _render_manuscript_admin(user_id):
                     st.rerun()
 
 
+def _format_admin_section_label(section_name):
+    return {
+        "recordings": "🎧 錄音審核 / Export",
+        "scripts": "🗂️ 句庫管理",
+        "manuscripts": "📄 完整稿管理",
+        "lexicon": "📖 讀音字典管理",
+        "llm": "📝 LLM 資料審核 / Export",
+    }.get(section_name, section_name)
+
+
 def _render_admin_tab(user_id):
     st.subheader("管理員")
     st.caption("集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。")
-    short_scripts = _load_scripts(active_only=True, script_type="short")
-    _render_review_panel(user_id)
-    _render_admin_scripts(user_id, short_scripts)
-    _render_manuscript_admin(user_id)
-    _render_lexicon_admin(user_id)
-    _render_llm_admin_panel(user_id)
+
+    section_options = ["recordings", "scripts", "manuscripts", "lexicon", "llm"]
+    if hasattr(st, "segmented_control"):
+        section = st.segmented_control(
+            "管理功能",
+            options=section_options,
+            default="recordings",
+            format_func=_format_admin_section_label,
+            key="ai_training_admin_section",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    else:
+        section = st.radio(
+            "管理功能",
+            options=section_options,
+            format_func=_format_admin_section_label,
+            key="ai_training_admin_section",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+    if section is None:
+        section = "recordings"
+
+    if section == "recordings":
+        _render_review_panel(user_id)
+    elif section == "scripts":
+        short_scripts = _load_scripts(active_only=True, script_type="short")
+        _render_admin_scripts(user_id, short_scripts)
+    elif section == "manuscripts":
+        _render_manuscript_admin(user_id)
+    elif section == "lexicon":
+        _render_lexicon_admin(user_id)
+    elif section == "llm":
+        _render_llm_admin_panel(user_id)
 
 
 st.header("聖呂中辯AI訓練")

@@ -519,7 +519,7 @@ with st.expander("指定 TTS 錄音委員及 AI 訓練管理員", expanded=False
 
 st.divider()
 st.subheader("AI基金管理員設定")
-st.caption("AI基金管理員可在 AI 辯論易的「💲AI基金」分頁確認入數、記錄 provider 支出及更新AI基金設定。")
+st.caption("AI基金管理員可在「💲AI基金」頁面確認入數、記錄 provider 支出及更新AI基金設定。")
 
 with st.expander("指定AI基金管理員", expanded=False):
     account_options = get_ai_fund_account_options()

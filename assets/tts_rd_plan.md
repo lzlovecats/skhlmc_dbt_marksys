@@ -120,6 +120,33 @@
 
 ---
 
+### 三之二、自家聲上線：latency 準則 + 分階段 rollout（非即時先行）　⬜ 未開始
+
+> 決策背景：自家聲（GPT-SoVITS 等）唔係「本質慢」，而係**部署方式**決定快慢。現有 Render 512MB proxy **跑唔到**（要 GPU + 幾 GB VRAM），一定係獨立 GPU 推理服務。換走 Azure＝把「快同穩」由 managed API 接返自己孭。所以**即時路徑唔貿然換 Azure，自家聲先喺非即時場景落地**。`_synthesize_tts` 的 `TTS_PROVIDER=azure\|custom` 抽象層已容許分階段切換。
+
+#### latency 準則（達標先可以接即時路徑）
+
+- **硬件**：必須 GPU 且 model 常駐預熱（keep warm）；純 CPU 或每次冷啟動 load model 一律當唔合格。
+- **分句 streaming**：邊合成邊播第一句，唔好等成段合成完先出聲。
+- **快取**：高頻句／固定開場白／評語模板做 cache。
+- **量度 end-to-end**（合成＋網絡＋廣播，唔淨係推理）：
+  - 單人 `/api/tts/azure`：first-audio 目標 **< ~1 秒**。
+  - 聯機 Mode B（`_room_gemini_pump` server 端合成再廣播全房）：合成慢＝**成房一齊等**，體感放大，門檻要更嚴。
+- **穩定度**：GPU endpoint 要有 uptime / fallback；自家聲掛咗要自動 fallback 返 Azure（沿用現有 fallback 機制）。
+
+#### 分階段 rollout
+
+| 階段 | 用喺邊 | Provider |
+|---|---|---|
+| P0 試音 | 管理員 A/B 試聽、離線生成 | `custom`（唔趕時間，慢啲無所謂） |
+| P1 非即時 | 預先生成內容、示範音、固定音檔 | `custom` |
+| P2 即時（達標後） | 單人 Free De/Mock | `custom`，達 latency 準則先切；未達留 `azure` |
+| P3 即時廣播（最後） | 聯機 Mode B 多人房 | `custom`，門檻最嚴，最後先接 |
+
+> 原則：**Azure 一直係即時路徑嘅預設同 fallback**；自家聲由「唔趕時間」嗰端逐格向即時推進，每格都要先量到 latency 達標先升級。
+
+---
+
 ### 四、辯論 LLM：內容、策略、攻防及評語　🟡 收集基建已完成
 
 辯論 LLM 目標是令 AI 更接近校隊教練：理解香港中學辯論語境、評分標準、追問方式和主線漏洞。這一條工作線不需要用聲音錄音直接訓練，主要使用文字資料和檢索。

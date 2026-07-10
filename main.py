@@ -391,6 +391,7 @@ page_team_roster = st.Page("team_roster.py", title="提交隊伍名單", url_pat
 page_ai_coach = st.Page("ai_coach.py", title="AI 辯論易", url_path="ai-coach")
 page_ai_training = st.Page("ai_training.py", title="聖呂中辯AI訓練", url_path="ai-training")
 page_lateness_fund = st.Page("lateness_fund.py", title="遲到罰款基金", url_path="lateness-fund")
+page_ai_fund = st.Page("ai_fund.py", title="AI基金", url_path="ai-fund")
 
 
 def is_team_roster_page():
@@ -418,7 +419,7 @@ pg = st.navigation({
     "參賽隊伍": [page_score_sheet],
     "一般人員": public_pages,
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_vote, page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_lateness_fund, page_bug_report],
+    "內部委員會成員": [page_vote, page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_ai_fund, page_lateness_fund, page_bug_report],
     "開發者": [page_dev_settings],
 })
 

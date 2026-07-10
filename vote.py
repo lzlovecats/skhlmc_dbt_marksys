@@ -6,7 +6,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from functions import show_noti_popup, hash_password, get_connection, execute_query, execute_query_count, get_active_user_count, get_member_participation_stats, CATEGORIES, DIFFICULTY_OPTIONS, DIFFICULTY_CRITERIA, render_page_guidance, _verify_config_password, query_params, is_bypass_active_check, get_bypass_active_until, get_vapid_public_key, notify_committee_vote_event, get_system_config, clear_field_draft
 from auth import require_committee, del_cookie, committee_cookie_manager, render_committee_auth_bridge, _sign_cookie
-from ai_coach_helpers import generate_general_ai_reply, is_successful_ai_result
+from ai_coach_helpers import generate_general_ai_reply, is_successful_ai_result, log_ai_fund_usage
 from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from schema import (
     TABLE_ACCOUNTS,
@@ -28,6 +28,30 @@ from prompts import (
     build_vote_discussion_prompt,
     build_vote_history_analysis_prompt,
     build_vote_topic_review_prompt,
+)
+# Pure vote business logic (Phase 1 extraction). Aliased to the original private
+# names so existing call sites in this page stay unchanged.
+from core.vote_logic import (
+    parse_reason_map,
+    parse_reason_list,
+    dump_json,
+    collect_reasons,
+    parse_deadline_row,
+    entry_threshold,
+    depose_threshold,
+    fetch_vote_data,
+    count_pending_votes,
+    count_pending_deposes,
+    get_comment_counts as _get_comment_counts,
+    discussion_comment_key as _discussion_comment_key,
+    ballot_delete as _ballot_delete,
+    ballot_upsert as _ballot_upsert,
+    ballot_switch_agree as _ballot_switch_agree,
+    check_category_would_exceed as _check_category_would_exceed,
+    apply_topic_pass,
+    apply_topic_reject,
+    apply_depose_pass,
+    apply_depose_reject,
 )
 
 st.header("辯題徵集、投票及罷免")
@@ -64,44 +88,6 @@ DEPOSE_REASONS = [
 AI_COMMENT_USER_ID = "Gemini"
 
 
-def parse_reason_map(raw_value):
-    if isinstance(raw_value, dict):
-        return raw_value
-    if not raw_value:
-        return {}
-    try:
-        parsed = json.loads(raw_value)
-        return parsed if isinstance(parsed, dict) else {}
-    except (TypeError, json.JSONDecodeError):
-        return {}
-
-
-def parse_reason_list(raw_value):
-    if isinstance(raw_value, list):
-        return [str(item).strip() for item in raw_value if str(item).strip()]
-    if not raw_value:
-        return []
-    try:
-        parsed = json.loads(raw_value)
-        if isinstance(parsed, list):
-            return [str(item).strip() for item in parsed if str(item).strip()]
-    except (TypeError, json.JSONDecodeError):
-        pass
-    return [str(raw_value).strip()] if str(raw_value).strip() else []
-
-
-def dump_json(data):
-    return json.dumps(data, ensure_ascii=False)
-
-
-def collect_reasons(selected_reasons, other_reason):
-    reasons = [reason.strip() for reason in selected_reasons if reason.strip()]
-    other_reason = other_reason.strip()
-    if other_reason:
-        reasons.append(f"其他：{other_reason}")
-    return reasons
-
-
 def render_reason_lines(reason_map, empty_text):
     if not reason_map:
         st.caption(empty_text)
@@ -116,26 +102,6 @@ def render_reason_lines(reason_map, empty_text):
     for reason, count in Counter(all_reasons).most_common():
         suffix = f"（{count} 人）" if count > 1 else ""
         st.caption(f"• {reason}{suffix}")
-
-
-def parse_deadline_row(row, key="deadline_date"):
-    # row: the row of the vote data
-    """Returns (deadline_passed: bool, deadline_str: str)."""
-    deadline_val = row.get(key, "")
-    deadline_passed = False
-    deadline_str = ""
-    if deadline_val and deadline_val != "":
-        try:
-            if hasattr(deadline_val, 'date'):
-                deadline_date = deadline_val.date() if hasattr(deadline_val, 'hour') else deadline_val
-            else:
-                deadline_date = datetime.strptime(str(deadline_val)[:10], "%Y-%m-%d").date()
-            today_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
-            deadline_passed = today_hk > deadline_date
-            deadline_str = deadline_date.strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return deadline_passed, deadline_str
 
 
 def clear_caches():
@@ -340,22 +306,6 @@ def render_refresh_button(key):
         st.rerun()
 
 
-def _get_comment_counts(motion_type):
-    df = query_params(
-        f"SELECT motion_key, COUNT(*) AS cnt FROM {TABLE_MOTION_COMMENTS} "
-        "WHERE motion_type = :type GROUP BY motion_key",
-        {"type": motion_type},
-    )
-    if df.empty:
-        return {}
-    return dict(zip(df["motion_key"], df["cnt"].astype(int)))
-
-
-def _discussion_comment_key(motion_type, motion_key):
-    raw = f"{motion_type}:{motion_key}".encode("utf-8")
-    return f"comment_{motion_type}_{hashlib.sha1(raw).hexdigest()[:12]}"
-
-
 def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
     comment_key = _discussion_comment_key(motion_type, motion_key)
     clear_key = f"{comment_key}_clear_pending"
@@ -469,63 +419,6 @@ def render_discussion(motion_type, motion_key, user_id, idx, comment_count):
                 st.error(ai_text)
 
 
-def _ballot_delete(table, topic, user_id):
-    params = {"user_id": user_id, "topic_text": topic}
-    if table == TABLE_TOPIC_VOTES:
-        execute_query(f"DELETE FROM {TABLE_TOPIC_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
-    else:
-        execute_query(f"DELETE FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
-
-
-def _ballot_upsert(table, topic, user_id, vote, reasons=None):
-    params = {"user_id": user_id, "topic_text": topic}
-    if table == TABLE_TOPIC_VOTES:
-        if vote == "agree":
-            execute_query(
-                f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice) VALUES (:topic_text, :user_id, 'agree')"
-                " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'agree'",
-                params,
-            )
-        else:
-            execute_query(
-                f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice, against_reasons) VALUES (:topic_text, :user_id, 'against', :reasons)"
-                " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'against', against_reasons = EXCLUDED.against_reasons",
-                {**params, "reasons": reasons or "[]"},
-            )
-    else:
-        execute_query(
-            f"INSERT INTO {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (topic_text, user_id, vote_choice) VALUES (:topic_text, :user_id, :vote)"
-            " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = :vote",
-            {**params, "vote": vote},
-        )
-
-
-def _ballot_switch_agree(table, topic, user_id):
-    params = {"user_id": user_id, "topic_text": topic}
-    if table == TABLE_TOPIC_VOTES:
-        execute_query(
-            f"UPDATE {TABLE_TOPIC_VOTE_BALLOTS} SET vote_choice = 'agree', against_reasons = '[]' WHERE topic_text = :topic_text AND user_id = :user_id",
-            params,
-        )
-    else:
-        execute_query(
-            f"UPDATE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} SET vote_choice = 'agree' WHERE topic_text = :topic_text AND user_id = :user_id",
-            params,
-        )
-
-
-def _check_category_would_exceed(category):
-    """Check if adding one more topic of this category would push it past 20% of the bank."""
-    conn = get_connection()
-    all_topics_df = conn.query(f"SELECT category FROM {TABLE_TOPICS}", ttl=5)
-    if all_topics_df.empty:
-        return False, 0.0, 0, 0
-    total = len(all_topics_df)
-    cat_count = int((all_topics_df["category"] == category).sum())
-    new_ratio = (cat_count + 1) / (total + 1)
-    return new_ratio > 0.2, new_ratio, cat_count, total
-
-
 @st.dialog("類別佔比提醒")
 def _confirm_agree_category_warning(topic, user_id, category, ratio, cat_count, total, is_switch, table, after_vote_fn):
     st.warning(
@@ -622,14 +515,7 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
     if mode == "topic":
         if agree_count >= threshold and agree_count > against_count:
             st.success(f"辯題「{topic}」已獲得足夠票數，正在寫入辯題庫...")
-            execute_query(
-                f"INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty) VALUES (:topic_text, :author, :category, :difficulty)",
-                {"topic_text": topic, "author": author, "category": category, "difficulty": difficulty}
-            )
-            updated = execute_query_count(
-                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
-                {"topic_text": topic}
-            )
+            updated = apply_topic_pass(topic, author=author, category=category, difficulty=difficulty)
             if updated:
                 notify_vote_event(
                     "辯題投票通過",
@@ -641,10 +527,7 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
             st.rerun()
         if against_count >= threshold and against_count > agree_count:
             st.error(f"辯題「{topic}」已獲得{against_count}票不同意票，正在刪除辯題...")
-            updated = execute_query_count(
-                f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
-                {"topic_text": topic}
-            )
+            updated = apply_topic_reject(topic)
             if updated:
                 notify_vote_event(
                     "辯題投票否決",
@@ -656,14 +539,7 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
     elif mode == "depose":
         if agree_count >= threshold and agree_count > against_count:
             st.error(f"罷免動議「{topic}」已獲通過，正在從辯題庫刪除該辯題...")
-            updated = execute_query_count(
-                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
-                {"topic_text": topic},
-            )
-            # Always remove the topic from the bank when a removal passes.
-            # Decoupled from `updated` so it self-heals even if the status row was
-            # already resolved (e.g. a prior run/session), preventing stale entries.
-            execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
+            updated = apply_depose_pass(topic)
             if updated:
                 notify_vote_event(
                     "罷免動議通過",
@@ -674,10 +550,7 @@ def check_vote_resolution(agree_count, against_count, threshold, topic, agree_li
             st.rerun()
         if against_count >= threshold and against_count > agree_count:
             st.success(f"罷免動議「{topic}」已被否決，正在刪除該罷免動議...")
-            updated = execute_query_count(
-                f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
-                {"topic_text": topic},
-            )
+            updated = apply_depose_reject(topic)
             if updated:
                 notify_vote_event(
                     "罷免動議否決",
@@ -749,6 +622,22 @@ def _gather_topic_review_context(category, difficulty):
     return "\n".join(lines)
 
 
+def _log_vote_ai_usage(feature, result, usage):
+    """把 vote 相關 AI 呼叫的用量記入 AI基金。以 module 級 user_id 作歸屬。"""
+    success = is_successful_ai_result(result)
+    try:
+        log_ai_fund_usage(
+            user_id=user_id,
+            feature=feature,
+            model_label=get_vote_ai_model(),
+            success=success,
+            error_message="" if success else (result or ""),
+            usage_override=usage if success else None,
+        )
+    except Exception:
+        pass
+
+
 def ai_review_topic(topic, category, difficulty):
     difficulty_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
     analytics_context = _gather_topic_review_context(category, difficulty)
@@ -760,7 +649,9 @@ def ai_review_topic(topic, category, difficulty):
         difficulty_definitions=DIFFICULTY_CRITERIA,
         analytics_context=analytics_context,
     )
-    return generate_general_ai_reply(VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    result, usage = generate_general_ai_reply(VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    _log_vote_ai_usage("vote_review", result, usage)
+    return result, usage
 
 
 def _find_stale_removed_topics():
@@ -826,7 +717,9 @@ def _gather_bank_analysis_context():
 def ai_analyze_topic_bank():
     bank_summary, topic_lines = _gather_bank_analysis_context()
     user_text = build_vote_bank_analysis_prompt(bank_summary, topic_lines)
-    return generate_general_ai_reply(VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    result, usage = generate_general_ai_reply(VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    _log_vote_ai_usage("vote_analysis", result, usage)
+    return result, usage
 
 
 @st.cache_data(ttl=30)
@@ -967,7 +860,9 @@ def _gather_vote_history_analysis_context(vote_df):
 def ai_analyze_vote_history(vote_df):
     overall_summary, member_lines, category_lines, reason_lines = _gather_vote_history_analysis_context(vote_df)
     user_text = build_vote_history_analysis_prompt(overall_summary, member_lines, category_lines, reason_lines)
-    return generate_general_ai_reply(VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    result, usage = generate_general_ai_reply(VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    _log_vote_ai_usage("vote_analysis", result, usage)
+    return result, usage
 
 
 def save_bank_analysis(analysis_text, user_id):
@@ -1124,7 +1019,9 @@ def ai_discussion_reply(motion_type, motion_key, comments, question=None):
         motion_type, motion_key, discussion_lines,
         removal_reasons=removal_reasons, question=question, background=background,
     )
-    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    result, usage = generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, get_vote_ai_model())
+    _log_vote_ai_usage("vote_discussion", result, usage)
+    return result, usage
 
 
 def ensure_ai_comment_account():
@@ -1185,8 +1082,8 @@ _active_count, active_user_list = get_active_user_count()
 _naturally_active = user_id == "admin" or user_id in active_user_list
 _bypass = is_bypass_active_check(user_id)
 is_active = _naturally_active or _bypass
-ENTRY_THRESHOLD = max(5, math.ceil(_active_count * 0.4))
-DEPOSE_THRESHOLD = max(6, math.ceil(_active_count * 0.5))
+ENTRY_THRESHOLD = entry_threshold(_active_count)
+DEPOSE_THRESHOLD = depose_threshold(_active_count)
 
 if user_id != "admin":
     if _naturally_active:
@@ -1197,82 +1094,22 @@ if user_id != "admin":
     else:
         st.warning("帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。")
 
+# Thin cached wrappers over the pure vote_logic queries. The caching decorator
+# is a Streamlit UI-runtime concern, so it stays here; the query bodies live in
+# vote_logic so the future HTML/JSON API can reuse them uncached.
 @st.cache_data(ttl=5)
 def get_vote_data():
-    conn = get_connection()
-    df = conn.query(
-        f"""
-        SELECT
-            topic_text,
-            proposer_user_id,
-            status,
-            created_at,
-            deadline_date,
-            approval_threshold,
-            category,
-            difficulty
-        FROM {TABLE_TOPIC_VOTES}
-        ORDER BY created_at DESC
-        """,
-        ttl=5,
-    )
-    df = df.fillna("")
-
-    # Load ballots for pending topics only — historical ballots are not needed for the UI
-    ballots = conn.query(
-        f"SELECT b.topic_text, b.user_id, b.vote_choice, b.against_reasons"
-        f" FROM {TABLE_TOPIC_VOTE_BALLOTS} b"
-        f" JOIN {TABLE_TOPIC_VOTES} tv ON b.topic_text = tv.topic_text"
-        " WHERE tv.status = 'pending'",
-        ttl=0
-    )
-    agree_map, against_map, reasons_map = {}, {}, {}
-    if not ballots.empty:
-        for _, b in ballots.iterrows():
-            t, uid, v = b["topic_text"], b["user_id"], b["vote_choice"]
-            if v == "agree":
-                agree_map.setdefault(t, []).append(uid)
-            else:
-                against_map.setdefault(t, []).append(uid)
-                raw = b.get("against_reasons")
-                r = raw if isinstance(raw, list) else (json.loads(raw) if raw else [])
-                if r:
-                    reasons_map.setdefault(t, {})[uid] = r
-
-    pending, passed, rejected = [], [], []
-    for _, row in df.iterrows():
-        row_dict = row.to_dict()
-        t = row_dict["topic_text"]
-        row_dict["agree_users"] = agree_map.get(t, [])
-        row_dict["against_users"] = against_map.get(t, [])
-        row_dict["against_reasons"] = reasons_map.get(t, {})
-        status = row_dict.get("status", "")
-        if status == "pending":
-            pending.append(row_dict)
-        elif status == "passed":
-            passed.append(t)
-        elif status == "rejected":
-            rejected.append(t)
-
-    return pending, passed, rejected
+    return fetch_vote_data()
 
 
 @st.cache_data(ttl=5)
 def get_pending_vote_count():
-    df = get_connection().query(
-        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'",
-        ttl=5,
-    )
-    return int(df.iloc[0]["cnt"]) if not df.empty else 0
+    return count_pending_votes()
 
 
 @st.cache_data(ttl=5)
 def get_pending_depose_count():
-    df = get_connection().query(
-        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
-        ttl=5,
-    )
-    return int(df.iloc[0]["cnt"]) if not df.empty else 0
+    return count_pending_deposes()
 
 
 # Pre-fetch pending counts for tab badges
