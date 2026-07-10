@@ -1102,10 +1102,12 @@ async def appliance_practice_page():
                         headers=_cache_headers(CACHE_HTML))
 
 
-@app.get("/vote")
+@app.get("/vote-beta")
 async def vote_page():
-    # New HTML voting page (Phase 2). Served alongside the legacy Streamlit page
-    # so committee members can use either while it stabilises.
+    # New HTML voting page (Phase 2). Served at /vote-beta — NOT /vote — because
+    # the Streamlit vote page already owns /vote (st.Page url_path="vote"). A
+    # separate path keeps the two genuinely parallel during testing and leaves
+    # vote push-notification links (url="/vote") on the stable Streamlit page.
     return FileResponse(BASE_DIR / "frontend" / "vote" / "index.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_HTML))
