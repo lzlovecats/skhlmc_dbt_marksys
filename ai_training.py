@@ -477,10 +477,10 @@ def _next_manuscript_id():
 def _split_manuscript(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
     """把完整稿切成一段段（每段最多 max_len 字）。"""
     cleaned = (text_value or "").replace("\r", "\n")
-    # 先按換行分大段，再在每大段內按句末標點併句
+    # 先按換行分大段，再在每大段內按停頓標點併句
     segments = []
     for block in cleaned.split("\n"):
-        parts = re.split(r"(?<=[。！？!?…])", block)
+        parts = re.split(r"(?<=[，,、；;：:。！？!?…])", block)
         buf = ""
         for part in parts:
             part = part.strip()
@@ -493,6 +493,8 @@ def _split_manuscript(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
                 while len(part) > max_len:
                     segments.append(part[:max_len])
                     part = part[max_len:]
+                if not part:
+                    continue
             if buf and len(buf) + len(part) > max_len:
                 segments.append(buf)
                 buf = part
