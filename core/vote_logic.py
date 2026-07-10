@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from schema import (
+    TABLE_ACCOUNTS,
     TABLE_MOTION_COMMENTS,
     TABLE_TOPICS,
     TABLE_TOPIC_VOTES,
@@ -217,6 +218,50 @@ def get_comment_counts(motion_type, db=None):
     if df.empty:
         return {}
     return dict(zip(df["motion_key"], df["cnt"].astype(int)))
+
+
+def fetch_comments(motion_type, motion_key, db=None):
+    """Discussion comments for one motion, oldest first."""
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
+        "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
+        {"type": motion_type, "key": motion_key},
+    )
+    if df.empty:
+        return []
+    out = []
+    for _, row in df.iterrows():
+        created = row.get("created_at")
+        out.append({
+            "user_id": str(row.get("user_id", "") or ""),
+            "comment_text": str(row.get("comment_text", "") or ""),
+            "created_at": created.strftime("%m-%d %H:%M") if hasattr(created, "strftime") else str(created)[:16],
+        })
+    return out
+
+
+def insert_comment(motion_type, motion_key, user_id, text, db=None):
+    db = _resolve_db(db)
+    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
+        "VALUES (:type, :key, :uid, :text, :now)",
+        {"type": motion_type, "key": motion_key, "uid": user_id, "text": text, "now": hk_now},
+    )
+    return hk_now
+
+
+def ensure_ai_comment_account(db=None):
+    db = _resolve_db(db)
+    db.execute(
+        f"""
+        INSERT INTO {TABLE_ACCOUNTS} (user_id, password_hash, account_status, account_disabled)
+        VALUES (:uid, '', 'inactive', TRUE)
+        ON CONFLICT (user_id) DO UPDATE SET account_disabled = TRUE
+        """,
+        {"uid": "Gemini"},
+    )
 
 
 def fetch_vote_data(db=None):
@@ -466,6 +511,166 @@ def fetch_depose_data(db=None):
         rd["difficulty"] = diff or ""
         out.append(rd)
     return out
+
+
+def fetch_vote_history(limit=20, db=None):
+    """Recently resolved topic-vote motions, matching the Streamlit expander."""
+    db = _resolve_db(db)
+    df = db.query(
+        f"""
+        SELECT tv.topic_text, tv.status, tv.created_at, tv.approval_threshold, tv.category,
+               (SELECT COUNT(*) FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text AND b.vote_choice = 'agree') AS agree,
+               (SELECT COUNT(*) FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text AND b.vote_choice != 'agree') AS against
+        FROM {TABLE_TOPIC_VOTES} tv
+        WHERE tv.status != 'pending'
+        ORDER BY tv.created_at DESC
+        LIMIT :limit
+        """,
+        {"limit": int(limit)},
+    )
+    if df.empty:
+        return []
+    rows = []
+    for _, row in df.iterrows():
+        created = row.get("created_at")
+        rows.append({
+            "topic_text": str(row.get("topic_text", "") or ""),
+            "status": str(row.get("status", "") or ""),
+            "created_at": str(created)[:10] if created not in (None, "") else "",
+            "approval_threshold": int(row.get("approval_threshold") or 0),
+            "category": str(row.get("category", "") or ""),
+            "agree": int(row.get("agree") or 0),
+            "against": int(row.get("against") or 0),
+        })
+    return rows
+
+
+def fetch_vote_history_analysis_data(db=None):
+    """Raw combined motion/ballot rows used by the AI analysis visual bars."""
+    db = _resolve_db(db)
+    return db.query(
+        f"""
+        SELECT
+            '辯題投票' AS motion_type,
+            tv.topic_text,
+            tv.status,
+            tv.proposer_user_id,
+            tv.category,
+            tv.difficulty,
+            tv.created_at,
+            b.user_id,
+            b.vote_choice,
+            b.against_reasons
+        FROM {TABLE_TOPIC_VOTES} tv
+        LEFT JOIN {TABLE_TOPIC_VOTE_BALLOTS} b ON b.topic_text = tv.topic_text
+        UNION ALL
+        SELECT
+            '罷免投票' AS motion_type,
+            rv.topic_text,
+            rv.status,
+            rv.proposer_user_id,
+            t.category,
+            t.difficulty,
+            rv.created_at,
+            b.user_id,
+            b.vote_choice,
+            NULL AS against_reasons
+        FROM {TABLE_TOPIC_REMOVAL_VOTES} rv
+        LEFT JOIN {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b ON b.topic_text = rv.topic_text
+        LEFT JOIN {TABLE_TOPICS} t ON t.topic_text = rv.topic_text
+        ORDER BY created_at DESC
+        """
+    )
+
+
+def vote_history_chart_data(vote_df):
+    if vote_df.empty:
+        return {"metrics": {"motions": 0, "ballots": 0, "avg_ballots": 0}, "charts": {}}
+    df = vote_df.fillna("")
+    motion_cols = ["motion_type", "topic_text", "status", "created_at", "category", "difficulty"]
+    motions = df[motion_cols].drop_duplicates()
+    ballots = df[df["user_id"].astype(str).str.strip() != ""].copy()
+
+    status_counts = (
+        motions["status"].replace({"pending": "進行中", "passed": "通過", "rejected": "否決"})
+        .value_counts().rename_axis("label").reset_index(name="value")
+    )
+    member_counts = (
+        ballots["user_id"].value_counts().rename_axis("label").reset_index(name="value")
+        if not ballots.empty else None
+    )
+    topic_motions = motions[motions["motion_type"] == "辯題投票"].copy()
+    category_rows = []
+    if not topic_motions.empty:
+        for cat, cat_df in topic_motions.groupby(topic_motions["category"].replace("", "未分類")):
+            n = len(cat_df)
+            passed = int((cat_df["status"] == "passed").sum())
+            category_rows.append({"label": cat, "value": passed / n * 100 if n else 0})
+    agree_rows = []
+    if not ballots.empty:
+        for uid, member_df in ballots.groupby("user_id"):
+            n = len(member_df)
+            agree = int((member_df["vote_choice"] == "agree").sum())
+            agree_rows.append({"label": uid, "value": agree / n * 100 if n else 0})
+    return {
+        "metrics": {
+            "motions": len(motions),
+            "ballots": len(ballots),
+            "avg_ballots": round(len(ballots) / len(motions), 1) if len(motions) else 0,
+        },
+        "charts": {
+            "status": status_counts.to_dict("records"),
+            "member_votes": [] if member_counts is None else member_counts.to_dict("records"),
+            "category_pass_rate": category_rows,
+            "member_agree_rate": agree_rows,
+        },
+    }
+
+
+def system_config_get(key, db=None):
+    db = _resolve_db(db)
+    df = db.query("SELECT value FROM system_config WHERE key = :key", {"key": key})
+    return None if df.empty else df.iloc[0]["value"]
+
+
+def system_config_set_many(values, db=None):
+    db = _resolve_db(db)
+    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    for key, val in values.items():
+        db.execute(
+            "INSERT INTO system_config (key, value, updated_at) VALUES (:k, :v, :u) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+            {"k": key, "v": val, "u": hk_now},
+        )
+    return hk_now
+
+
+def load_saved_analysis(kind, db=None):
+    prefix = "vote_bank_analysis" if kind == "bank" else "vote_history_analysis"
+    return {
+        "analysis": system_config_get(prefix, db=db) or "",
+        "analysed_at": system_config_get(f"{prefix}_at", db=db) or "",
+        "analysed_by": system_config_get(f"{prefix}_by", db=db) or "",
+    }
+
+
+def save_analysis(kind, analysis_text, user_id, db=None):
+    prefix = "vote_bank_analysis" if kind == "bank" else "vote_history_analysis"
+    return system_config_set_many({
+        prefix: analysis_text,
+        f"{prefix}_at": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
+        f"{prefix}_by": user_id or "",
+    }, db=db)
+
+
+def find_stale_removed_topics(db=None):
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT t.topic_text FROM {TABLE_TOPICS} t "
+        f"JOIN {TABLE_TOPIC_REMOVAL_VOTES} r ON r.topic_text = t.topic_text "
+        "WHERE r.status = 'passed'"
+    )
+    return [] if df.empty else df["topic_text"].tolist()
 
 
 # ─────────────────────────────────────────────────────────────

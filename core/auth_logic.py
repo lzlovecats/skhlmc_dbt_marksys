@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import bcrypt
 
-from schema import TABLE_ACCOUNTS, TABLE_LOGIN_RECORDS
+from schema import TABLE_ACCOUNTS, TABLE_LOGIN_RECORDS, VIEW_COMMITTEE_VOTE_ACTIVITY
 from core.vote_logic import _resolve_db
 
 
@@ -27,6 +27,10 @@ def verify_password(plain: str, stored: str) -> bool:
     return plain == stored
 
 
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+
 def check_login(user_id: str, password: str, db=None) -> bool:
     """True if user_id exists and the password matches its stored hash."""
     db = _resolve_db(db)
@@ -39,14 +43,47 @@ def check_login(user_id: str, password: str, db=None) -> bool:
     return verify_password(password, str(df.iloc[0]["password_hash"]))
 
 
+def change_password(user_id: str, current_password: str, new_password: str, db=None) -> bool:
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT password_hash FROM {TABLE_ACCOUNTS} WHERE user_id = :uid",
+        {"uid": user_id},
+    )
+    if df.empty or not verify_password(current_password, str(df.iloc[0]["password_hash"])):
+        return False
+    db.execute(
+        f"UPDATE {TABLE_ACCOUNTS} SET password_hash = :password_hash WHERE user_id = :uid",
+        {"password_hash": hash_password(new_password), "uid": user_id},
+    )
+    return True
+
+
 def record_login(user_id: str, db=None) -> None:
     """Stamp the login and write an audit record — mirrors
     update_committee_login_time + _log_login. Best-effort: wrapped so a missing
-    lifecycle column never blocks an otherwise-valid login. NOTE: does not call
-    refresh_acc_type (account_status column); vote logic reads the activity view,
-    not that column, so it isn't needed for the vote feature."""
+    lifecycle column never blocks an otherwise-valid login."""
     db = _resolve_db(db)
     now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    try:
+        account = db.query(
+            f"SELECT account_status FROM {TABLE_ACCOUNTS} WHERE user_id = :uid",
+            {"uid": user_id},
+        )
+        current = str(account.iloc[0]["account_status"]).strip() if not account.empty else ""
+        if current not in {"admin", "developer"}:
+            activity = db.query(
+                f"SELECT is_active FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} WHERE user_id = :uid",
+                {"uid": user_id},
+            )
+            is_active = False if activity.empty else str(activity.iloc[0]["is_active"]).strip().lower() in {
+                "true", "t", "1", "yes"
+            }
+            db.execute(
+                f"UPDATE {TABLE_ACCOUNTS} SET account_status = :status WHERE user_id = :uid",
+                {"status": "active" if is_active else "inactive", "uid": user_id},
+            )
+    except Exception:
+        pass
     try:
         # Also clears account_disabled, re-enabling a dormant account on login.
         db.execute(
