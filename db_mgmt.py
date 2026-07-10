@@ -269,7 +269,7 @@ with st.expander("📋 資料庫表結構參考", expanded=False):
         st.markdown(f"**{table_label}**")
         st.dataframe(
             pd.DataFrame(columns, columns=["欄位", "類型", "說明"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -323,7 +323,7 @@ with st.expander("📋 登入記錄", expanded=False):
     from functions import query_params as _qp_db
     logs = _qp_db("SELECT * FROM login_records ORDER BY logged_in_at DESC LIMIT 50")
     if not logs.empty:
-        st.dataframe(logs, use_container_width=True, hide_index=True)
+        st.dataframe(logs, width="stretch", hide_index=True)
     else:
         st.caption("暫無登入記錄。")
 
@@ -332,7 +332,7 @@ sql_input = st.text_area("SQL 查詢", height=160, placeholder="SELECT * FROM to
 
 col_run, col_clear = st.columns([1, 5])
 with col_run:
-    run_clicked = st.button("▶ 執行", type="primary", use_container_width=True)
+    run_clicked = st.button("▶ 執行", type="primary", width="stretch")
 with col_clear:
     if st.button("清除"):
         st.session_state["sql_pending_confirm"] = False
@@ -356,7 +356,7 @@ if run_clicked and sql_input.strip():
                 kind, data = _run_query(sql)
             if kind == "select":
                 st.success(f"查詢完成，共 {len(data)} 行")
-                st.dataframe(data, use_container_width=True, hide_index=True)
+                st.dataframe(data, width="stretch", hide_index=True)
             else:
                 st.success(f"執行完成，影響 {data} 行")
         except Exception as e:
@@ -373,7 +373,7 @@ if st.session_state["sql_pending_confirm"]:
     confirmed = st.checkbox("我明白風險，確認執行此操作")
     col_confirm, col_cancel = st.columns(2)
     with col_confirm:
-        if st.button("確認執行", type="primary", disabled=not confirmed, use_container_width=True):
+        if st.button("確認執行", type="primary", disabled=not confirmed, width="stretch"):
             try:
                 with st.spinner("執行中..."):
                     kind, data = _run_query(pending_sql)
@@ -381,13 +381,13 @@ if st.session_state["sql_pending_confirm"]:
                 st.session_state["sql_pending_query"] = ""
                 if kind == "select":
                     st.success(f"查詢完成，共 {len(data)} 行")
-                    st.dataframe(data, use_container_width=True, hide_index=True)
+                    st.dataframe(data, width="stretch", hide_index=True)
                 else:
                     st.success(f"執行完成，影響 {data} 行")
             except Exception as e:
                 st.error(f"執行失敗：{e}")
     with col_cancel:
-        if st.button("取消", use_container_width=True):
+        if st.button("取消", width="stretch"):
             st.session_state["sql_pending_confirm"] = False
             st.session_state["sql_pending_query"] = ""
             st.rerun()

@@ -115,7 +115,7 @@ with st.container(border=True):
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=True,
         )
-        upload_photos = st.form_submit_button("上載圖片", type="primary", use_container_width=True)
+        upload_photos = st.form_submit_button("上載圖片", type="primary", width="stretch")
 
     if upload_photos:
         if not uploaded_files:
@@ -236,11 +236,11 @@ for index, (_, photo) in enumerate(filtered_df.iterrows()):
         photo_date = _format_value(photo["photo_date"], "")
         date_text = f" ｜ {photo_date}" if photo_date else ""
         if compact_view:
-            st.image(image_bytes, use_container_width=True)
+            st.image(image_bytes, width="stretch")
             st.caption(title if len(title) <= 18 else f"{title[:18]}...")
             if photo_date:
                 st.caption(photo_date)
-            with st.popover("詳情", use_container_width=True):
+            with st.popover("詳情", width="stretch"):
                 st.write(title)
                 st.caption(f"{photo['album_label']}{date_text} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
                 if photo["caption"]:
@@ -250,18 +250,18 @@ for index, (_, photo) in enumerate(filtered_df.iterrows()):
                     data=image_bytes,
                     file_name=photo["file_name"] or f"match-photo-{int(photo['id'])}.jpg",
                     mime=photo["mime_type"] or "image/jpeg",
-                    use_container_width=True,
+                    width="stretch",
                 )
         else:
-            st.image(image_bytes, caption=title, use_container_width=True)
+            st.image(image_bytes, caption=title, width="stretch")
             st.caption(f"{photo['album_label']}{date_text} ｜ {_format_time(photo['created_at'])} ｜ {photo['uploaded_by']}")
             if photo["caption"]:
                 st.write(photo["caption"])
-            with st.popover("下載", use_container_width=True):
+            with st.popover("下載", width="stretch"):
                 st.download_button(
                     "下載原圖",
                     data=image_bytes,
                     file_name=photo["file_name"] or f"match-photo-{int(photo['id'])}.jpg",
                     mime=photo["mime_type"] or "image/jpeg",
-                    use_container_width=True,
+                    width="stretch",
                 )

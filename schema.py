@@ -42,6 +42,7 @@ TABLE_AI_FUND_USAGE_LOGS = "ai_fund_usage_logs"
 TABLE_LATENESS_FUND_RECORDS = "lateness_fund_records"
 TABLE_LATENESS_FUND_EXPENSES = "lateness_fund_expenses"
 TABLE_LATENESS_FUND_PERIODS = "lateness_fund_periods"
+TABLE_BUG_REPORTS = "bug_reports"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -745,6 +746,30 @@ CREATE TABLE IF NOT EXISTS {TABLE_LATENESS_FUND_PERIODS} (
 );
 """
 
+# Table: BUG_REPORTS
+# Committee member bug reports and developer replies.
+CREATE_BUG_REPORTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_BUG_REPORTS} (
+    id                    SERIAL PRIMARY KEY,
+    reporter_user_id      TEXT,
+    affected_page         TEXT        NOT NULL,
+    device_info           TEXT,
+    reproduction_steps    TEXT        NOT NULL,
+    expected_result       TEXT,
+    actual_result         TEXT        NOT NULL,
+    extra_notes           TEXT,
+    status                TEXT        DEFAULT 'open',
+    developer_reply       TEXT,
+    fixed_version         TEXT,
+    created_at            TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+    resolved_at           TIMESTAMP,
+    CONSTRAINT fk_bug_reports_reporter
+        FOREIGN KEY (reporter_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
 # View: COMMITTEE_VOTE_ACTIVITY
 # Canonical source for committee participation metrics used by Streamlit.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
@@ -928,6 +953,10 @@ CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date
     ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date);
 CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date
     ON {TABLE_LATENESS_FUND_EXPENSES}(expense_date);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created
+    ON {TABLE_BUG_REPORTS}(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created
+    ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC);
 """
 
 # System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
@@ -978,6 +1007,7 @@ ALL_SCHEMAS = [
     CREATE_LATENESS_FUND_RECORDS,     # → accounts
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps
+    CREATE_BUG_REPORTS,               # → accounts
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables

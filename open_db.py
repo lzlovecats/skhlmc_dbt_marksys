@@ -72,7 +72,7 @@ st.caption(f"共找到 {len(display_df)} 條符合條件的辯題")
 if display_df.empty:
     st.info("沒有符合條件的辯題。請調整搜尋關鍵字或篩選條件後再試。")
 else:
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
 st.divider()
 st.subheader("📊 類別分佈 (所有辯題)")
@@ -85,7 +85,7 @@ if "category" in topics_df.columns:
     
     chart_data = cat_counts.set_index("類別")["辯題數量"]
     st.bar_chart(chart_data)
-    st.dataframe(cat_counts, use_container_width=True, hide_index=True)
+    st.dataframe(cat_counts, width="stretch", hide_index=True)
 
 if "difficulty_label" in topics_df.columns:
     st.divider()
@@ -98,7 +98,7 @@ if "difficulty_label" in topics_df.columns:
 
     chart_data = diff_counts.set_index("難度")["辯題數量"]
     st.bar_chart(chart_data)
-    st.dataframe(diff_counts, use_container_width=True, hide_index=True)
+    st.dataframe(diff_counts, width="stretch", hide_index=True)
 
 if not topic_vote_stats_df.empty and "category" in topic_vote_stats_df.columns and "status" in topic_vote_stats_df.columns:
     resolved_vote_df = topic_vote_stats_df[topic_vote_stats_df["status"].isin(["passed", "rejected"])].copy()
@@ -123,4 +123,4 @@ if not topic_vote_stats_df.empty and "category" in topic_vote_stats_df.columns a
 
         chart_data = cat_vote_stats.set_index("category")["投票通過率"] * 100
         st.bar_chart(chart_data)
-        st.dataframe(display_vote_stats, use_container_width=True, hide_index=True)
+        st.dataframe(display_vote_stats, width="stretch", hide_index=True)

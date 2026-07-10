@@ -654,7 +654,7 @@ if selected_tab == "review":
         review_text_parts.append("\n".join(qa_text_lines))
     review_text_for_ai = "\n\n".join(review_text_parts)
 
-    if st.button("分析發言", type="primary", use_container_width=True, key="review_submit"):
+    if st.button("分析發言", type="primary", width="stretch", key="review_submit"):
         if qa_warning:
             st.warning(qa_warning)
         elif not review_text_for_ai and not has_review_audio:
@@ -746,7 +746,7 @@ if selected_tab == "strategy":
     )
     st.caption(_format_ai_estimate("strategy", model_label))
 
-    if st.button("生成主線", type="primary", use_container_width=True, key="strategy_submit"):
+    if st.button("生成主線", type="primary", width="stretch", key="strategy_submit"):
         if not topic_text:
             st.warning("請輸入或選擇辯題。")
         else:
@@ -768,7 +768,7 @@ if selected_tab == "strategy":
                 data=result,
                 file_name="策略建議.txt",
                 mime="text/plain",
-                use_container_width=True,
+                width="stretch",
             )
 
     # ─── Tab 3: 搵料易 ───────────────────────────────────────────────
@@ -785,7 +785,7 @@ if selected_tab == "research":
     if not model_config.get("supports_web_search"):
         st.warning("呢個模型不支援上網搜尋。請選擇收費模型以使用此功能。")
 
-    if st.button("搵料易", type="primary", use_container_width=True, key="research_submit"):
+    if st.button("搵料易", type="primary", width="stretch", key="research_submit"):
         if not research_topic:
             st.warning("請輸入辯題。")
         elif not research_need:
@@ -808,7 +808,7 @@ if selected_tab == "research":
                 data=result,
                 file_name="搵料結果.txt",
                 mime="text/plain",
-                use_container_width=True,
+                width="stretch",
             )
 
     # ─── Tab 4: Fact Check易 ────────────────────────────────────────────
@@ -824,7 +824,7 @@ if selected_tab == "fact_check":
     if not model_config.get("supports_web_search"):
         st.warning("呢個模型不支援上網搜尋。請選擇收費模型以使用此功能。")
 
-    if st.button("Fact Check", type="primary", use_container_width=True, key="fact_check_submit"):
+    if st.button("Fact Check", type="primary", width="stretch", key="fact_check_submit"):
         if not statement:
             st.warning("請輸入要核查的陳述。")
         else:
@@ -844,7 +844,7 @@ if selected_tab == "fact_check":
                 data=result,
                 file_name="fact_check結果.txt",
                 mime="text/plain",
-                use_container_width=True,
+                width="stretch",
             )
 
     # ─── Tab 5: 打Free De ─────────────────────────────────────────
@@ -939,7 +939,7 @@ if selected_tab == "free_debate":
     if "GEMINI_API_KEY" not in st.secrets:
         st.warning("未設定 GEMINI_API_KEY，未能使用此功能。")
 
-    if st.button("開始Free De", type="primary", use_container_width=True, key="free_debate_live_create"):
+    if st.button("開始Free De", type="primary", width="stretch", key="free_debate_live_create"):
         if not free_topic.strip():
             st.warning("請先輸入辯題。")
         elif "GEMINI_API_KEY" not in st.secrets:
@@ -1104,7 +1104,7 @@ if selected_tab == "full_mock":
     if "GEMINI_API_KEY" not in st.secrets:
         st.warning("未設定 GEMINI_API_KEY，未能使用此功能。")
 
-    if st.button("開始打Mock", type="primary", use_container_width=True, key="full_mock_live_create"):
+    if st.button("開始打Mock", type="primary", width="stretch", key="full_mock_live_create"):
         if not mock_topic.strip():
             st.warning("請先輸入辯題。")
         elif "GEMINI_API_KEY" not in st.secrets:
@@ -1616,7 +1616,7 @@ if selected_tab == "fund":
                             )
                             btn_col1, btn_col2 = st.columns(2)
                             with btn_col1:
-                                if st.button("確認入數", key=f"confirm_ai_fund_{tx_id}", use_container_width=True):
+                                if st.button("確認入數", key=f"confirm_ai_fund_{tx_id}", width="stretch"):
                                     updated = update_ai_fund_transaction_status(
                                         tx_id,
                                         "confirmed",
@@ -1626,7 +1626,7 @@ if selected_tab == "fund":
                                     st.success("已確認入數。" if updated else "此入數已被處理。")
                                     st.rerun()
                             with btn_col2:
-                                if st.button("拒絕入數", key=f"reject_ai_fund_{tx_id}", use_container_width=True):
+                                if st.button("拒絕入數", key=f"reject_ai_fund_{tx_id}", width="stretch"):
                                     updated = update_ai_fund_transaction_status(
                                         tx_id,
                                         "rejected",
@@ -1688,13 +1688,13 @@ if selected_tab == "fund":
             st.info("暫無交易紀錄。")
         else:
             tx_display = _prepare_transaction_display(tx_df)
-            st.dataframe(tx_display, use_container_width=True, hide_index=True)
+            st.dataframe(tx_display, width="stretch", hide_index=True)
             st.download_button(
                 "下載交易紀錄 CSV",
                 data=tx_display.to_csv(index=False).encode("utf-8-sig"),
                 file_name="ai基金交易紀錄.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
     with fund_usage_tab:
@@ -1704,13 +1704,13 @@ if selected_tab == "fund":
             st.info("暫無 AI 用量紀錄。")
         else:
             usage_display = _prepare_usage_display(usage_df)
-            st.dataframe(usage_display, use_container_width=True, hide_index=True)
+            st.dataframe(usage_display, width="stretch", hide_index=True)
             st.download_button(
                 "下載最近用量 CSV",
                 data=usage_display.to_csv(index=False).encode("utf-8-sig"),
                 file_name="ai用量估算紀錄.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
         usage_summary_df = get_ai_fund_usage_summary()
@@ -1735,11 +1735,11 @@ if selected_tab == "fund":
                     "estimated_cost_hkd": "估算成本(HKD)",
                 })
                 st.markdown("#### 按月 / 用戶 / 功能統計")
-                st.dataframe(usage_summary_display, use_container_width=True, hide_index=True)
+                st.dataframe(usage_summary_display, width="stretch", hide_index=True)
                 st.download_button(
                     "下載用量統計 CSV",
                     data=usage_summary_display.to_csv(index=False).encode("utf-8-sig"),
                     file_name="ai用量統計.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )

@@ -396,30 +396,31 @@ with col_right:
 
 with st.container(border=True):
     st.markdown("### 🗳️ 內部委員會成員")
-    st.write("提出辯題、參與投票、提出罷免動議、重溫比賽片段及圖片、使用 AI 辯論教練、提交 AI 訓練資料、管理遲到罰款及個人帳戶。")
+    st.write("提出辯題、參與投票、提出罷免動議、重溫比賽片段及圖片、使用 AI 辯論教練、提交 AI 訓練資料、管理遲到罰款、回報 Bug 及管理個人帳戶。")
     st.page_link("vote.py", label="辯題徵集、投票及罷免", icon="🗳️")
     st.page_link("ai_coach.py", label="AI 辯論易", icon="✨")
     st.page_link("ai_training.py", label="聖呂中辯AI訓練", icon="🎙️")
     st.page_link("video_replay.py", label="比賽片段重溫", icon="🎬")
     st.page_link("match_photos.py", label="比賽圖片回顧", icon="🖼️")
     st.page_link("lateness_fund.py", label="遲到罰款基金", icon="💰")
+    st.page_link("bug_report.py", label="Bug回報", icon="🛠️")
 
 st.divider()
 with st.expander("📚 支援資料", expanded=False):
     st.caption("如需了解操作流程或比賽規則，可在此開啟完整說明。")
     support_col1, support_col2 = st.columns(2)
     with support_col1:
-        if st.button("📖 閱讀使用手冊", use_container_width=True, key="home_show_manual"):
+        if st.button("📖 閱讀使用手冊", width="stretch", key="home_show_manual"):
             show_manual()
     with support_col2:
-        if st.button("📋 查看賽規", use_container_width=True, key="home_show_rules"):
+        if st.button("📋 查看賽規", width="stretch", key="home_show_rules"):
             show_rules()
 
 # ─── System status check — collapsed at bottom ────────────────────────────────
 
 st.divider()
 with st.expander("🔧 系統狀態檢查", expanded=False):
-    if st.button("執行系統狀態檢查", use_container_width=True):
+    if st.button("執行系統狀態檢查", width="stretch"):
         with st.spinner("正在檢查系統狀態..."):
             st.session_state["sys_status_results"] = _run_status_checks()
 
