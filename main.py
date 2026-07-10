@@ -66,11 +66,10 @@ def render_pwa_install_listener():
                             padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
                         }
 
-                        /* Hide Streamlit's toolbar entirely on mobile — the
-                           running-man status widget and the "⋯" main menu are
-                           not needed by users, sit at an awkward height, and
-                           overlap the sidebar button. */
-                        [data-testid="stToolbar"],
+                        /* Hide only the running-man status widget and the "⋯"
+                           main menu — NOT the whole stToolbar, because the ">>"
+                           open-sidebar button is nested inside stToolbar and
+                           `display:none` on the toolbar removes it too. */
                         [data-testid="stStatusWidget"],
                         [data-testid="stMainMenu"] {
                             display: none !important;
