@@ -18,12 +18,28 @@ router = APIRouter(prefix="/api/vote", tags=["vote"])
 def _committee_user(request: Request) -> str:
     """401 unless the request carries a valid committee cookie / bearer token."""
     from deploy.proxy import _require_committee_user
-    return _require_committee_user(request)
+    user_id = _require_committee_user(request)
+    if user_id == "admin":
+        raise HTTPException(403, "賽會人員帳戶不能使用此頁面")
+    return user_id
+
+
+def _activity_payload(user_id: str, db) -> dict:
+    from core.members import member_activity
+    return member_activity(user_id, db=db)
 
 
 def _vote_db():
     from deploy.proxy import get_vote_db
     return get_vote_db()
+
+
+def _ai_secrets():
+    from deploy.proxy import _get_proxy_secret
+    return {
+        "GEMINI_API_KEY": _get_proxy_secret("GEMINI_API_KEY"),
+        "OPENROUTER_API_KEY": _get_proxy_secret("OPENROUTER_API_KEY"),
+    }
 
 
 # ── serialization ─────────────────────────────────────────────────────────────
@@ -53,6 +69,7 @@ def _jsonify_pending(row: dict) -> dict:
         "agree_count": len(agree_users),
         "against_count": len(against_users),
         "against_reasons": row.get("against_reasons", {}) or {},
+        "comment_count": int(row.get("comment_count") or 0),
         # Per-topic stored threshold. The dynamic active-member threshold is
         # surfaced in a later slice once get_active_user_count moves into core.
         "approval_threshold": threshold,
@@ -62,24 +79,29 @@ def _jsonify_pending(row: dict) -> dict:
 @router.get("/data")
 def vote_data(user_id: str = Depends(_committee_user)):
     """Read-only vote board: pending motions plus resolved-topic names."""
-    from core.vote_logic import fetch_vote_data, count_pending_deposes
+    from core.vote_logic import fetch_vote_data, count_pending_deposes, get_comment_counts, fetch_vote_history
 
     from core.vote_logic import entry_threshold, depose_threshold
     from core.members import count_active_members
 
     db = _vote_db()
     pending, passed, rejected = fetch_vote_data(db=db)
+    comment_counts = get_comment_counts("topic_vote", db=db)
+    for row in pending:
+        row["comment_count"] = comment_counts.get(row.get("topic_text"), 0)
     active_count = count_active_members(db=db)
     return {
         "user_id": user_id,
         "pending": [_jsonify_pending(row) for row in pending],
         "passed": passed,
         "rejected": rejected,
+        "history": fetch_vote_history(limit=20, db=db),
         "pending_vote_count": len(pending),
         "pending_depose_count": count_pending_deposes(db=db),
         "active_count": active_count,
         "entry_threshold": entry_threshold(active_count),
         "depose_threshold": depose_threshold(active_count),
+        **_activity_payload(user_id, db),
     }
 
 
@@ -270,6 +292,7 @@ def _jsonify_depose(row: dict) -> dict:
         "against_users": list(against_users),
         "agree_count": len(agree_users),
         "against_count": len(against_users),
+        "comment_count": int(row.get("comment_count") or 0),
         "approval_threshold": threshold,
     }
 
@@ -278,11 +301,14 @@ def _jsonify_depose(row: dict) -> dict:
 def depose_data(user_id: str = Depends(_committee_user)):
     """Deposition board: pending removal motions + the bank topics that can be
     proposed for removal."""
-    from core.vote_logic import fetch_depose_data, list_bank_topics, depose_threshold
+    from core.vote_logic import fetch_depose_data, list_bank_topics, depose_threshold, get_comment_counts
     from core.members import count_active_members
 
     db = _vote_db()
     pending = fetch_depose_data(db=db)
+    comment_counts = get_comment_counts("topic_removal", db=db)
+    for row in pending:
+        row["comment_count"] = comment_counts.get(row.get("topic_text"), 0)
     pending_topics = {r["topic_text"] for r in pending}
     bank = [t for t in list_bank_topics(db=db) if t["topic_text"] not in pending_topics]
     return {
@@ -290,8 +316,165 @@ def depose_data(user_id: str = Depends(_committee_user)):
         "pending": [_jsonify_depose(row) for row in pending],
         "pending_depose_count": len(pending),
         "depose_threshold": depose_threshold(count_active_members(db=db)),
+        **_activity_payload(user_id, db),
         "bank_topics": bank,
     }
+
+
+@router.get("/member-stats")
+def member_stats(user_id: str = Depends(_committee_user)):
+    """Committee-only participation table for the HTML member-stats tab."""
+    from core.members import get_member_participation_stats, count_active_members
+
+    db = _vote_db()
+    stats, total_vote_count = get_member_participation_stats(db=db)
+    current = next(
+        (s for s in stats if str(s.get("用戶", "")).strip() == str(user_id).strip()),
+        None,
+    )
+    return {
+        "user_id": user_id,
+        "stats": stats,
+        "current_user_stats": current,
+        "total_vote_count": total_vote_count,
+        "active_count": count_active_members(db=db),
+    }
+
+
+class CommentBody(BaseModel):
+    motion_type: str
+    motion_key: str
+    text: str | None = None
+    tag_ai: bool = False
+
+
+def _validate_motion_type(value: str) -> str:
+    if value not in ("topic_vote", "topic_removal"):
+        raise HTTPException(400, "invalid motion_type")
+    return value
+
+
+@router.get("/comments")
+def comments(motion_type: str, motion_key: str, user_id: str = Depends(_committee_user)):
+    from core.vote_logic import fetch_comments
+
+    db = _vote_db()
+    return {
+        "user_id": user_id,
+        "comments": fetch_comments(_validate_motion_type(motion_type), motion_key, db=db),
+    }
+
+
+@router.post("/comments")
+def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
+    from core import vote_logic as vl
+    from core import vote_ai
+
+    motion_type = _validate_motion_type(body.motion_type)
+    motion_key = (body.motion_key or "").strip()
+    if not motion_key:
+        raise HTTPException(400, "motion_key is required")
+
+    db = _vote_db()
+    text = (body.text or "").strip()
+    if text:
+        vl.insert_comment(motion_type, motion_key, user_id, text, db=db)
+        snippet = text if len(text) <= 40 else text[:40] + "⋯"
+        topic_label = motion_key if len(motion_key) <= 20 else motion_key[:20] + "⋯"
+        _fire_push(db, "💬 新留言", f"{user_id} 在「{topic_label}」發表意見：{snippet}",
+                   f"comment-{motion_type}-{motion_key}", exclude_user=user_id)
+    elif not body.tag_ai:
+        raise HTTPException(400, "請輸入內容")
+
+    ai_text = ""
+    should_ai = bool(body.tag_ai)
+    question = vote_ai.extract_gemini_question(text) if text else None
+    if question is not None:
+        should_ai = True
+
+    if should_ai:
+        vl.ensure_ai_comment_account(db=db)
+        existing = vl.fetch_comments(motion_type, motion_key, db=db)
+        ai_text, _usage = vote_ai.discussion_reply(
+            motion_type, motion_key, existing, db, _ai_secrets(), question=question
+        )
+        if vote_ai.is_successful_ai_result(ai_text):
+            vl.insert_comment(motion_type, motion_key, "Gemini", ai_text, db=db)
+        else:
+            return {
+                "status": "ai_failed" if text else "failed",
+                "message": ai_text,
+                "comments": vl.fetch_comments(motion_type, motion_key, db=db),
+            }
+
+    return {
+        "status": "ok",
+        "ai_replied": should_ai and bool(ai_text),
+        "comments": vl.fetch_comments(motion_type, motion_key, db=db),
+    }
+
+
+class AiReviewBody(BaseModel):
+    topic: str
+    category: str
+    difficulty: int
+
+
+@router.post("/ai-review")
+def ai_review(body: AiReviewBody, user_id: str = Depends(_committee_user)):
+    from core.vote_ai import review_topic
+
+    topic = (body.topic or "").strip()
+    if not topic:
+        raise HTTPException(400, "請先輸入完整辯題")
+    text, _usage = review_topic(topic, body.category, body.difficulty, _vote_db(), _ai_secrets())
+    return {"status": "ok", "review": text}
+
+
+@router.get("/analysis")
+def analysis(user_id: str = Depends(_committee_user)):
+    from core.vote_logic import (
+        find_stale_removed_topics,
+        fetch_vote_history_analysis_data,
+        load_saved_analysis,
+        vote_history_chart_data,
+    )
+
+    db = _vote_db()
+    history_df = fetch_vote_history_analysis_data(db=db)
+    return {
+        "user_id": user_id,
+        "stale_topics": find_stale_removed_topics(db=db),
+        "bank": load_saved_analysis("bank", db=db),
+        "history": load_saved_analysis("history", db=db),
+        "history_visuals": vote_history_chart_data(history_df),
+    }
+
+
+class AiAnalysisBody(BaseModel):
+    kind: str
+
+
+@router.post("/analysis/ai")
+def run_analysis(body: AiAnalysisBody, user_id: str = Depends(_committee_user)):
+    from core import vote_logic as vl
+    from core import vote_ai
+
+    db = _vote_db()
+    if body.kind == "bank":
+        text, _usage = vote_ai.analyze_topic_bank(db, _ai_secrets())
+        if vote_ai.is_successful_ai_result(text):
+            vl.save_analysis("bank", text, user_id, db=db)
+    elif body.kind == "history":
+        history_df = vl.fetch_vote_history_analysis_data(db=db)
+        text, _usage = vote_ai.analyze_vote_history(history_df, db, _ai_secrets())
+        if vote_ai.is_successful_ai_result(text):
+            vl.save_analysis("history", text, user_id, db=db)
+    else:
+        raise HTTPException(400, "kind must be 'bank' or 'history'")
+    if not vote_ai.is_successful_ai_result(text):
+        raise HTTPException(502, text)
+    return {"status": "ok", "analysis": text}
 
 
 class ProposeBody(BaseModel):
@@ -342,7 +525,8 @@ def propose(body: ProposeBody, user_id: str = Depends(_committee_user)):
 
 
 class DeposeBody(BaseModel):
-    topic: str
+    topic: str | None = None
+    topics: list[str] | None = None
     reasons: list[str]
 
 
@@ -352,8 +536,12 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     from core import vote_logic as vl
     from core.members import is_active_member, count_active_members
 
-    topic = (body.topic or "").strip()
-    if not topic:
+    topics = [str(t).strip() for t in (body.topics or []) if str(t).strip()]
+    if body.topic:
+        single = str(body.topic).strip()
+        if single and single not in topics:
+            topics.insert(0, single)
+    if not topics:
         raise HTTPException(400, "請選擇要罷免的辯題")
     reasons = [str(r).strip() for r in (body.reasons or []) if str(r).strip()]
     if not reasons:
@@ -362,16 +550,29 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     db = _vote_db()
     if not is_active_member(user_id, db=db):
         raise HTTPException(403, "非活躍成員不能提出罷免動議")
-    if not vl.topic_in_bank(topic, db=db):
-        raise HTTPException(404, "該辯題不在辯題庫中")
     if vl.count_pending_deposes(db=db) >= 10:
         raise HTTPException(409, "目前已有 10 個罷免動議，請先完成投票再提交")
-    if vl.depose_pending_exists(topic, db=db):
-        raise HTTPException(409, "該辯題已有待處理的罷免動議")
 
     threshold = vl.depose_threshold(count_active_members(db=db))
-    deadline = vl.insert_depose_vote(topic, user_id, vl.dump_json(reasons), threshold, db=db)
-    _fire_push(db, "新罷免動議待投票",
-               f"「{topic}」已提出罷免動議，截止日期為 {deadline}。",
-               f"topic-removal-new-{topic}", exclude_user=user_id)
-    return {"status": "ok", "deadline": deadline, "threshold": threshold}
+    created = []
+    skipped = []
+    deadline = None
+    pending_now = vl.count_pending_deposes(db=db)
+    for topic in topics:
+        if pending_now >= 10:
+            skipped.append(topic)
+            continue
+        if not vl.topic_in_bank(topic, db=db):
+            raise HTTPException(404, f"「{topic}」不在辯題庫中")
+        if vl.depose_pending_exists(topic, db=db):
+            skipped.append(topic)
+            continue
+        deadline = vl.insert_depose_vote(topic, user_id, vl.dump_json(reasons), threshold, db=db)
+        pending_now += 1
+        created.append(topic)
+        _fire_push(db, "新罷免動議待投票",
+                   f"「{topic}」已提出罷免動議，截止日期為 {deadline}。",
+                   f"topic-removal-new-{topic}", exclude_user=user_id)
+    if not created:
+        raise HTTPException(409, "所選辯題已有待處理的罷免動議，或待處理動議已達上限")
+    return {"status": "ok", "deadline": deadline, "threshold": threshold, "created": created, "skipped": skipped}

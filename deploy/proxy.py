@@ -41,6 +41,7 @@ from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
 from prompts import build_free_debate_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
+from api.auth_api import router as committee_router
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -100,6 +101,7 @@ app = FastAPI()
 # routes at the bottom of this file so /api/vote/* is served locally instead of
 # being forwarded to Streamlit.
 app.include_router(vote_router)
+app.include_router(committee_router)
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
 _streamlit_secrets = None
@@ -370,6 +372,17 @@ def _verify_relay_signature(token: str, sig: str) -> bool:
         return False
     expected = hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, expected)
+
+
+def _sign_committee_token(user_id: str):
+    """Mint a signed ``user_id:sig`` committee token, matching
+    _verify_committee_token / auth._sign_cookie. Used by the committee login API
+    to set the shared ``committee_user`` cookie. Returns None if no secret."""
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        return None
+    sig = hmac.new(str(secret).encode(), user_id.encode(), hashlib.sha256).hexdigest()
+    return f"{user_id}:{sig}"
 
 
 def _require_committee_user(request: Request):
