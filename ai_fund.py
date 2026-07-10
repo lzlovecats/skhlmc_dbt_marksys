@@ -126,9 +126,13 @@ if not fund_settings["treasurers"]:
 elif is_treasurer:
     st.success("你是 AI基金管理員，可確認入數、記錄支出及更新AI基金設定。")
 
-fund_overview_tab, fund_deposit_tab, fund_usage_tab = st.tabs(
-    ["總覽", "入數 / 交易", "AI 用量"]
-)
+# 管理員功能集中喺獨立「管理員」tab，只有 AI基金管理員先見到。
+_tab_labels = ["總覽", "入數 / 交易", "AI 用量"]
+if is_treasurer:
+    _tab_labels.append("管理員")
+_fund_tabs = st.tabs(_tab_labels)
+fund_overview_tab, fund_deposit_tab, fund_usage_tab = _fund_tabs[0], _fund_tabs[1], _fund_tabs[2]
+fund_admin_tab = _fund_tabs[3] if is_treasurer else None
 
 with fund_overview_tab:
     col1, col2, col3 = st.columns(3)
@@ -182,72 +186,11 @@ with fund_overview_tab:
                     f"更新：{google_ai_studio_balance['updated_at'] or '—'}｜"
                     f"{google_ai_studio_balance['updated_by'] or '—'}"
                 )
-            if is_treasurer:
-                with st.form("google_ai_studio_balance_form"):
-                    balance_default = google_ai_studio_balance["balance_usd"]
-                    google_balance_usd = st.number_input(
-                        "更新 Google AI Studio 餘額（USD）",
-                        min_value=0.0,
-                        value=float(balance_default or 0.0),
-                        step=1.0,
-                        format="%.4f",
-                    )
-                    submit_google_balance = st.form_submit_button("更新餘額")
-                if submit_google_balance:
-                    try:
-                        save_google_ai_studio_balance(google_balance_usd, user_id)
-                        st.success("Google AI Studio 餘額已更新。")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Google AI Studio 餘額更新失敗：{e}")
+        if is_treasurer:
+            st.caption("如需更新 Google AI Studio 餘額或基金設定，請到「管理員」分頁。")
 
     with st.expander("付款指示"):
         st.text(fund_settings["payment_instruction"])
-
-    if is_treasurer:
-        with st.expander("AI基金管理員設定"):
-            with st.form("ai_fund_settings_form"):
-                target_hkd = st.number_input(
-                    "目標金額（HKD）",
-                    min_value=0.0,
-                    value=float(fund_settings["target_hkd"]),
-                    step=10.0,
-                    format="%.2f",
-                )
-                low_balance_hkd = st.number_input(
-                    "低餘額警戒線（HKD）",
-                    min_value=0.0,
-                    value=float(fund_settings["low_balance_hkd"]),
-                    step=5.0,
-                    format="%.2f",
-                )
-                payment_instruction = st.text_area(
-                    "付款指示",
-                    value=fund_settings["payment_instruction"],
-                    height=120,
-                )
-                save_settings = st.form_submit_button("更新設定", type="primary")
-
-            if save_settings:
-                save_ai_fund_public_settings(
-                    target_hkd=target_hkd,
-                    low_balance_hkd=low_balance_hkd,
-                    payment_instruction=payment_instruction,
-                )
-                st.success("AI基金設定已更新。")
-                st.rerun()
-
-            st.divider()
-            st.markdown("##### 重置 AI 用量紀錄")
-            st.caption("刪除所有 AI 用量估算紀錄。此操作不可復原，不影響現金帳交易。")
-            reset_confirm = st.checkbox("我確認要重置所有 AI 用量紀錄", key="reset_usage_confirm")
-            if st.button("重置用量紀錄", disabled=not reset_confirm, key="reset_usage_btn"):
-                try:
-                    deleted = reset_ai_fund_usage_logs()
-                    st.success(f"已刪除 {deleted} 筆用量紀錄。")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"重置失敗：{e}")
 
 with fund_deposit_tab:
     st.markdown("#### 成員入數")
@@ -286,101 +229,7 @@ with fund_deposit_tab:
             st.rerun()
 
     if is_treasurer:
-        st.divider()
-        st.markdown("#### AI基金管理員操作")
-        tx_df_for_pending = get_ai_fund_transactions(user_id=user_id, treasurer=True, limit=200)
-        pending_df = tx_df_for_pending[
-            (tx_df_for_pending["status"] == "pending")
-            & (tx_df_for_pending["transaction_type"] == "member_deposit")
-        ] if not tx_df_for_pending.empty else tx_df_for_pending
-
-        with st.expander(f"待確認入數（{0 if pending_df.empty else len(pending_df)}）", expanded=True):
-            if pending_df.empty:
-                st.caption("而家沒有待確認入數。")
-            else:
-                for _, row in pending_df.iterrows():
-                    tx_id = int(row["id"])
-                    with st.container(border=True):
-                        st.markdown(
-                            f"**#{tx_id}**｜{row['created_by']}｜"
-                            f"{_format_hkd(row['amount_hkd'])}｜{row.get('payment_method') or '—'}"
-                        )
-                        st.caption(
-                            f"Reference：{row.get('reference_no') or '—'}｜"
-                            f"提交時間：{row.get('created_at')}"
-                        )
-                        if row.get("note"):
-                            st.caption(f"備註：{row['note']}")
-                        status_note = st.text_input(
-                            "確認 / 拒絕備註（可選）",
-                            key=f"ai_fund_status_note_{tx_id}",
-                        )
-                        btn_col1, btn_col2 = st.columns(2)
-                        with btn_col1:
-                            if st.button("確認入數", key=f"confirm_ai_fund_{tx_id}", width="stretch"):
-                                updated = update_ai_fund_transaction_status(
-                                    tx_id,
-                                    "confirmed",
-                                    user_id,
-                                    status_note=status_note,
-                                )
-                                st.success("已確認入數。" if updated else "此入數已被處理。")
-                                st.rerun()
-                        with btn_col2:
-                            if st.button("拒絕入數", key=f"reject_ai_fund_{tx_id}", width="stretch"):
-                                updated = update_ai_fund_transaction_status(
-                                    tx_id,
-                                    "rejected",
-                                    user_id,
-                                    status_note=status_note,
-                                )
-                                st.warning("已拒絕入數。" if updated else "此入數已被處理。")
-                                st.rerun()
-
-        with st.expander("記錄 provider 支出 / 退款 / 調整", expanded=False):
-            with st.form("ai_fund_treasurer_tx_form"):
-                treasurer_tx_type = st.selectbox(
-                    "交易類型",
-                    ["provider_topup", "refund", "adjustment"],
-                    format_func=lambda x: AI_FUND_TRANSACTION_LABELS.get(x, x),
-                )
-                treasurer_provider = st.selectbox(
-                    "Provider / 分類",
-                    ["gemini", "openrouter", "other"],
-                    format_func=lambda x: AI_PROVIDER_LABELS.get(x, x),
-                )
-                treasurer_amount = st.number_input(
-                    "金額（HKD）",
-                    value=0.0,
-                    step=10.0,
-                    format="%.2f",
-                    help="充值 / 支出及退款請輸入正數；手動調整可輸入正數或負數。",
-                )
-                treasurer_method = st.text_input("付款方式 / Provider", placeholder="例如：OpenRouter、FPS")
-                treasurer_ref = st.text_input("Reference / 帳單編號（如有）")
-                treasurer_note = st.text_area("原因 / 備註", height=100)
-                submit_treasurer_tx = st.form_submit_button("新增已確認交易", type="primary")
-
-            if submit_treasurer_tx:
-                if treasurer_tx_type != "adjustment" and treasurer_amount <= 0:
-                    st.warning("充值 / 支出及退款金額必須大於 0。")
-                elif treasurer_tx_type == "adjustment" and treasurer_amount == 0:
-                    st.warning("手動調整金額不能為 0。")
-                elif not treasurer_note.strip():
-                    st.warning("請填寫原因 / 備註。")
-                else:
-                    create_ai_fund_transaction(
-                        user_id=user_id,
-                        transaction_type=treasurer_tx_type,
-                        amount_hkd=treasurer_amount,
-                        provider=treasurer_provider,
-                        payment_method=treasurer_method,
-                        reference_no=treasurer_ref,
-                        note=treasurer_note,
-                        status="confirmed",
-                    )
-                    st.success("已新增交易紀錄。")
-                    st.rerun()
+        st.caption("確認入數、記錄 provider 支出及基金設定已移至「管理員」分頁。")
 
     st.divider()
     st.markdown("#### 交易紀錄" if is_treasurer else "#### 我的入數紀錄")
@@ -444,3 +293,167 @@ with fund_usage_tab:
                 mime="text/csv",
                 width="stretch",
             )
+
+if fund_admin_tab is not None:
+    with fund_admin_tab:
+        st.markdown("#### 待確認入數")
+        tx_df_for_pending = get_ai_fund_transactions(user_id=user_id, treasurer=True, limit=200)
+        pending_df = tx_df_for_pending[
+            (tx_df_for_pending["status"] == "pending")
+            & (tx_df_for_pending["transaction_type"] == "member_deposit")
+        ] if not tx_df_for_pending.empty else tx_df_for_pending
+
+        with st.expander(f"待確認入數（{0 if pending_df.empty else len(pending_df)}）", expanded=True):
+            if pending_df.empty:
+                st.caption("而家沒有待確認入數。")
+            else:
+                for _, row in pending_df.iterrows():
+                    tx_id = int(row["id"])
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**#{tx_id}**｜{row['created_by']}｜"
+                            f"{_format_hkd(row['amount_hkd'])}｜{row.get('payment_method') or '—'}"
+                        )
+                        st.caption(
+                            f"Reference：{row.get('reference_no') or '—'}｜"
+                            f"提交時間：{row.get('created_at')}"
+                        )
+                        if row.get("note"):
+                            st.caption(f"備註：{row['note']}")
+                        status_note = st.text_input(
+                            "確認 / 拒絕備註（可選）",
+                            key=f"ai_fund_status_note_{tx_id}",
+                        )
+                        btn_col1, btn_col2 = st.columns(2)
+                        with btn_col1:
+                            if st.button("確認入數", key=f"confirm_ai_fund_{tx_id}", width="stretch"):
+                                updated = update_ai_fund_transaction_status(
+                                    tx_id,
+                                    "confirmed",
+                                    user_id,
+                                    status_note=status_note,
+                                )
+                                st.success("已確認入數。" if updated else "此入數已被處理。")
+                                st.rerun()
+                        with btn_col2:
+                            if st.button("拒絕入數", key=f"reject_ai_fund_{tx_id}", width="stretch"):
+                                updated = update_ai_fund_transaction_status(
+                                    tx_id,
+                                    "rejected",
+                                    user_id,
+                                    status_note=status_note,
+                                )
+                                st.warning("已拒絕入數。" if updated else "此入數已被處理。")
+                                st.rerun()
+
+        st.divider()
+        st.markdown("#### 記錄 provider 支出 / 退款 / 調整")
+        with st.form("ai_fund_treasurer_tx_form"):
+            treasurer_tx_type = st.selectbox(
+                "交易類型",
+                ["provider_topup", "refund", "adjustment"],
+                format_func=lambda x: AI_FUND_TRANSACTION_LABELS.get(x, x),
+            )
+            treasurer_provider = st.selectbox(
+                "Provider / 分類",
+                ["gemini", "openrouter", "other"],
+                format_func=lambda x: AI_PROVIDER_LABELS.get(x, x),
+            )
+            treasurer_amount = st.number_input(
+                "金額（HKD）",
+                value=0.0,
+                step=10.0,
+                format="%.2f",
+                help="充值 / 支出及退款請輸入正數；手動調整可輸入正數或負數。",
+            )
+            treasurer_method = st.text_input("付款方式 / Provider", placeholder="例如：OpenRouter、FPS")
+            treasurer_ref = st.text_input("Reference / 帳單編號（如有）")
+            treasurer_note = st.text_area("原因 / 備註", height=100)
+            submit_treasurer_tx = st.form_submit_button("新增已確認交易", type="primary")
+
+        if submit_treasurer_tx:
+            if treasurer_tx_type != "adjustment" and treasurer_amount <= 0:
+                st.warning("充值 / 支出及退款金額必須大於 0。")
+            elif treasurer_tx_type == "adjustment" and treasurer_amount == 0:
+                st.warning("手動調整金額不能為 0。")
+            elif not treasurer_note.strip():
+                st.warning("請填寫原因 / 備註。")
+            else:
+                create_ai_fund_transaction(
+                    user_id=user_id,
+                    transaction_type=treasurer_tx_type,
+                    amount_hkd=treasurer_amount,
+                    provider=treasurer_provider,
+                    payment_method=treasurer_method,
+                    reference_no=treasurer_ref,
+                    note=treasurer_note,
+                    status="confirmed",
+                )
+                st.success("已新增交易紀錄。")
+                st.rerun()
+
+        st.divider()
+        st.markdown("#### 更新 Google AI Studio 餘額")
+        admin_google_balance = get_google_ai_studio_balance()
+        st.caption("由 AI基金管理員從 AI Studio Billing 手動更新，並非 Google API 即時回傳。")
+        with st.form("google_ai_studio_balance_form"):
+            google_balance_usd = st.number_input(
+                "Google AI Studio 餘額（USD）",
+                min_value=0.0,
+                value=float(admin_google_balance["balance_usd"] or 0.0),
+                step=1.0,
+                format="%.4f",
+            )
+            submit_google_balance = st.form_submit_button("更新餘額")
+        if submit_google_balance:
+            try:
+                save_google_ai_studio_balance(google_balance_usd, user_id)
+                st.success("Google AI Studio 餘額已更新。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Google AI Studio 餘額更新失敗：{e}")
+
+        st.divider()
+        st.markdown("#### AI基金設定")
+        with st.form("ai_fund_settings_form"):
+            target_hkd = st.number_input(
+                "目標金額（HKD）",
+                min_value=0.0,
+                value=float(fund_settings["target_hkd"]),
+                step=10.0,
+                format="%.2f",
+            )
+            low_balance_hkd = st.number_input(
+                "低餘額警戒線（HKD）",
+                min_value=0.0,
+                value=float(fund_settings["low_balance_hkd"]),
+                step=5.0,
+                format="%.2f",
+            )
+            payment_instruction = st.text_area(
+                "付款指示",
+                value=fund_settings["payment_instruction"],
+                height=120,
+            )
+            save_settings = st.form_submit_button("更新設定", type="primary")
+
+        if save_settings:
+            save_ai_fund_public_settings(
+                target_hkd=target_hkd,
+                low_balance_hkd=low_balance_hkd,
+                payment_instruction=payment_instruction,
+            )
+            st.success("AI基金設定已更新。")
+            st.rerun()
+
+        st.divider()
+        st.markdown("#### 重置 AI 用量紀錄")
+        st.caption("刪除所有 AI 用量估算紀錄。此操作不可復原，不影響現金帳交易。")
+        reset_confirm = st.checkbox("我確認要重置所有 AI 用量紀錄", key="reset_usage_confirm")
+        if st.button("重置用量紀錄", disabled=not reset_confirm, key="reset_usage_btn"):
+            try:
+                deleted = reset_ai_fund_usage_logs()
+                st.success(f"已刪除 {deleted} 筆用量紀錄。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"重置失敗：{e}")
