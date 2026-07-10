@@ -91,6 +91,7 @@
 
     <div class="toolbar">
         <button id="refresh" type="button">↻ 重新整理</button>
+        <button id="logout" type="button" style="display:none">登出</button>
         <span class="sub" id="counts"></span>
         <a class="sub" href="/vote-classic" style="margin-left:auto">舊版 (Classic) ↗</a>
     </div>
@@ -106,6 +107,7 @@
     const who = document.getElementById("who");
     const counts = document.getElementById("counts");
     const refreshBtn = document.getElementById("refresh");
+    const logoutBtn = document.getElementById("logout");
     const toastEl = document.getElementById("toast");
     const tabsEl = document.getElementById("tabs");
 
@@ -158,9 +160,43 @@
     function notLoggedIn() {
         who.textContent = "";
         counts.textContent = "";
-        content.innerHTML = '<div class="card err"><div class="topic">尚未登入</div>' +
-            '<div class="sub">請先於現有系統以內部委員會成員帳戶登入，再返回本頁。' +
-            '（獨立登入功能將於下一階段加入）</div></div>';
+        ME = "";
+        tabsEl.style.display = "none";
+        logoutBtn.style.display = "none";
+        content.innerHTML = `
+            <div class="card" style="max-width:380px;margin:1.5rem auto">
+                <div class="topic" style="margin-bottom:.75rem">內部委員會成員登入</div>
+                <div class="field"><label>用戶名稱</label>
+                    <input type="text" id="loginUser" autocomplete="username"></div>
+                <div class="field"><label>密碼</label>
+                    <input type="password" id="loginPass" autocomplete="current-password"></div>
+                <button class="btn-primary" data-act="login" style="width:100%">登入</button>
+                <div class="sub" id="loginMsg" style="margin-top:.5rem;color:var(--against)"></div>
+            </div>`;
+        const pass = document.getElementById("loginPass");
+        if (pass) pass.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+    }
+
+    async function doLogin() {
+        const u = (document.getElementById("loginUser").value || "").trim();
+        const p = document.getElementById("loginPass").value || "";
+        const msg = document.getElementById("loginMsg");
+        if (!u || !p) { msg.textContent = "請輸入帳號及密碼"; return; }
+        if (BUSY) return;
+        BUSY = true;
+        try {
+            const { res, data } = await postJSON("/api/committee/login", { user_id: u, password: p });
+            if (!res.ok) { msg.textContent = data.detail || ("登入失敗 " + res.status); return; }
+            tabsEl.style.display = "";
+            await load();
+        } catch (e) {
+            msg.textContent = "登入失敗：" + e.message;
+        } finally { BUSY = false; }
+    }
+
+    async function doLogout() {
+        try { await postJSON("/api/committee/logout", {}); } catch (e) { /* ignore */ }
+        notLoggedIn();
     }
 
     // ── generic vote buttons (shared by topic + depose) ───────────────────────
@@ -316,6 +352,8 @@
                 if (!d) return;
                 ME = d.user_id || "";
                 who.textContent = "已登入：" + ME;
+                tabsEl.style.display = "";
+                logoutBtn.style.display = "";
                 counts.textContent = `待罷免 ${d.pending_depose_count} · 罷免門檻 ${d.depose_threshold}`;
                 renderDepose(d);
             } else {
@@ -324,6 +362,8 @@
                 if (!d) return;
                 ME = d.user_id || "";
                 who.textContent = "已登入：" + ME;
+                tabsEl.style.display = "";
+                logoutBtn.style.display = "";
                 counts.textContent = `待投票 ${d.pending_vote_count} · 待罷免 ${d.pending_depose_count}` +
                     (d.active_count != null ? ` · 活躍 ${d.active_count} · 門檻 ${d.entry_threshold}` : "");
                 if (TAB === "propose") renderPropose(d);
@@ -426,6 +466,7 @@
         const topic = btn.dataset.topic;
         const mode = btn.dataset.mode || "topic";
 
+        if (act === "login") { doLogin(); return; }
         if (act === "agree") { cast({ mode, topic, action: "agree" }); return; }
         if (act === "withdraw") { cast({ mode, topic, action: "withdraw" }); return; }
         if (act === "against") { cast({ mode, topic, action: "against" }); return; }  // depose: no reasons
@@ -464,6 +505,7 @@
     });
 
     refreshBtn.addEventListener("click", load);
+    logoutBtn.addEventListener("click", doLogout);
     load();
 })();
 </script>
