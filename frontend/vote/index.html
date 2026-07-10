@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8">
+    <title>辯題投票（新版）</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="theme-color" content="#111827">
+    <style>
+        /* Always dark, to match the Streamlit app (config.toml base="dark").
+           Surfaces/text follow Streamlit's default dark theme (#0e1117 / #262730
+           / #fafafa); agree=green, against=red kept for clarity, accent=blue so
+           it never reads as an "against" red. */
+        :root {
+            color-scheme: dark;
+            --bg: #0e1117; --card: #262730; --text: #fafafa; --muted: #9aa0ab;
+            --border: #3a3d46; --agree: #29b46b; --against: #ff5c5c; --accent: #4c9bff;
+            --chip: #2b2f3a; --chip-text: #cdd3e0;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; background: var(--bg); color: var(--text);
+            font-family: system-ui, -apple-system, "PingFang HK", "Noto Sans CJK HK", sans-serif;
+            font-size: 16px; line-height: 1.5;
+            padding: max(1rem, env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));
+        }
+        .wrap { max-width: 820px; margin: 0 auto; }
+        header { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+        h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+        .sub { color: var(--muted); font-size: .9rem; }
+        .badge { background: var(--chip); color: var(--chip-text); border-radius: 999px; padding: .15rem .6rem; font-size: .8rem; font-weight: 600; }
+        .tabs { display: flex; gap: .35rem; margin: .9rem 0 .6rem; flex-wrap: wrap; }
+        .tab { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 999px; padding: .4rem .9rem; cursor: pointer; font: inherit; }
+        .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .toolbar { display: flex; align-items: center; gap: .5rem; margin: .3rem 0 1rem; flex-wrap: wrap; }
+        button {
+            font: inherit; border: 1px solid var(--border); background: var(--card); color: var(--text);
+            border-radius: 8px; padding: .5rem .9rem; cursor: pointer;
+        }
+        button:active { transform: translateY(1px); }
+        button:disabled { opacity: .55; cursor: default; }
+        .card {
+            background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+            padding: 1rem; margin-bottom: .85rem;
+        }
+        .topic { font-weight: 600; font-size: 1.05rem; margin-bottom: .4rem; }
+        .meta { color: var(--muted); font-size: .85rem; margin-bottom: .6rem; display: flex; flex-wrap: wrap; gap: .35rem .75rem; }
+        .chip { background: var(--chip); color: var(--chip-text); border-radius: 6px; padding: .05rem .45rem; font-size: .78rem; }
+        .tallies { display: flex; gap: 1.2rem; font-size: .95rem; }
+        .agree b { color: var(--agree); }
+        .against b { color: var(--against); }
+        .deadline-past { color: var(--against); font-weight: 600; }
+        .state { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
+        .err { border-color: var(--against); }
+        .section-title { margin: 1.5rem 0 .5rem; font-size: 1rem; color: var(--muted); }
+        .pill-list { display: flex; flex-wrap: wrap; gap: .35rem; }
+        .pill { border: 1px solid var(--border); border-radius: 999px; padding: .1rem .6rem; font-size: .82rem; color: var(--muted); }
+        a { color: var(--accent); }
+        .actions { display: flex; gap: .5rem; margin-top: .75rem; flex-wrap: wrap; }
+        .actions button { flex: 1 1 auto; min-width: 8rem; }
+        .btn-agree { border-color: var(--agree); color: var(--agree); }
+        .btn-against { border-color: var(--against); color: var(--against); }
+        .btn-on-agree { background: var(--agree); color: #fff; border-color: var(--agree); }
+        .btn-on-against { background: var(--against); color: #fff; border-color: var(--against); }
+        .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .reasons { margin-top: .75rem; padding-top: .75rem; border-top: 1px dashed var(--border); }
+        .reasons .pill-list { margin-bottom: .5rem; }
+        .reason-opt { border: 1px solid var(--border); border-radius: 999px; padding: .15rem .7rem; font-size: .82rem; cursor: pointer; user-select: none; }
+        .reason-opt.sel { background: var(--chip); color: var(--chip-text); border-color: var(--chip-text); }
+        textarea, input[type=text], select { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); padding: .55rem; font: inherit; }
+        .field { margin-bottom: .7rem; }
+        .field label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .25rem; }
+        .row { display: flex; gap: .5rem; margin-top: .5rem; }
+        .toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: .6rem 1rem; border-radius: 8px; font-size: .9rem; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; text-align: center; }
+        .toast.show { opacity: .95; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <div>
+            <h1>辯題投票 <span class="badge">新版 · 測試中</span></h1>
+            <div class="sub" id="who">載入中…</div>
+        </div>
+    </header>
+
+    <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="vote">📊 辯題投票</button>
+        <button class="tab" data-tab="depose">✂️ 罷免投票</button>
+        <button class="tab" data-tab="propose">📝 提案</button>
+    </div>
+
+    <div class="toolbar">
+        <button id="refresh" type="button">↻ 重新整理</button>
+        <span class="sub" id="counts"></span>
+    </div>
+
+    <div id="content"><div class="state">載入中…</div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+    "use strict";
+    const content = document.getElementById("content");
+    const who = document.getElementById("who");
+    const counts = document.getElementById("counts");
+    const refreshBtn = document.getElementById("refresh");
+    const toastEl = document.getElementById("toast");
+    const tabsEl = document.getElementById("tabs");
+
+    // Mirror the constants in vote.py / functions.py.
+    const REJECTION_REASONS = [
+        "表述或界定不清", "正反責任失衡", "與現有題目重複或相似",
+        "討論價值不足", "題目表述可再修訂", "類別分類不當", "難度分類不當",
+    ];
+    const DEPOSE_REASONS = [
+        "題目已過時", "表述或界定不清", "正反責任失衡", "與現有題目重複或相似",
+        "討論價值不足", "已有更佳版本可取代", "類別分類不當", "難度分類不當",
+    ];
+    const CATEGORIES = [
+        "國際與時事", "科技與未來", "文化與生活",
+        "香港社會政策", "青少年與教育", "哲理／價值觀",
+    ];
+    const DIFFICULTIES = [
+        { v: 1, label: "Lv1 — 概念日常" },
+        { v: 2, label: "Lv2 — 一般議題" },
+        { v: 3, label: "Lv3 — 進階專業" },
+    ];
+
+    let ME = "";
+    let BUSY = false;
+    let TAB = "vote";
+    let openReasonFor = null;   // topic_text with an open against-reason panel (topic vote)
+
+    function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+            { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+        ));
+    }
+    function cssEsc(s) { return String(s).replace(/["\\]/g, "\\$&"); }
+    function diffLabel(v) { const d = DIFFICULTIES.find(x => String(x.v) === String(v)); return d ? d.label : (v || ""); }
+
+    let toastTimer = null;
+    function toast(msg) {
+        toastEl.textContent = msg;
+        toastEl.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2600);
+    }
+
+    function myState(t) {
+        if ((t.agree_users || []).indexOf(ME) !== -1) return "agree";
+        if ((t.against_users || []).indexOf(ME) !== -1) return "against";
+        return null;
+    }
+
+    function notLoggedIn() {
+        who.textContent = "";
+        counts.textContent = "";
+        content.innerHTML = '<div class="card err"><div class="topic">尚未登入</div>' +
+            '<div class="sub">請先於現有系統以內部委員會成員帳戶登入，再返回本頁。' +
+            '（獨立登入功能將於下一階段加入）</div></div>';
+    }
+
+    // ── generic vote buttons (shared by topic + depose) ───────────────────────
+    function agreeButton(t, mine, mode) {
+        const label = mode === "depose" ? "同意罷免" : "同意";
+        if (mine === "agree")
+            return `<button class="btn-on-agree" data-act="withdraw" data-mode="${mode}" data-topic="${esc(t.topic_text)}">已同意（撤回）</button>`;
+        if (mine === "against")
+            return `<button class="btn-agree" data-act="agree" data-mode="${mode}" data-topic="${esc(t.topic_text)}">轉投同意</button>`;
+        return `<button class="btn-agree" data-act="agree" data-mode="${mode}" data-topic="${esc(t.topic_text)}">✅ ${label}</button>`;
+    }
+    function againstButton(t, mine, mode) {
+        const label = mode === "depose" ? "不同意罷免" : "不同意";
+        if (mine === "against")
+            return `<button class="btn-on-against" data-act="withdraw" data-mode="${mode}" data-topic="${esc(t.topic_text)}">已反對（撤回）</button>`;
+        // topic against needs reasons (opens a panel); depose against is direct.
+        const act = mode === "depose" ? "against" : "against-open";
+        return `<button class="btn-against" data-act="${act}" data-mode="${mode}" data-topic="${esc(t.topic_text)}">❌ ${label}</button>`;
+    }
+    function reasonPanel(t) {
+        const opts = REJECTION_REASONS.map(r =>
+            `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`).join("");
+        return `
+            <div class="reasons" data-panel="${esc(t.topic_text)}">
+                <div class="sub">請選擇不同意原因（至少一項）：</div>
+                <div class="pill-list reason-opts">${opts}</div>
+                <textarea rows="2" placeholder="其他原因（如有）"></textarea>
+                <div class="row">
+                    <button class="btn-against" data-act="against-submit" data-topic="${esc(t.topic_text)}">確認不同意</button>
+                    <button data-act="against-cancel" data-topic="${esc(t.topic_text)}">取消</button>
+                </div>
+            </div>`;
+    }
+
+    function metaBits(t) {
+        const bits = [];
+        if (t.category) bits.push(`<span class="chip">${esc(t.category)}</span>`);
+        if (t.difficulty) bits.push(`<span class="chip">${esc(diffLabel(t.difficulty))}</span>`);
+        bits.push(`提出者：${esc(t.proposer_user_id) || "—"}`);
+        if (t.deadline) {
+            bits.push(t.deadline_passed
+                ? `<span class="deadline-past">截止：${esc(t.deadline)}（已過期）</span>`
+                : `截止：${esc(t.deadline)}`);
+        }
+        return bits.join("");
+    }
+
+    // ── topic vote tab ────────────────────────────────────────────────────────
+    function renderVote(data) {
+        const list = data.pending || [];
+        let html = "";
+        if (!list.length) {
+            html = '<div class="state">目前沒有待表決的辯題。</div>';
+        } else {
+            html = list.map(t => {
+                const mine = myState(t);
+                const thr = t.approval_threshold != null ? ` / 門檻 ${t.approval_threshold}` : "";
+                const panel = openReasonFor === t.topic_text ? reasonPanel(t) : "";
+                return `
+                    <div class="card">
+                        <div class="topic">${esc(t.topic_text)}</div>
+                        <div class="meta">${metaBits(t)}</div>
+                        <div class="tallies">
+                            <span class="agree">同意 <b>${t.agree_count}</b>${thr}</span>
+                            <span class="against">不同意 <b>${t.against_count}</b></span>
+                        </div>
+                        <div class="actions">${agreeButton(t, mine, "topic")}${againstButton(t, mine, "topic")}</div>
+                        ${panel}
+                    </div>`;
+            }).join("");
+        }
+        html += renderResolved("已通過辯題", data.passed) + renderResolved("已否決辯題", data.rejected);
+        content.innerHTML = html;
+    }
+    function renderResolved(title, names) {
+        if (!names || !names.length) return "";
+        const pills = names.map(n => `<span class="pill">${esc(n)}</span>`).join("");
+        return `<div class="section-title">${title}（${names.length}）</div><div class="pill-list">${pills}</div>`;
+    }
+
+    // ── depose tab ────────────────────────────────────────────────────────────
+    function renderDepose(data) {
+        const list = data.pending || [];
+        let html = '<div class="section-title">提出罷免動議</div>' + deposeProposeForm(data.bank_topics || []);
+        html += '<div class="section-title">待罷免辯題</div>';
+        if (!list.length) {
+            html += '<div class="state">目前沒有待罷免的辯題。</div>';
+        } else {
+            html += list.map(t => {
+                const mine = myState(t);
+                const thr = t.approval_threshold != null ? ` / 門檻 ${t.approval_threshold}` : "";
+                const reasons = (t.reasons || []).length
+                    ? `<div class="sub" style="margin-top:.4rem">罷免原因：${esc((t.reasons || []).join("；"))}</div>` : "";
+                return `
+                    <div class="card">
+                        <div class="topic">${esc(t.topic_text)}</div>
+                        <div class="meta">${metaBits(t)}</div>
+                        ${reasons}
+                        <div class="tallies" style="margin-top:.5rem">
+                            <span class="agree">同意罷免 <b>${t.agree_count}</b>${thr}</span>
+                            <span class="against">不同意 <b>${t.against_count}</b></span>
+                        </div>
+                        <div class="actions">${agreeButton(t, mine, "depose")}${againstButton(t, mine, "depose")}</div>
+                    </div>`;
+            }).join("");
+        }
+        content.innerHTML = html;
+    }
+    function deposeProposeForm(bankTopics) {
+        if (!bankTopics.length)
+            return '<div class="card"><div class="sub">辯題庫暫無可提出罷免的辯題。</div></div>';
+        const opts = bankTopics.map(t => `<option value="${esc(t.topic_text)}">${esc(t.topic_text)}</option>`).join("");
+        const reasonOpts = DEPOSE_REASONS.map(r => `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`).join("");
+        return `
+            <div class="card" id="deposeForm">
+                <div class="field"><label>選擇要罷免的辯題</label><select id="deposeTopic">${opts}</select></div>
+                <div class="field"><label>罷免原因（至少一項）</label><div class="pill-list reason-opts">${reasonOpts}</div></div>
+                <div class="field"><textarea id="deposeOther" rows="2" placeholder="其他補充原因（如有）"></textarea></div>
+                <button class="btn-primary" data-act="depose-submit">提出罷免動議</button>
+            </div>`;
+    }
+
+    // ── propose tab ───────────────────────────────────────────────────────────
+    function renderPropose(data) {
+        const cats = CATEGORIES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+        const diffs = DIFFICULTIES.map(d => `<option value="${d.v}">${esc(d.label)}</option>`).join("");
+        const info = data && data.entry_threshold != null
+            ? `目前活躍成員：${data.active_count} 人 ｜ 入庫門檻：${data.entry_threshold} 票` : "";
+        content.innerHTML = `
+            <div class="card">
+                <div class="sub" style="margin-bottom:.6rem">${esc(info)}</div>
+                <div class="field"><label>完整辯題（甲乙格式：（甲）XXX／（乙）YYY，用全形符號）</label>
+                    <input type="text" id="propTopic" placeholder="請輸入完整辯題"></div>
+                <div class="field"><label>辯題類別</label><select id="propCategory">${cats}</select></div>
+                <div class="field"><label>辯題難度</label><select id="propDifficulty">${diffs}</select></div>
+                <button class="btn-primary" data-act="propose-submit">提交辯題</button>
+            </div>`;
+    }
+
+    // ── data loading ──────────────────────────────────────────────────────────
+    async function getJSON(url) {
+        const res = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } });
+        if (res.status === 401) { notLoggedIn(); return null; }
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+    }
+
+    async function load() {
+        content.innerHTML = '<div class="state">載入中…</div>';
+        try {
+            if (TAB === "depose") {
+                const d = await getJSON("/api/vote/depose-data");
+                if (!d) return;
+                ME = d.user_id || "";
+                who.textContent = "已登入：" + ME;
+                counts.textContent = `待罷免 ${d.pending_depose_count} · 罷免門檻 ${d.depose_threshold}`;
+                renderDepose(d);
+            } else {
+                // both "vote" and "propose" use /api/vote/data
+                const d = await getJSON("/api/vote/data");
+                if (!d) return;
+                ME = d.user_id || "";
+                who.textContent = "已登入：" + ME;
+                counts.textContent = `待投票 ${d.pending_vote_count} · 待罷免 ${d.pending_depose_count}` +
+                    (d.active_count != null ? ` · 活躍 ${d.active_count} · 門檻 ${d.entry_threshold}` : "");
+                if (TAB === "propose") renderPropose(d);
+                else renderVote(d);
+            }
+        } catch (e) {
+            who.textContent = "";
+            content.innerHTML = '<div class="card err"><div class="topic">載入失敗</div>' +
+                '<div class="sub">' + esc(e.message) + '，請稍後再試或重新整理。</div></div>';
+        }
+    }
+
+    // ── POST helpers ──────────────────────────────────────────────────────────
+    async function postJSON(url, payload) {
+        const res = await fetch(url, {
+            method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        return { res, data };
+    }
+
+    async function cast(payload) {
+        if (BUSY) return;
+        BUSY = true;
+        try {
+            const { res, data } = await postJSON("/api/vote/cast", payload);
+            if (res.status === 401) { toast("登入已失效，請重新登入。"); return; }
+            if (res.status === 200 && data.status === "confirm_category") {
+                const pct = (data.ratio * 100).toFixed(1);
+                if (!window.confirm(`若此辯題通過，類別「${data.category}」將佔辯題庫 ${pct}%（現有 ${data.total} 題中已有 ${data.cat_count} 題同類）。仍要投同意票嗎？`)) return;
+                BUSY = false;
+                return cast(Object.assign({}, payload, { confirm_category: true }));
+            }
+            if (!res.ok) { toast(data.detail || ("錯誤 " + res.status)); return; }
+            if (data.resolved === "passed") toast(payload.mode === "depose" ? "罷免通過，辯題已移除！" : "此辯題已達門檻並通過！");
+            else if (data.resolved === "rejected") toast(payload.mode === "depose" ? "罷免動議已被否決。" : "此辯題已被否決。");
+            else toast("投票已更新");
+            openReasonFor = null;
+            await load();
+        } catch (e) {
+            toast("提交失敗：" + e.message);
+        } finally { BUSY = false; }
+    }
+
+    async function submitDepose() {
+        if (BUSY) return;
+        const form = document.getElementById("deposeForm");
+        if (!form) return;
+        const topic = form.querySelector("#deposeTopic").value;
+        const picked = Array.from(form.querySelectorAll(".reason-opt.sel")).map(e => e.dataset.reason);
+        const other = form.querySelector("#deposeOther").value.trim();
+        if (other) picked.push("其他：" + other);
+        if (!picked.length) { toast("請至少選擇一個罷免原因。"); return; }
+        BUSY = true;
+        try {
+            const { res, data } = await postJSON("/api/vote/depose", { topic, reasons: picked });
+            if (!res.ok) { toast(data.detail || ("錯誤 " + res.status)); return; }
+            toast("罷免動議已提出！");
+            await load();
+        } catch (e) { toast("提交失敗：" + e.message); }
+        finally { BUSY = false; }
+    }
+
+    async function submitPropose(confirmImbalance) {
+        if (BUSY) return;
+        const topic = document.getElementById("propTopic").value.trim();
+        const category = document.getElementById("propCategory").value;
+        const difficulty = parseInt(document.getElementById("propDifficulty").value, 10);
+        if (!topic) { toast("請輸入辯題內容。"); return; }
+        BUSY = true;
+        try {
+            const { res, data } = await postJSON("/api/vote/propose",
+                { topic, category, difficulty, confirm_imbalance: !!confirmImbalance });
+            if (res.status === 200 && data.status === "confirm_imbalance") {
+                const pct = (data.ratio * 100).toFixed(1);
+                if (window.confirm(`類別「${data.category}」目前已佔辯題庫 ${pct}%（共 ${data.total} 題中有 ${data.cat_count} 題）。繼續新增同類辯題將令辯題庫失衡，是否確認提交？`)) {
+                    BUSY = false;
+                    return submitPropose(true);
+                }
+                return;
+            }
+            if (!res.ok) { toast(data.detail || ("錯誤 " + res.status)); return; }
+            toast(`辯題已加入投票區（截止 ${data.deadline}）！`);
+            TAB = "vote"; syncTabs();
+            await load();
+        } catch (e) { toast("提交失敗：" + e.message); }
+        finally { BUSY = false; }
+    }
+
+    // ── event delegation ──────────────────────────────────────────────────────
+    content.addEventListener("click", function (ev) {
+        const optEl = ev.target.closest(".reason-opt");
+        if (optEl) { optEl.classList.toggle("sel"); return; }
+
+        const btn = ev.target.closest("button[data-act]");
+        if (!btn) return;
+        const act = btn.dataset.act;
+        const topic = btn.dataset.topic;
+        const mode = btn.dataset.mode || "topic";
+
+        if (act === "agree") { cast({ mode, topic, action: "agree" }); return; }
+        if (act === "withdraw") { cast({ mode, topic, action: "withdraw" }); return; }
+        if (act === "against") { cast({ mode, topic, action: "against" }); return; }  // depose: no reasons
+        if (act === "against-open") { openReasonFor = topic; renderVoteReopen(); return; }
+        if (act === "against-cancel") { openReasonFor = null; renderVoteReopen(); return; }
+        if (act === "against-submit") {
+            const panel = content.querySelector(`.reasons[data-panel="${cssEsc(topic)}"]`);
+            const picked = Array.from(panel.querySelectorAll(".reason-opt.sel")).map(e => e.dataset.reason);
+            const other = panel.querySelector("textarea").value.trim();
+            if (other) picked.push("其他：" + other);
+            if (!picked.length) { toast("請至少選擇一個不同意原因。"); return; }
+            cast({ mode: "topic", topic, action: "against", reasons: picked });
+            return;
+        }
+        if (act === "depose-submit") { submitDepose(); return; }
+        if (act === "propose-submit") { submitPropose(false); return; }
+    });
+
+    // Re-render only the topic-vote tab (to open/close a reason panel) without refetch.
+    let LAST_VOTE_DATA = null;
+    function renderVoteReopen() { if (LAST_VOTE_DATA) renderVote(LAST_VOTE_DATA); }
+    const _origRenderVote = renderVote;
+    renderVote = function (data) { LAST_VOTE_DATA = data; _origRenderVote(data); };
+
+    function syncTabs() {
+        Array.from(tabsEl.querySelectorAll(".tab")).forEach(b =>
+            b.classList.toggle("active", b.dataset.tab === TAB));
+    }
+    tabsEl.addEventListener("click", function (ev) {
+        const b = ev.target.closest(".tab");
+        if (!b) return;
+        TAB = b.dataset.tab;
+        openReasonFor = null;
+        syncTabs();
+        load();
+    });
+
+    refreshBtn.addEventListener("click", load);
+    load();
+})();
+</script>
+</body>
+</html>

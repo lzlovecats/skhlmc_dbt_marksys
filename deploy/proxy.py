@@ -40,22 +40,38 @@ from debate_timing import (  # pure helpers, no side effects
 from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
 from prompts import build_free_debate_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
 from prompts import build_room_judgement_prompt
+from api.vote_api import router as vote_router
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
 STREAMLIT_WS_URL = os.getenv("STREAMLIT_WS_URL", "ws://127.0.0.1:8501")
 BASE_DIR = Path(__file__).resolve().parents[1]
 
+CACHE_NO_CACHE = "no-cache"
+CACHE_HTML = "public, max-age=300, stale-while-revalidate=3600"
+CACHE_MANIFEST = "public, max-age=86400"
+CACHE_STATIC = "public, max-age=31536000, immutable"
+STREAMLIT_STATIC_RE = re.compile(
+    r"^(static|vendor)/|"
+    r"\.(?:js|mjs|css|map|woff2?|ttf|otf|png|jpe?g|gif|webp|svg|ico)$",
+    re.IGNORECASE,
+)
+
 PWA_HEAD = """
 <!-- skh-pwa-head -->
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/app-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="聖呂中辯">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#111827">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
 <style>
+html, body, #root {
+    background: #000000 !important;
+}
 input, textarea, select {
     font-size: 16px !important;
 }
@@ -80,6 +96,10 @@ HOP_BY_HOP_HEADERS = {
 
 
 app = FastAPI()
+# JSON API for the HTML voting page. Registered before the catch-all proxy
+# routes at the bottom of this file so /api/vote/* is served locally instead of
+# being forwarded to Streamlit.
+app.include_router(vote_router)
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
 _streamlit_secrets = None
@@ -100,6 +120,23 @@ def _response_headers(headers):
         for key, value in headers.items()
         if key.lower() not in blocked
     }
+
+
+def _cache_headers(cache_control):
+    return {"Cache-Control": cache_control}
+
+
+def _streamlit_cache_control(path, content_type):
+    if not path or path == "/":
+        return CACHE_NO_CACHE
+
+    normalized = path.lstrip("/")
+    lowered_type = (content_type or "").lower()
+    if "text/html" in lowered_type:
+        return CACHE_NO_CACHE
+    if STREAMLIT_STATIC_RE.search(normalized):
+        return CACHE_STATIC
+    return None
 
 
 def _websocket_headers(headers):
@@ -127,6 +164,25 @@ def _inject_pwa_head(content):
 
     if "<!-- skh-pwa-head -->" in html or "</head>" not in html:
         return content
+
+    # Streamlit ships its own viewport meta tag. iOS is sensitive to multiple
+    # viewport/theme declarations, so strip them and inject one authoritative
+    # PWA block before the page reaches the device.
+    for meta_name in (
+        "viewport",
+        "theme-color",
+        "color-scheme",
+        "apple-mobile-web-app-capable",
+        "mobile-web-app-capable",
+        "apple-mobile-web-app-title",
+        "apple-mobile-web-app-status-bar-style",
+    ):
+        html = re.sub(
+            rf"\s*<meta\b(?=[^>]*\bname=[\"']{re.escape(meta_name)}[\"'])[^>]*>\s*",
+            "\n",
+            html,
+            flags=re.IGNORECASE,
+        )
 
     return html.replace("</head>", PWA_HEAD + "\n</head>", 1).encode("utf-8")
 
@@ -183,6 +239,17 @@ def _get_proxy_secret(key: str, default: str = "") -> str:
     return str(value) if value is not None else default
 
 
+def _get_vapid():
+    """VAPID config for streamlit-free push (core.push), or None if unconfigured.
+    Mirrors functions._get_vapid_config but reads the proxy's own secret source."""
+    public_key = _get_proxy_secret("VAPID_PUBLIC_KEY")
+    private_key = _get_proxy_secret("VAPID_PRIVATE_KEY")
+    subject = _get_proxy_secret("VAPID_SUBJECT", "https://skhlmc-dbt-marksys.onrender.com")
+    if not public_key or not private_key:
+        return None
+    return {"public_key": public_key, "private_key": private_key, "subject": subject}
+
+
 def _get_db_engine():
     global _db_engine
     if _db_engine is None:
@@ -199,6 +266,44 @@ def _get_db_engine():
             finally:
                 cursor.close()
     return _db_engine
+
+
+class _ProxyDb:
+    """DB executor over the proxy's own SQLAlchemy engine, matching the duck-typed
+    contract consumed by ``core`` domain logic (query / execute / execute_count).
+
+    The streamlit-free counterpart of ``db.StreamlitDb`` — lets the proxy reuse
+    ``core.vote_logic`` without importing Streamlit. Search path (public,
+    extensions) is already set by the engine's connect listener.
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+
+    def query(self, sql_str, params=None):
+        import pandas as pd
+        with self._engine.connect() as conn:
+            result = conn.execute(text(sql_str), params or {})
+            rows = result.fetchall()
+            columns = list(result.keys())
+        return pd.DataFrame(rows, columns=columns)
+
+    def execute(self, sql_str, params=None):
+        with self._engine.begin() as conn:
+            conn.execute(text(sql_str), params or {})
+
+    def execute_count(self, sql_str, params=None):
+        with self._engine.begin() as conn:
+            result = conn.execute(text(sql_str), params or {})
+            return result.rowcount
+
+
+def get_vote_db():
+    """The DB executor passed to ``core.vote_logic`` from the API handlers."""
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return _ProxyDb(engine)
 
 
 def _verify_committee_token(token: str):
@@ -304,12 +409,26 @@ def _ensure_video_tracking_tables(conn):
 
 @app.get("/manifest.json")
 async def manifest():
-    return FileResponse(BASE_DIR / "static" / "manifest.json", media_type="application/manifest+json")
+    return FileResponse(
+        BASE_DIR / "static" / "manifest.json",
+        media_type="application/manifest+json",
+        headers=_cache_headers(CACHE_MANIFEST),
+    )
 
 
 @app.get("/sw.js")
 async def service_worker():
-    return FileResponse(BASE_DIR / "deploy" / "sw.js", media_type="application/javascript")
+    # Inject the VAPID public key so the service worker can re-subscribe on its
+    # own when the browser rotates the push endpoint (pushsubscriptionchange).
+    source = (BASE_DIR / "deploy" / "sw.js").read_text(encoding="utf-8")
+    vapid = _get_vapid()
+    public_key = vapid["public_key"] if vapid else ""
+    source = source.replace("__VAPID_PUBLIC_KEY__", public_key)
+    return Response(
+        content=source,
+        media_type="application/javascript",
+        headers=_cache_headers(CACHE_NO_CACHE),
+    )
 
 
 @app.get("/app-icon-{size}.png")
@@ -317,7 +436,8 @@ async def app_icon(size: str):
     icon_path = BASE_DIR / "static" / f"app-icon-{size}.png"
     if size not in {"180", "192", "512"} or not icon_path.exists():
         return Response(status_code=404)
-    return FileResponse(icon_path, media_type="image/png")
+    return FileResponse(icon_path, media_type="image/png",
+                        headers=_cache_headers(CACHE_STATIC))
 
 
 @app.post("/api/push/subscribe")
@@ -396,6 +516,83 @@ async def push_unsubscribe(request: Request):
                     "WHERE user_id = :user_id"
                 ),
                 {"user_id": user_id, "now": now},
+            )
+
+    return {"ok": True}
+
+
+@app.post("/api/push/resubscribe")
+async def push_resubscribe(request: Request):
+    """Migrate a push subscription to a new endpoint after the browser rotated it.
+
+    Called from the service worker's ``pushsubscriptionchange`` handler, which has
+    no auth token — we authenticate implicitly on the ``old_endpoint`` (a secret,
+    unguessable capability URL already stored against a user). We carry over that
+    row's ``user_id`` so the member keeps receiving notifications without having to
+    manually re-enable them.
+    """
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    old_endpoint = str(payload.get("old_endpoint", "")).strip() if isinstance(payload, dict) else ""
+    subscription = payload.get("subscription") if isinstance(payload, dict) else None
+    new_endpoint = (
+        str(subscription.get("endpoint", "")).strip()
+        if isinstance(subscription, dict) else ""
+    )
+    if not new_endpoint:
+        raise HTTPException(status_code=400, detail="Missing new endpoint")
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        _ensure_push_subscriptions_table(conn)
+
+        # Recover the owning user from the old row (if the old endpoint is known).
+        user_id = None
+        if old_endpoint:
+            row = conn.execute(
+                text(
+                    f"SELECT user_id FROM {TABLE_PUSH_SUBSCRIPTIONS} "
+                    "WHERE endpoint = :old_endpoint"
+                ),
+                {"old_endpoint": old_endpoint},
+            ).fetchone()
+            if row is not None:
+                user_id = row[0]
+
+        conn.execute(
+            text(
+                f"INSERT INTO {TABLE_PUSH_SUBSCRIPTIONS} "
+                "(endpoint, user_id, subscription_json, is_active, created_at, updated_at, last_error) "
+                "VALUES (:endpoint, :user_id, :subscription_json, TRUE, :now, :now, NULL) "
+                "ON CONFLICT (endpoint) DO UPDATE SET "
+                "user_id = COALESCE(EXCLUDED.user_id, {table}.user_id), "
+                "subscription_json = EXCLUDED.subscription_json, "
+                "is_active = TRUE, "
+                "updated_at = EXCLUDED.updated_at, "
+                "last_error = NULL".format(table=TABLE_PUSH_SUBSCRIPTIONS)
+            ),
+            {
+                "endpoint": new_endpoint,
+                "user_id": user_id,
+                "subscription_json": json.dumps(subscription, ensure_ascii=False),
+                "now": now,
+            },
+        )
+
+        # Drop the stale row so we don't keep pushing to a dead endpoint.
+        if old_endpoint and old_endpoint != new_endpoint:
+            conn.execute(
+                text(
+                    f"DELETE FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE endpoint = :old_endpoint"
+                ),
+                {"old_endpoint": old_endpoint},
             )
 
     return {"ok": True}
@@ -778,13 +975,15 @@ def _resolve_projector_state(engine, display_key):
 @app.get("/projector")
 async def projector_display_page():
     return FileResponse(BASE_DIR / "templates" / "projector_display.html",
-                        media_type="text/html")
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
 
 
 @app.get("/projector/control")
 async def projector_control_page():
     return FileResponse(BASE_DIR / "templates" / "projector_control.html",
-                        media_type="text/html")
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
 
 
 @app.get("/api/projector/state")
@@ -899,12 +1098,23 @@ async def projector_set_state(request: Request):
 @app.get("/practice")
 async def appliance_practice_page():
     return FileResponse(BASE_DIR / "templates" / "appliance_practice.html",
-                        media_type="text/html")
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/vote")
+async def vote_page():
+    # New HTML voting page (Phase 2). Served alongside the legacy Streamlit page
+    # so committee members can use either while it stabilises.
+    return FileResponse(BASE_DIR / "frontend" / "vote" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
 
 
 @app.get("/api/practice/bell")
 async def appliance_practice_bell():
-    return FileResponse(BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg")
+    return FileResponse(BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg",
+                        headers=_cache_headers(CACHE_STATIC))
 
 
 @app.get("/api/practice/timer-config")
@@ -1070,7 +1280,8 @@ background:#3b82f6;border-radius:16px;padding:16px 44px;text-decoration:none}}
 @app.get("/practice/ai-debate")
 async def appliance_ai_debate_page():
     return FileResponse(BASE_DIR / "templates" / "appliance_ai_debate.html",
-                        media_type="text/html")
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
 
 
 @app.get("/practice/ai-debate/live")
@@ -2506,9 +2717,14 @@ async def http_proxy(request: Request, path: str):
     if "text/html" in content_type.lower():
         content = _inject_pwa_head(content)
 
+    headers = _response_headers(backend_response.headers)
+    cache_control = _streamlit_cache_control(path, content_type)
+    if cache_control:
+        headers["Cache-Control"] = cache_control
+
     return Response(
         content=content,
         status_code=backend_response.status_code,
-        headers=_response_headers(backend_response.headers),
+        headers=headers,
         media_type=None,
     )

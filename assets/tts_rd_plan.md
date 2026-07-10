@@ -147,6 +147,23 @@
 
 ---
 
+### 三之三、硬件策略：訓練租 CUDA / 推理視乎是否本地　⬜ 未開始
+
+> 涵蓋 TTS（讀音／聲線）同辯論 LLM 兩條線嘅硬件決定。核心觀察：**兩條線嘅「訓練」都係 CUDA 優先，Mac（Apple Silicon）強項係「推理 / serving」唔係「訓練」。** 所以「一部機打天下」唔成立，要按角色分。
+
+| 角色 | 建議硬件 | 原因 |
+|---|---|---|
+| **訓練 / fine-tune**（TTS GPT-SoVITS + LLM LoRA） | **租雲 CUDA**（按鐘） | CUDA-first 生態（Unsloth / bitsandbytes / axolotl）齊；訓練 bursty 且罕有（料儲夠先訓一次），租最抵、零 capex |
+| **LLM 推理 / serving / RAG dev** | 可考慮 **Mac mini（M4 Pro，≥48–64GB unified）** | Apple Silicon unified memory 係真着數，跑到同價 NVIDIA 消費卡跑唔起嘅大 quant model；靜、慳電、24/7；MLX 生態成熟 |
+| **TTS live serving** | **CUDA endpoint** | 見三之二；MPS 推理慢，即時路徑唔頂 |
+
+- **原則**：唔好為「訓練」買硬件 —— 訓練一律租 CUDA。買 Mac mini 嘅唯一合理理由係「本地 LLM 推理 + serving + dev」，唔係攞�嚟 tune。
+- **Mac mini 對 GPT-SoVITS（TTS）唔夾**：CUDA-first，MPS 部分算子 fallback CPU，訓練尤其痛。即使買咗 Mac，TTS 訓練都要租 CUDA。
+- **LLM 是否需要本地機**：視乎辯論 LLM 之後行雲 API 定 self-host 推理。若行雲 API，連 Mac mini 都未必需要；若要慳 API 錢做本地推理，Mac mini 先有位。
+- **決策次序**：先確認 LLM 用雲 API 定本地 self-host → 若本地，再評估 Mac mini vs 專用 NVIDIA box（睇需唔需要同時做 TTS 推理，需要就 NVIDIA 贏）。
+
+---
+
 ### 四、辯論 LLM：內容、策略、攻防及評語　🟡 收集基建已完成
 
 辯論 LLM 目標是令 AI 更接近校隊教練：理解香港中學辯論語境、評分標準、追問方式和主線漏洞。這一條工作線不需要用聲音錄音直接訓練，主要使用文字資料和檢索。

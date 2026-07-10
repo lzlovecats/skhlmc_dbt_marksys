@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
+import platform
 import re
+import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -30,6 +34,104 @@ def _slug(value: str) -> str:
 
 def _clean_text(value: str) -> str:
     return " ".join((value or "").replace("|", " ").split())
+
+
+def _run_quiet(cmd: list[str]) -> str:
+    try:
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _memory_gb() -> float | None:
+    if platform.system() == "Darwin":
+        raw = _run_quiet(["sysctl", "-n", "hw.memsize"])
+        if raw.isdigit():
+            return int(raw) / (1024**3)
+    if platform.system() == "Linux":
+        meminfo = Path("/proc/meminfo")
+        if meminfo.exists():
+            for line in meminfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemTotal:"):
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        return int(parts[1]) / (1024**2)
+    return None
+
+
+def _nvidia_vram_gb() -> list[float]:
+    if not shutil.which("nvidia-smi"):
+        return []
+    raw = _run_quiet(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+    values = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            values.append(int(line) / 1024)
+    return values
+
+
+def _hardware_info() -> dict[str, object]:
+    return {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "cpu_count": os.cpu_count() or 1,
+        "memory_gb": _memory_gb(),
+        "nvidia_vram_gb": _nvidia_vram_gb(),
+    }
+
+
+def _recommended_params(info: dict[str, object], total_minutes: float) -> dict[str, object]:
+    vram_values = info.get("nvidia_vram_gb") or []
+    has_nvidia = bool(vram_values)
+    max_vram = max(vram_values) if has_nvidia else 0
+
+    if has_nvidia:
+        if max_vram >= 16:
+            sovits_batch = 4
+            gpt_batch = 4
+        elif max_vram >= 10:
+            sovits_batch = 2
+            gpt_batch = 2
+        else:
+            sovits_batch = 1
+            gpt_batch = 1
+        gpu_info = "0"
+        device_note = f"NVIDIA GPU detected ({max_vram:.1f} GB VRAM); use GPU 0."
+    else:
+        sovits_batch = 1
+        gpt_batch = 1
+        gpu_info = "0"
+        if info.get("system") == "Darwin" and info.get("machine") == "arm64":
+            device_note = "Apple Silicon Mac detected; use CPU settings first. MPS may work but is less predictable for this workflow."
+        else:
+            device_note = "No NVIDIA GPU detected; use CPU settings."
+
+    if total_minutes < 15:
+        sovits_epochs = 4
+        gpt_epochs = 10
+    elif total_minutes < 45:
+        sovits_epochs = 8
+        gpt_epochs = 15
+    else:
+        sovits_epochs = 8
+        gpt_epochs = 20
+
+    return {
+        "gpu_info": gpu_info,
+        "device_note": device_note,
+        "sovits_batch": sovits_batch,
+        "sovits_epochs": sovits_epochs,
+        "sovits_save_every": max(1, sovits_epochs // 2),
+        "sovits_lr_weight": 0.4,
+        "gpt_batch": gpt_batch,
+        "gpt_epochs": gpt_epochs,
+        "gpt_save_every": 5 if gpt_epochs >= 10 else max(1, gpt_epochs // 2),
+        "enable_dpo": "unchecked",
+    }
 
 
 def _default_output_dir(zip_path: Path) -> Path:
@@ -87,12 +189,33 @@ def _write_webui_note(
     list_path: Path,
     dataset_dir: Path,
     language: str,
+    hardware: dict[str, object],
+    params: dict[str, object],
 ) -> None:
+    memory = hardware.get("memory_gb")
+    memory_text = f"{memory:.1f} GB" if isinstance(memory, float) else "unknown"
+    nvidia = hardware.get("nvidia_vram_gb") or []
+    nvidia_text = ", ".join(f"{value:.1f} GB" for value in nvidia) if nvidia else "none detected"
     note_path.write_text(
         "\n".join(
             [
                 "GPT-SoVITS WebUI fields",
                 "========================",
+                "",
+                "Open WebUI",
+                "----------",
+                "cd ~/Documents/AI/GPT-SoVITS",
+                "conda activate GPTSoVits",
+                "python webui.py",
+                "Browser URL: http://127.0.0.1:9874",
+                "",
+                "Detected hardware",
+                "-----------------",
+                f"System: {hardware.get('system')} {hardware.get('machine')}",
+                f"CPU cores: {hardware.get('cpu_count')}",
+                f"Memory: {memory_text}",
+                f"NVIDIA VRAM: {nvidia_text}",
+                f"Recommendation: {params['device_note']}",
                 "",
                 "0 / Fine-Tuned Model Information",
                 f"Experiment/model name: {experiment}",
@@ -103,14 +226,28 @@ def _write_webui_note(
                 f"Text labelling file: {list_path}",
                 "Audio dataset folder: leave blank",
                 "",
+                "Press these in order after filling the fields:",
+                "1. Open Tokenization & BERT Feature Extraction",
+                "2. Open Speech SSL Feature Extraction",
+                "3. Open Semantics Token Extraction",
+                "4. Open Training Set One-Click Formatting",
+                "",
                 "1B / Fine-Tuning",
-                "SoVITS batch size: 1",
-                "SoVITS total epochs: 4 for a quick smoke test, 8 for a longer first run",
-                "SoVITS save frequency: 2",
-                "GPT batch size: 1",
-                "GPT total epochs: 10",
-                "GPT save frequency: 5",
-                "GPU number: 0",
+                f"SoVITS batch size: {params['sovits_batch']}",
+                f"SoVITS total epochs: {params['sovits_epochs']}",
+                f"SoVITS text model learning rate weighting: {params['sovits_lr_weight']}",
+                f"SoVITS save frequency: {params['sovits_save_every']}",
+                f"SoVITS GPU number: {params['gpu_info']}",
+                "SoVITS checkboxes: keep both checked",
+                "",
+                f"GPT batch size: {params['gpt_batch']}",
+                f"GPT total epochs: {params['gpt_epochs']}",
+                f"GPT save frequency: {params['gpt_save_every']}",
+                f"GPT GPU number: {params['gpu_info']}",
+                "GPT DPO training: unchecked",
+                "GPT checkboxes: keep both checked",
+                "",
+                "Press Open SoVITS Training first. Wait until it finishes, then press Open GPT Training.",
                 "",
                 "1C / Inference",
                 f"Reference audio: choose a clean wav under {dataset_dir / 'audio'}",
@@ -179,7 +316,10 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     if kept == 0:
         raise ValueError("No usable rows were written. Check speaker, metadata.csv, and audio paths.")
 
-    _write_webui_note(note_path, experiment, list_path, output_dir, language)
+    total_minutes = total_seconds / 60
+    hardware = _hardware_info()
+    params = _recommended_params(hardware, total_minutes)
+    _write_webui_note(note_path, experiment, list_path, output_dir, language, hardware, params)
 
     print("Prepared GPT-SoVITS dataset")
     print(f"  extracted dir: {output_dir}")
@@ -189,7 +329,7 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     print(f"  list file:     {list_path}")
     print(f"  WebUI note:    {note_path}")
     print(f"  rows written:  {kept}")
-    print(f"  total audio:   {total_seconds / 60:.1f} minutes")
+    print(f"  total audio:   {total_minutes:.1f} minutes")
     if transcript_mismatch:
         print(f"  note:          {transcript_mismatch} ASR transcript(s) differ from prompt_text; prompt_text was used")
     if missing_audio:
@@ -202,6 +342,22 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     print(f"  Text labelling file:   {list_path}")
     print("  Audio dataset folder:  leave blank")
     print("  Language:              yue")
+    print()
+    print("Recommended 1B fine-tuning parameters for this machine:")
+    print(f"  hardware:              {hardware['system']} {hardware['machine']}, CPU cores={hardware['cpu_count']}")
+    memory = hardware.get("memory_gb")
+    if isinstance(memory, float):
+        print(f"  memory:                {memory:.1f} GB")
+    if hardware.get("nvidia_vram_gb"):
+        print(f"  NVIDIA VRAM:           {hardware['nvidia_vram_gb']}")
+    print(f"  note:                  {params['device_note']}")
+    print(f"  SoVITS batch size:     {params['sovits_batch']}")
+    print(f"  SoVITS epochs:         {params['sovits_epochs']}")
+    print(f"  SoVITS save frequency: {params['sovits_save_every']}")
+    print(f"  GPT batch size:        {params['gpt_batch']}")
+    print(f"  GPT epochs:            {params['gpt_epochs']}")
+    print(f"  GPT save frequency:    {params['gpt_save_every']}")
+    print(f"  GPU number:            {params['gpu_info']}")
     return 0
 
 

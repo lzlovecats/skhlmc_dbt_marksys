@@ -77,3 +77,28 @@ def execute_query_count(sql_str, params=None):
         count = result.rowcount
         s.commit()
     return count
+
+
+class StreamlitDb:
+    """DB executor over Streamlit's connection, matching the duck-typed contract
+    consumed by ``core`` domain logic: ``query`` / ``execute`` / ``execute_count``.
+
+    Lets the same domain functions run under Streamlit (this class) or under the
+    streamlit-free proxy (its own engine-backed executor) without either process
+    importing the other's runtime.
+    """
+
+    def query(self, sql_str, params=None):
+        return query_params(sql_str, params)
+
+    def execute(self, sql_str, params=None):
+        execute_query(sql_str, params)
+
+    def execute_count(self, sql_str, params=None):
+        return execute_query_count(sql_str, params)
+
+
+def default_db():
+    """The Streamlit-runtime DB executor used when domain logic is called without
+    an explicit ``db`` (i.e. from the Streamlit pages)."""
+    return StreamlitDb()
