@@ -102,6 +102,44 @@ def render_pwa_install_listener():
                 win.document.head.appendChild(style);
             }
 
+            // --- iOS: stop BaseWeb selectbox from summoning the keyboard/AutoFill ---
+            // Every st.selectbox hides a search <input>. On tap it takes focus, iOS
+            // pops the keyboard + "AutoFill" accessory, the visual viewport shrinks,
+            // and BaseWeb's portal-positioned popover ends up hit-testing BELOW where
+            // the option text is painted — the recurring "要撳低啲先撳到" symptom.
+            // These are short lists that never need typeahead, so suppress the keyboard
+            // outright: no accessory bar, no viewport shift, paint/touch stay aligned.
+            // A MutationObserver re-applies it because Streamlit reruns mount fresh
+            // inputs, and it keys off the stable data-baseweb attribute (survives
+            // Streamlit upgrades better than internal class names).
+            if (!win.__skhSelectKeyboardFixReady) {
+                win.__skhSelectKeyboardFixReady = true;
+                const hardenSelects = function () {
+                    const inputs = win.document.querySelectorAll('[data-baseweb="select"] input');
+                    for (let i = 0; i < inputs.length; i++) {
+                        const el = inputs[i];
+                        if (el.__skhHardened) continue;
+                        el.__skhHardened = true;
+                        el.setAttribute("inputmode", "none");   // no on-screen keyboard
+                        el.setAttribute("autocomplete", "off");  // no AutoFill accessory
+                        el.setAttribute("autocorrect", "off");
+                        el.setAttribute("autocapitalize", "none");
+                        el.setAttribute("spellcheck", "false");
+                    }
+                };
+                hardenSelects();
+                let scheduled = false;
+                const observer = new win.MutationObserver(function () {
+                    if (scheduled) return;
+                    scheduled = true;
+                    win.requestAnimationFrame(function () {
+                        scheduled = false;
+                        hardenSelects();
+                    });
+                });
+                observer.observe(win.document.body, { childList: true, subtree: true });
+            }
+
             if (!win.__skhPwaInstallListenerReady) {
                 win.__skhPwaInstallListenerReady = true;
                 win.__skhPwaDeferredPrompt = null;
