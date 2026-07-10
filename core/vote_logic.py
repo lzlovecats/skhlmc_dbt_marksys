@@ -3,23 +3,30 @@
 Phase 1 of the HTML migration: this module holds the non-UI vote logic that was
 previously embedded in ``vote.py`` — reason parsing, ballot writes, vote-data
 queries, threshold maths and auto-resolution DB effects. It is the single source
-of truth shared by the current Streamlit page and (later) the HTML/JSON API.
+of truth shared by the current Streamlit page and the HTML/JSON API.
 
 Rules for this module:
   * NO ``import streamlit`` and NO ``st.*`` UI calls (toasts, dialogs, reruns).
   * NO ``@st.cache_data`` — caching is a UI-runtime concern and stays in vote.py.
-  * DB access goes through the shared primitives in ``functions``/``db``. Those
-    still ride on Streamlit's connection today; decoupling that belongs to a
-    later phase and does not change this module's public surface.
+  * NO top-level import of ``functions``/``db`` — those pull in Streamlit and
+    would bloat the streamlit-free proxy (uvicorn) process. DB access is done
+    through an injected ``db`` executor (see the contract below); callers that
+    omit it fall back to the Streamlit-backed default via a lazy import.
+
+DB executor contract (duck-typed) — the ``db`` object must provide:
+    query(sql: str, params: dict | None = None)         -> pandas.DataFrame
+    execute(sql: str, params: dict | None = None)       -> None
+    execute_count(sql: str, params: dict | None = None) -> int   # rows affected
+Two implementations exist: ``db.StreamlitDb`` (Streamlit runtime) and a wrapper
+around the proxy's own SQLAlchemy engine for the streamlit-free API process.
 """
 
 import json
 import hashlib
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from functions import get_connection, execute_query, execute_query_count, query_params
 from schema import (
     TABLE_MOTION_COMMENTS,
     TABLE_TOPICS,
@@ -28,6 +35,18 @@ from schema import (
     TABLE_TOPIC_REMOVAL_VOTES,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
 )
+
+
+def _resolve_db(db):
+    """Return the injected executor, or lazily build the Streamlit-backed default.
+
+    The import is deferred so a streamlit-free process (the proxy) that always
+    passes its own executor never imports ``db``/streamlit.
+    """
+    if db is not None:
+        return db
+    from db import default_db
+    return default_db()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -125,55 +144,58 @@ def resolve_vote(agree_count, against_count, threshold):
 # ─────────────────────────────────────────────────────────────
 # Ballot writes
 # ─────────────────────────────────────────────────────────────
-def ballot_delete(table, topic, user_id):
+def ballot_delete(table, topic, user_id, db=None):
+    db = _resolve_db(db)
     params = {"user_id": user_id, "topic_text": topic}
     if table == TABLE_TOPIC_VOTES:
-        execute_query(f"DELETE FROM {TABLE_TOPIC_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
+        db.execute(f"DELETE FROM {TABLE_TOPIC_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
     else:
-        execute_query(f"DELETE FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
+        db.execute(f"DELETE FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} WHERE topic_text = :topic_text AND user_id = :user_id", params)
 
 
-def ballot_upsert(table, topic, user_id, vote, reasons=None):
+def ballot_upsert(table, topic, user_id, vote, reasons=None, db=None):
+    db = _resolve_db(db)
     params = {"user_id": user_id, "topic_text": topic}
     if table == TABLE_TOPIC_VOTES:
         if vote == "agree":
-            execute_query(
+            db.execute(
                 f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice) VALUES (:topic_text, :user_id, 'agree')"
                 " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'agree'",
                 params,
             )
         else:
-            execute_query(
+            db.execute(
                 f"INSERT INTO {TABLE_TOPIC_VOTE_BALLOTS} (topic_text, user_id, vote_choice, against_reasons) VALUES (:topic_text, :user_id, 'against', :reasons)"
                 " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = 'against', against_reasons = EXCLUDED.against_reasons",
                 {**params, "reasons": reasons or "[]"},
             )
     else:
-        execute_query(
+        db.execute(
             f"INSERT INTO {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (topic_text, user_id, vote_choice) VALUES (:topic_text, :user_id, :vote)"
             " ON CONFLICT (topic_text, user_id) DO UPDATE SET vote_choice = :vote",
             {**params, "vote": vote},
         )
 
 
-def ballot_switch_agree(table, topic, user_id):
+def ballot_switch_agree(table, topic, user_id, db=None):
+    db = _resolve_db(db)
     params = {"user_id": user_id, "topic_text": topic}
     if table == TABLE_TOPIC_VOTES:
-        execute_query(
+        db.execute(
             f"UPDATE {TABLE_TOPIC_VOTE_BALLOTS} SET vote_choice = 'agree', against_reasons = '[]' WHERE topic_text = :topic_text AND user_id = :user_id",
             params,
         )
     else:
-        execute_query(
+        db.execute(
             f"UPDATE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} SET vote_choice = 'agree' WHERE topic_text = :topic_text AND user_id = :user_id",
             params,
         )
 
 
-def check_category_would_exceed(category):
+def check_category_would_exceed(category, db=None):
     """Check if adding one more topic of this category would push it past 20% of the bank."""
-    conn = get_connection()
-    all_topics_df = conn.query(f"SELECT category FROM {TABLE_TOPICS}", ttl=5)
+    db = _resolve_db(db)
+    all_topics_df = db.query(f"SELECT category FROM {TABLE_TOPICS}")
     if all_topics_df.empty:
         return False, 0.0, 0, 0
     total = len(all_topics_df)
@@ -185,8 +207,9 @@ def check_category_would_exceed(category):
 # ─────────────────────────────────────────────────────────────
 # Vote-data queries
 # ─────────────────────────────────────────────────────────────
-def get_comment_counts(motion_type):
-    df = query_params(
+def get_comment_counts(motion_type, db=None):
+    db = _resolve_db(db)
+    df = db.query(
         f"SELECT motion_key, COUNT(*) AS cnt FROM {TABLE_MOTION_COMMENTS} "
         "WHERE motion_type = :type GROUP BY motion_key",
         {"type": motion_type},
@@ -196,9 +219,9 @@ def get_comment_counts(motion_type):
     return dict(zip(df["motion_key"], df["cnt"].astype(int)))
 
 
-def fetch_vote_data():
-    conn = get_connection()
-    df = conn.query(
+def fetch_vote_data(db=None):
+    db = _resolve_db(db)
+    df = db.query(
         f"""
         SELECT
             topic_text,
@@ -211,18 +234,16 @@ def fetch_vote_data():
             difficulty
         FROM {TABLE_TOPIC_VOTES}
         ORDER BY created_at DESC
-        """,
-        ttl=5,
+        """
     )
     df = df.fillna("")
 
     # Load ballots for pending topics only — historical ballots are not needed for the UI
-    ballots = conn.query(
+    ballots = db.query(
         f"SELECT b.topic_text, b.user_id, b.vote_choice, b.against_reasons"
         f" FROM {TABLE_TOPIC_VOTE_BALLOTS} b"
         f" JOIN {TABLE_TOPIC_VOTES} tv ON b.topic_text = tv.topic_text"
-        " WHERE tv.status = 'pending'",
-        ttl=0
+        " WHERE tv.status = 'pending'"
     )
     agree_map, against_map, reasons_map = {}, {}, {}
     if not ballots.empty:
@@ -255,20 +276,196 @@ def fetch_vote_data():
     return pending, passed, rejected
 
 
-def count_pending_votes():
-    df = get_connection().query(
-        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'",
-        ttl=5,
+def count_pending_votes(db=None):
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_VOTES} WHERE status = 'pending'"
     )
     return int(df.iloc[0]["cnt"]) if not df.empty else 0
 
 
-def count_pending_deposes():
-    df = get_connection().query(
-        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'",
-        ttl=5,
+def count_pending_deposes(db=None):
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT COUNT(*) AS cnt FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending'"
     )
     return int(df.iloc[0]["cnt"]) if not df.empty else 0
+
+
+# ─────────────────────────────────────────────────────────────
+# Single-motion queries (used by the cast endpoint to read fresh state)
+#
+# ``table`` is the *motion* table (TABLE_TOPIC_VOTES for topic votes,
+# TABLE_TOPIC_REMOVAL_VOTES for deposition votes); the matching ballot table is
+# resolved from it.
+# ─────────────────────────────────────────────────────────────
+def _ballot_table_for(table):
+    return TABLE_TOPIC_VOTE_BALLOTS if table == TABLE_TOPIC_VOTES else TABLE_TOPIC_REMOVAL_VOTE_BALLOTS
+
+
+def get_motion(table, topic, db=None):
+    """Return the motion row as a dict (status, proposer, threshold, and for topic
+    votes category/difficulty), or None if the motion does not exist."""
+    db = _resolve_db(db)
+    if table == TABLE_TOPIC_VOTES:
+        cols = "proposer_user_id, status, approval_threshold, category, difficulty"
+    else:
+        cols = "proposer_user_id, status, approval_threshold"
+    df = db.query(f"SELECT {cols} FROM {table} WHERE topic_text = :t", {"t": topic})
+    return None if df.empty else df.iloc[0].to_dict()
+
+
+def get_user_ballot(table, topic, user_id, db=None):
+    """Return this user's current vote_choice ('agree'/'against') or None."""
+    db = _resolve_db(db)
+    bt = _ballot_table_for(table)
+    df = db.query(
+        f"SELECT vote_choice FROM {bt} WHERE topic_text = :t AND user_id = :u",
+        {"t": topic, "u": user_id},
+    )
+    return None if df.empty else df.iloc[0]["vote_choice"]
+
+
+def count_ballots(table, topic, db=None):
+    """Return (agree_count, against_count) for a single motion."""
+    db = _resolve_db(db)
+    bt = _ballot_table_for(table)
+    df = db.query(
+        f"SELECT vote_choice, COUNT(*) AS cnt FROM {bt} WHERE topic_text = :t GROUP BY vote_choice",
+        {"t": topic},
+    )
+    agree = against = 0
+    for _, r in df.iterrows():
+        if r["vote_choice"] == "agree":
+            agree = int(r["cnt"])
+        elif r["vote_choice"] == "against":
+            against = int(r["cnt"])
+    return agree, against
+
+
+# ─────────────────────────────────────────────────────────────
+# Bank / proposal helpers (topic proposal + deposition proposal)
+# ─────────────────────────────────────────────────────────────
+def list_bank_topics(db=None):
+    """All topics currently in the bank (topic_text, category, difficulty)."""
+    db = _resolve_db(db)
+    df = db.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS} ORDER BY topic_text")
+    return [] if df.empty else df.fillna("").to_dict("records")
+
+
+def topic_in_bank(topic, db=None):
+    db = _resolve_db(db)
+    df = db.query(f"SELECT 1 AS x FROM {TABLE_TOPICS} WHERE topic_text = :t LIMIT 1", {"t": topic})
+    return not df.empty
+
+
+def topic_vote_or_bank_exists(topic, db=None):
+    """True if the topic is already a pending vote or already in the bank
+    (matches vote.py's duplicate guard before proposing)."""
+    db = _resolve_db(db)
+    v = db.query(
+        f"SELECT 1 AS x FROM {TABLE_TOPIC_VOTES} WHERE topic_text = :t AND status = 'pending' LIMIT 1",
+        {"t": topic},
+    )
+    if not v.empty:
+        return True
+    return topic_in_bank(topic, db=db)
+
+
+def depose_pending_exists(topic, db=None):
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT 1 AS x FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE topic_text = :t AND status = 'pending' LIMIT 1",
+        {"t": topic},
+    )
+    return not df.empty
+
+
+def category_current_ratio(category, db=None):
+    """Current share of ``category`` in the bank as (ratio, cat_count, total).
+
+    Matches vote.py's proposal-time imbalance check (cat_count / total, not the
+    +1 projection used by check_category_would_exceed during voting)."""
+    db = _resolve_db(db)
+    df = db.query(f"SELECT category FROM {TABLE_TOPICS}")
+    total = len(df)
+    if total == 0:
+        return 0.0, 0, 0
+    cat_count = int((df["category"] == category).sum())
+    return cat_count / total, cat_count, total
+
+
+def insert_topic_vote(topic, proposer, category, difficulty, threshold, db=None):
+    """Insert a pending topic vote (7-day deadline). Returns the deadline string."""
+    db = _resolve_db(db)
+    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+    deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
+    db.execute(
+        f"INSERT INTO {TABLE_TOPIC_VOTES} "
+        "(topic_text, proposer_user_id, status, created_at, deadline_date, approval_threshold, category, difficulty) "
+        "VALUES (:t, :u, 'pending', :c, :d, :th, :cat, :diff)",
+        {"t": topic, "u": proposer, "c": hk_time, "d": deadline, "th": threshold,
+         "cat": category, "diff": difficulty},
+    )
+    return deadline
+
+
+def insert_depose_vote(topic, proposer, reasons_json, threshold, db=None):
+    """Insert a pending deposition vote (7-day deadline). Returns the deadline string."""
+    db = _resolve_db(db)
+    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    hk_time = hk_now.strftime("%Y-%m-%d %H:%M:%S")
+    deadline = (hk_now.date() + timedelta(days=7)).strftime("%Y-%m-%d")
+    db.execute(
+        f"INSERT INTO {TABLE_TOPIC_REMOVAL_VOTES} "
+        "(topic_text, proposer_user_id, status, created_at, removal_reasons, deadline_date, approval_threshold) "
+        "VALUES (:t, :u, 'pending', :c, :r, :d, :th)",
+        {"t": topic, "u": proposer, "c": hk_time, "r": reasons_json, "d": deadline, "th": threshold},
+    )
+    return deadline
+
+
+def fetch_depose_data(db=None):
+    """Pending deposition motions with tallies, reasons and topic meta.
+
+    Mirrors vote.py's depose tab (pending only). Each row: topic_text,
+    proposer_user_id, removal_reasons (parsed list), created_at, deadline_date,
+    approval_threshold, agree_users, against_users, category, difficulty.
+    """
+    db = _resolve_db(db)
+    df = db.query(
+        f"SELECT topic_text, proposer_user_id, status, removal_reasons, created_at, deadline_date, approval_threshold"
+        f" FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending' ORDER BY created_at DESC"
+    )
+    df = df.fillna("")
+    ballots = db.query(
+        f"SELECT topic_text, user_id, vote_choice FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}"
+    )
+    agree_map, against_map = {}, {}
+    if not ballots.empty:
+        for _, b in ballots.iterrows():
+            t = b["topic_text"]
+            (agree_map if b["vote_choice"] == "agree" else against_map).setdefault(t, []).append(b["user_id"])
+
+    meta_df = db.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}")
+    meta = {}
+    if not meta_df.empty:
+        for _, r in meta_df.iterrows():
+            meta[r["topic_text"]] = (r.get("category"), r.get("difficulty"))
+
+    out = []
+    for _, row in df.iterrows():
+        rd = row.to_dict()
+        t = rd["topic_text"]
+        rd["agree_users"] = agree_map.get(t, [])
+        rd["against_users"] = against_map.get(t, [])
+        rd["removal_reasons"] = parse_reason_list(rd.get("removal_reasons", ""))
+        cat, diff = meta.get(t, ("", ""))
+        rd["category"] = cat or ""
+        rd["difficulty"] = diff or ""
+        out.append(rd)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -278,38 +475,42 @@ def count_pending_deposes():
 # already resolved), so the caller can decide whether to fire notifications.
 # UI feedback (success/error banners, balloons, reruns) stays in vote.py.
 # ─────────────────────────────────────────────────────────────
-def apply_topic_pass(topic, author=None, category=None, difficulty=None):
-    execute_query(
+def apply_topic_pass(topic, author=None, category=None, difficulty=None, db=None):
+    db = _resolve_db(db)
+    db.execute(
         f"INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty) VALUES (:topic_text, :author, :category, :difficulty)",
         {"topic_text": topic, "author": author, "category": category, "difficulty": difficulty},
     )
-    return execute_query_count(
+    return db.execute_count(
         f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
         {"topic_text": topic},
     )
 
 
-def apply_topic_reject(topic):
-    return execute_query_count(
+def apply_topic_reject(topic, db=None):
+    db = _resolve_db(db)
+    return db.execute_count(
         f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
         {"topic_text": topic},
     )
 
 
-def apply_depose_pass(topic):
-    updated = execute_query_count(
+def apply_depose_pass(topic, db=None):
+    db = _resolve_db(db)
+    updated = db.execute_count(
         f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
         {"topic_text": topic},
     )
     # Always remove the topic from the bank when a removal passes.
     # Decoupled from `updated` so it self-heals even if the status row was
     # already resolved (e.g. a prior run/session), preventing stale entries.
-    execute_query(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
+    db.execute(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
     return updated
 
 
-def apply_depose_reject(topic):
-    return execute_query_count(
+def apply_depose_reject(topic, db=None):
+    db = _resolve_db(db)
+    return db.execute_count(
         f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'rejected' WHERE topic_text = :topic_text AND status = 'pending'",
         {"topic_text": topic},
     )

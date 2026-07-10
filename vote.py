@@ -242,6 +242,14 @@ def render_push_notification_settings():
                 if (!response.ok) {
                     throw new Error("訂閱儲存失敗：" + response.status);
                 }
+                // Ask the browser to keep our storage (and thus the push
+                // subscription + service worker) from being evicted under
+                // storage pressure or Chrome's "unused site" cleanup.
+                try {
+                    if (win.navigator.storage && win.navigator.storage.persist) {
+                        await win.navigator.storage.persist();
+                    }
+                } catch (e) { /* best effort */ }
                 setStatus("通知已啟用。");
             } catch (error) {
                 setStatus(error.message || "未能啟用通知。");

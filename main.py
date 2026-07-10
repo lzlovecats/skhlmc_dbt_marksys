@@ -20,11 +20,17 @@ def render_pwa_install_listener():
         <script>
         (function () {
             const win = window.parent;
-            let viewport = win.document.querySelector("meta[name='viewport']");
-            if (!viewport) {
-                viewport = win.document.createElement("meta");
-                viewport.setAttribute("name", "viewport");
-                win.document.head.appendChild(viewport);
+            const doc = win.document;
+
+            function setSingleMeta(name, content) {
+                const selector = 'meta[name="' + name + '"]';
+                const metas = Array.prototype.slice.call(doc.querySelectorAll(selector));
+                const meta = metas.length ? metas[0] : doc.createElement("meta");
+                meta.setAttribute("name", name);
+                meta.setAttribute("content", content);
+                if (!metas.length) doc.head.appendChild(meta);
+                for (let i = 1; i < metas.length; i++) metas[i].remove();
+                return meta;
             }
             // Lock zoom at 1 and DO NOT extend content under the status bar.
             // With `viewport-fit=cover` + a translucent status bar the page
@@ -33,16 +39,39 @@ def render_pwa_install_listener():
             // painted — the "要撳低啲先撳到" symptom. Dropping cover keeps the
             // paint and touch coordinates aligned. Inputs still don't auto-zoom
             // because their font-size is >= 16px.
-            viewport.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
-            if (!win.document.getElementById("skh-mobile-input-zoom-fix")) {
-                const style = win.document.createElement("style");
+            setSingleMeta("viewport", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
+            setSingleMeta("theme-color", "#000000");
+            setSingleMeta("color-scheme", "dark");
+            setSingleMeta("apple-mobile-web-app-capable", "yes");
+            setSingleMeta("mobile-web-app-capable", "yes");
+            setSingleMeta("apple-mobile-web-app-status-bar-style", "black");
+            doc.documentElement.style.backgroundColor = "#000000";
+            if (doc.body) doc.body.style.backgroundColor = "#000000";
+
+            if (!doc.getElementById("skh-mobile-input-zoom-fix")) {
+                const style = doc.createElement("style");
                 style.id = "skh-mobile-input-zoom-fix";
                 style.textContent = `
+                    html, body, #root, .stApp { background: #000000 !important; }
                     input, textarea, select { font-size: 16px !important; }
 
                     @media (max-width: 640px) {
+                        body::before {
+                            content: "";
+                            position: fixed;
+                            top: 0;
+                            left: 0;
+                            right: 0;
+                            height: env(safe-area-inset-top);
+                            background: #000000;
+                            z-index: 999998;
+                            pointer-events: none;
+                        }
+
                         /* ">>" open-sidebar button, pinned clear of the notch. */
-                        [data-testid="stExpandSidebarButton"] {
+                        [data-testid="stExpandSidebarButton"],
+                        button[aria-label="Open sidebar"],
+                        button[title="Open sidebar"] {
                             position: fixed !important;
                             top: max(1.25rem, calc(env(safe-area-inset-top) + 0.75rem)) !important;
                             left: 0.75rem !important;
@@ -50,7 +79,8 @@ def render_pwa_install_listener():
                         }
 
                         [data-testid="stExpandSidebarButton"],
-                        button[aria-label="Open sidebar"] {
+                        button[aria-label="Open sidebar"],
+                        button[title="Open sidebar"] {
                             width: 3rem !important;
                             height: 3rem !important;
                             min-width: 3rem !important;
@@ -71,8 +101,22 @@ def render_pwa_install_listener():
                            open-sidebar button is nested inside stToolbar and
                            `display:none` on the toolbar removes it too. */
                         [data-testid="stStatusWidget"],
-                        [data-testid="stMainMenu"] {
+                        [data-testid="stMainMenu"],
+                        button[aria-label="Main menu"],
+                        button[aria-label="Menu"],
+                        button[title="Main menu"] {
                             display: none !important;
+                        }
+
+                        [data-testid="stToolbar"],
+                        [data-testid="stDecoration"],
+                        header[data-testid="stHeader"] {
+                            top: env(safe-area-inset-top) !important;
+                        }
+
+                        [data-testid="stToolbar"] {
+                            padding-top: env(safe-area-inset-top) !important;
+                            min-height: calc(env(safe-area-inset-top) + 3rem) !important;
                         }
 
                         /* "<<" collapse button lives in the sidebar header; push
@@ -99,32 +143,25 @@ def render_pwa_install_listener():
                         }
                     }
                 `;
-                win.document.head.appendChild(style);
+                doc.head.appendChild(style);
             }
 
-            // --- iOS: stop BaseWeb selectbox from summoning the keyboard/AutoFill ---
-            // Every st.selectbox hides a search <input>. On tap it takes focus, iOS
-            // pops the keyboard + "AutoFill" accessory, the visual viewport shrinks,
-            // and BaseWeb's portal-positioned popover ends up hit-testing BELOW where
-            // the option text is painted — the recurring "要撳低啲先撳到" symptom.
-            // These are short lists that never need typeahead, so suppress the keyboard
-            // outright: no accessory bar, no viewport shift, paint/touch stay aligned.
-            // A MutationObserver re-applies it because Streamlit reruns mount fresh
-            // inputs, and it keys off the stable data-baseweb attribute (survives
-            // Streamlit upgrades better than internal class names).
+            // iOS: stop BaseWeb selectbox from summoning the keyboard/AutoFill.
+            // Each st.selectbox contains a search input. On iPhone, focusing it
+            // can show the AutoFill accessory and resize the visual viewport; the
+            // portal-positioned menu then paints above its real tap targets.
             if (!win.__skhSelectKeyboardFixReady) {
                 win.__skhSelectKeyboardFixReady = true;
                 const hardenSelects = function () {
                     const inputs = win.document.querySelectorAll('[data-baseweb="select"] input');
                     for (let i = 0; i < inputs.length; i++) {
                         const el = inputs[i];
-                        if (el.__skhHardened) continue;
-                        el.__skhHardened = true;
-                        el.setAttribute("inputmode", "none");   // no on-screen keyboard
-                        el.setAttribute("autocomplete", "off");  // no AutoFill accessory
+                        el.setAttribute("inputmode", "none");
+                        el.setAttribute("autocomplete", "off");
                         el.setAttribute("autocorrect", "off");
                         el.setAttribute("autocapitalize", "none");
                         el.setAttribute("spellcheck", "false");
+                        el.readOnly = true;
                     }
                 };
                 hardenSelects();
@@ -138,6 +175,13 @@ def render_pwa_install_listener():
                     });
                 });
                 observer.observe(win.document.body, { childList: true, subtree: true });
+                win.addEventListener("pageshow", hardenSelects);
+                win.addEventListener("focusin", function (event) {
+                    const target = event.target;
+                    if (target && target.matches && target.matches('[data-baseweb="select"] input')) {
+                        hardenSelects();
+                    }
+                }, true);
             }
 
             if (!win.__skhPwaInstallListenerReady) {
