@@ -89,7 +89,17 @@ AI_FEATURE_LABELS = {
     "fact_check": "Fact Check易",
     "free_debate_live": "打Free De",
     "full_mock_live": "打完整Mock",
+    "vote_review": "辯題審查",
+    "vote_analysis": "辯題庫 / 往績分析",
+    "vote_discussion": "委員討論回應",
+    "tts_review": "AI訓練·錄音檢查",
+    "tts_script_analysis": "AI訓練·句庫分析",
+    "llm_review": "AI訓練·文字審查",
 }
+
+# log_ai_fund_usage 寫入時會受 chk_ai_fund_usage_feature CHECK 約束限制，
+# 新增 feature key 必須同步更新 ensure_ai_fund_tables() 內的約束及 migration 版本。
+AI_FUND_USAGE_FEATURES = tuple(AI_FEATURE_LABELS.keys())
 
 AI_FUND_TRANSACTION_LABELS = {
     "member_deposit": "成員入數",
@@ -470,7 +480,7 @@ def _now_hk_timestamp() -> str:
 
 
 def ensure_ai_fund_tables() -> bool:
-    if st.session_state.get("_ai_fund_tables_ready") == "usage_actual_v3":
+    if st.session_state.get("_ai_fund_tables_ready") == "usage_actual_v4":
         return True
     try:
         execute_query(CREATE_AI_FUND_TRANSACTIONS)
@@ -480,14 +490,15 @@ def ensure_ai_fund_tables() -> bool:
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS {TABLE_AI_FUND_USAGE_LOGS}_feature_check")
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature")
+        allowed_features = ", ".join(f"'{feature}'" for feature in AI_FUND_USAGE_FEATURES)
         execute_query(
             f"""
             ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS}
             ADD CONSTRAINT chk_ai_fund_usage_feature
-            CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live'))
+            CHECK (feature IN ({allowed_features}))
             """
         )
-        st.session_state["_ai_fund_tables_ready"] = "usage_actual_v3"
+        st.session_state["_ai_fund_tables_ready"] = "usage_actual_v4"
         return True
     except Exception as e:
         logger.warning("ensure_ai_fund_tables failed: %s", e)
@@ -1058,7 +1069,7 @@ def estimate_ai_feature_usage(
         "output_tokens": output_tokens,
         "audio_tokens": audio_tokens,
         "search_calls": search_calls,
-        "estimated_cost_usd": round(usd, 4),
+        "estimated_cost_usd": round(usd, 6),
         "estimated_cost_hkd": round(usd * HKD_PER_USD, 4),
         "cost_source": "estimate",
     }
@@ -1125,6 +1136,45 @@ def log_ai_fund_usage(
             "error_message": error_message[:500] if error_message else "",
             "created_at": _now_hk_timestamp(),
         },
+    )
+
+
+def _model_config_for_slug(model_slug: str | None) -> tuple[str, dict]:
+    """按 Gemini / OpenRouter model slug（例如 "gemini-2.5-flash"）找回對應的
+    model label 及定價 config；找不到時 fallback 至預設模型。"""
+    for label, config in AI_MODEL_GENERATION_OPTIONS.items():
+        if config.get("model") == model_slug:
+            return label, config
+    return DEFAULT_AI_MODEL, AI_MODEL_GENERATION_OPTIONS[DEFAULT_AI_MODEL]
+
+
+def log_gemini_usage_from_response(
+    user_id: str,
+    feature: str,
+    model_slug: str | None,
+    response,
+    success: bool,
+    has_audio: bool = False,
+    error_message: str = "",
+) -> None:
+    """畀直接使用 google-genai SDK 的呼叫點（例如 ai_training.py）記錄 AI 用量到 AI基金。
+    成功時由 raw Gemini response 的 usage_metadata 抽真實 token 計成本；失敗只記狀態。"""
+    model_label, model_config = _model_config_for_slug(model_slug)
+    usage = None
+    if success and response is not None:
+        usage = _usage_from_gemini_response(
+            response,
+            model_config,
+            fallback_audio_tokens=SPEECH_REVIEW_AUDIO_TOKENS if has_audio else 0,
+        )
+    log_ai_fund_usage(
+        user_id=user_id,
+        feature=feature,
+        model_label=model_label,
+        success=success,
+        has_audio=has_audio,
+        error_message=error_message,
+        usage_override=usage,
     )
 
 

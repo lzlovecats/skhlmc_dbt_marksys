@@ -621,7 +621,8 @@ with history_tab:
             width="stretch",
         )
 
-        st.markdown("#### 更新已繳金額")
+        st.markdown("##### 管理紀錄")
+        st.caption("先揀一筆紀錄，再更新已繳金額或刪除。")
         record_options = {
             int(row["id"]): f"#{int(row['id'])}｜{row['member_user_id']}｜{_format_date(row['late_date'])}｜第 {int(row['late_no'])} 次｜應繳 {_format_hkd(row['penalty_amount'])}"
             for _, row in year_records.iterrows()
@@ -630,58 +631,57 @@ with history_tab:
             "選擇紀錄",
             list(record_options.keys()),
             format_func=lambda record_id: record_options.get(record_id, str(record_id)),
+            key="lateness_manage_record_select",
         )
         selected_record = year_records[year_records["id"] == selected_record_id].iloc[0]
-        updated_paid_amount = st.number_input(
-            "已繳金額（HKD）",
-            min_value=0.0,
-            value=float(selected_record["paid_amount"] or 0),
-            step=1.0,
-            format="%.2f",
-            key=f"lateness_update_paid_{selected_record_id}",
-        )
-        if st.button("更新已繳金額", width="stretch"):
-            updated = execute_query_count(
-                f"""
-                UPDATE {TABLE_LATENESS_FUND_RECORDS}
-                SET paid_amount = :paid_amount,
-                    updated_at = :updated_at
-                WHERE id = :record_id
-                """,
-                {
-                    "record_id": int(selected_record_id),
-                    "paid_amount": float(updated_paid_amount),
-                    "updated_at": _now_hk_timestamp(),
-                },
-            )
-            st.success("已更新已繳金額。" if updated else "找不到要更新的紀錄。")
-            st.rerun()
 
-        st.markdown("#### 刪除遲到紀錄")
-        st.caption("如錯誤新增遲到紀錄，可在此永久刪除。此操作無法復原。")
-        delete_record_id = st.selectbox(
-            "選擇要刪除的紀錄",
-            list(record_options.keys()),
-            format_func=lambda record_id: record_options.get(record_id, str(record_id)),
-            key="lateness_delete_record_select",
-        )
-        confirm_delete_record = st.checkbox(
-            "我確認要刪除以上遲到紀錄",
-            key="lateness_delete_record_confirm",
-        )
-        if st.button(
-            "刪除遲到紀錄",
-            width="stretch",
-            disabled=not confirm_delete_record,
-            key="lateness_delete_record_btn",
-        ):
-            deleted = execute_query_count(
-                f"DELETE FROM {TABLE_LATENESS_FUND_RECORDS} WHERE id = :record_id",
-                {"record_id": int(delete_record_id)},
+        update_col, delete_col = st.columns(2)
+        with update_col:
+            st.markdown("**更新已繳金額**")
+            updated_paid_amount = st.number_input(
+                "已繳金額（HKD）",
+                min_value=0.0,
+                value=float(selected_record["paid_amount"] or 0),
+                step=1.0,
+                format="%.2f",
+                key=f"lateness_update_paid_{selected_record_id}",
             )
-            st.success("已刪除遲到紀錄。" if deleted else "找不到要刪除的紀錄。")
-            st.session_state.pop("lateness_delete_record_confirm", None)
-            st.rerun()
+            if st.button("更新已繳金額", width="stretch", key="lateness_update_paid_btn"):
+                updated = execute_query_count(
+                    f"""
+                    UPDATE {TABLE_LATENESS_FUND_RECORDS}
+                    SET paid_amount = :paid_amount,
+                        updated_at = :updated_at
+                    WHERE id = :record_id
+                    """,
+                    {
+                        "record_id": int(selected_record_id),
+                        "paid_amount": float(updated_paid_amount),
+                        "updated_at": _now_hk_timestamp(),
+                    },
+                )
+                st.success("已更新已繳金額。" if updated else "找不到要更新的紀錄。")
+                st.rerun()
+        with delete_col:
+            st.markdown("**刪除紀錄**")
+            st.caption("永久刪除，無法復原。")
+            confirm_delete_record = st.checkbox(
+                "我確認要刪除此遲到紀錄",
+                key="lateness_delete_record_confirm",
+            )
+            if st.button(
+                "刪除遲到紀錄",
+                width="stretch",
+                disabled=not confirm_delete_record,
+                key="lateness_delete_record_btn",
+            ):
+                deleted = execute_query_count(
+                    f"DELETE FROM {TABLE_LATENESS_FUND_RECORDS} WHERE id = :record_id",
+                    {"record_id": int(selected_record_id)},
+                )
+                st.success("已刪除遲到紀錄。" if deleted else "找不到要刪除的紀錄。")
+                st.session_state.pop("lateness_delete_record_confirm", None)
+                st.rerun()
 
     st.divider()
     st.markdown(f"#### 支出紀錄（{selected_label} 年度）")
@@ -698,7 +698,7 @@ with history_tab:
             width="stretch",
         )
 
-        st.markdown("#### 刪除支出紀錄")
+        st.markdown("##### 刪除支出紀錄")
         st.caption("如錯誤新增支出紀錄，可在此永久刪除。此操作無法復原。")
         expense_options = {
             int(row["id"]): f"#{int(row['id'])}｜{_format_date(row['expense_date'])}｜{_format_hkd(row['amount_hkd'])}｜{row['note'] or ''}"
