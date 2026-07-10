@@ -26,11 +26,14 @@ def render_pwa_install_listener():
                 viewport.setAttribute("name", "viewport");
                 win.document.head.appendChild(viewport);
             }
-            // Lock zoom at 1. On iOS standalone PWA, allowing zoom desyncs the
-            // paint vs. hit-test position of BaseWeb's fixed dropdown popovers,
-            // which is why mobile drop-downs "撳唔到" / tap the wrong option.
-            // Inputs still don't auto-zoom because their font-size is >= 16px.
-            viewport.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover");
+            // Lock zoom at 1 and DO NOT extend content under the status bar.
+            // With `viewport-fit=cover` + a translucent status bar the page
+            // draws beneath the notch, which shifts the hit-test area of
+            // BaseWeb's fixed dropdown popovers below where the option text is
+            // painted — the "要撳低啲先撳到" symptom. Dropping cover keeps the
+            // paint and touch coordinates aligned. Inputs still don't auto-zoom
+            // because their font-size is >= 16px.
+            viewport.setAttribute("content", "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no");
             if (!win.document.getElementById("skh-mobile-input-zoom-fix")) {
                 const style = win.document.createElement("style");
                 style.id = "skh-mobile-input-zoom-fix";

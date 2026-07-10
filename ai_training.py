@@ -343,6 +343,83 @@ def _set_script_active(script_id, is_active):
     )
 
 
+def _fully_recorded_short_scripts(allowed_users):
+    if not allowed_users:
+        return []
+    rows = query_params(
+        f"""
+        SELECT s.script_id, s.category, s.text,
+               COUNT(DISTINCT r.speaker_user_id) AS recorded_users
+        FROM {TABLE_TTS_SCRIPTS} s
+        LEFT JOIN {TABLE_TTS_VOICE_RECORDINGS} r
+          ON r.script_id = s.script_id
+         AND r.status IN ('accepted', 'pending')
+         AND r.speaker_user_id = ANY(:allowed_users)
+        WHERE s.is_active = TRUE
+          AND COALESCE(s.script_type, 'short') = 'short'
+        GROUP BY s.script_id, s.category, s.text, s.sort_order
+        HAVING COUNT(DISTINCT r.speaker_user_id) >= :required
+        ORDER BY s.category, s.sort_order, s.script_id
+        """,
+        {"allowed_users": allowed_users, "required": len(allowed_users)},
+    )
+    return [row.to_dict() for _, row in rows.iterrows()]
+
+
+def _fully_recorded_manuscripts(allowed_users):
+    if not allowed_users:
+        return []
+    rows = query_params(
+        f"""
+        WITH active_segments AS (
+            SELECT script_id, manuscript_id, manuscript_title, sort_order
+            FROM {TABLE_TTS_SCRIPTS}
+            WHERE is_active = TRUE
+              AND COALESCE(script_type, 'short') = 'full'
+              AND manuscript_id IS NOT NULL
+        ),
+        segment_progress AS (
+            SELECT s.manuscript_id, s.manuscript_title, s.script_id, s.sort_order,
+                   COUNT(DISTINCT r.speaker_user_id) AS recorded_users
+            FROM active_segments s
+            LEFT JOIN {TABLE_TTS_VOICE_RECORDINGS} r
+              ON r.script_id = s.script_id
+             AND r.status IN ('accepted', 'pending')
+             AND r.speaker_user_id = ANY(:allowed_users)
+            GROUP BY s.manuscript_id, s.manuscript_title, s.script_id, s.sort_order
+        )
+        SELECT manuscript_id, manuscript_title,
+               COUNT(*) AS segment_count,
+               ARRAY_AGG(script_id ORDER BY sort_order, script_id) AS script_ids
+        FROM segment_progress
+        GROUP BY manuscript_id, manuscript_title
+        HAVING MIN(recorded_users) >= :required
+        ORDER BY manuscript_id
+        """,
+        {"allowed_users": allowed_users, "required": len(allowed_users)},
+    )
+    manuscripts = []
+    for _, row in rows.iterrows():
+        script_ids = row["script_ids"]
+        if not isinstance(script_ids, list):
+            script_ids = list(script_ids) if script_ids is not None else []
+        manuscripts.append({
+            "manuscript_id": row["manuscript_id"],
+            "title": row["manuscript_title"] or "（無標題）",
+            "segment_count": int(row["segment_count"] or 0),
+            "script_ids": [str(sid) for sid in script_ids],
+        })
+    return manuscripts
+
+
+def _deactivate_scripts(script_ids):
+    changed = 0
+    for script_id in script_ids:
+        _set_script_active(script_id, False)
+        changed += 1
+    return changed
+
+
 # ---------------------------------------------------------------------------
 # 順序錄音：系統挑錄音者未錄過的句子，錄一句跳一句。分「短句」與「完整稿」兩模式；
 # 完整稿由管理員貼全文、系統自動分段（見 _split_manuscript / _save_manuscript）。
@@ -1719,6 +1796,52 @@ def _render_admin_scripts(user_id, all_scripts):
     st.caption("管理員可手動新增、修改或停用錄音句子；亦可用 AI 分析仍需要收集哪些錄音。")
 
     counts = _recording_counts_by_category(all_scripts)
+
+    with st.expander("✅ 停用已全員錄製內容", expanded=False):
+        st.caption(
+            "短句會逐句判斷；完整稿只會在整份稿所有啟用段落都已由所有錄音名單成員提交後，先一併停用。"
+        )
+        if not allowed_users:
+            st.warning("尚未設定 TTS 錄音委員名單，未能判斷全員錄製狀態。")
+        else:
+            completed_short = _fully_recorded_short_scripts(allowed_users)
+            completed_manuscripts = _fully_recorded_manuscripts(allowed_users)
+            manuscript_segment_ids = [
+                sid
+                for manuscript in completed_manuscripts
+                for sid in manuscript["script_ids"]
+            ]
+            st.caption(
+                f"錄音名單人數：{len(allowed_users)}｜可停用短句：{len(completed_short)} 句｜"
+                f"可停用完整稿：{len(completed_manuscripts)} 份（共 {len(manuscript_segment_ids)} 段）"
+            )
+            if completed_short:
+                with st.expander("將停用的短句", expanded=False):
+                    for row in completed_short[:50]:
+                        st.caption(f"{row['script_id']}｜{row['category']}｜{row['text']}")
+                    if len(completed_short) > 50:
+                        st.caption(f"另有 {len(completed_short) - 50} 句未顯示。")
+            if completed_manuscripts:
+                with st.expander("將停用的完整稿", expanded=False):
+                    for manuscript in completed_manuscripts:
+                        st.caption(
+                            f"{manuscript['manuscript_id']}｜{manuscript['title']}｜"
+                            f"{manuscript['segment_count']} 段"
+                        )
+            confirm_deactivate = st.checkbox(
+                "我確認要停用以上已全員錄製內容",
+                key="tts_deactivate_completed_confirm",
+            )
+            target_ids = [str(row["script_id"]) for row in completed_short] + manuscript_segment_ids
+            if st.button(
+                "停用所有已全員錄製內容",
+                type="primary",
+                width="stretch",
+                disabled=not (confirm_deactivate and target_ids),
+            ):
+                changed = _deactivate_scripts(target_ids)
+                st.success(f"已停用 {changed} 段內容。")
+                st.rerun()
 
     # --- AI 缺口分析 ---
     with st.expander("🤖 AI 句庫缺口分析", expanded=False):
