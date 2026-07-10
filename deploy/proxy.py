@@ -1104,8 +1104,10 @@ async def appliance_practice_page():
 
 @app.get("/vote")
 async def vote_page():
-    # New HTML voting page (Phase 2). Served alongside the legacy Streamlit page
-    # so committee members can use either while it stabilises.
+    # New HTML voting page — the primary vote URL, set to replace Streamlit. The
+    # legacy Streamlit page now lives at /vote-classic (st.Page url_path
+    # "vote-classic"), so this proxy route no longer shadows it. Vote push links
+    # (url="/vote") intentionally land here.
     return FileResponse(BASE_DIR / "frontend" / "vote" / "index.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_HTML))

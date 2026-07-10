@@ -54,94 +54,6 @@ def render_pwa_install_listener():
                 style.textContent = `
                     html, body, #root, .stApp { background: #000000 !important; }
                     input, textarea, select { font-size: 16px !important; }
-
-                    @media (max-width: 640px) {
-                        body::before {
-                            content: "";
-                            position: fixed;
-                            top: 0;
-                            left: 0;
-                            right: 0;
-                            height: env(safe-area-inset-top);
-                            background: #000000;
-                            z-index: 999998;
-                            pointer-events: none;
-                        }
-
-                        /* ">>" open-sidebar button, pinned clear of the notch. */
-                        [data-testid="stExpandSidebarButton"],
-                        button[aria-label="Open sidebar"],
-                        button[title="Open sidebar"] {
-                            position: fixed !important;
-                            top: max(1.25rem, calc(env(safe-area-inset-top) + 0.75rem)) !important;
-                            left: 0.75rem !important;
-                            z-index: 999999 !important;
-                        }
-
-                        [data-testid="stExpandSidebarButton"],
-                        button[aria-label="Open sidebar"],
-                        button[title="Open sidebar"] {
-                            width: 3rem !important;
-                            height: 3rem !important;
-                            min-width: 3rem !important;
-                            min-height: 3rem !important;
-                            padding: 0.65rem !important;
-                            align-items: center !important;
-                            justify-content: center !important;
-                        }
-
-                        /* Reserve space so the fixed expand button never overlaps
-                           the page title/content on mobile. */
-                        .block-container {
-                            padding-top: calc(env(safe-area-inset-top) + 3.25rem) !important;
-                        }
-
-                        /* Hide only the running-man status widget and the "⋯"
-                           main menu — NOT the whole stToolbar, because the ">>"
-                           open-sidebar button is nested inside stToolbar and
-                           `display:none` on the toolbar removes it too. */
-                        [data-testid="stStatusWidget"],
-                        [data-testid="stMainMenu"],
-                        button[aria-label="Main menu"],
-                        button[aria-label="Menu"],
-                        button[title="Main menu"] {
-                            display: none !important;
-                        }
-
-                        [data-testid="stToolbar"],
-                        [data-testid="stDecoration"],
-                        header[data-testid="stHeader"] {
-                            top: env(safe-area-inset-top) !important;
-                        }
-
-                        [data-testid="stToolbar"] {
-                            padding-top: env(safe-area-inset-top) !important;
-                            min-height: calc(env(safe-area-inset-top) + 3rem) !important;
-                        }
-
-                        /* "<<" collapse button lives in the sidebar header; push
-                           the header below the notch so it stays tappable in the
-                           standalone PWA. */
-                        [data-testid="stSidebarHeader"] {
-                            padding-top: calc(env(safe-area-inset-top) + 0.75rem) !important;
-                        }
-
-                        [data-testid="stSidebarCollapseButton"] {
-                            width: 3rem !important;
-                            height: 3rem !important;
-                            min-width: 3rem !important;
-                            min-height: 3rem !important;
-                            z-index: 999999 !important;
-                        }
-
-                        /* Keep long drop-down menus scrollable on small screens. */
-                        [data-baseweb="popover"] ul,
-                        [data-baseweb="menu"] ul {
-                            max-height: min(60vh, 24rem) !important;
-                            overflow-y: auto !important;
-                            -webkit-overflow-scrolling: touch !important;
-                        }
-                    }
                 `;
                 doc.head.appendChild(style);
             }
@@ -464,7 +376,7 @@ page_match_photos = st.Page("match_photos.py", title="比賽圖片回顧", url_p
 page_video_admin = st.Page("video_admin.py", title="比賽片段管理")
 page_registration = st.Page("registration.py", title="比賽報名", url_path="registration")
 page_open_db = st.Page("open_db.py", title="查閱辯題庫")
-page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免", url_path="vote")
+page_vote = st.Page("vote.py", title="辯題徵集、投票及罷免", url_path="vote-classic")
 page_bug_report = st.Page("bug_report.py", title="Bug回報", url_path="bug-report")
 page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
 page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admin-hub")

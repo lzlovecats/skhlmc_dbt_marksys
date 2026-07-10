@@ -84,14 +84,15 @@
     </header>
 
     <div class="tabs" id="tabs">
-        <button class="tab active" data-tab="vote">📊 辯題投票</button>
+        <button class="tab active" data-tab="propose">📝 提案</button>
+        <button class="tab" data-tab="vote">📊 辯題投票</button>
         <button class="tab" data-tab="depose">✂️ 罷免投票</button>
-        <button class="tab" data-tab="propose">📝 提案</button>
     </div>
 
     <div class="toolbar">
         <button id="refresh" type="button">↻ 重新整理</button>
         <span class="sub" id="counts"></span>
+        <a class="sub" href="/vote-classic" style="margin-left:auto">舊版 (Classic) ↗</a>
     </div>
 
     <div id="content"><div class="state">載入中…</div></div>
@@ -129,7 +130,7 @@
 
     let ME = "";
     let BUSY = false;
-    let TAB = "vote";
+    let TAB = "propose";
     let openReasonFor = null;   // topic_text with an open against-reason panel (topic vote)
 
     function esc(s) {
