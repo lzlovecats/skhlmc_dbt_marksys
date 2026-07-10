@@ -51,6 +51,7 @@ REVIEWERS_CONFIG_KEY = "tts_recording_reviewers"
 AI_TRAINING_REVIEW_MODELS = model_slugs_for_labels(ROOM_JUDGEMENT_MODEL_LABELS)
 RD_PLAN_PATH = Path(__file__).parent / "assets" / "tts_rd_plan.md"
 REVIEW_PAGE_SIZE = 5
+MANUSCRIPT_SEGMENT_MAX_LEN = 35
 LLM_DATA_TYPES = [
     "發言稿",
     "自由辯論逐字稿",
@@ -473,8 +474,8 @@ def _next_manuscript_id():
     return f"ms_{max_n + 1:04d}"
 
 
-def _split_manuscript(text_value, max_len=45):
-    """把完整稿切成一段段（每段合併數句、約 max_len 字以內，貼近 1–60 秒一個 clip）。"""
+def _split_manuscript(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
+    """把完整稿切成一段段（每段最多 max_len 字）。"""
     cleaned = (text_value or "").replace("\r", "\n")
     # 先按換行分大段，再在每大段內按句末標點併句
     segments = []
@@ -485,6 +486,13 @@ def _split_manuscript(text_value, max_len=45):
             part = part.strip()
             if not part:
                 continue
+            if len(part) > max_len:
+                if buf:
+                    segments.append(buf)
+                    buf = ""
+                while len(part) > max_len:
+                    segments.append(part[:max_len])
+                    part = part[max_len:]
             if buf and len(buf) + len(part) > max_len:
                 segments.append(buf)
                 buf = part
@@ -2210,7 +2218,7 @@ def _render_manuscript_admin(user_id):
         )
         ms_text = st.text_area(
             "完整稿內容", key="ms_new_text", height=240,
-            placeholder="貼上整份發言稿；系統會按句號與換行自動分段。",
+            placeholder=f"貼上整份發言稿；系統會按句號與換行自動分段，每段最多 {MANUSCRIPT_SEGMENT_MAX_LEN} 字。",
         )
         if st.button("預覽分段", key="ms_preview_btn"):
             st.session_state["ms_preview"] = _split_manuscript(ms_text or "")
