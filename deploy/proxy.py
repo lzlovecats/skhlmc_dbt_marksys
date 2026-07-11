@@ -42,6 +42,8 @@ from prompts import build_free_debate_live_prompt, LIVE_RUNTIME_PROMPTS  # pure,
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
 from api.auth_api import router as committee_router
+from api.open_db_api import router as open_db_router
+from api.home_api import router as home_router
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -102,6 +104,8 @@ app = FastAPI()
 # being forwarded to Streamlit.
 app.include_router(vote_router)
 app.include_router(committee_router)
+app.include_router(open_db_router)
+app.include_router(home_router)
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
 _streamlit_secrets = None
@@ -1117,11 +1121,25 @@ async def appliance_practice_page():
 
 @app.get("/vote")
 async def vote_page():
-    # New HTML voting page — the primary vote URL, set to replace Streamlit. The
-    # legacy Streamlit page now lives at /vote-classic (st.Page url_path
-    # "vote-classic"), so this proxy route no longer shadows it. Vote push links
-    # (url="/vote") intentionally land here.
+    """Primary HTML voting page."""
     return FileResponse(BASE_DIR / "frontend" / "vote" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/")
+async def home_page():
+    """Primary HTML home page, replacing Streamlit's former default route."""
+    return FileResponse(BASE_DIR / "frontend" / "home" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/open_db")
+@app.get("/open-db", include_in_schema=False)
+async def open_db_page():
+    """Primary HTML public topic bank; hyphenated path remains an alias."""
+    return FileResponse(BASE_DIR / "frontend" / "open_db" / "index.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_HTML))
 

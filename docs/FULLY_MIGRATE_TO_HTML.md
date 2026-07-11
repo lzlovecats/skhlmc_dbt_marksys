@@ -10,7 +10,7 @@
 
 ## 0. TL;DR（畀趕時間嘅人）
 
-- **策略**：逐頁遷移，**Streamlit 同 HTML 雙軌並行**，穩定先刪 Streamlit。已完成第一版：**投票頁（vote）**。
+- **策略**：逐頁遷移；已接管頁面保留 Streamlit source 於 `legacy_streamlit/`，不刪除但不再註冊。其餘頁面先雙軌驗證再接管。
 - **唔係用 JS 重寫 backend**。Python 業務邏輯抽入 `core/`（去 Streamlit 化），HTML 前端經 `api/` 嘅 JSON 端點取用。**新舊 UI 共用同一份 `core/` 邏輯 = 單一真相來源。**
 - **三個關鍵不變量**：
   1. `core/` 同 `api/` **禁止 `import streamlit` / `st.*`**（proxy 係 512MB、又冇 Streamlit runtime）。
@@ -159,7 +159,7 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 
 ## 6. 已完成 vs 未完成
 
-### ✅ 已完成 —— 投票頁（vote）
+### ✅ 已完成並直接接管 —— 投票頁（vote）
 - **`core/`**：`vote_logic`（解析/門檻/ballot/查詢/單一動議查詢/自動結算）、`members`（動態門檻）、`push`、`auth_logic`。
 - **`api/vote_api.py`**：
   - `GET /api/vote/data` — 待投票 + 已通過/否決 + 動態門檻（live 驗證 200）
@@ -171,7 +171,7 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 - **參與率 slice**：`core.members.get_member_participation_stats` + `GET /api/vote/member-stats` + HTML「參與率」tab（讀 `committee_vote_activity_view`，同 Streamlit 統計表一致）。
 - **Vote parity 收尾**：提案 tab 已重新包含「提出新辯題 + 提出罷免動議」；投票/罷免卡補回進度 bar、討論區、理由 expander；辯題投票補回「最近二十個」歷史 expander；AI 審查提案、討論 Tag Gemini、AI 辯題庫/歷史分析改成 streamlit-free API。
 - **`frontend/vote/index.html`**：六分頁（提案/投票/罷免/AI分析/成員統計/帳戶）+ 登入表單 + 登出 + push（重用 `/api/push/subscribe`）+ 更改密碼。
-- **路徑**：HTML 頁 = **`/vote`**（未來主版）；Streamlit 頁改 `url_path="vote-classic"` = **`/vote-classic`**（`vote.py` 頂有掣去 `/vote`）。
+- **路徑**：HTML 頁 = **`/vote`**；原 `vote.py` 已搬至 `legacy_streamlit/vote.py`，不再由 Streamlit navigation 註冊。
 - **驗證**：`py_compile` + import 隔離 + 假 db 單元測 + 本機 live-curl 讀端點 + 使用者確認 Streamlit 頁仍正常。
 
 ### ✅ 已完成 —— 投票頁 HTML parity 收尾
@@ -181,7 +181,7 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 
 ### ⬜ 未開始 —— 其餘所有 Streamlit 頁
 每版都要行同一套 4 步流程。粗略清單（睇 `main.py` `st.Page`）：
-下一頁已指定為 `open_db`，遷移基線見 `docs/OPEN_DB_HTML_MIGRATION.md`。其後包括：`home`（主頁導航）、`judging`（電子分紙，核心）、`match_info`、`review`、`draw_match_schedule`、`registration`(+admin)、`team_roster`、`video_replay`/`video_admin`、`match_photos`、`chairperson`、`lateness_fund`、`ai_fund`、`ai_coach`、`ai_training`、`db_mgmt`、`dev_settings`、`bug_report` 等。
+已接管：`vote`、`open_db`、`home`。三個 Streamlit source 分別保留於 `legacy_streamlit/`。其後包括：`judging`（電子分紙，核心）、`match_info`、`review`、`draw_match_schedule`、`registration`(+admin)、`team_roster`、`video_replay`/`video_admin`、`match_photos`、`chairperson`、`lateness_fund`、`ai_fund`、`ai_coach`、`ai_training`、`db_mgmt`、`dev_settings`、`bug_report` 等。
 
 ---
 

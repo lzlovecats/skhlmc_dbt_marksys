@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8">
+    <title>聖呂中辯電子賽務系統</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="theme-color" content="#0e1117">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/app-icon-180.png">
+    <style>
+        :root { color-scheme: dark; --bg:#0e1117; --card:#262730; --text:#fafafa; --muted:#a3a8b5; --border:#3a3d46; --accent:#ff4b4b; --teal:#5eead4; --warn:#ffd27d; }
+        * { box-sizing:border-box; }
+        body { margin:0; padding:max(1rem, env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom)); background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; font-size:16px; line-height:1.5; }
+        main { width:100%; margin:0 auto; }
+        h1 { margin:0 0 .35rem; font-size:2rem; line-height:1.25; }
+        h2 { font-size:1.1rem; margin:0 0 .35rem; line-height:1.35; }
+        p { margin:.35rem 0 .8rem; }
+        .caption, .muted { color:var(--muted); font-size:.9rem; }
+        .card { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:1rem; margin:1rem 0; }
+        .warning { border-color:#96732d; color:var(--warn); }
+        .grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:1rem; }
+        .stack { display:grid; gap:1rem; }
+        .link-list { display:grid; gap:.55rem; }
+        a, button { font:inherit; }
+        a.action, button { display:inline-flex; align-items:center; justify-content:center; min-height:2.55rem; border:1px solid var(--border); border-radius:8px; padding:.45rem .8rem; color:var(--text); background:#171923; text-decoration:none; cursor:pointer; }
+        a.action:hover, button:hover { border-color:#778093; }
+        button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+        button:disabled { opacity:.6; cursor:not-allowed; }
+        .registration { display:grid; grid-template-columns:3fr 1fr; gap:1rem; align-items:end; }
+        .divider { border:0; border-top:1px solid var(--border); margin:2rem 0 1.35rem; }
+        details { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:.85rem 1rem; margin:1rem 0; }
+        summary { cursor:pointer; font-weight:600; }
+        .support-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin-top:.85rem; }
+        .install-kicker { color:var(--teal); font-size:.82rem; font-weight:700; margin-bottom:.25rem; }
+        .install-title { font-size:1.1rem; font-weight:700; margin-bottom:.35rem; }
+        .install-copy, .install-status, .ios-steps { color:#e2e8f0; font-size:.92rem; line-height:1.55; }
+        .install-actions { margin:.8rem 0 .35rem; }
+        .install-button { color:#0f172a; background:var(--teal); border:0; font-weight:700; }
+        .ios-steps, .android-only { display:none; }
+        .is-ios .ios-steps { display:block; }
+        .is-android .android-only { display:block; }
+        .is-installed #installAssistant { display:none; }
+        .loading { color:var(--muted); padding:2rem 0; }
+        .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.75rem; margin:.85rem 0; }
+        .metric { border:1px solid var(--border); border-radius:8px; padding:.7rem; background:#171923; }
+        .metric-label { color:var(--muted); font-size:.82rem; }
+        .metric-value { margin-top:.2rem; font-size:1.25rem; font-weight:700; }
+        .result-line { margin:.55rem 0; }
+        .ok { color:#8ee6b4; } .bad { color:#ffb4b4; } .warn-text { color:var(--warn); }
+        .modal-backdrop { position:fixed; inset:0; z-index:20; display:none; place-items:center; padding:1rem; background:rgba(0,0,0,.7); }
+        .modal-backdrop.show { display:grid; }
+        .modal { width:min(62rem,100%); max-height:calc(100vh - 2rem); overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--card); padding:1rem; box-shadow:0 20px 60px rgba(0,0,0,.6); }
+        .modal-head { display:flex; gap:1rem; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
+        .close { min-height:2.25rem; min-width:2.25rem; padding:.25rem .5rem; }
+        .role-tabs { display:flex; flex-wrap:wrap; gap:.5rem; border-bottom:1px solid var(--border); padding-bottom:.85rem; margin-bottom:1rem; }
+        .role-tabs button.active { border-color:var(--accent); background:var(--accent); color:#fff; }
+        .markdown { overflow-wrap:anywhere; }
+        .markdown h1 { font-size:1.45rem; margin:1rem 0 .5rem; }
+        .markdown h2 { font-size:1.25rem; margin:1rem 0 .5rem; }
+        .markdown h3 { font-size:1.08rem; margin:1rem 0 .5rem; }
+        .markdown h4 { font-size:1rem; margin:1rem 0 .45rem; }
+        .markdown p { margin:.55rem 0; }
+        .markdown ul, .markdown ol { margin:.45rem 0 .45rem 1.25rem; padding:0; }
+        .markdown li { margin:.25rem 0; }
+        .markdown table { width:100%; border-collapse:collapse; margin:.75rem 0; }
+        .markdown th, .markdown td { border:1px solid var(--border); padding:.45rem .55rem; text-align:left; vertical-align:top; }
+        .markdown th { color:var(--muted); }
+        @media (max-width:640px) { h1 { font-size:1.65rem; } .grid, .registration, .support-actions, .metrics { grid-template-columns:1fr; } }
+    </style>
+</head>
+<body>
+<main>
+    <h1>聖呂中辯電子賽務系統</h1>
+    <div class="caption">請根據你的身份選擇對應功能</div>
+    <section id="installAssistant" class="card" hidden>
+        <div class="install-kicker">手機版捷徑</div>
+        <div class="install-title">將系統加到手機主畫面</div>
+        <div class="install-copy">之後按下主畫面圖示會直接進入系統主頁，再自行選擇功能。</div>
+        <div class="install-actions android-only"><button id="installButton" class="install-button" type="button">安裝手機版</button></div>
+        <ol class="ios-steps"><li>用 Safari 開啟此頁。</li><li>按下底部分享按鈕 ⬆️。</li><li>選擇「加入主畫面」，再按下「加入」。</li></ol>
+        <div id="installStatus" class="install-status">正在檢查手機瀏覽器安裝方式。</div>
+    </section>
+    <div id="loading" class="loading">載入中…</div>
+    <section id="maintenance" class="card warning" hidden>
+        <h2>系統維護中</h2><p>目前系統正在進行更新，所有功能暫停開放。</p><p id="maintenanceDeadline"></p><div class="caption">所有功能現已暫停使用，請稍後再試。</div>
+    </section>
+    <section id="content" hidden>
+        <section id="registration" class="card" hidden>
+            <h2 id="registrationTitle"></h2><p>報名步驟：填寫隊伍資料 → 確認聯絡方法 → 提交報名</p>
+            <div class="registration"><div class="caption" id="registrationEnd"></div><a class="action" href="/registration">📝 前往比賽報名</a></div>
+        </section>
+        <div class="grid">
+            <div class="stack">
+                <section class="card"><h2>⚖️ 評判</h2><p>填寫電子分紙，提交比賽評分。</p><div class="link-list"><a class="action" href="/judging">📝 前往電子分紙</a></div></section>
+                <section class="card"><h2>🌐 一般人員</h2><p>瀏覽公開辯題庫及相關統計。</p><div class="link-list"><a class="action" href="/open_db">📚 查閱辯題庫</a></div></section>
+            </div>
+            <div class="stack">
+                <section class="card"><h2>🏆 參賽隊伍</h2><p>查閱所參與比賽的評判評分紙。</p><div class="link-list"><a class="action" href="/review">📄 查閱比賽分紙</a></div></section>
+                <section class="card"><h2>🎛️ 賽會人員</h2><p>整合管理報名、場次、片段及賽程，並提供主席主持工具。</p><div class="link-list"><a class="action" href="/admin-hub">🗂️ 賽務管理易</a><a class="action" href="/chairperson">🎤 主席主持易</a><a class="action" href="/management">📊 查閱比賽結果</a><a class="action" href="/db_mgmt">🖥️ 資料庫管理控制台</a></div></section>
+            </div>
+        </div>
+        <section class="card"><h2>🗳️ 內部委員會成員</h2><p>提出辯題、參與投票、提出罷免動議、重溫比賽片段及圖片、使用 AI 辯論教練、提交 AI 訓練資料、管理 AI 基金及遲到罰款、回報 Bug 及管理個人帳戶。</p><div class="link-list"><a class="action" href="/vote">🗳️ 辯題徵集、投票及罷免</a><a class="action" href="/ai-coach">✨ AI 辯論易</a><a class="action" href="/ai-training">🎙️ 聖呂中辯AI訓練</a><a class="action" href="/video-replay">🎬 比賽片段重溫</a><a class="action" href="/match-photos">🖼️ 比賽圖片回顧</a><a class="action" href="/ai-fund">💲 AI基金</a><a class="action" href="/lateness-fund">💰 遲到罰款基金</a><a class="action" href="/bug-report">🛠️ Bug回報</a></div></section>
+        <hr class="divider">
+        <details><summary>📚 支援資料</summary><div class="caption">如需了解操作流程或比賽規則，可在此開啟完整說明。</div><div class="support-actions"><button type="button" data-doc="manual">📖 閱讀使用手冊</button><button type="button" data-doc="rules">📋 查看賽規</button></div></details>
+        <hr class="divider">
+        <details><summary>🔧 系統狀態檢查</summary><div class="support-actions"><button id="statusCheck" type="button">執行系統狀態檢查</button></div><div id="statusResult"></div></details>
+    </section>
+</main>
+<div id="modalBackdrop" class="modal-backdrop" aria-hidden="true"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-head"><h2 id="modalTitle"></h2><button class="close" id="modalClose" type="button" aria-label="關閉">×</button></div><div id="roleTabs" class="role-tabs"></div><div id="markdown" class="markdown"></div></section></div>
+<script>
+(function () {
+    "use strict";
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value == null ? "" : value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+    let deferredPrompt = null;
+    let activeDocument = null;
+    let activeRole = null;
+    const roles = { manual:["評判","賽會人員","參賽隊伍","一般人員","內部委員會成員"], rules:["評判","賽會人員","參賽隊伍"] };
+
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+    window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); deferredPrompt = event; refreshInstall(); });
+    window.addEventListener("appinstalled", () => { document.body.classList.add("is-installed"); });
+
+    function refreshInstall() {
+        const status = $("installStatus"), button = $("installButton");
+        if (!$("installAssistant").hidden) {
+            if (deferredPrompt) { button.hidden = false; status.textContent = "如瀏覽器彈出確認視窗，按安裝即可。"; }
+            else if (document.body.classList.contains("is-android")) { button.hidden = true; status.textContent = "如未見安裝按鈕，請按 Chrome 右上角選單，再選 Install app 或 Add to Home screen。"; }
+            else if (document.body.classList.contains("is-ios")) { status.textContent = "iPhone/iPad 需要經 Safari 分享選單加入主畫面。"; }
+            else status.textContent = "可使用瀏覽器選單將此系統加入桌面或主畫面。";
+        }
+    }
+    function initInstall() {
+        const query = new URLSearchParams(location.search);
+        const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+        const ua = navigator.userAgent || "";
+        document.body.classList.toggle("is-ios", /iPad|iPhone|iPod/.test(ua) || (ua.includes("Macintosh") && "ontouchend" in document));
+        document.body.classList.toggle("is-android", /Android/i.test(ua));
+        document.body.classList.toggle("is-installed", standalone);
+        $("installAssistant").hidden = query.get("install") !== "1" || standalone;
+        refreshInstall();
+    }
+    function renderHome(data) {
+        $("loading").hidden = true;
+        if (data.maintenance_mode) {
+            $("maintenanceDeadline").textContent = `預計於 ${data.maintenance_deadline} 或之前完成。`;
+            $("maintenance").hidden = false;
+            return;
+        }
+        const registration = data.registration || {};
+        if (registration.is_open && registration.settings) {
+            $("registrationTitle").textContent = `第 ${registration.settings.competition_edition} 屆比賽現正接受報名`;
+            const end = String(registration.settings.registration_end || "").replace("T", " ").slice(0, 16);
+            $("registrationEnd").textContent = `截止時間（香港時間／HKT）：${end}`;
+            $("registration").hidden = false;
+        }
+        $("content").hidden = false;
+    }
+    function inline(text) { return esc(text).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"); }
+    function markdown(source) {
+        const lines = String(source || "").replace(/\r/g, "").split("\n"); let html = "", list = null;
+        const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+        for (let i = 0; i < lines.length; i += 1) {
+            const line = lines[i], heading = line.match(/^(#{1,4})\s+(.+)$/), bullet = line.match(/^\s*[-*]\s+(.+)$/), ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+            if (/^\|.*\|$/.test(line) && i + 1 < lines.length && /^\|?\s*:?-{3,}/.test(lines[i + 1])) {
+                closeList(); const headers = line.split("|").slice(1,-1).map(cell => `<th>${inline(cell.trim())}</th>`); html += `<table><thead><tr>${headers.join("")}</tr></thead><tbody>`; i += 2;
+                while (i < lines.length && /^\|.*\|$/.test(lines[i])) { html += `<tr>${lines[i].split("|").slice(1,-1).map(cell => `<td>${inline(cell.trim())}</td>`).join("")}</tr>`; i += 1; } html += "</tbody></table>"; i -= 1; continue;
+            }
+            if (heading) { closeList(); html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`; }
+            else if (/^---\s*$/.test(line)) { closeList(); html += "<hr>"; }
+            else if (bullet || ordered) { const type = ordered ? "ol" : "ul"; if (list !== type) { closeList(); list = type; html += `<${type}>`; } html += `<li>${inline((bullet || ordered)[1])}</li>`; }
+            else if (!line.trim()) { closeList(); }
+            else { closeList(); html += `<p>${inline(line)}</p>`; }
+        }
+        closeList(); return html;
+    }
+    async function openDocument(kind, role) {
+        activeDocument = kind; activeRole = role || roles[kind][0];
+        $("modalTitle").textContent = kind === "manual" ? "聖呂中辯電子賽務系統：用戶使用手冊" : "校園隨想辯論比賽：賽規";
+        $("roleTabs").innerHTML = roles[kind].map(item => `<button type="button" class="${item === activeRole ? "active" : ""}" data-role="${esc(item)}">${esc(item)}</button>`).join("");
+        $("markdown").textContent = "載入中…"; $("modalBackdrop").classList.add("show"); $("modalBackdrop").setAttribute("aria-hidden", "false");
+        const response = await fetch(`/api/home/${kind}?role=${encodeURIComponent(activeRole)}`); const data = await response.json();
+        $("markdown").innerHTML = response.ok ? markdown(data.markdown) : `<p>${esc(data.detail || "載入失敗")}</p>`;
+    }
+    function closeDocument() { $("modalBackdrop").classList.remove("show"); $("modalBackdrop").setAttribute("aria-hidden", "true"); }
+    function renderStatus(data) {
+        if (!data.db_ok) { $("statusResult").innerHTML = `<p class="bad">資料庫連線失敗: ${esc(data.db_error)}</p>`; return; }
+        const c = data.table_counts || {};
+        let html = `<p class="ok">資料庫連線正常</p><div class="metrics">${[["帳戶數",c.accounts],["比賽場次",c.matches],["評分紀錄",c.scores],["辯題庫",c.topics],["待表決辯題",data.pending_votes == null ? "—" : data.pending_votes],["24 小時內登入次數",data.logins_24h == null ? "—" : data.logins_24h]].map(item => `<div class="metric"><div class="metric-label">${item[0]}</div><div class="metric-value">${item[1] == null ? "—" : item[1]}</div></div>`).join("")}</div>`;
+        html += `<p class="${data.config_admin_ok ? "ok" : "warn-text"}">${data.config_admin_ok ? "賽會人員密碼已設定" : "尚未設定賽會人員密碼"}</p>`;
+        html += `<p class="${data.config_developer_ok ? "ok" : "warn-text"}">${data.config_developer_ok ? "開發者密碼已設定" : "尚未設定開發者密碼"}</p>`;
+        if (data.errors && data.errors.length) html += `<p class="warn-text">部分檢查未能完成：<br>${data.errors.map(esc).join("<br>")}</p>`;
+        $("statusResult").innerHTML = html;
+    }
+    $("installButton").addEventListener("click", async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; refreshInstall(); });
+    document.addEventListener("click", event => { const docButton = event.target.closest("[data-doc]"); const roleButton = event.target.closest("[data-role]"); if (docButton) openDocument(docButton.dataset.doc); if (roleButton) openDocument(activeDocument, roleButton.dataset.role); if (event.target === $("modalBackdrop")) closeDocument(); });
+    $("modalClose").addEventListener("click", closeDocument);
+    $("statusCheck").addEventListener("click", async () => { const button = $("statusCheck"); button.disabled = true; button.textContent = "正在檢查系統狀態..."; $("statusResult").textContent = ""; try { const response = await fetch("/api/home/status-check", {method:"POST"}); renderStatus(await response.json()); } catch (error) { $("statusResult").innerHTML = `<p class="bad">系統狀態檢查失敗: ${esc(error.message)}</p>`; } finally { button.disabled = false; button.textContent = "執行系統狀態檢查"; } });
+    initInstall();
+    fetch("/api/home/data").then(response => response.json().then(data => ({response,data}))).then(({response,data}) => { if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); renderHome(data); }).catch(error => { $("loading").textContent = `連線錯誤: ${error.message}`; });
+})();
+</script>
+</body>
+</html>

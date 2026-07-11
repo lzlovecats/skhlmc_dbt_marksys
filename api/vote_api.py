@@ -80,11 +80,15 @@ def _jsonify_pending(row: dict) -> dict:
 def vote_data(user_id: str = Depends(_committee_user)):
     """Read-only vote board: pending motions plus resolved-topic names."""
     from core.vote_logic import fetch_vote_data, count_pending_deposes, get_comment_counts, fetch_vote_history
-
+    from core.vote_logic import expire_pending_topic_votes
     from core.vote_logic import entry_threshold, depose_threshold
     from core.members import count_active_members
 
     db = _vote_db()
+    expired = expire_pending_topic_votes(db=db)
+    for e in expired:
+        _fire_push(db, "辯題投票逾期", f"「{e['topic']}」未達入庫標準，已自動否決。",
+                   f"topic-vote-expired-{e['topic']}")
     pending, passed, rejected = fetch_vote_data(db=db)
     comment_counts = get_comment_counts("topic_vote", db=db)
     for row in pending:
@@ -101,6 +105,7 @@ def vote_data(user_id: str = Depends(_committee_user)):
         "active_count": active_count,
         "entry_threshold": entry_threshold(active_count),
         "depose_threshold": depose_threshold(active_count),
+        "expired": expired,
         **_activity_payload(user_id, db),
     }
 
@@ -302,9 +307,14 @@ def depose_data(user_id: str = Depends(_committee_user)):
     """Deposition board: pending removal motions + the bank topics that can be
     proposed for removal."""
     from core.vote_logic import fetch_depose_data, list_bank_topics, depose_threshold, get_comment_counts
+    from core.vote_logic import expire_pending_depose_votes
     from core.members import count_active_members
 
     db = _vote_db()
+    expired = expire_pending_depose_votes(db=db)
+    for e in expired:
+        _fire_push(db, "罷免動議逾期", f"「{e['topic']}」的罷免動議未達標準，已自動取消。",
+                   f"topic-removal-expired-{e['topic']}")
     pending = fetch_depose_data(db=db)
     comment_counts = get_comment_counts("topic_removal", db=db)
     for row in pending:
@@ -316,6 +326,7 @@ def depose_data(user_id: str = Depends(_committee_user)):
         "pending": [_jsonify_depose(row) for row in pending],
         "pending_depose_count": len(pending),
         "depose_threshold": depose_threshold(count_active_members(db=db)),
+        "expired": expired,
         **_activity_payload(user_id, db),
         "bank_topics": bank,
     }
