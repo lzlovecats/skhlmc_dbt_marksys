@@ -338,6 +338,38 @@ def count_pending_deposes(db=None):
 
 
 # ─────────────────────────────────────────────────────────────
+# Deadline expiry (mirrors vote.py's on-render auto-reject)
+#
+# A motion whose deadline has passed without reaching threshold is auto-rejected.
+# Topic votes and depose motions both UPDATE status='rejected' (kept in history).
+# Returns [{"topic","deadline"}] of the motions newly expired this call, so the
+# API can surface the warning + fire the "逾期" push. Idempotent: an already
+# resolved motion is not pending, so it never re-fires.
+# ─────────────────────────────────────────────────────────────
+def _expire_pending(table, db):
+    df = db.query(f"SELECT topic_text, deadline_date FROM {table} WHERE status = 'pending'")
+    expired = []
+    for _, row in df.iterrows():
+        passed, deadline_str = parse_deadline_row(row.to_dict())
+        if not passed:
+            continue
+        if db.execute_count(
+            f"UPDATE {table} SET status = 'rejected' WHERE topic_text = :t AND status = 'pending'",
+            {"t": row["topic_text"]},
+        ):
+            expired.append({"topic": row["topic_text"], "deadline": deadline_str})
+    return expired
+
+
+def expire_pending_topic_votes(db=None):
+    return _expire_pending(TABLE_TOPIC_VOTES, _resolve_db(db))
+
+
+def expire_pending_depose_votes(db=None):
+    return _expire_pending(TABLE_TOPIC_REMOVAL_VOTES, _resolve_db(db))
+
+
+# ─────────────────────────────────────────────────────────────
 # Single-motion queries (used by the cast endpoint to read fresh state)
 #
 # ``table`` is the *motion* table (TABLE_TOPIC_VOTES for topic votes,
@@ -356,7 +388,14 @@ def get_motion(table, topic, db=None):
         cols = "proposer_user_id, status, approval_threshold, category, difficulty"
     else:
         cols = "proposer_user_id, status, approval_threshold"
-    df = db.query(f"SELECT {cols} FROM {table} WHERE topic_text = :t", {"t": topic})
+    # A topic_text can have several rows (re-proposed after a prior reject/expire).
+    # Prefer the still-pending row so voting acts on the live motion, not a stale
+    # resolved one (else cast wrongly returns "motion already resolved").
+    df = db.query(
+        f"SELECT {cols} FROM {table} WHERE topic_text = :t "
+        "ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT 1",
+        {"t": topic},
+    )
     return None if df.empty else df.iloc[0].to_dict()
 
 

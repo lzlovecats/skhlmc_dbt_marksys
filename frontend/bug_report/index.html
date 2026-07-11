@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8">
+    <title>Bug回報</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="theme-color" content="#0e1117">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/app-icon-180.png">
+    <style>
+        :root { color-scheme:dark; --bg:#0e1117; --card:#262730; --surface:#171923; --text:#fafafa; --muted:#a3a8b5; --border:#3a3d46; --accent:#ff4b4b; --success:#8ee6b4; --warning:#ffd27d; --error:#ffb4b4; }
+        * { box-sizing:border-box; }
+        body { margin:0; padding:max(1rem, env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom)); background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; font-size:16px; line-height:1.5; }
+        main { width:100%; margin:0 auto; }
+        h1 { margin:0 0 .35rem; font-size:2rem; line-height:1.25; } h2 { margin:0 0 .6rem; font-size:1.25rem; line-height:1.3; }
+        p { margin:.35rem 0 .85rem; } .caption { color:var(--muted); font-size:.9rem; }
+        .back-link { display:inline-flex; align-items:center; gap:.3rem; color:#4c9bff; text-decoration:none; font-size:.95rem; margin-bottom:.6rem; }
+        .back-link:hover { text-decoration:underline; }
+        .card { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:1rem; margin:1rem 0; }
+        label { display:block; margin:.85rem 0 .28rem; font-weight:600; } input, textarea, select { width:100%; min-height:2.45rem; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); padding:.55rem .7rem; font:inherit; } textarea { resize:vertical; }
+        input:focus, textarea:focus, select:focus { outline:2px solid var(--accent); outline-offset:1px; }
+        button { width:100%; min-height:2.65rem; border:1px solid var(--border); border-radius:8px; padding:.5rem .85rem; background:var(--surface); color:var(--text); font:inherit; cursor:pointer; } button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700; } button:disabled { opacity:.6; cursor:not-allowed; }
+        .notice { border:1px solid var(--border); border-radius:8px; padding:.75rem .9rem; margin:.75rem 0; background:var(--surface); } .notice.warn { color:var(--warning); border-color:#927126; } .notice.ok { color:var(--success); border-color:#357a52; } .notice.err { color:var(--error); border-color:#a14646; }
+        .divider { border:0; border-top:1px solid var(--border); margin:2rem 0 1.35rem; }
+        details { border:1px solid var(--border); border-radius:8px; background:var(--card); padding:.8rem .95rem; margin:.7rem 0; } summary { cursor:pointer; font-weight:600; } .report-meta { color:var(--muted); font-size:.88rem; margin:.7rem 0; } .report-body { white-space:pre-wrap; overflow-wrap:anywhere; } .report-heading { font-weight:700; margin:1rem 0 .25rem; } .reply { color:var(--text); background:#1b2a3d; border:1px solid #35506e; border-radius:8px; padding:.75rem .9rem; white-space:pre-wrap; }
+        .hidden { display:none !important; } .login-card { max-width:36rem; } .login-actions { display:grid; gap:.65rem; margin-top:.9rem; }
+        @media (max-width:520px) { h1 { font-size:1.65rem; } }
+    </style>
+</head>
+<body>
+<main>
+    <a class="back-link" href="/">← 返回主頁</a>
+    <h1>Bug回報</h1>
+    <div class="caption">請提供足夠資料讓 developer 可以重現問題。太籠統的描述不會提交。</div>
+    <section id="loading" class="notice">載入中…</section>
+    <section id="login" class="card login-card hidden">
+        <h2>內部委員會成員登入</h2>
+        <button id="retryLogin" type="button">🔄 用已儲存的登入資料登入</button>
+        <div id="loginMessage"></div>
+        <form id="loginForm">
+            <label for="loginUser">用戶名稱</label><input id="loginUser" autocomplete="username" required>
+            <label for="loginPassword">密碼</label><input id="loginPassword" type="password" autocomplete="current-password" required>
+            <div class="login-actions"><button class="primary" type="submit">登入</button></div>
+        </form>
+    </section>
+    <section id="app" class="hidden">
+        <form id="reportForm" class="card">
+            <label for="pageChoice">受影響頁面</label><select id="pageChoice" required></select>
+            <div id="otherPageWrap" class="hidden"><label for="otherPage">請填寫頁面名稱</label><input id="otherPage"></div>
+            <label for="deviceInfo">裝置及瀏覽器</label><input id="deviceInfo" placeholder="例如：iPhone 15 / iOS 18 / 主畫面 App；或 Chrome Android">
+            <label for="steps">重現步驟</label><textarea id="steps" rows="8" required placeholder="請逐步寫低：1. 進入哪個頁面；2. 撳哪個按鈕/選項；3. 輸入甚麼；4. 出現甚麼問題。"></textarea>
+            <label for="expected">預期結果</label><textarea id="expected" rows="4" required placeholder="正常應該出現或完成甚麼？"></textarea>
+            <label for="actual">實際結果</label><textarea id="actual" rows="6" required placeholder="實際出現了甚麼錯誤、卡在哪一步、畫面有甚麼異常？"></textarea>
+            <label for="notes">補充資料（可留空）</label><textarea id="notes" rows="4" placeholder="例如：錯誤訊息、截圖已發到群組、發生時間、是否每次都重現。"></textarea>
+            <div id="formMessage"></div><button id="submitReport" class="primary" type="submit">提交Bug回報</button>
+        </form>
+        <hr class="divider"><h2>我的回報</h2><div id="reports"></div>
+    </section>
+</main>
+<script>
+(function () {
+    "use strict";
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value == null ? "" : value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+    const statusLabels = {};
+    let loadedData = null;
+    function notice(target, kind, message) { target.innerHTML = message ? `<div class="notice ${kind}">${esc(message)}</div>` : ""; }
+    function renderReports(reports) {
+        const target = $("reports");
+        if (!reports.length) { target.innerHTML = '<div class="notice">你暫時未提交任何 Bug 回報。</div>'; return; }
+        target.innerHTML = reports.map(report => {
+            const status = statusLabels[report.status] || report.status;
+            const expanded = !["fixed", "closed", "duplicate"].includes(report.status) ? " open" : "";
+            return `<details${expanded}><summary>#${report.id} ${esc(report.affected_page)}｜${esc(status)}</summary><div class="report-meta">提交時間：${esc(report.created_at)}｜更新時間：${esc(report.updated_at)}</div>${report.device_info ? `<div class="report-body"><strong>裝置及瀏覽器：</strong> ${esc(report.device_info)}</div>` : ""}<div class="report-heading">重現步驟</div><div class="report-body">${esc(report.reproduction_steps)}</div><div class="report-heading">預期結果</div><div class="report-body">${esc(report.expected_result || "未提供")}</div><div class="report-heading">實際結果</div><div class="report-body">${esc(report.actual_result)}</div>${report.extra_notes ? `<div class="report-heading">補充資料</div><div class="report-body">${esc(report.extra_notes)}</div>` : ""}${report.fixed_version ? `<div class="notice ok">已於版本 ${esc(report.fixed_version)} 修正。</div>` : ""}${report.developer_reply ? `<div class="report-heading">Developer 回覆</div><div class="reply">${esc(report.developer_reply)}</div>` : ""}</details>`;
+        }).join("");
+    }
+    function renderData(data) {
+        loadedData = data;
+        Object.assign(statusLabels, data.status_labels || {});
+        $("pageChoice").innerHTML = (data.page_options || []).map(option => `<option value="${esc(option)}">${esc(option)}</option>`).join("");
+        renderReports(data.reports || []);
+        $("loading").classList.add("hidden"); $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+    }
+    async function load() {
+        try {
+            const response = await fetch("/api/bug-report/data", { credentials:"same-origin" });
+            if (response.status === 401) { $("loading").classList.add("hidden"); $("login").classList.remove("hidden"); return; }
+            const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); renderData(data);
+        } catch (error) { $("loading").textContent = `連線錯誤: ${error.message}`; }
+    }
+    $("pageChoice").addEventListener("change", () => { $("otherPageWrap").classList.toggle("hidden", $("pageChoice").value !== "其他"); });
+    $("retryLogin").addEventListener("click", async () => { notice($("loginMessage"), "", ""); await load(); if (!loadedData) notice($("loginMessage"), "warn", "找不到有效的登入紀錄，請於下方重新輸入帳號密碼。"); });
+    $("loginForm").addEventListener("submit", async event => { event.preventDefault(); const button = event.currentTarget.querySelector("button"); button.disabled = true; notice($("loginMessage"), "", ""); try { const response = await fetch("/api/committee/login", { method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify({user_id:$("loginUser").value.trim(), password:$("loginPassword").value}) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "用戶名稱或密碼錯誤。"); notice($("loginMessage"), "ok", `歡迎，${data.user_id}。`); await load(); } catch (error) { notice($("loginMessage"), "err", error.message); } finally { button.disabled = false; } });
+    $("reportForm").addEventListener("submit", async event => { event.preventDefault(); const button = $("submitReport"); const affected = $("pageChoice").value === "其他" ? $("otherPage").value.trim() : $("pageChoice").value; button.disabled = true; notice($("formMessage"), "", ""); try { const response = await fetch("/api/bug-report/submit", { method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ affected_page:affected, device_info:$("deviceInfo").value, reproduction_steps:$("steps").value, expected_result:$("expected").value, actual_result:$("actual").value, extra_notes:$("notes").value }) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); if (!data.ok) { $("formMessage").innerHTML = data.errors.map(message => `<div class="notice warn">${esc(message)}</div>`).join(""); return; } event.currentTarget.reset(); $("otherPageWrap").classList.add("hidden"); notice($("formMessage"), "ok", "Bug回報已提交。Developer 更新版本後會在此回覆修正狀態。"); await load(); } catch (error) { notice($("formMessage"), "err", error.message); } finally { button.disabled = false; } });
+    load();
+})();
+</script>
+</body>
+</html>

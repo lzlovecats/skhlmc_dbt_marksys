@@ -63,6 +63,12 @@
         .deadline-past { color: var(--against); font-weight: 600; }
         .state { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
         .err { border-color: var(--against); }
+        .warn { border-color: #b98a2e; background: #3b2d13; }
+        .busy-overlay { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.35); display: none; place-items: center; }
+        .busy-overlay.show { display: grid; }
+        .busy-pill { display: flex; align-items: center; gap: .55rem; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: .6rem 1.15rem; font-size: .92rem; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
+        .spinner { width: 1.05rem; height: 1.05rem; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .section-title { margin: 1.5rem 0 .5rem; font-size: 1rem; color: var(--muted); }
         .pill-list { display: flex; flex-wrap: wrap; gap: .35rem; }
         .pill { border: 1px solid var(--border); border-radius: 999px; padding: .1rem .6rem; font-size: .82rem; color: var(--muted); }
@@ -99,6 +105,9 @@
         .discussion .row { margin-top: .85rem; margin-bottom: .65rem; }
         .discussion textarea { margin-top: .75rem; }
         summary { cursor: pointer; color: var(--muted); }
+        .guide { background: var(--card); border: 1px solid var(--border); border-top: 1px solid var(--border); border-radius: 12px; padding: .85rem 1rem; margin: 0 0 1rem; }
+        .guide > summary { color: var(--text); font-weight: 600; }
+        .guide .sub { line-height: 1.95; margin-top: .55rem; }
         .comment { border-top: 1px solid var(--border); padding: .5rem 0; }
         .comment:first-child { border-top: 0; }
         .comment .by { color: var(--muted); font-size: .8rem; margin-bottom: .15rem; }
@@ -121,11 +130,13 @@
         .multi-opt { display: flex; gap: .5rem; align-items: flex-start; padding: .35rem .45rem; border-radius: 6px; cursor: pointer; }
         .multi-opt:hover { background: var(--chip); }
         .multi-opt input { margin-top: .2rem; }
-        .toast { position: fixed; right: max(1rem, env(safe-area-inset-right)); top: max(1rem, env(safe-area-inset-top)); background: #000; color: #fff; border: 1px solid #333; padding: .65rem 1rem; border-radius: 8px; font-size: .9rem; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: min(24rem, 90vw); text-align: left; box-shadow: 0 10px 30px rgba(0,0,0,.55); z-index: 20; }
+        .toast { position: fixed; right: max(1rem, env(safe-area-inset-right)); top: max(1rem, env(safe-area-inset-top)); background: #000; color: #fff; border: 1px solid #333; padding: 1rem 1.25rem; border-radius: 12px; font-size: 1.05rem; line-height: 1.5; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: min(32rem, 92vw); text-align: left; box-shadow: 0 14px 40px rgba(0,0,0,.6); z-index: 20; }
         .toast.show { opacity: 1; }
         .notice-backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.72); display: grid; place-items: center; padding: 1rem; }
         .notice-dialog { width: min(36rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
         .notice-dialog .topic { font-size: 1.2rem; }
+        .back-link { display: inline-flex; align-items: center; gap: .3rem; color: var(--accent); text-decoration: none; font-size: .95rem; margin-bottom: .6rem; }
+        .back-link:hover { text-decoration: underline; }
         @media (max-width: 520px) {
             h1 { font-size: 1.65rem; }
             .metric-grid { grid-template-columns: 1fr; }
@@ -136,6 +147,7 @@
 <div class="wrap">
     <header>
         <div>
+            <a class="back-link" href="/">← 返回主頁</a>
             <h1>辯題徵集、投票及罷免</h1>
             <div class="sub">活躍成員標準：整體投票率達 40%，且最近十次投票至少參與三次。</div>
             <div id="who"></div>
@@ -151,9 +163,20 @@
         <button class="tab" data-tab="account">🔐 帳戶</button>
     </div>
 
+    <details class="guide">
+        <summary>ℹ️ 首次使用指南</summary>
+        <div class="sub">
+            • 請先使用內部委員會成員帳戶登入，再按需要切換至提出辯題、辯題投票、罷免投票或帳戶管理分頁。<br>
+            • 活躍成員可提出新辯題或罷免動議；所有成員均可參與投票。<br>
+            • 每項動議均設 7 日截止日期，達門檻且票數過半時會自動更新狀態。<br>
+            • 可在「🔐 帳戶」分頁啟用背景通知，新辯題及投票結果會推送到你的裝置（iPhone / iPad 需先加入主畫面）。
+        </div>
+    </details>
+
     <div id="content"><div class="state">載入中…</div></div>
 </div>
 <div class="toast" id="toast"></div>
+<div class="busy-overlay" id="busy"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
 <div id="noticeRoot"></div>
 <div id="confirmRoot"></div>
 
@@ -163,11 +186,13 @@
     const content = document.getElementById("content");
     const who = document.getElementById("who");
     const toastEl = document.getElementById("toast");
+    const busyEl = document.getElementById("busy");
     const noticeRoot = document.getElementById("noticeRoot");
     const confirmRoot = document.getElementById("confirmRoot");
     const tabsEl = document.getElementById("tabs");
 
     // Mirror the constants in vote.py / functions.py.
+    const AI_COMMENT_USER = "Gemini";   // AI_COMMENT_USER_ID — replies rendered as markdown
     const REJECTION_REASONS = [
         "表述或界定不清", "正反責任失衡", "與現有題目重複或相似",
         "討論價值不足", "題目表述可再修訂", "類別分類不當", "難度分類不當",
@@ -189,7 +214,10 @@
     let ME = "";
     let ACTIVITY = null;
     let NOTI_CHECKED = false;
-    let BUSY = false;
+    let BUSY = 0;
+    // Central busy state → shows the "處理中…" overlay so every action button
+    // click gives clear loading feedback and double-submits are blocked.
+    function setBusy(v) { BUSY = v; busyEl.classList.toggle("show", !!v); }
     let TAB = "propose";
     let ANALYSIS_TAB = "bank";
     let openReasonFor = null;   // topic_text with an open against-reason panel (topic vote)
@@ -326,7 +354,7 @@
         const msg = document.getElementById("loginMsg");
         if (!u || !p) { msg.textContent = "請輸入帳號及密碼"; return; }
         if (BUSY) return;
-        BUSY = true;
+        setBusy(true);
         try {
             const { res, data } = await postJSON("/api/committee/login", { user_id: u, password: p });
             if (!res.ok) { msg.textContent = data.detail || ("登入失敗 " + res.status); return; }
@@ -336,7 +364,7 @@
             prefetchLikelyTabs();
         } catch (e) {
             msg.textContent = "登入失敗：" + e.message;
-        } finally { BUSY = false; }
+        } finally { setBusy(false); }
     }
 
     async function doLogout() {
@@ -454,17 +482,29 @@
             target.innerHTML = rows.length ? rows.map(c => `
                 <div class="comment">
                     <div class="by"><b>${esc(c.user_id)}</b>　${esc(c.created_at)}</div>
-                    <div>${esc(c.comment_text)}</div>
+                    ${c.user_id === AI_COMMENT_USER ? `<div class="ai-box">${md(c.comment_text)}</div>` : `<div>${esc(c.comment_text)}</div>`}
                 </div>`).join("") : '<div class="sub" style="padding:.55rem 0">暫時未有討論。</div>';
         } catch (e) {
             target.innerHTML = `<div class="sub" style="color:var(--against);padding:.55rem 0">載入留言失敗：${esc(e.message)}</div>`;
         }
     }
 
+    // Warning banner for motions auto-rejected on this load (deadline passed).
+    function expiredBanner(expired, kind) {
+        if (!expired || !expired.length) return "";
+        return expired.map(e => {
+            const msg = kind === "depose"
+                ? `罷免動議「${esc(e.topic)}」投票期限（${esc(e.deadline)} 23:59）已過，未達罷免標準，動議自動取消。`
+                : `辯題「${esc(e.topic)}」投票期限（${esc(e.deadline)} 23:59）已過，未達入庫標準，系統自動否決。`;
+            return `<div class="card warn"><div class="sub" style="color:#ffd27d">⚠️ ${msg}</div></div>`;
+        }).join("");
+    }
+
     // ── topic vote tab ────────────────────────────────────────────────────────
     function renderVote(data) {
         const list = data.pending || [];
         let html = '<div class="card"><div class="topic">待表決辯題</div><div class="sub">當同意票數達入庫門檻，且同意票多於不同意票時，系統會自動將辯題寫入辯題庫。</div><div class="sub">當不同意票數達入庫門檻，且不同意票多於同意票時，系統會自動否決該辯題。</div><div class="actions"><button data-act="refresh">🔄 重新整理</button></div></div>';
+        html += expiredBanner(data.expired, "topic");
         if (!list.length) {
             html += '<div class="state">目前沒有待表決的辯題。</div>';
         } else {
@@ -514,6 +554,7 @@
     function renderDepose(data) {
         const list = data.pending || [];
         let html = '<div class="card"><div class="topic">罷免投票</div><div class="sub">當同意罷免票數達罷免門檻，且同意票多於不同意票時，系統會自動刪除辯題。</div><div class="sub">當不同意票數達罷免門檻，且不同意票多於同意票時，系統會自動否決罷免動議。</div><div class="actions"><button data-act="refresh">🔄 重新整理</button></div></div>';
+        html += expiredBanner(data.expired, "depose");
         if (!list.length) {
             html += '<div class="state">目前沒有待罷免的辯題。</div>';
         } else {
@@ -661,10 +702,13 @@
 
     function chart(title, rows, suffix) {
         rows = rows || [];
-        const max = rows.reduce((m, r) => Math.max(m, Number(r.value) || 0), 0) || 1;
+        // Percentage charts (suffix "%") map value→width directly (0-100), so the
+        // bar reflects the real percentage. Count charts normalise to the group max.
+        const isPct = suffix === "%";
+        const max = isPct ? 100 : (rows.reduce((m, r) => Math.max(m, Number(r.value) || 0), 0) || 1);
         const body = rows.length ? rows.map(r => {
             const val = Number(r.value) || 0;
-            const width = Math.max(2, val / max * 100);
+            const width = Math.min(100, Math.max(2, val / max * 100));
             return `<div class="chart-row"><div>${esc(r.label)}</div><div class="chart-track"><div class="chart-fill" style="width:${width}%"></div></div><div>${esc(Math.round(val * 10) / 10)}${suffix || ""}</div></div>`;
         }).join("") : '<div class="sub">暫時未有數據。</div>';
         return `<div class="card"><div class="topic">${esc(title)}</div><div class="chart">${body}</div></div>`;
@@ -834,7 +878,7 @@
 
     async function cast(payload, toastMessage) {
         if (BUSY) return;
-        BUSY = true;
+        setBusy(true);
         try {
             const { res, data } = await postJSON("/api/vote/cast", payload);
             if (res.status === 401) { toast("⚠️ 登入已失效，請重新登入。"); return; }
@@ -844,17 +888,27 @@
                     `若此辯題通過，類別「${data.category}」將佔辯題庫 ${pct}%（現有 ${data.total} 題中已有 ${data.cat_count} 題同類）。仍要投同意票嗎？`,
                     "✅ 確認投同意票"
                 )) return;
-                BUSY = false;
+                setBusy(false);
                 return cast(Object.assign({}, payload, { confirm_category: true }));
             }
             if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
-            toast(toastMessage || "☑️ 投票已更新");
+            if (data.resolved === "passed") {
+                toast(payload.mode === "depose"
+                    ? "🗑️ 罷免動議已通過，辯題已從辯題庫移除。"
+                    : "🎉 辯題已獲得足夠票數，已寫入辯題庫！");
+            } else if (data.resolved === "rejected") {
+                toast(payload.mode === "depose"
+                    ? "🛡️ 罷免動議已被否決。"
+                    : "❌ 辯題不同意票達門檻，已被否決。");
+            } else {
+                toast(toastMessage || "☑️ 投票已更新");
+            }
             openReasonFor = null;
             invalidateCache();
             await load();
         } catch (e) {
             toast("⚠️ 提交失敗：" + e.message);
-        } finally { BUSY = false; }
+        } finally { setBusy(false); }
     }
 
     async function submitDepose() {
@@ -867,7 +921,7 @@
         if (other) picked.push("其他：" + other);
         if (!topics.length) { toast("⚠️ 請至少選擇一條辯題。"); return; }
         if (!picked.length) { toast("⚠️ 請至少選擇一個罷免原因。"); return; }
-        BUSY = true;
+        setBusy(true);
         try {
             const { res, data } = await postJSON("/api/vote/depose", { topics, reasons: picked });
             if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
@@ -875,7 +929,7 @@
             invalidateCache();
             await load();
         } catch (e) { toast("⚠️ 提交失敗：" + e.message); }
-        finally { BUSY = false; }
+        finally { setBusy(false); }
     }
 
     async function submitPropose(confirmImbalance) {
@@ -884,7 +938,7 @@
         const category = document.getElementById("propCategory").value;
         const difficulty = parseInt(document.getElementById("propDifficulty").value, 10);
         if (!topic) { toast("⚠️ 請輸入辯題內容。"); return; }
-        BUSY = true;
+        setBusy(true);
         try {
             const { res, data } = await postJSON("/api/vote/propose",
                 { topic, category, difficulty, confirm_imbalance: !!confirmImbalance });
@@ -894,7 +948,7 @@
                     `類別「${data.category}」目前已佔辯題庫 ${pct}%（共 ${data.total} 題中有 ${data.cat_count} 題）。繼續新增同類辯題將令辯題庫失衡，是否確認提交？`,
                     "✅ 確認繼續提交"
                 )) {
-                    BUSY = false;
+                    setBusy(false);
                     return submitPropose(true);
                 }
                 return;
@@ -904,7 +958,7 @@
             invalidateCache();
             await load();
         } catch (e) { toast("⚠️ 提交失敗：" + e.message); }
-        finally { BUSY = false; }
+        finally { setBusy(false); }
     }
 
     async function aiReviewTopic() {
@@ -914,7 +968,7 @@
         const difficulty = parseInt(document.getElementById("propDifficulty").value, 10);
         const box = document.getElementById("proposalAiReview");
         if (!topic) { toast("⚠️ 請先輸入完整辯題。"); return; }
-        BUSY = true;
+        setBusy(true);
         box.innerHTML = '<div class="sub" style="margin-top:.7rem">AI 正在審查提案，請稍候…</div>';
         try {
             const { res, data } = await postJSON("/api/vote/ai-review", { topic, category, difficulty });
@@ -922,7 +976,7 @@
             box.innerHTML = `<details open><summary>AI 審查結果</summary><div class="ai-box">${md(data.review)}</div></details>`;
         } catch (e) {
             box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">AI 審查失敗：${esc(e.message)}</div>`;
-        } finally { BUSY = false; }
+        } finally { setBusy(false); }
     }
 
     async function submitComment(btn, tagAi) {
@@ -931,7 +985,7 @@
         const textEl = box.querySelector("textarea");
         const text = textEl.value.trim();
         if (!text && !tagAi) { toast("⚠️ 請輸入內容。"); return; }
-        BUSY = true;
+        setBusy(true);
         try {
             const { res, data } = await postJSON("/api/vote/comments", {
                 motion_type: box.dataset.motionType,
@@ -947,12 +1001,12 @@
             await loadComments(box);
         } catch (e) {
             toast("⚠️ 留言失敗：" + e.message);
-        } finally { BUSY = false; }
+        } finally { setBusy(false); }
     }
 
     async function runAnalysis(kind) {
         if (BUSY) return;
-        BUSY = true;
+        setBusy(true);
         toast("⏳ AI 正在分析，請稍候…");
         try {
             const { res, data } = await postJSON("/api/vote/analysis/ai", { kind });
@@ -962,7 +1016,7 @@
             await load();
         } catch (e) {
             toast("⚠️ AI 分析失敗：" + e.message);
-        } finally { BUSY = false; }
+        } finally { setBusy(false); }
     }
 
     async function pushEnable() {
@@ -1012,7 +1066,7 @@
         if (!current_password) { toast("⚠️ 請輸入目前密碼。"); return; }
         if (!new_password) { toast("⚠️ 請輸入新密碼。"); return; }
         if (new_password !== confirm_password) { toast("⚠️ 兩次輸入的新密碼不一致。"); return; }
-        BUSY = true;
+        setBusy(true);
         try {
             const { res, data } = await postJSON("/api/committee/password", { current_password, new_password, confirm_password });
             if (!res.ok) { toast("⚠️ " + (data.detail || "密碼更改失敗")); return; }
@@ -1021,7 +1075,7 @@
             document.getElementById("pwConfirm").value = "";
             toast("☑️ 帳戶密碼已更改！下次登入請使用新密碼！");
         } catch (e) { toast("⚠️ 密碼更改失敗：" + e.message); }
-        finally { BUSY = false; }
+        finally { setBusy(false); }
     }
 
     // ── event delegation ──────────────────────────────────────────────────────
