@@ -135,6 +135,8 @@
         .notice-backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.72); display: grid; place-items: center; padding: 1rem; }
         .notice-dialog { width: min(36rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
         .notice-dialog .topic { font-size: 1.2rem; }
+        .back-link { display: inline-flex; align-items: center; gap: .3rem; color: var(--accent); text-decoration: none; font-size: .95rem; margin-bottom: .6rem; }
+        .back-link:hover { text-decoration: underline; }
         @media (max-width: 520px) {
             h1 { font-size: 1.65rem; }
             .metric-grid { grid-template-columns: 1fr; }
@@ -145,6 +147,7 @@
 <div class="wrap">
     <header>
         <div>
+            <a class="back-link" href="/">← 返回主頁</a>
             <h1>辯題徵集、投票及罷免</h1>
             <div class="sub">活躍成員標準：整體投票率達 40%，且最近十次投票至少參與三次。</div>
             <div id="who"></div>

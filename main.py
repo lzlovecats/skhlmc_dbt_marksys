@@ -2,7 +2,7 @@ import json
 import streamlit as st
 import streamlit.components.v1 as components
 from urllib.parse import urlparse
-from functions import get_registration_status, is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
+from functions import is_maintenance_mode, render_maintenance_notice, show_manual, show_rules
 from version import APP_VERSION
 
 # Set up basic structure of the webpage
@@ -367,15 +367,12 @@ if is_maintenance_mode():
 page_judging = st.Page("judging.py", title="電子分紙")
 page_match_mgmt = st.Page("match_info.py", title="比賽場次管理")
 page_mgmt = st.Page("management.py", title="查閱比賽結果")
-page_registration_admin = st.Page("registration_admin.py", title="比賽報名管理")
 page_db_mgmt = st.Page("db_mgmt.py", title="資料庫管理控制台")
 page_draw_schedule = st.Page("draw_match_schedule.py", title="抽取賽程")
 page_score_sheet = st.Page("review.py", title="查閱比賽分紙")
 page_video_replay = st.Page("video_replay.py", title="比賽片段重溫", url_path="video-replay")
 page_match_photos = st.Page("match_photos.py", title="比賽圖片回顧", url_path="match-photos")
 page_video_admin = st.Page("video_admin.py", title="比賽片段管理")
-page_registration = st.Page("registration.py", title="比賽報名", url_path="registration")
-page_bug_report = st.Page("bug_report.py", title="Bug回報", url_path="bug-report")
 page_dev_settings = st.Page("dev_settings.py", title="開發者設定")
 page_admin_hub = st.Page("admin_hub.py", title="賽務管理易", url_path="admin-hub")
 page_chairperson = st.Page("chairperson.py", title="主席主持易", url_path="chairperson")
@@ -404,11 +401,9 @@ navigation_sections = {
     "評判": [page_judging],
     "參賽隊伍": [page_score_sheet],
     "賽會人員": [page_admin_hub, page_chairperson, page_mgmt, page_db_mgmt],
-    "內部委員會成員": [page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_ai_fund, page_lateness_fund, page_bug_report],
+    "內部委員會成員": [page_ai_coach, page_ai_training, page_video_replay, page_match_photos, page_ai_fund, page_lateness_fund],
     "開發者": [page_dev_settings],
 }
-if get_registration_status()["is_open"]:
-    navigation_sections["一般人員"] = [page_registration]
 pg = st.navigation(navigation_sections)
 
 if st.session_state.get("committee_user"):

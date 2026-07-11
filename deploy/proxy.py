@@ -44,6 +44,9 @@ from api.vote_api import router as vote_router
 from api.auth_api import router as committee_router
 from api.open_db_api import router as open_db_router
 from api.home_api import router as home_router
+from api.bug_report_api import router as bug_report_router
+from api.registration_api import router as registration_router
+from api.registration_admin_api import router as registration_admin_router
 
 
 STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
@@ -106,6 +109,9 @@ app.include_router(vote_router)
 app.include_router(committee_router)
 app.include_router(open_db_router)
 app.include_router(home_router)
+app.include_router(bug_report_router)
+app.include_router(registration_router)
+app.include_router(registration_admin_router)
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
 _streamlit_secrets = None
@@ -389,6 +395,29 @@ def _sign_committee_token(user_id: str):
     return f"{user_id}:{sig}"
 
 
+def _sign_registration_admin_token():
+    """Mint a dedicated session token for the organiser registration console."""
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        return None
+    subject = "registration_admin"
+    sig = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
+    return f"{subject}:{sig}"
+
+
+def _verify_registration_admin_token(token: str) -> bool:
+    if not token or ":" not in token:
+        return False
+    subject, sig = token.rsplit(":", 1)
+    if subject != "registration_admin":
+        return False
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        return False
+    expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
 def _require_committee_user(request: Request):
     # The cookie is the primary source, but requests originating from the
     # sandboxed Streamlit component iframe cannot carry a SameSite=Strict
@@ -455,6 +484,15 @@ async def app_icon(size: str):
         return Response(status_code=404)
     return FileResponse(icon_path, media_type="image/png",
                         headers=_cache_headers(CACHE_STATIC))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(
+        BASE_DIR / "static" / "app-icon-192.png",
+        media_type="image/png",
+        headers=_cache_headers(CACHE_STATIC),
+    )
 
 
 @app.post("/api/push/subscribe")
@@ -1140,6 +1178,31 @@ async def home_page():
 async def open_db_page():
     """Primary HTML public topic bank; hyphenated path remains an alias."""
     return FileResponse(BASE_DIR / "frontend" / "open_db" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/bug-report")
+async def bug_report_page():
+    """Primary HTML committee bug-report page."""
+    return FileResponse(BASE_DIR / "frontend" / "bug_report" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/registration")
+async def registration_page():
+    """Primary public HTML competition registration page."""
+    return FileResponse(BASE_DIR / "frontend" / "registration" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/registration-admin")
+@app.get("/registration_admin", include_in_schema=False)
+async def registration_admin_page():
+    """Primary HTML organiser registration-management page; underscore path is legacy alias."""
+    return FileResponse(BASE_DIR / "frontend" / "registration_admin" / "index.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_HTML))
 

@@ -1,0 +1,132 @@
+"""Streamlit-free validation and persistence for committee bug reports."""
+
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from core.vote_logic import _resolve_db
+from schema import CREATE_BUG_REPORTS, TABLE_BUG_REPORTS
+
+
+STATUS_LABELS = {
+    "open": "待處理",
+    "investigating": "跟進中",
+    "fixed": "已修正",
+    "not_reproducible": "未能重現",
+    "duplicate": "重複回報",
+    "closed": "已關閉",
+}
+PAGE_OPTIONS = [
+    "主頁",
+    "辯題徵集、投票及罷免",
+    "AI 辯論易",
+    "聖呂中辯AI訓練",
+    "比賽片段重溫",
+    "比賽圖片回顧",
+    "遲到罰款基金",
+    "其他",
+]
+VAGUE_PATTERNS = [
+    r"有\s*bug", r"用\s*唔\s*到", r"壞\s*咗", r"出\s*錯",
+    r"唔\s*得", r"有\s*問題", r"唔\s*work", r"唔\s*正常",
+]
+MIN_STEPS_LEN = 15
+
+
+def ensure_bug_reports_table(db=None):
+    _resolve_db(db).execute(CREATE_BUG_REPORTS)
+
+
+def plain_len(text):
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def is_too_vague(text):
+    cleaned = re.sub(r"\s+", "", text or "")
+    if len(cleaned) < MIN_STEPS_LEN:
+        return True
+    concrete = cleaned
+    for pattern in VAGUE_PATTERNS:
+        concrete = re.sub(pattern, "", concrete)
+    return len(concrete) < 8
+
+
+def validate_report(affected_page, steps, expected, actual):
+    errors = []
+    if not (affected_page or "").strip():
+        errors.append("請選擇或填寫受影響頁面。")
+    if is_too_vague(steps):
+        errors.append("請用具體步驟寫明點樣重現，例如：先去邊頁、撳邊個掣、輸入咩內容、之後發生咩事。")
+    if plain_len(actual) < 15:
+        errors.append("請具體描述實際出現的錯誤或異常畫面。")
+    if plain_len(expected) < 8:
+        errors.append("請寫明正常情況下你預期系統應該點樣運作。")
+    return errors
+
+
+def submit_report(user_id, affected_page, device_info, reproduction_steps, expected_result, actual_result, extra_notes, db=None):
+    db = _resolve_db(db)
+    ensure_bug_reports_table(db)
+    affected_page = (affected_page or "").strip()
+    reproduction_steps = (reproduction_steps or "").strip()
+    expected_result = (expected_result or "").strip()
+    actual_result = (actual_result or "").strip()
+    errors = validate_report(affected_page, reproduction_steps, expected_result, actual_result)
+    if errors:
+        return {"ok": False, "errors": errors}
+    now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        f"""
+        INSERT INTO {TABLE_BUG_REPORTS}
+            (reporter_user_id, affected_page, device_info, reproduction_steps,
+             expected_result, actual_result, extra_notes, status, created_at, updated_at)
+        VALUES
+            (:uid, :page, :device, :steps, :expected, :actual, :notes, 'open', :now, :now)
+        """,
+        {
+            "uid": user_id, "page": affected_page, "device": (device_info or "").strip(),
+            "steps": reproduction_steps, "expected": expected_result, "actual": actual_result,
+            "notes": (extra_notes or "").strip(), "now": now,
+        },
+    )
+    return {"ok": True, "errors": []}
+
+
+def _format_time(value):
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return str(value or "")[:16]
+
+
+def reports_for_user(user_id, db=None):
+    db = _resolve_db(db)
+    ensure_bug_reports_table(db)
+    reports = db.query(
+        f"""
+        SELECT id, affected_page, device_info, reproduction_steps, expected_result,
+               actual_result, extra_notes, status, developer_reply, fixed_version,
+               created_at, updated_at, resolved_at
+        FROM {TABLE_BUG_REPORTS}
+        WHERE reporter_user_id = :uid
+        ORDER BY created_at DESC
+        LIMIT 30
+        """,
+        {"uid": user_id},
+    )
+    items = []
+    for _, row in reports.iterrows():
+        status = str(row.get("status") or "open")
+        items.append({
+            "id": int(row["id"]), "affected_page": str(row.get("affected_page") or ""),
+            "device_info": str(row.get("device_info") or ""),
+            "reproduction_steps": str(row.get("reproduction_steps") or ""),
+            "expected_result": str(row.get("expected_result") or ""),
+            "actual_result": str(row.get("actual_result") or ""),
+            "extra_notes": str(row.get("extra_notes") or ""), "status": status,
+            "developer_reply": str(row.get("developer_reply") or ""),
+            "fixed_version": str(row.get("fixed_version") or ""),
+            "created_at": _format_time(row.get("created_at")),
+            "updated_at": _format_time(row.get("updated_at")),
+            "resolved_at": _format_time(row.get("resolved_at")),
+        })
+    return items

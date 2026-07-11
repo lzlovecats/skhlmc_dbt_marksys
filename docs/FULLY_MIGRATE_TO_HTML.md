@@ -152,6 +152,7 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 - **語意色**：同意=綠、不同意=紅；**accent 用藍**（唔好用會撞「不同意」紅嘅紅做 accent）。
 - **Tab／分頁次序同 label 要對齊對應 Streamlit 頁**（例：vote = 提案 → 辯題投票 → 罷免投票，default 提案，對應 `vote.py` 的 `_tab_options`）。
 - **手機優先**：`padding: env(safe-area-inset-top)`、鎖 viewport（`maximum-scale=1`）、input `font-size ≥16px` 防 iOS 縮放。（`>>`/`⋯` 同狀態欄重疊嗰個問題係 **Streamlit 專屬 chrome**，全 HTML 後自然消失。）
+- **返回主頁**：每個由 HTML 直接接管、但不是主頁的 page，首屏必須有 `← 返回主頁` 連結到 `/`；這是既有 Streamlit sidebar navigation 被移除後的必要替代入口。
 - **技術取向**：vanilla JS + `fetch`（一個人都維護到）、事件委派（event delegation）。頁面暫時 self-contained（inline css/js）；規模大時再拆 `frontend/shared/` + proxy `StaticFiles` mount。
 - **落手前**：先開對應 Streamlit 頁睇實際樣同分頁，先跟住做。
 
@@ -181,7 +182,7 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 
 ### ⬜ 未開始 —— 其餘所有 Streamlit 頁
 每版都要行同一套 4 步流程。粗略清單（睇 `main.py` `st.Page`）：
-已接管：`vote`、`open_db`、`home`。三個 Streamlit source 分別保留於 `legacy_streamlit/`。其後包括：`judging`（電子分紙，核心）、`match_info`、`review`、`draw_match_schedule`、`registration`(+admin)、`team_roster`、`video_replay`/`video_admin`、`match_photos`、`chairperson`、`lateness_fund`、`ai_fund`、`ai_coach`、`ai_training`、`db_mgmt`、`dev_settings`、`bug_report` 等。
+已接管：`vote`、`open_db`、`home`、`bug_report`、`registration`、`registration_admin`。Streamlit source 保留於 `legacy_streamlit/`。其後包括：`judging`（電子分紙，核心）、`match_info`、`review`、`draw_match_schedule`、`team_roster`、`video_replay`/`video_admin`、`match_photos`、`chairperson`、`lateness_fund`、`ai_fund`、`ai_coach`、`ai_training`、`db_mgmt`、`dev_settings` 等。
 
 ---
 

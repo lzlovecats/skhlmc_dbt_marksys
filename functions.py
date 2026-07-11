@@ -1492,7 +1492,7 @@ def render_home_reference():
 
         with col_right:
             st.markdown("**賽會人員**：使用賽會人員密碼登入後管理報名、場次、賽果及賽程。")
-            st.page_link("registration_admin.py", label="前往比賽報名管理", icon="🗂️")
+            st.link_button("🗂️ 前往比賽報名管理", "/registration-admin", width="stretch")
             st.page_link("match_info.py", label="前往比賽場次管理", icon="📋")
 
             st.markdown("**內部委員會成員**：登入個人帳戶後提出辯題、投票及管理帳戶。")

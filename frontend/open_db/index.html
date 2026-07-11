@@ -47,6 +47,11 @@
         .chart-num { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
         .section { margin-top: 0; }
         .hidden { display: none !important; }
+        .back-link { display: inline-flex; align-items: center; gap: .3rem; color: #4c9bff; text-decoration: none; font-size: .95rem; margin-bottom: .6rem; }
+        .back-link:hover { text-decoration: underline; }
+        .pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: 1rem 0 .5rem; }
+        .pager button { min-height: 2.35rem; }
+        .pager-info { color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
         @media (max-width: 700px) {
             h1 { font-size: 1.65rem; }
             .field-grid { grid-template-columns: 1fr; gap: .7rem; }
@@ -56,6 +61,7 @@
 </head>
 <body>
 <main>
+    <a class="back-link" href="/">← 返回主頁</a>
     <h1>查閱辯題庫</h1>
     <div id="loading" class="notice">載入中…</div>
     <div id="error" class="notice error hidden"></div>
@@ -74,6 +80,7 @@
         <div id="resultCount" class="caption"></div>
         <div id="noResults" class="notice hidden">沒有符合條件的辯題。請調整搜尋關鍵字或篩選條件後再試。</div>
         <div id="results" class="table-wrap"></div>
+        <div id="pager" class="pager"></div>
 
         <section id="categorySection" class="section">
             <hr class="divider">
@@ -146,14 +153,28 @@
                 (difficulty.value === "全部" || topic.difficulty_label === difficulty.value);
         });
     }
+    const PAGE_SIZE = 20;
+    let page = 1;
     function renderResults() {
         const rows = currentTopics().map(topic => ({
             "辯題": topic.topic_text, "作者": topic.author, "類別": topic.category, "難度": topic.difficulty_label,
         }));
-        document.getElementById("resultCount").textContent = `共找到 ${rows.length} 條符合條件的辯題`;
-        document.getElementById("noResults").classList.toggle("hidden", rows.length !== 0);
-        document.getElementById("results").classList.toggle("hidden", rows.length === 0);
-        if (rows.length) table(document.getElementById("results"), rows, ["辯題", "作者", "類別", "難度"]);
+        const total = rows.length;
+        const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+        page = Math.min(Math.max(1, page), pages);
+        document.getElementById("resultCount").textContent = total
+            ? `共找到 ${total} 條符合條件的辯題（第 ${page} / ${pages} 頁）`
+            : "共找到 0 條符合條件的辯題";
+        document.getElementById("noResults").classList.toggle("hidden", total !== 0);
+        document.getElementById("results").classList.toggle("hidden", total === 0);
+        const pager = document.getElementById("pager");
+        if (!total) { pager.innerHTML = ""; return; }
+        const start = (page - 1) * PAGE_SIZE;
+        table(document.getElementById("results"), rows.slice(start, start + PAGE_SIZE), ["辯題", "作者", "類別", "難度"]);
+        pager.innerHTML = pages <= 1 ? "" :
+            `<button type="button" data-page="prev" ${page === 1 ? "disabled" : ""}>← 上一頁</button>`
+            + `<span class="pager-info">第 ${page} / ${pages} 頁</span>`
+            + `<button type="button" data-page="next" ${page === pages ? "disabled" : ""}>下一頁 →</button>`;
     }
     function renderStats(data) {
         const categories = data.category_distribution || [];
@@ -197,8 +218,16 @@
             error.classList.remove("hidden");
         }
     }
-    [search, author, category, difficulty].forEach(element => element.addEventListener("input", renderResults));
-    [author, category, difficulty].forEach(element => element.addEventListener("change", renderResults));
+    function onFilterChange() { page = 1; renderResults(); }
+    [search, author, category, difficulty].forEach(element => element.addEventListener("input", onFilterChange));
+    [author, category, difficulty].forEach(element => element.addEventListener("change", onFilterChange));
+    document.getElementById("pager").addEventListener("click", event => {
+        const button = event.target.closest("button[data-page]");
+        if (!button) return;
+        page += button.dataset.page === "next" ? 1 : -1;
+        renderResults();
+        document.getElementById("results").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     load();
 })();
 </script>
