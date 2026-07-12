@@ -148,6 +148,13 @@ class MigrationParityRegressionTests(unittest.TestCase):
             self.assertIn(marker, core)
         self.assertIn('@router.post("/logout")', api)
 
+    def test_schedule_page_preserves_normalized_snapshot_and_loser_byes(self):
+        html = (ROOT / "frontend" / "draw_match_schedule" / "index.html").read_text(encoding="utf-8")
+        for marker in ("snapshotTeams = teams()", "sameTeams", "invalidated = true", "byes[round.round] || round.bye", "match-caption", 'id="logout"', "/api/registration-admin/logout"):
+            self.assertIn(marker, html)
+        for caption in ("使用賽會人員密碼登入後", "舊抽籤結果會自動失效", "方便稍後抄錄到"):
+            self.assertIn(caption, html)
+
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
         browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")
