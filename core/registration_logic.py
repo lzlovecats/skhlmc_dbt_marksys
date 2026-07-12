@@ -150,13 +150,20 @@ def submit_registration(data, competition_edition, db=None):
     latest_status = get_registration_status(db)
     if not latest_status["is_open"]:
         return {"ok": False, "message": "報名時間已關閉，未能提交報名。"}
+    current_edition = int(latest_status["settings"]["competition_edition"])
+    try:
+        submitted_edition = int(competition_edition)
+    except (TypeError, ValueError):
+        submitted_edition = -1
+    if submitted_edition != current_edition:
+        return {"ok": False, "message": "報名屆數已更新，請重新載入頁面後再提交。"}
 
     duplicate = db.query(
         f"""
         SELECT 1 FROM {TABLE_COMPETITION_REGISTRATIONS}
         WHERE competition_edition = :competition_edition AND team_name = :team_name
         """,
-        {"competition_edition": int(competition_edition), "team_name": form_data["team_name"]},
+        {"competition_edition": current_edition, "team_name": form_data["team_name"]},
     )
     if not duplicate.empty:
         return {"ok": False, "message": "此隊名已於本屆提交報名，請勿重覆提交。"}
@@ -175,7 +182,7 @@ def submit_registration(data, competition_edition, db=None):
                 :contact_phone, 'submitted', :submitted_at, :updated_at
             )
             """,
-            {"competition_edition": int(competition_edition), **form_data,
+            {"competition_edition": current_edition, **form_data,
              "submitted_at": now, "updated_at": now},
         )
     except Exception as exc:

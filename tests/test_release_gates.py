@@ -45,6 +45,17 @@ class ChairpersonTimerTests(unittest.TestCase):
         self.assertIn('start="${start}"', markdown)
 
 class MigrationParityRegressionTests(unittest.TestCase):
+    def test_public_registration_uses_server_edition_and_mobile_form_contract(self):
+        core = (ROOT / "core" / "registration_logic.py").read_text(encoding="utf-8")
+        html = (ROOT / "frontend" / "registration" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('current_edition = int(latest_status["settings"]["competition_edition"])', core)
+        self.assertIn("submitted_edition != current_edition", core)
+        for marker in ('required autocomplete="organization"', 'pattern="[0-9]{8}"', "SafeMarkdown.render", "參賽隊伍"):
+            self.assertIn(marker, html)
+        self.assertNotIn("user-scalable=no", html)
+        self.assertNotIn("請至側邊欄查閱賽規", html)
+        self.assertIn("只供賽會處理本次報名、聯絡及跟進用途", html)
+
     def test_judging_uses_server_scoring_contract_and_submission_safeguards(self):
         html = (ROOT / "frontend" / "judging" / "index.html").read_text(encoding="utf-8")
         ux = (ROOT / "frontend" / "shared" / "judging-ux.js").read_text(encoding="utf-8")
