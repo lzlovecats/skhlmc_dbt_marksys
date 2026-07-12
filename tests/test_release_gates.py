@@ -68,6 +68,15 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn("changed = db.execute_count", core)
         self.assertIn("比賽屆數必須為正整數", core)
 
+    def test_match_info_defaults_are_streamlit_aligned_and_saves_are_atomic(self):
+        html = (ROOT / "frontend" / "match_info" / "index.html").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "match_logic.py").read_text(encoding="utf-8")
+        for marker in ("state.default_date", "state.default_time", "難度篩選", "隊伍名稱1", "留空代表保留現有密碼", "hasUnsavedChanges", "尚未儲存的修改", "beforeunload"):
+            self.assertIn(marker, html)
+        self.assertNotIn("user-scalable=no", html)
+        self.assertIn("with db.transaction() as session", core)
+        self.assertIn('"default_time": "16:00"', core)
+
     def test_judging_uses_server_scoring_contract_and_submission_safeguards(self):
         html = (ROOT / "frontend" / "judging" / "index.html").read_text(encoding="utf-8")
         ux = (ROOT / "frontend" / "shared" / "judging-ux.js").read_text(encoding="utf-8")

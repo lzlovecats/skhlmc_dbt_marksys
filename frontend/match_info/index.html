@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>比賽場次管理</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#111827">
     <link rel="stylesheet" href="/shared/vote-ui.css">
     <link rel="stylesheet" href="/shared/app-shell.css"><style>
@@ -69,9 +69,9 @@
     <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>
         <ul>
-            <li>建立場次後，可抽辯題、抽站方及更新正反方與辯員資料。</li>
-            <li>正反方各有一條專屬填名連結；提交後可重開或重新生成。</li>
-            <li>密碼欄留空會保留現有設定；只有勾選清除才會移除密碼。</li>
+            <li>使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。</li>
+            <li>編輯場次時，請確認正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。</li>
+            <li>刪除場次會一併刪除該場次的正式評分與暫存資料，請再次確認相關紀錄不再需要。</li>
         </ul>
     </details>
 
@@ -93,8 +93,9 @@
 
         <section class="card">
             <h2>建立新場次</h2>
+            <p class="intro">請先建立場次，再進行抽辯題、抽站方或編輯資料。</p>
             <div class="toolbar">
-                <div class="field"><label for="newId">比賽場次名稱</label><input id="newId" placeholder="例：初賽 A 組 1"></div>
+                <div class="field"><label for="newId">輸入比賽場次</label><input id="newId" placeholder="例：初賽 A 組 1"></div>
                 <button id="create" class="primary" type="button">新增比賽場次</button>
             </div>
         </section>
@@ -103,11 +104,12 @@
 
         <section id="manage" class="hidden">
             <section class="card">
-                <div class="field"><label for="match">選擇場次</label><select id="match"></select></div>
+                <div class="field"><label for="match">選擇比賽場次</label><select id="match"></select></div>
             </section>
 
             <section class="card">
                 <h2>隊伍自助填名連結</h2>
+                <p class="intro">將以下專屬連結分別發給正反方。每個連結只可提交一次；如需要修改，可重開填寫或重新生成連結。</p>
                 <div id="links" class="link-grid"></div>
             </section>
 
@@ -116,14 +118,16 @@
                 <div class="draw-grid">
                     <div class="draw-card">
                         <h3>抽辯題</h3>
-                        <label for="difficulty">難度</label>
+                        <label for="difficulty">難度篩選</label>
                         <select id="difficulty"></select>
+                        <div class="caption">從辯題庫抽取一條辯題，結果會自動填入下方場次資料。</div>
                         <button id="drawTopic" type="button">抽辯題</button>
                     </div>
                     <div class="draw-card">
                         <h3>抽站方</h3>
-                        <label for="team1">隊伍 1</label><input id="team1">
-                        <label for="team2">隊伍 2</label><input id="team2">
+                        <div class="caption">輸入兩隊名稱後抽出正反方，結果會自動填入下方場次資料。</div>
+                        <label for="team1">隊伍名稱1</label><input id="team1">
+                        <label for="team2">隊伍名稱2</label><input id="team2">
                         <button id="drawSides" type="button">確定抽籤</button>
                     </div>
                 </div>
@@ -162,6 +166,7 @@
                 </div>
 
                 <h3 class="section-heading">場次密碼</h3>
+                <div class="caption">留空代表保留現有密碼；輸入新密碼代表更新；如需移除，請勾選清除。</div>
                 <div class="password-grid">
                     <div>
                         <label for="access">評判入場密碼</label>
@@ -202,7 +207,8 @@
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
     }[char]));
-    let state = null;
+    let state = null, savedFormSnapshot = null, selectedMatchId = "";
+    const formKeys = ["match_date", "match_time", "topic_text", "pro_team", "con_team", "pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"];
 
     const setBusy = active => VoteUI.setBusy($("busy"), active);
     const toast = text => VoteUI.toast($("toast"), text);
@@ -230,6 +236,18 @@
         return ({ match_date: "date", match_time: "time", topic_text: "topic" }[key] || key);
     }
 
+    function formSnapshot() {
+        return JSON.stringify({
+            fields: Object.fromEntries(formKeys.map(key => [key, $(fieldId(key)).value])),
+            access: $("access").value, review: $("review").value,
+            clearAccess: $("clearAccess").checked, clearReview: $("clearReview").checked,
+        });
+    }
+
+    function hasUnsavedChanges() {
+        return savedFormSnapshot !== null && !$("manage").classList.contains("hidden") && formSnapshot() !== savedFormSnapshot;
+    }
+
     function renderLinks() {
         const links = state.roster_links || {};
         $("links").innerHTML = ["pro", "con"].map(side => {
@@ -239,7 +257,7 @@
             return `<section class="link-card">
                 <h3>${label}填名連結</h3>
                 <div class="${link.submitted ? "ok" : "caption"}">狀態：${link.submitted ? "已提交" : "未提交"}</div>
-                <label for="${side}Link">專屬連結</label>
+                <label for="${side}Link">${label}提交連結</label>
                 <input id="${side}Link" readonly value="${esc(url)}">
                 <div class="link-actions">
                     <button type="button" data-reopen="${side}" ${link.submitted ? "" : "disabled"}>重開填寫</button>
@@ -251,8 +269,9 @@
 
     function fillMatch() {
         const match = current();
-        ["match_date", "match_time", "topic_text", "pro_team", "con_team", "pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"].forEach(key => {
-            $(fieldId(key)).value = match[key] || "";
+        formKeys.forEach(key => {
+            const fallback = key === "match_date" ? state.default_date : key === "match_time" ? state.default_time : "";
+            $(fieldId(key)).value = match[key] || fallback;
         });
         $("access").value = "";
         $("review").value = "";
@@ -261,6 +280,8 @@
         $("accessState").textContent = `目前狀態：${match.has_access_code ? "已設定" : "未設定"}`;
         $("reviewState").textContent = `目前狀態：${match.has_review_password ? "已設定" : "未設定"}`;
         renderLinks();
+        selectedMatchId = match.match_id;
+        savedFormSnapshot = formSnapshot();
     }
 
     function render() {
@@ -270,7 +291,7 @@
         $("app").classList.remove("hidden");
         $("empty").classList.toggle("hidden", matches.length > 0);
         $("manage").classList.toggle("hidden", matches.length === 0);
-        if (!matches.length) return;
+        if (!matches.length) { selectedMatchId = ""; savedFormSnapshot = null; return; }
         $("match").innerHTML = matches.map(match => `<option value="${esc(match.match_id)}" ${match.match_id === state.selected_match_id ? "selected" : ""}>${esc(match.match_id)}</option>`).join("");
         $("time").innerHTML = state.time_slots.map(time => `<option value="${esc(time)}">${esc(time)}</option>`).join("");
         $("difficulty").innerHTML = `<option value="">全部難度</option>${state.difficulties.map(item => `<option value="${item.value}">${esc(item.label)}</option>`).join("")}`;
@@ -319,7 +340,17 @@
         toast(`✅ ${result.message}`);
     }));
 
-    $("match").addEventListener("change", () => run(() => load($("match").value)));
+    $("match").addEventListener("change", () => {
+        const nextMatchId = $("match").value;
+        if (hasUnsavedChanges()) {
+            $("match").value = selectedMatchId;
+            window.setTimeout(() => {
+                if (window.confirm("目前場次有尚未儲存的修改。確定要切換場次並放棄這些修改嗎？")) run(() => load(nextMatchId));
+            }, 0);
+            return;
+        }
+        run(() => load(nextMatchId));
+    });
 
     $("drawTopic").addEventListener("click", () => run(async () => {
         const result = await request("/api/match-info/draw-topic", { difficulty: $("difficulty").value || null });
@@ -341,7 +372,7 @@
         run(async () => {
             const match = current();
             const body = { match_id: match.match_id };
-            ["match_date", "match_time", "topic_text", "pro_team", "con_team", "pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"].forEach(key => {
+            formKeys.forEach(key => {
                 body[key] = $(fieldId(key)).value;
             });
             body.access_code = $("access").value;
@@ -378,6 +409,12 @@
         await load();
         toast(`✅ ${result.message}`);
     }));
+
+    window.addEventListener("beforeunload", event => {
+        if (!hasUnsavedChanges()) return;
+        event.preventDefault();
+        event.returnValue = "";
+    });
 
     load().catch(error => { $("loading").textContent = error.message; });
 })();

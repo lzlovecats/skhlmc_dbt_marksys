@@ -5,6 +5,8 @@ import random
 import secrets
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
+
 from core.auth_logic import hash_password
 from core.vote_logic import _resolve_db
 from schema import (
@@ -62,7 +64,9 @@ def match_admin_data(selected_match_id=None, db=None):
     selected = _clean(selected_match_id) or (matches[0]["match_id"] if matches else "")
     if selected and selected not in {m["match_id"] for m in matches}: selected = matches[0]["match_id"] if matches else ""
     links = ensure_match_links(selected, db) if selected else {}
-    return {"matches": matches, "selected_match_id": selected or None, "roster_links": links, "time_slots": TIME_SLOTS, "difficulties": [{"value": key, "label": value} for key, value in DIFFICULTY_OPTIONS.items()]}
+    return {"matches": matches, "selected_match_id": selected or None, "roster_links": links,
+            "default_date": _now().date().isoformat(), "default_time": "16:00",
+            "time_slots": TIME_SLOTS, "difficulties": [{"value": key, "label": value} for key, value in DIFFICULTY_OPTIONS.items()]}
 
 
 def create_match(match_id, db=None):
@@ -78,22 +82,32 @@ def create_match(match_id, db=None):
 def save_match(data, db=None):
     db = _resolve_db(db); match_id = _clean(data.get("match_id"))
     if not match_id: return {"ok": False, "message": "場次不存在。"}
-    exists = db.query(f"SELECT access_code_hash, review_password_hash FROM {TABLE_MATCHES} WHERE match_id = :id", {"id": match_id})
-    if exists.empty: return {"ok": False, "message": "場次不存在。"}
-    access, review = exists.iloc[0]["access_code_hash"], exists.iloc[0]["review_password_hash"]
     if data.get("clear_access_code") and _clean(data.get("access_code")): return {"ok": False, "message": "如需清除評判入場密碼，請將密碼欄留空。"}
     if data.get("clear_review_password") and _clean(data.get("review_password")): return {"ok": False, "message": "如需清除查閱分紙密碼，請將密碼欄留空。"}
-    access = None if data.get("clear_access_code") else hash_password(_clean(data.get("access_code"))) if _clean(data.get("access_code")) else access
-    review = None if data.get("clear_review_password") else hash_password(_clean(data.get("review_password"))) if _clean(data.get("review_password")) else review
-    params = {"id": match_id, "date": _clean(data.get("match_date")) or None, "time": _clean(data.get("match_time")) or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "access": access, "review": review}
-    db.execute(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id", params)
-    for side in ("pro", "con"):
-        for pos in range(1, 5):
-            db.execute(f"INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name) VALUES (:id, :side, :pos, :name) ON CONFLICT (match_id, side, position) DO UPDATE SET debater_name=EXCLUDED.debater_name", {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))})
+    match_date, match_time = _clean(data.get("match_date")), _clean(data.get("match_time"))
+    try:
+        if match_date: dt.date.fromisoformat(match_date)
+    except ValueError:
+        return {"ok": False, "message": "請輸入有效的比賽日期。"}
+    if match_time and match_time not in TIME_SLOTS:
+        return {"ok": False, "message": "請選擇有效的比賽時間。"}
+    with db.transaction() as session:
+        exists = session.execute(text(f"SELECT access_code_hash, review_password_hash FROM {TABLE_MATCHES} WHERE match_id = :id"), {"id": match_id}).fetchone()
+        if not exists: return {"ok": False, "message": "場次不存在。"}
+        access, review = exists._mapping["access_code_hash"], exists._mapping["review_password_hash"]
+        access = None if data.get("clear_access_code") else hash_password(_clean(data.get("access_code"))) if _clean(data.get("access_code")) else access
+        review = None if data.get("clear_review_password") else hash_password(_clean(data.get("review_password"))) if _clean(data.get("review_password")) else review
+        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "access": access, "review": review}
+        session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
+        for side in ("pro", "con"):
+            for pos in range(1, 5):
+                session.execute(text(f"INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name) VALUES (:id, :side, :pos, :name) ON CONFLICT (match_id, side, position) DO UPDATE SET debater_name=EXCLUDED.debater_name"), {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))})
     return {"ok": True, "message": f"場次「{match_id}」資料已儲存至資料庫！"}
 
 
 def draw_topic(difficulty=None, db=None):
+    if difficulty not in (None, "", 1, 2, 3, "1", "2", "3"):
+        return {"ok": False, "message": "請選擇有效的難度。"}
     db = _resolve_db(db); params = {"difficulty": int(difficulty)} if difficulty else {}
     sql = f"SELECT topic_text FROM {TABLE_TOPICS}" + (" WHERE difficulty = :difficulty" if difficulty else "")
     rows = db.query(sql, params)
@@ -121,7 +135,8 @@ def reopen_link(match_id, side, db=None):
 
 
 def delete_match(match_id, db=None):
-    _resolve_db(db).execute(f"DELETE FROM {TABLE_MATCHES} WHERE match_id = :id", {"id": match_id})
+    changed = _resolve_db(db).execute_count(f"DELETE FROM {TABLE_MATCHES} WHERE match_id = :id", {"id": _clean(match_id)})
+    if not changed: return {"ok": False, "message": "場次不存在或已被刪除。"}
     return {"ok": True, "message": f"已成功刪除場次 「{match_id}」 及其所有相關評分記錄。"}
 
 
