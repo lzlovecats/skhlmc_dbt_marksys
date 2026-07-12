@@ -147,7 +147,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
 
     def test_ai_training_parity_endpoints_are_registered(self):
         source = (ROOT / "api" / "ai_training_api.py").read_text(encoding="utf-8")
-        for route in ("/recordings/quality-check", "/manuscripts", "/coverage", "/inventory", "/regenerate-suggestions",
+        for route in ("/recordings/quality-check", "/manuscripts", "/coverage", "/coverage/ai", "/inventory", "/regenerate-suggestions",
                       "/export/recordings.zip", "/export/llm.jsonl"):
             self.assertIn(route, source)
         browser = (
@@ -156,6 +156,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
         )
         self.assertIn("跳過此句", browser)
         self.assertIn("data-active-type", browser)
+        proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
+        self.assertIn('@app.get("/ai-training/app.js")', proxy)
 
 
 class StaticArchitectureTests(unittest.TestCase):

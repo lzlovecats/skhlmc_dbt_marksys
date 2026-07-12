@@ -1254,6 +1254,15 @@ async def ai_training_page():
     return FileResponse(BASE_DIR / "frontend" / "ai_training" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
 
 
+@app.get("/ai-training/app.js")
+async def ai_training_script():
+    return FileResponse(
+        BASE_DIR / "frontend" / "ai_training" / "app.js",
+        media_type="text/javascript",
+        headers=_cache_headers(CACHE_STATIC),
+    )
+
+
 @app.get("/db-mgmt")
 @app.get("/db_mgmt", include_in_schema=False)
 async def db_management_page():
