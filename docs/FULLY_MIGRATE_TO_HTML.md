@@ -1,22 +1,21 @@
-# Fully Migrate to HTML — 遷移計劃 / Onboarding Handoff
+# Fully Migrate to HTML — 4.0.0 驗收及維護手冊
 
-> 本文件係畀**接手／協助呢個遷移嘅開發者**睇。目標：將現有 Streamlit 系統逐頁改寫成
-> HTML/CSS/JS 前端 + Python JSON API，最終刪走 Streamlit。讀完呢份文件，你應該可以自己
-> 揀一版頁面、跟同一套模式獨立開工。
+> 所有主要 UI 已由 HTML/CSS/JS + FastAPI 接管。Streamlit source 保留於
+> `legacy_streamlit/` 作 4.0.0 parity 驗收基準，唔再係 production UI。
 >
-> 狀態日期：2026-07-10 ｜ 版本：3.8.0（vote 頁已遷移並雙軌並行）
+> 狀態日期：2026-07-12 ｜ 版本：4.0.0 release candidate
 
 ---
 
 ## 0. TL;DR（畀趕時間嘅人）
 
-- **策略**：逐頁遷移；已接管頁面保留 Streamlit source 於 `legacy_streamlit/`，不刪除但不再註冊。其餘頁面先雙軌驗證再接管。
+- **狀態**：全部主要頁面已接管；Streamlit source 保留於 `legacy_streamlit/`，不註冊 production route。
 - **唔係用 JS 重寫 backend**。Python 業務邏輯抽入 `core/`（去 Streamlit 化），HTML 前端經 `api/` 嘅 JSON 端點取用。**新舊 UI 共用同一份 `core/` 邏輯 = 單一真相來源。**
 - **三個關鍵不變量**：
   1. `core/` 同 `api/` **禁止 `import streamlit` / `st.*`**（proxy 係 512MB、又冇 Streamlit runtime）。
   2. DB 存取用**注入式 executor**（`db=None` 參數），令同一份邏輯喺 Streamlit 同 proxy 兩個 process 都行到。
   3. HTML 頁**外觀／tab 次序要對齊現有 Streamlit**（永遠 dark、同配色、同分頁次序）。
-- **每頁遷移 4 步**：① 抽 `core/` 邏輯（行為零改變，Streamlit 仍要正常）→ ② 加 `api/` router → ③ 砌 `frontend/` 頁 → ④ 雙軌並行收 bug → 最後刪 Streamlit 頁。
+- **後續修改 4 步**：① 對照 legacy 行為 → ② 修改 `core/` / `api/` → ③ 修改 `frontend/` → ④ 完成 parity、pagination、desktop/mobile 驗收。
 - 揀新一版頁做之前，**睇「§7 每頁遷移 Playbook」同「§9 坑」**。
 
 ---
@@ -43,29 +42,28 @@
 
 ### 策略
 - **保留** Python 業務邏輯做後端（唔用 JS 重寫規則——最有價值又最易改壞嘅資產）。
-- **逐頁**遷移；**vote 頁先行**（委員使用率最高）。
-- **雙軌並行**：舊 Streamlit 頁同新 HTML 頁同時上線，兩邊共用 `core/` 邏輯 → 數據天然一致；穩定先刪 Streamlit。
+- 所有主要頁面已接管；`legacy_streamlit/` 只作 parity reference。
+- 4.0.0 production runtime 不再啟動或反代 Streamlit。
 
 ---
 
 ## 2. 執行架構（Runtime）
 
-兩個 process，由 `deploy/start.sh` 一齊起（Docker，見 `deploy/Dockerfile`）：
+單一 FastAPI process，由 `deploy/start.sh` 啟動（Docker，見 `deploy/Dockerfile`）：
 
 ```
 瀏覽器 / PWA
     │
     ▼
-FastAPI 反向代理  (deploy/proxy.py, uvicorn, PORT=8000)   ← 對外唯一入口
-    ├─ 直接處理：/vote(HTML)、/api/*、/practice、/projector、
-    │            /gemini-live、/room/*、PWA(manifest/sw/icons)、push、TTS …
-    └─ 其餘一律反代去 ↓
-Streamlit  (main.py, 127.0.0.1:8501)                      ← 舊 UI（逐步縮細）
+FastAPI  (deploy/proxy.py, uvicorn, PORT=8000) ← 對外唯一入口
+    ├─ HTML：frontend/*、templates/*
+    ├─ JSON API：api/*、core/*
+    └─ WebSocket / PWA：Gemini Live、房間、投影、push、TTS
 ```
 
 - **部署**：Render（Docker），`deploy/render.yaml`（`autoDeploy:false`，但 dashboard 設定會 override，deploy 前要確認）。main 係生產分支。
 - **DB**：PostgreSQL，SQLAlchemy。連線資訊喺 `.streamlit/secrets.toml` `[connections.postgresql]`（proxy 亦讀 `DATABASE_URL` env）。
-- **記憶體**：Render starter 512MB → `start.sh` 有 malloc 調校。**呢個係「proxy 唔可以 import streamlit」嘅硬理由之一。**
+- **記憶體**：Render starter 512MB → `start.sh` 有 malloc 調校；production modules 禁止 import Streamlit。
 - **PWA**：`static/manifest.json`（`scope:"/"`、`display:standalone`）、`deploy/sw.js`（**冇 fetch handler**，只做 push + 通知點擊；所以唔會快取/攔截 API）。
 
 ---
@@ -89,19 +87,16 @@ frontend/    HTML/CSS/JS 前端本體（取代 templates/ 角色）。
 
 ### 現有（背景）
 ```
-main.py              Streamlit 入口 + st.navigation（頁面路由，url_path）
-<page>.py (根目錄)    每個 Streamlit 頁（vote.py, judging.py, home.py …）← 遷完逐個刪
-functions.py         共用 helper（⚠️ 頂層 import streamlit）
-db.py                DB primitive（⚠️ 包 st.connection；含 StreamlitDb executor）
-auth.py              Streamlit 認證（⚠️ import streamlit）
+legacy_streamlit/    舊 Streamlit 頁，只供 parity reference
+main.py/functions.py/db.py/auth.py  舊 runtime 相容 source，不由 production 啟動
 schema.py            表名常數 + DDL（✅ 無頂層 streamlit，可安全 import）
 prompts.py / debate_timing.py / ai_model_config.py   純 helper（✅ 無 streamlit）
-deploy/              proxy.py（反代 + API 掛載 + 自有 DB engine）、Dockerfile、start.sh、sw.js
+deploy/              proxy.py（HTML/API/WebSocket + DB engine）、Dockerfile、start.sh、sw.js
 templates/           舊 proxy-served HTML（projector/practice/live/room）← 最後收編入 frontend/
 static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 ```
 
-**原則**：前端（`frontend/`）同後端（`core/` + `api/`）界線清楚；`core/` 語言無關可測；舊 Streamlit 頁留喺根目錄過渡，遷完即刪。
+**原則**：前端（`frontend/`）同後端（`core/` + `api/`）界線清楚；`core/` 無 UI dependency、可獨立測試；舊 Streamlit 頁只留於 `legacy_streamlit/` 作驗收基準。
 
 ---
 
@@ -146,14 +141,21 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 
 ## 5. HTML 設計原則
 
-**大方向：新版要同現有 Streamlit「睇落差唔多」**（雙軌期用戶會同時見到兩版；亦方便無縫取代）。
+**大方向：功能與 Streamlit 1:1 對齊；UI 可按 HTML 使用情境重設計。** 不要為了複製 Streamlit 的版面而保留其限制；可跟 `/vote` 已驗證的設計語言統一使用體驗。
+
+### 5.1 共用 CSS（強制）
+
+- 所有 direct HTML page 必須載入 `frontend/shared/app-shell.css`；它是 dark theme、container、card、form、button、tab、table、toast、busy state 及 responsive grid 的唯一基礎來源。
+- `frontend/shared/vote-ui.css` 只保留給已遷移頁的相容入口，並 import `app-shell.css`。新頁不得再以 `vote-ui.css` 作唯一樣式依賴。
+- 頁內 `<style>` 只可保留該頁獨有的 layout / component 規則，不能重新定義基礎 palette、button、form control、card、table、toast 或 breakpoint。
 
 - **主題永遠 dark**（Streamlit `.streamlit/config.toml` `base="dark"`）。**唔好**用 `prefers-color-scheme` 跟系統。用 Streamlit 預設 dark 配色：底 `#0e1117`、卡/次要面 `#262730`、文字 `#fafafa`。
 - **語意色**：同意=綠、不同意=紅；**accent 用藍**（唔好用會撞「不同意」紅嘅紅做 accent）。
-- **Tab／分頁次序同 label 要對齊對應 Streamlit 頁**（例：vote = 提案 → 辯題投票 → 罷免投票，default 提案，對應 `vote.py` 的 `_tab_options`）。
+- **流程、tab／分頁次序、label、權限與寫入規則要對齊對應 Streamlit 頁**（例：vote = 提案 → 辯題投票 → 罷免投票，default 提案，對應 `vote.py` 的 `_tab_options`）；視覺排版可重設計。
 - **手機優先**：`padding: env(safe-area-inset-top)`、鎖 viewport（`maximum-scale=1`）、input `font-size ≥16px` 防 iOS 縮放。（`>>`/`⋯` 同狀態欄重疊嗰個問題係 **Streamlit 專屬 chrome**，全 HTML 後自然消失。）
 - **返回主頁**：每個由 HTML 直接接管、但不是主頁的 page，首屏必須有 `← 返回主頁` 連結到 `/`；這是既有 Streamlit sidebar navigation 被移除後的必要替代入口。
-- **技術取向**：vanilla JS + `fetch`（一個人都維護到）、事件委派（event delegation）。頁面暫時 self-contained（inline css/js）；規模大時再拆 `frontend/shared/` + proxy `StaticFiles` mount。
+- **共用 UI**：新頁先使用 `frontend/shared/vote-ui.css` 和 `frontend/shared/vote-ui.js`。登入表單、首次使用指南、藍色主按鈕、黑底 toast、處理中 overlay 以 `/vote` 為準；頁面專屬排版及業務流程才留在各自目錄。
+- **技術取向**：vanilla JS + `fetch`（一個人都維護到）、事件委派（event delegation）。共用 CSS/JS 由 proxy 的 `/shared/` 提供，避免每頁複製相同互動程式。
 - **落手前**：先開對應 Streamlit 頁睇實際樣同分頁，先跟住做。
 
 ---
@@ -180,9 +182,8 @@ static/ assets/ appliance/   PWA 資源 / 內容檔 / kiosk 運維
 - 已補 `bypass_active_check`、登入時 `refresh_acc_type`、一次性系統公告、黑底 toast、Streamlit 頁內刷新掣、完整活躍狀態提示及投票卡 progress bar。
 - 仍需正式環境 smoke：AI provider、Web Push permission、production 寫入端點；呢啲係部署驗證，唔係已知功能缺口。
 
-### ⬜ 未開始 —— 其餘所有 Streamlit 頁
-每版都要行同一套 4 步流程。粗略清單（睇 `main.py` `st.Page`）：
-已接管：`vote`、`open_db`、`home`、`bug_report`、`registration`、`registration_admin`。Streamlit source 保留於 `legacy_streamlit/`。其後包括：`judging`（電子分紙，核心）、`match_info`、`review`、`draw_match_schedule`、`team_roster`、`video_replay`/`video_admin`、`match_photos`、`chairperson`、`lateness_fund`、`ai_fund`、`ai_coach`、`ai_training`、`db_mgmt`、`dev_settings` 等。
+### ✅ 已接管 —— 其餘所有主要頁面
+已接管：`vote`、`open_db`、`home`、`bug_report`、`registration`、`registration_admin`、`video_replay`、`video_admin`、`match_photos`、`team_roster`、`match_info`、`draw_match_schedule`、`management`、`judging`、`review`、`lateness_fund`、`ai_fund`、`chairperson`、`ai_coach`、`ai_training`、`db_mgmt`、`dev_settings`。所有 Streamlit source 保留於 `legacy_streamlit/` 作行為參考。
 
 ---
 
@@ -223,16 +224,13 @@ python -c "import sys, core.X_logic; print('st?', 'streamlit' in sys.modules)"  
 
 ## 8. 本機開發 / 測試
 
-- venv 曾改過名 → **一律用 `./venv/bin/python -m <module>`**（`pip`/`streamlit`/`uvicorn` 嘅 wrapper script shebang 可能壞）。
-- 起全 app：
+- venv 曾改過名 → **一律用 `./venv/bin/python -m <module>`**。
+- 起全 HTML/FastAPI app：
   ```
-  ./venv/bin/python -m streamlit run main.py --server.port 8501 --server.address 127.0.0.1 \
-      --server.headless true --server.enableCORS false --server.enableXsrfProtection false \
-      --server.fileWatcherType none --browser.gatherUsageStats false &
   ./venv/bin/python -m uvicorn deploy.proxy:app --host 127.0.0.1 --port 8000
   ```
-  用 **proxy 個 port 8000** 睇嘢（唔好用 8501）。
-- **只測 HTML 頁**（唔使 Streamlit）：只起 proxy，然後 mint cookie 繞過登入——
+  用 port 8000 測試全部 HTML/API/WebSocket route。
+- 測登入頁可 mint 臨時測試 cookie——
   ```
   # 產生 cookie 值（uid 改自己）
   ./venv/bin/python -c "import tomllib,hmac,hashlib;from sqlalchemy import create_engine,text;\
@@ -242,7 +240,6 @@ python -c "import sys, core.X_logic; print('st?', 'streamlit' in sys.modules)"  
   uid='admin';print('committee_user='+uid+':'+hmac.new(str(sec).encode(),uid.encode(),hashlib.sha256).hexdigest())"
   # 瀏覽器開 http://localhost:8000/vote → F12 console: document.cookie="上面嗰串; path=/"
   ```
-- 本機 **Streamlit 登入可能失敗**（見 §9 websockets）——所以測 HTML 用上面 cookine 注入法最穩。
 
 ---
 
@@ -251,7 +248,7 @@ python -c "import sys, core.X_logic; print('st?', 'streamlit' in sys.modules)"  
 1. **路由碰撞（最容易中）**：Streamlit `st.Page(url_path="X")` 令 `/X` 屬 Streamlit；proxy 加 `@app.get("/X")` 會**靜靜蓋過**佢，連 push 通知(url) 都會跟住去新頁。加 route 前 grep `main.py` 的 `url_path`。（我哋踩過：`/vote` 一度蓋咗 Streamlit vote 頁。）
 2. **proxy 唔可以 import streamlit**：`functions/auth/db` 頂層都 import streamlit；`schema/prompts/debate_timing` 就安全。core/api 要用 lazy import 隔開。512MB 記憶體亦唔想 proxy 拖住 streamlit。
 3. **`proxy.py` 開機 import `api.*`**：proxy 係大門，import 鏈一爆成個網站起唔到。api 頂層保持只 import fastapi/pydantic；deploy 後即刻確認網站起到。
-4. **本機 Streamlit 登入 400**：本機 `websockets`/`streamlit` 版本比生產新（16.x / 1.55），反代 Streamlit 的 `/_stcore/stream` 握手被拒 → 登入 UI 用唔到。生產環境正常。本機測 HTML 用 cookie 注入；要本機開全 app 就 `pip install "websockets==12.0"`（甚至降 streamlit）。
+4. **本機登入測試**：優先使用臨時測試帳戶或短期 cookie；唔好將 production 密碼寫入 repo、測試 snapshot 或 shell history。
 5. **AI 呼叫耦合**：`ai_coach_helpers` / `ai_review_topic` 等可能拉 streamlit。遷 AI 相關功能前，確認相關 helper 係咪 streamlit-free，唔係就要一齊抽（AI 功能可放最後，唔阻核心）。
 6. **RLS / 自訂 auth**：現時網站由可信 Python backend 用 direct Postgres connection 存取 DB，委員身份係自訂 cookie，唔係 Supabase Auth JWT。開 RLS 前要先設計 DB role／policy，唔可以假設 `auth.uid()` 等於委員 `user_id`；亦唔可以把 service role、secret key或 DB connection string 放入前端。
 7. **並發編輯**：呢個 repo 可能有多個 session／IDE 同時改。commit 前 `git status` 睇清楚，唔好 `git add -A` 掃入唔關你事嘅檔（曾見 `ai_fund.py`、TTS/manual 檔同時被改）。

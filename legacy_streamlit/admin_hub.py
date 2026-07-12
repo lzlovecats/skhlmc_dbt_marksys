@@ -23,14 +23,10 @@ tab = st.segmented_control(
 )
 
 if tab == "報名管理":
-    from registration_admin import render_registration_admin
-    render_registration_admin()
+    st.link_button("前往比賽報名管理", "/registration-admin", width="stretch")
 elif tab == "場次管理":
-    from match_info import render_match_info
-    render_match_info()
+    st.link_button("前往比賽場次管理", "/match-info", width="stretch")
 elif tab == "片段管理":
-    from video_admin import render_video_admin
-    render_video_admin()
+    st.link_button("前往比賽片段管理", "/video-admin", width="stretch")
 elif tab == "抽取賽程":
-    from draw_match_schedule import render_draw_schedule
-    render_draw_schedule()
+    st.link_button("前往抽取賽程", "/draw-match-schedule", width="stretch")

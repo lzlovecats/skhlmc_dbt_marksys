@@ -233,19 +233,11 @@ def registration_admin_data(competition_edition=None, status="全部", db=None):
     if status in STATUS_LABELS:
         where_sql += " AND status = :status"
         params["status"] = status
-    records = db.query(
-        f"""
-        SELECT id, competition_edition, team_name, main_debater_name, first_deputy_name,
-               second_deputy_name, closing_debater_name, contact_name, contact_class,
-               contact_phone, status, submitted_at, updated_at
-        FROM {TABLE_COMPETITION_REGISTRATIONS}
-        {where_sql}
-        ORDER BY submitted_at DESC, id DESC
-        """,
-        params,
-    )
-    items = [_record_payload(row) for _, row in records.iterrows()]
-    counts = {key: sum(item["status"] == key for item in items) for key in STATUS_LABELS}
+    items = []
+    count_rows = db.query(f"SELECT status,COUNT(*) AS count FROM {TABLE_COMPETITION_REGISTRATIONS} WHERE competition_edition=:competition_edition GROUP BY status", {"competition_edition":selected_edition})
+    counts = {key: 0 for key in STATUS_LABELS}
+    for _, row in count_rows.iterrows():
+        if row["status"] in counts: counts[row["status"]] = int(row["count"])
     return {
         "settings": _settings_payload(settings), "now": json_datetime(_now()),
         "default_end": json_datetime(_now() + dt.timedelta(days=14)),

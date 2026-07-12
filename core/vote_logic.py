@@ -396,7 +396,14 @@ def get_motion(table, topic, db=None):
         "ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT 1",
         {"t": topic},
     )
-    return None if df.empty else df.iloc[0].to_dict()
+    if df.empty:
+        return None
+    motion = df.iloc[0].to_dict()
+    # Legacy deployment tables use a fixed-width status column. PostgreSQL
+    # ignores its padding in SQL predicates, but a pandas value retains it.
+    # Normalise at this core boundary so API callers match vote.py's SQL logic.
+    motion["status"] = str(motion.get("status") or "").strip()
+    return motion
 
 
 def get_user_ballot(table, topic, user_id, db=None):

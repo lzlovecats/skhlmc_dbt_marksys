@@ -985,7 +985,10 @@ function playPcm(base64, mimeType) {
     const src = outputCtx.createBufferSource();
     src.buffer = buffer;
     src.connect(outputCtx.destination);
-    playAt = Math.max(playAt, outputCtx.currentTime);
+    // A tiny queue absorbs Live/WebSocket burst jitter without adding a
+    // perceptible turn delay.  It prevents the intermittent chopped replies
+    // reported on longer Free De and Mock sessions.
+    playAt = Math.max(playAt, outputCtx.currentTime + 0.12);
     src.start(playAt);
     playAt += buffer.duration;
 }
@@ -1005,7 +1008,7 @@ async function startMic() {
     inputCtx = new (window.AudioContext || window.webkitAudioContext)();
     await inputCtx.resume();
     sourceNode = inputCtx.createMediaStreamSource(stream);
-    processor = inputCtx.createScriptProcessor(4096, 1, 1);
+    processor = inputCtx.createScriptProcessor(2048, 1, 1);
     processor.onaudioprocess = (event) => {
         if (!isRecording) return;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -1025,7 +1028,13 @@ async function startMic() {
         }));
     };
     sourceNode.connect(processor);
-    processor.connect(inputCtx.destination);
+    // Keep the processing graph alive without routing the mic to speakers.
+    // Direct monitoring creates feedback and can cause mobile audio sessions
+    // to be interrupted during Free De / Mock.
+    const silentGain = inputCtx.createGain();
+    silentGain.gain.value = 0;
+    processor.connect(silentGain);
+    silentGain.connect(inputCtx.destination);
 }
 
 function sendSetup() {

@@ -1317,6 +1317,42 @@ def submit_best_debater_rankings(match_id, judge_name, rankings):
         s.commit()
 
 
+# Streamlit compatibility wrappers.  The judging page retains its established
+# imports while HTML/API and Streamlit now execute the same domain logic.
+from core import judging_logic as _judging_logic
+from db import default_db as _default_domain_db
+
+
+def normalize_judge_name(name: str) -> str:
+    return _judging_logic.normalize_judge_name(name)
+
+
+def save_draft_to_db(match_id, judge_name, team_side, score_data):
+    _judging_logic.save_draft(match_id, judge_name, team_side, score_data, db=_default_domain_db())
+    return True
+
+
+def load_draft_from_db(match_id, judge_name):
+    return _judging_logic.load_drafts(match_id, judge_name, db=_default_domain_db())
+
+
+def has_final_submission(match_id, judge_name):
+    return _judging_logic.has_final_submission(match_id, judge_name, db=_default_domain_db())
+
+
+def submit_final_scores(match_id, judge_name, pro_data, con_data):
+    result = _judging_logic.submit_final_scores(match_id, judge_name, pro_data, con_data, db=_default_domain_db())
+    return bool(result)
+
+
+def auto_derive_ranking_order(pro_scores, con_scores):
+    return _judging_logic.auto_derive_ranking_order(pro_scores, con_scores)
+
+
+def submit_best_debater_rankings(match_id, judge_name, rankings):
+    return _judging_logic.submit_best_debater_rankings(match_id, judge_name, rankings, db=_default_domain_db())
+
+
 def return_user_manual():
     return load_markdown_asset("user_manual.md")
 
@@ -1493,7 +1529,7 @@ def render_home_reference():
         with col_right:
             st.markdown("**賽會人員**：使用賽會人員密碼登入後管理報名、場次、賽果及賽程。")
             st.link_button("🗂️ 前往比賽報名管理", "/registration-admin", width="stretch")
-            st.page_link("match_info.py", label="前往比賽場次管理", icon="📋")
+            st.link_button("📋 前往比賽場次管理", "/match-info", width="stretch")
 
             st.markdown("**內部委員會成員**：登入個人帳戶後提出辯題、投票及管理帳戶。")
             st.page_link("vote.py", label="前往辯題徵集、投票及罷免", icon="🗳️")

@@ -172,14 +172,15 @@
   let expectedTurnSide = null;
   let serverOffset = 0;                  // serverNow = Date.now() + serverOffset
   let firedBells = new Set();
-  let isRecording = false, micReady = false;
+  let isRecording = false, micReady = false, reconnectTimer = 0, reconnectAttempt = 0;
   let aiSpeaking = false;
-  let recognition = null, recogText = "";
+  let recognition = null, recogText = "", recognitionFinal = "", recognitionStopping = false;
   let transcriptItems = [];
   let precheckActive = false, activePrecheckId = null;
   let networkTestStartedAt = 0, networkTestTimer = 0;
   let stream = null, inputCtx = null, sourceNode = null, processor = null;
   let outputCtx = null, playAt = 0;
+  const JITTER_BUFFER_SECONDS = 0.12;
   let bellCtx = null, bellBuffer = null, bellLoading = null;
 
   const $ = (id) => document.getElementById(id);
@@ -284,7 +285,10 @@
     const src = outputCtx.createBufferSource();
     src.buffer = buffer;
     src.connect(outputCtx.destination);
-    playAt = Math.max(playAt, outputCtx.currentTime);
+    // Keep a short queue ahead of the speaker.  Starting every received PCM
+    // frame immediately creates audible dropouts whenever mobile WebSocket
+    // delivery is bursty; this buffer trades 120 ms latency for continuity.
+    playAt = Math.max(playAt, outputCtx.currentTime + JITTER_BUFFER_SECONDS);
     src.start(playAt);
     playAt += buffer.duration;
   }
@@ -413,7 +417,7 @@
     inputCtx = new (window.AudioContext || window.webkitAudioContext)();
     await inputCtx.resume();
     sourceNode = inputCtx.createMediaStreamSource(stream);
-    processor = inputCtx.createScriptProcessor(4096, 1, 1);
+    processor = inputCtx.createScriptProcessor(2048, 1, 1);
     processor.onaudioprocess = (event) => {
       if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
       const raw = event.inputBuffer.getChannelData(0);
@@ -429,7 +433,13 @@
       }));
     };
     sourceNode.connect(processor);
-    processor.connect(inputCtx.destination);
+    // ScriptProcessor needs an output connection in some browsers, but routing
+    // the mic straight to speakers causes feedback and can suspend the audio
+    // graph on mobile. Keep a silent sink instead.
+    const silentGain = inputCtx.createGain();
+    silentGain.gain.value = 0;
+    processor.connect(silentGain);
+    silentGain.connect(inputCtx.destination);
     micReady = true;
   }
 
@@ -496,7 +506,7 @@
     return ms / 1000;
   }
   function updateSideTimers() {
-    const isFree = phase === "active" && segSide === "雙方" && segTotal === 1;
+    const isFree = phase === "active" && segSide === "雙方";
     $("sideTimers").classList.toggle("hidden", !isFree);
     if (!isFree) return;
     const pro = sideUsedSeconds("正方");
@@ -510,12 +520,12 @@
     updateSideTimers();
     if (phase !== "active" || segStartedMs == null) return;
     const elapsed = segElapsed();
-    if (segSide === "雙方" && segTotal === 1 && myRole) {
+    if (segSide === "雙方" && myRole) {
       $("timer").textContent = formatTime(sideUsedSeconds(myRole));
     } else {
       $("timer").textContent = formatTime(elapsed);
     }
-    if (segSide === "雙方" && segTotal === 1) {
+    if (segSide === "雙方") {
       if (activeTurnSide) {
         const used = sideUsedSeconds(activeTurnSide);
         segBells.forEach((b, i) => {
@@ -528,7 +538,7 @@
       });
     }
     const over = segSeconds && (
-      (segSide === "雙方" && segTotal === 1 && myRole) ? sideUsedSeconds(myRole) >= segSeconds : elapsed >= segSeconds
+      (segSide === "雙方" && myRole) ? sideUsedSeconds(myRole) >= segSeconds : elapsed >= segSeconds
     );
     $("timer").style.color = over ? "#f85149" : "#e6e6e6";
     if (isRecording && !canSpeak()) stopTalk();
@@ -676,24 +686,36 @@
     r.continuous = true;
     r.interimResults = true;
     r.onresult = (event) => {
-      let text = "";
-      for (let i = 0; i < event.results.length; i++) {
-        text += event.results[i][0].transcript || "";
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const piece = event.results[i][0].transcript || "";
+        if (event.results[i].isFinal) recognitionFinal += piece;
+        else interim += piece;
       }
-      recogText = text.trim();
+      recogText = (recognitionFinal + interim).trim();
     };
-    r.onerror = () => {};
+    r.onerror = (event) => {
+      // Network/no-speech ends are common on mobile.  Keep recording audio and
+      // restart recognition below where the browser permits it.
+      if (event.error !== "aborted") log("逐字稿暫時中斷：" + event.error);
+    };
+    r.onend = () => {
+      if (isRecording && !recognitionStopping) {
+        try { r.start(); } catch (e) {}
+      }
+    };
     return r;
   }
   function startRecognition() {
-    recogText = "";
+    recogText = ""; recognitionFinal = ""; recognitionStopping = false;
     recognition = makeRecognition();
     if (!recognition) return;
     try { recognition.start(); } catch (e) {}
   }
   function stopRecognitionAndSend() {
-    const text = recogText.trim();
+    const text = (recognitionFinal || recogText).trim();
     if (recognition) {
+      recognitionStopping = true;
       try { recognition.stop(); } catch (e) {}
     }
     recognition = null;
@@ -722,6 +744,7 @@
     $("talkBtn").textContent = "按一下開始發言";
     if (sendTranscript) stopRecognitionAndSend();
     else if (recognition) {
+      recognitionStopping = true;
       try { recognition.stop(); } catch (e) {}
       recognition = null;
       recogText = "";
@@ -751,15 +774,20 @@
 
   // ── websocket ──
   function connect() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     const token = authToken();
-    if (!token) { setConn("未登入，無法連接房間。"); return; }
     if (!ROOM_CODE) { setConn("未有房間代碼。"); return; }
-    const url = wsBase() + "/" + ROOM_CODE + "?u=" + encodeURIComponent(token);
+    // New HTML pages authenticate with an HttpOnly same-origin cookie.  The
+    // server also accepts the legacy localStorage token when one exists.
+    const url = wsBase() + "/" + ROOM_CODE + (token ? "?u=" + encodeURIComponent(token) : "");
     ws = new WebSocket(url);
-    ws.onopen = () => { setConn("已連線 ✅"); };
+    ws.onopen = () => { reconnectAttempt = 0; setConn("已連線 ✅"); };
     ws.onclose = (ev) => {
-      setConn("連線中斷（" + ev.code + "）。" + (ev.code === 1008 ? "房間不存在或尚未登入。" : "5 秒後重試…"));
-      if (ev.code !== 1008 && ev.code !== 1013) setTimeout(connect, 5000);
+      ws = null;
+      const retryable = ev.code !== 1008 && ev.code !== 1013;
+      const delay = Math.min(12000, 1000 * Math.pow(2, reconnectAttempt++));
+      setConn("連線中斷（" + ev.code + "）。" + (retryable ? Math.ceil(delay / 1000) + " 秒後重試…" : "房間不存在或尚未登入。"));
+      if (retryable && !reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = 0; connect(); }, delay);
     };
     ws.onerror = () => { setConn("連線錯誤。"); };
     ws.onmessage = (ev) => {
@@ -804,6 +832,9 @@
         setNetworkTest("WebSocket 延遲：" + rtt + "ms（" + latencyLabel(rtt) + "）。已向房內其他人發測試聲。");
         break;
       }
+      case "heartbeat_ack":
+        if (msg.server_now_ms) serverOffset = msg.server_now_ms - Date.now();
+        break;
       case "test_audio":
         if (msg.from !== myUid) {
           playPcm(msg.data, msg.mimeType);
@@ -879,6 +910,12 @@
   }
 
   loadBell();
+  // Keep mobile/reverse-proxy WebSockets warm while speakers pause between
+  // turns.  Without this, an idle connection can die silently and audio only
+  // returns after the browser's next reconnect.
+  setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "heartbeat" }));
+  }, 15000);
   connect();
 </script>
 </body>

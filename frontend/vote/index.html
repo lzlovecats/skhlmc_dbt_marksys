@@ -5,7 +5,7 @@
     <title>辯題徵集、投票及罷免</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <meta name="theme-color" content="#111827">
-    <style>
+    <link rel="stylesheet" href="/shared/app-shell.css"><style>
         /* Always dark, to match the Streamlit app (config.toml base="dark").
            Surfaces/text follow Streamlit's default dark theme (#0e1117 / #262730
            / #fafafa); agree=green, against=red kept for clarity, accent=blue so
@@ -23,7 +23,7 @@
             font-size: 16px; line-height: 1.5;
             padding: max(1rem, env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));
         }
-        .wrap { width: 100%; margin: 0 auto; }
+        .wrap { width: min(100%, 84rem); margin: 0 auto; }
         header { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
         h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 .55rem; }
         .sub { color: var(--muted); font-size: .9rem; }
@@ -58,7 +58,7 @@
         .progress-label { margin-top: .9rem; font-weight: 600; }
         .progress { height: .72rem; border: 0; border-radius: 999px; overflow: hidden; background: #2d2f3a; margin-top: .35rem; position: relative; }
         .progress > span { display: block; height: 100%; min-width: 0; }
-        .progress.agree-bar > span { background: #ff4b4b; }
+        .progress.agree-bar > span { background: var(--agree); }
         .progress.against-bar > span { background: #ff4b4b; }
         .deadline-past { color: var(--against); font-weight: 600; }
         .state { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
@@ -180,7 +180,7 @@
 <div id="noticeRoot"></div>
 <div id="confirmRoot"></div>
 
-<script>
+<script src="/shared/vote-ui.js"></script><script>
 (function () {
     "use strict";
     const content = document.getElementById("content");
@@ -884,11 +884,13 @@
             if (res.status === 401) { toast("⚠️ 登入已失效，請重新登入。"); return; }
             if (res.status === 200 && data.status === "confirm_category") {
                 const pct = (data.ratio * 100).toFixed(1);
+                // The confirmation dialog has a lower z-index than the busy
+                // overlay. Clear the in-flight state before awaiting input.
+                setBusy(false);
                 if (!await askConfirm(
                     `若此辯題通過，類別「${data.category}」將佔辯題庫 ${pct}%（現有 ${data.total} 題中已有 ${data.cat_count} 題同類）。仍要投同意票嗎？`,
                     "✅ 確認投同意票"
                 )) return;
-                setBusy(false);
                 return cast(Object.assign({}, payload, { confirm_category: true }));
             }
             if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
@@ -944,11 +946,12 @@
                 { topic, category, difficulty, confirm_imbalance: !!confirmImbalance });
             if (res.status === 200 && data.status === "confirm_imbalance") {
                 const pct = (data.ratio * 100).toFixed(1);
+                // See cast(): a visible busy overlay would otherwise block this dialog.
+                setBusy(false);
                 if (await askConfirm(
                     `類別「${data.category}」目前已佔辯題庫 ${pct}%（共 ${data.total} 題中有 ${data.cat_count} 題）。繼續新增同類辯題將令辯題庫失衡，是否確認提交？`,
                     "✅ 確認繼續提交"
                 )) {
-                    setBusy(false);
                     return submitPropose(true);
                 }
                 return;

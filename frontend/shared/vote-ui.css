@@ -1,0 +1,2 @@
+/* Backwards-compatible entry point for pages migrated before app-shell.css. */
+@import url("/shared/app-shell.css");
