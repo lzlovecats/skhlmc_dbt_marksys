@@ -155,6 +155,20 @@ class MigrationParityRegressionTests(unittest.TestCase):
         for caption in ("使用賽會人員密碼登入後", "舊抽籤結果會自動失效", "方便稍後抄錄到"):
             self.assertIn(caption, html)
 
+    def test_lateness_fund_has_manager_gates_and_streamlit_features(self):
+        html = (ROOT / "frontend" / "lateness_fund" / "index.html").read_text(encoding="utf-8")
+        api = (ROOT / "api" / "funds_api.py").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "funds_logic.py").read_text(encoding="utf-8")
+        admin = (ROOT / "api" / "admin_console_api.py").read_text(encoding="utf-8")
+        for marker in ("outstanding_members", "member-summary", "export/records.csv", "export/expenses.csv", "notifyTarget", "actionDialog", "todayHK", "late_date="):
+            self.assertIn(marker, html)
+        self.assertNotIn('/shared/server-tables.js', html)
+        for marker in ("_lateness_context(request, manager=True)", 'Field(ge=0)', 'notify_committee', 'records.csv', 'expenses.csv'):
+            self.assertIn(marker, api)
+        for marker in ("LATENESS_FUND_MANAGERS_DEFAULT", "lateness_managers", "is_lateness_manager", "_today_hk", "已繳金額不能為負數"):
+            self.assertIn(marker, core)
+        self.assertIn("lateness_fund_managers", admin)
+
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
         browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")

@@ -1275,6 +1275,11 @@ async def developer_settings_page():
     return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
 
 
+@app.get("/dev-settings/lateness-managers.js")
+async def developer_lateness_managers_script():
+    return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "lateness-managers.js", media_type="application/javascript", headers=_cache_headers(CACHE_STATIC))
+
+
 @app.get("/lateness-fund")
 @app.get("/lateness_fund", include_in_schema=False)
 async def lateness_fund_page():

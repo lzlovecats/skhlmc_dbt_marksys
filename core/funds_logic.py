@@ -25,10 +25,15 @@ AI_USAGE_FEATURES = (
     "vote_analysis", "vote_discussion", "tts_review",
     "tts_script_analysis", "llm_review",
 )
+LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
 
 
 def _now():
     return datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _today_hk():
+    return datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
 
 
 def _float(value, default=0.0):
@@ -74,9 +79,33 @@ def fiscal_range(year):
     return date(int(year), 9, 1), date(int(year) + 1, 8, 31)
 
 
-def lateness_data(selected_year=None, db=None):
+def _valid_date(value, label):
+    try:
+        return date.fromisoformat(str(value)[:10]).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}無效。") from exc
+
+
+def lateness_managers(db=None):
+    db = _resolve_db(db)
+    raw = _config(db, "lateness_fund_managers", "")
+    if not raw:
+        return list(LATENESS_FUND_MANAGERS_DEFAULT)
+    try:
+        values = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        values = []
+    managers = [str(value).strip() for value in values if str(value).strip()]
+    return managers or list(LATENESS_FUND_MANAGERS_DEFAULT)
+
+
+def is_lateness_manager(user_id, db=None):
+    return str(user_id or "").strip() in lateness_managers(db)
+
+
+def lateness_data(selected_year=None, user_id=None, db=None):
     db = _resolve_db(db); _ensure_lateness(db)
-    years = {fiscal_start(date.today())}
+    years = {fiscal_start(_today_hk())}
     year_rows=db.query(f"SELECT DISTINCT (CASE WHEN EXTRACT(MONTH FROM late_date)>=9 THEN EXTRACT(YEAR FROM late_date) ELSE EXTRACT(YEAR FROM late_date)-1 END)::int fiscal_year FROM {TABLE_LATENESS_FUND_RECORDS} UNION SELECT DISTINCT (CASE WHEN EXTRACT(MONTH FROM expense_date)>=9 THEN EXTRACT(YEAR FROM expense_date) ELSE EXTRACT(YEAR FROM expense_date)-1 END)::int FROM {TABLE_LATENESS_FUND_EXPENSES}")
     years.update(int(value) for value in year_rows.get("fiscal_year",[]) if value is not None)
     year = int(selected_year) if selected_year is not None else max(years)
@@ -88,10 +117,27 @@ def lateness_data(selected_year=None, db=None):
     opening = _float(opening_df.iloc[0]["opening_balance"]) if not opening_df.empty else 0.0
     penalties=_float(totals["penalties"]);received=_float(totals["received"]);expense_total=_float(expense_row["expenses"])
     accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id")
+    outstanding = lateness_outstanding(year, db=db)
     return {"year": year, "years": sorted(years, reverse=True), "label": fiscal_label(year), "range": [start.isoformat(), end.isoformat()],
             "metrics": {"opening": opening, "received": received, "expenses": expense_total, "closing": opening + received - expense_total, "penalties": penalties, "outstanding": penalties - received, "count": int(totals["count"] or 0)},
             "summary": [], "records": [], "expenses": [],
-            "members": [str(value).strip() for value in accounts.get("user_id", []) if str(value).strip()]}
+            "members": [str(value).strip() for value in accounts.get("user_id", []) if str(value).strip()],
+            "is_manager": is_lateness_manager(user_id, db=db) if user_id else False,
+            "outstanding_members": outstanding}
+
+
+def lateness_outstanding(year, db=None):
+    db = _resolve_db(db); start, end = fiscal_range(year)
+    rows = db.query(f"""WITH ranked AS (
+        SELECT member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,
+               ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no
+        FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end
+    ), grouped AS (
+        SELECT member_user_id,SUM(late_no*late_minutes)-SUM(paid_amount) owed
+        FROM ranked GROUP BY member_user_id
+    ) SELECT member_user_id,owed FROM grouped WHERE owed>0 ORDER BY member_user_id""",
+        {"start": start.isoformat(), "end": end.isoformat()})
+    return _rows(rows)
 
 
 def set_lateness_opening(year, amount, db=None):
@@ -108,18 +154,25 @@ def carry_lateness_opening(year, db=None):
 
 def add_lateness_record(user_id, late_date, member_user_id, late_minutes, paid_amount, note, db=None):
     db = _resolve_db(db); _ensure_lateness(db)
-    if not str(member_user_id or "").strip() or int(late_minutes or 0) < 1: raise ValueError("請選擇帳戶並輸入有效遲到分鐘。")
-    db.execute(f"INSERT INTO {TABLE_LATENESS_FUND_RECORDS}(late_date,member_user_id,late_minutes,paid_amount,note,created_by,created_at) VALUES(:date,:member,:minutes,:paid,:note,:user,:now)", {"date": str(late_date)[:10], "member": str(member_user_id).strip(), "minutes": int(late_minutes), "paid": _float(paid_amount), "note": str(note or "").strip(), "user": user_id, "now": _now()})
+    member = str(member_user_id or "").strip()
+    if not member or int(late_minutes or 0) < 1: raise ValueError("請選擇帳戶並輸入有效遲到分鐘。")
+    paid = _float(paid_amount)
+    if paid < 0: raise ValueError("已繳金額不能為負數。")
+    account = db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:member AND COALESCE(account_disabled,FALSE)=FALSE", {"member": member})
+    if account.empty: raise ValueError("所選帳戶不存在或已停用。")
+    db.execute(f"INSERT INTO {TABLE_LATENESS_FUND_RECORDS}(late_date,member_user_id,late_minutes,paid_amount,note,created_by,created_at) VALUES(:date,:member,:minutes,:paid,:note,:user,:now)", {"date": _valid_date(late_date, "遲到日期"), "member": member, "minutes": int(late_minutes), "paid": paid, "note": str(note or "").strip(), "user": user_id, "now": _now()})
 
 
 def add_lateness_expense(user_id, expense_date, amount, note, db=None):
     if _float(amount) <= 0: raise ValueError("請輸入大於 0 的支出金額。")
     db = _resolve_db(db); _ensure_lateness(db)
-    db.execute(f"INSERT INTO {TABLE_LATENESS_FUND_EXPENSES}(expense_date,amount_hkd,note,created_by,created_at) VALUES(:date,:amount,:note,:user,:now)", {"date":str(expense_date)[:10],"amount":_float(amount),"note":str(note or "").strip(),"user":user_id,"now":_now()})
+    db.execute(f"INSERT INTO {TABLE_LATENESS_FUND_EXPENSES}(expense_date,amount_hkd,note,created_by,created_at) VALUES(:date,:amount,:note,:user,:now)", {"date":_valid_date(expense_date, "支出日期"),"amount":_float(amount),"note":str(note or "").strip(),"user":user_id,"now":_now()})
 
 
 def update_lateness_paid(record_id, amount, db=None):
-    return _resolve_db(db).execute_count(f"UPDATE {TABLE_LATENESS_FUND_RECORDS} SET paid_amount=:amount,updated_at=:now WHERE id=:id", {"id":int(record_id),"amount":_float(amount),"now":_now()})
+    amount = _float(amount)
+    if amount < 0: raise ValueError("已繳金額不能為負數。")
+    return _resolve_db(db).execute_count(f"UPDATE {TABLE_LATENESS_FUND_RECORDS} SET paid_amount=:amount,updated_at=:now WHERE id=:id", {"id":int(record_id),"amount":amount,"now":_now()})
 
 
 def delete_lateness(kind, row_id, db=None):
