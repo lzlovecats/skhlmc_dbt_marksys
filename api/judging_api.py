@@ -104,13 +104,24 @@ def state(request: Request, judge_name: str = ""):
 @router.post("/draft")
 def save_draft(body: DraftBody, request: Request):
     from core.judging_logic import save_draft
-    return {"ok": True, "score_data": save_draft(_match_scope(request), body.judge_name, body.side, body.score_data, db=_db())}
+    try:
+        score_data = save_draft(_match_scope(request), body.judge_name, body.side, body.score_data, db=_db())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "score_data": score_data}
 
 
 @router.post("/submit")
 def submit(body: FinalBody, request: Request):
-    from core.judging_logic import submit_final_scores
-    result = submit_final_scores(_match_scope(request), body.judge_name, body.pro_data, body.con_data, db=_db())
+    from core.judging_logic import load_drafts, submit_final_scores
+    match_id = _match_scope(request)
+    drafts = load_drafts(match_id, body.judge_name, db=_db())
+    if not drafts.get("正方") or not drafts.get("反方"):
+        raise HTTPException(409, "請先分別完成正方及反方評分，並各自暫存。")
+    try:
+        result = submit_final_scores(match_id, body.judge_name, body.pro_data, body.con_data, db=_db())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not result:
         raise HTTPException(409, "你已提交過評分！無法再次提交！")
     return result
@@ -119,5 +130,8 @@ def submit(body: FinalBody, request: Request):
 @router.post("/rankings")
 def rankings(body: RankingsBody, request: Request):
     from core.judging_logic import submit_best_debater_rankings
-    submit_best_debater_rankings(_match_scope(request), body.judge_name, body.rankings, db=_db())
+    try:
+        submit_best_debater_rankings(_match_scope(request), body.judge_name, body.rankings, db=_db())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"ok": True}

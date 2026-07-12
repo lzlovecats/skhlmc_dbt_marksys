@@ -38,12 +38,22 @@ class ChairpersonTimerTests(unittest.TestCase):
 class MigrationParityRegressionTests(unittest.TestCase):
     def test_judging_uses_server_scoring_contract_and_submission_safeguards(self):
         html = (ROOT / "frontend" / "judging" / "index.html").read_text(encoding="utf-8")
+        ux = (ROOT / "frontend" / "shared" / "judging-ux.js").read_text(encoding="utf-8")
         api = (ROOT / "api" / "judging_api.py").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "judging_logic.py").read_text(encoding="utf-8")
         self.assertIn('@router.get("/config")', api)
         self.assertIn("/api/judging/config", html)
+        self.assertIn('/shared/judging-ux.js?v=4.0.3-judging', html)
         self.assertNotIn("const speech=[[", html)
         for marker in ("zeroWarnings", "預計結果", "雙方同分", "switchMatch", "上次儲存：", "S.saved[side]=false"):
             self.assertIn(marker, html)
+        for marker in ("submitBottom", "completionHint", "請輸入中文全名", "手機建議橫向使用"):
+            self.assertIn(marker, html)
+        for marker in ("確認登出", "確認切換場次", "每個名次（1–8）必須恰好使用一次", "updateMatchAvailability", "dirtySides", "略過未修改的"):
+            self.assertIn(marker, ux)
+        self.assertIn('raise HTTPException(400, str(exc))', api)
+        self.assertIn('expected_slots', core)
+        self.assertIn('with db.transaction() as session', core)
 
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
