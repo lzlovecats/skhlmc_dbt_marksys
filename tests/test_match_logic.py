@@ -7,8 +7,9 @@ from core.match_logic import delete_match, match_admin_data, save_match
 
 
 class Result:
-    def __init__(self, row=None):
+    def __init__(self, row=None, rowcount=1):
         self.row = row
+        self.rowcount = rowcount
 
     def fetchone(self):
         return self.row
@@ -33,6 +34,12 @@ class MatchDb:
             }])
         if "FROM debaters" in sql:
             return pd.DataFrame(columns=["match_id", "side", "position", "debater_name"])
+        if "JOIN matches" in sql:
+            return pd.DataFrame([{
+                "match_id": "測試場次", "side": "pro", "roster_token": "pro-token",
+                "submitted_at": None, "match_date": None, "match_time": None,
+                "topic_text": "", "pro_team": "", "con_team": "",
+            }])
         if "FROM match_roster_links" in sql:
             return pd.DataFrame([
                 {"side": "pro", "roster_token": "pro-token", "submitted_at": None, "created_at": None},
@@ -56,7 +63,7 @@ class MatchDb:
                 db.session_calls.append((sql, dict(params or {})))
                 if "SELECT access_code_hash" in sql:
                     return Result(Row(access_code_hash=None, review_password_hash=None))
-                return Result()
+                return Result(rowcount=db.changed)
 
         yield Session()
 
@@ -84,6 +91,19 @@ class MatchLogicTests(unittest.TestCase):
         db.changed = 0
         result = delete_match("不存在", db=db)
         self.assertFalse(result["ok"])
+
+    def test_roster_claim_and_all_writes_share_one_transaction(self):
+        from core.match_logic import save_roster
+
+        db = MatchDb()
+        result = save_roster("pro-token", {
+            "team_name": "測試隊", "debater_1": "甲", "debater_2": "乙",
+            "debater_3": "丙", "debater_4": "丁",
+        }, db=db)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(db.session_calls), 6)
+        self.assertIn("UPDATE match_roster_links", db.session_calls[0][0])
+        self.assertEqual(sum("INSERT INTO debaters" in sql for sql, _ in db.session_calls), 4)
 
 
 if __name__ == "__main__":

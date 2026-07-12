@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 * { box-sizing: border-box; }
-:root { --bg:#0e0f13; --panel:#16181f; --panel-2:#1e2129; --border:#2c313d;
-    --text:#eef1f6; --muted:#9aa3b2; --green:#38c172; --blue:#3b82f6; --red:#ff4b4b; }
+:root { --bg:#0e1117; --panel:#262730; --panel-2:#171923; --border:#3a3d46;
+    --text:#fafafa; --muted:#9aa0ab; --green:#29b46b; --blue:#4c9bff; --red:#ff5c5c; }
 body {
     margin:0 auto; padding:clamp(12px,2.5vw,30px); max-width:1100px;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans HK","PingFang HK",Roboto,sans-serif;
@@ -111,21 +111,28 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .bell-item { font-size:clamp(14px,1.3vw,17px); padding:3px 0; color:#6b7280; }
 .bell-item.fired { color: #4caf50; font-weight: 700; }
 @media (max-width: 560px) {
-    body { padding:10px; }
-    .practice-nav { align-items:stretch; flex-direction:column; }
-    .back-link { text-align:center; }
-    .live-wrap { border-radius:16px; }
+    body { padding:max(.85rem,env(safe-area-inset-top)) .85rem calc(1rem + env(safe-area-inset-bottom)); }
+    .practice-nav { align-items:stretch; flex-direction:column; gap:.55rem; margin-bottom:.75rem; }
+    .practice-nav strong { font-size:1.4rem; }
+    .back-link { min-height:2.7rem; padding:.55rem .9rem; border-width:1px; border-radius:8px; text-align:center; font-size:16px; }
+    .live-wrap { border-radius:12px; }
     .topbar { align-items: stretch; flex-direction: column; }
     .buttons { width: 100%; }
     .buttons button { flex: 1; }
-    .session-panel { grid-template-columns: 1fr; }
-    .timer-box { width: 100%; }
-    .talk-btn { min-height:92px; font-size:25px; }
-    .log { height: 360px; }
+    button { min-height:2.7rem; padding:.55rem .8rem; border-radius:8px; font-size:16px; }
+    .topbar,.session-panel,.mock-bar { padding:1rem; }
+    .session-panel { position:sticky; top:0; z-index:8; grid-template-columns: 1fr; gap:.65rem; box-shadow:0 10px 24px rgb(0 0 0 / .35); }
+    .timer-box { order:-1; width:100%; min-height:3.5rem; flex-direction:row; justify-content:space-between; border-radius:8px; }
+    .timer-value { margin:0; font-size:32px; }
+    .talk-btn { min-height:72px; border-radius:10px; font-size:22px; }
+    .talk-hint { margin-top:.45rem; font-size:.9rem; }
+    .log { height:45dvh; min-height:18rem; max-height:30rem; padding:1rem; }
     .hint { align-items: stretch; flex-direction: column; }
     .hint button { width: 100%; }
     .mock-btns { flex-wrap: wrap; }
     .mock-btns button { min-width: 30%; max-width: none; }
+    .mock-timer { font-size:48px; }
+    .mock-stage { font-size:1.2rem; }
     .status { white-space: normal; }
     .substatus { white-space: normal; }
 }

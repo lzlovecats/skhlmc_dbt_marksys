@@ -45,6 +45,27 @@ class ChairpersonTimerTests(unittest.TestCase):
         self.assertIn('start="${start}"', markdown)
 
 class MigrationParityRegressionTests(unittest.TestCase):
+    def test_all_html_pages_share_the_visual_system_and_allow_mobile_zoom(self):
+        for html_path in sorted((ROOT / "frontend").glob("*/index.html")):
+            html = html_path.read_text(encoding="utf-8")
+            with self.subTest(page=html_path.parent.name):
+                self.assertTrue("/shared/app-shell.css" in html or "/shared/vote-ui.css" in html)
+                self.assertNotIn("user-scalable=no", html)
+                self.assertNotIn("maximum-scale=1", html)
+
+    def test_ai_practice_has_vote_aligned_mobile_controls(self):
+        coach = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
+        appliance = (ROOT / "templates" / "appliance_ai_debate.html").read_text(encoding="utf-8")
+        live = (ROOT / "templates" / "live_debate.html").read_text(encoding="utf-8")
+        room = (ROOT / "templates" / "room_debate.html").read_text(encoding="utf-8")
+        for marker in ("scroll-snap-type:x proximity", "height:max(42rem,calc(100dvh - 9rem))"):
+            self.assertIn(marker, coach)
+        for marker in ("--bg:#0e1117", "font-size:16px", "border-radius:12px"):
+            self.assertIn(marker, appliance)
+            self.assertIn(marker, live)
+            self.assertIn(marker, room)
+        self.assertIn("position:sticky", live)
+
     def test_public_registration_uses_server_edition_and_mobile_form_contract(self):
         core = (ROOT / "core" / "registration_logic.py").read_text(encoding="utf-8")
         html = (ROOT / "frontend" / "registration" / "index.html").read_text(encoding="utf-8")
@@ -76,6 +97,16 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertNotIn("user-scalable=no", html)
         self.assertIn("with db.transaction() as session", core)
         self.assertIn('"default_time": "16:00"', core)
+
+    def test_team_roster_submission_is_atomic_and_uses_required_mobile_fields(self):
+        html = (ROOT / "frontend" / "team_roster" / "index.html").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "match_logic.py").read_text(encoding="utf-8")
+        self.assertEqual(html.count('autocomplete="name" required'), 4)
+        self.assertIn('autocomplete="organization" required', html)
+        for marker in ("confirmSubmitDialog", "確認提交名單？", "pendingPayload", "if (submitting) return"):
+            self.assertIn(marker, html)
+        self.assertIn("claimed=session.execute", core)
+        self.assertIn("with db.transaction() as session", core)
 
     def test_judging_uses_server_scoring_contract_and_submission_safeguards(self):
         html = (ROOT / "frontend" / "judging" / "index.html").read_text(encoding="utf-8")

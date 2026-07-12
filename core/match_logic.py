@@ -159,9 +159,12 @@ def save_roster(token, data, db=None):
     clean = {key:_clean(data.get(key)) for key in ("team_name","debater_1","debater_2","debater_3","debater_4")}
     missing=[label for label,key in (("隊名","team_name"),("主辯","debater_1"),("一副","debater_2"),("二副","debater_3"),("結辯","debater_4")) if not clean[key]]
     if missing: return {"ok":False,"reason":"validation","message":"請填寫所有必填資料："+"、".join(missing)}
-    db=_resolve_db(db); claimed=db.execute_count(f"UPDATE {TABLE_MATCH_ROSTER_LINKS} SET submitted_at=:now WHERE roster_token=:token AND submitted_at IS NULL", {"now":_now(),"token":token})
-    if not claimed: return {"ok":False,"reason":"submitted"}
+    db=_resolve_db(db)
     col="pro_team" if roster["side"]=="pro" else "con_team"
-    db.execute(f"UPDATE {TABLE_MATCHES} SET {col}=:name WHERE match_id=:id", {"name":clean["team_name"],"id":roster["match_id"]})
-    for pos in range(1,5): db.execute(f"INSERT INTO {TABLE_DEBATERS} (match_id,side,position,debater_name) VALUES (:id,:side,:pos,:name) ON CONFLICT (match_id,side,position) DO UPDATE SET debater_name=EXCLUDED.debater_name", {"id":roster["match_id"],"side":roster["side"],"pos":pos,"name":clean[f"debater_{pos}"]})
+    with db.transaction() as session:
+        claimed=session.execute(text(f"UPDATE {TABLE_MATCH_ROSTER_LINKS} SET submitted_at=:now WHERE roster_token=:token AND submitted_at IS NULL"), {"now":_now(),"token":token}).rowcount
+        if not claimed: return {"ok":False,"reason":"submitted"}
+        session.execute(text(f"UPDATE {TABLE_MATCHES} SET {col}=:name WHERE match_id=:id"), {"name":clean["team_name"],"id":roster["match_id"]})
+        for pos in range(1,5):
+            session.execute(text(f"INSERT INTO {TABLE_DEBATERS} (match_id,side,position,debater_name) VALUES (:id,:side,:pos,:name) ON CONFLICT (match_id,side,position) DO UPDATE SET debater_name=EXCLUDED.debater_name"), {"id":roster["match_id"],"side":roster["side"],"pos":pos,"name":clean[f"debater_{pos}"]})
     return {"ok":True,"match_id":roster["match_id"],"side":roster["side"]}

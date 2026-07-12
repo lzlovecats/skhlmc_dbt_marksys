@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>提交隊伍名單</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#111827">
     <link rel="stylesheet" href="/shared/vote-ui.css">
     <link rel="stylesheet" href="/shared/app-shell.css"><style>
@@ -26,10 +26,16 @@
         .field label { margin-bottom: .3rem; }
         .role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem 1rem; }
         .submit { width: 100%; margin-top: .4rem; font-size: 1.05rem; }
+        .confirm-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 1rem; background: rgb(0 0 0 / .72); }
+        .confirm-dialog { width: min(32rem, 100%); max-height: calc(100dvh - 2rem); overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--card); padding: 1rem; box-shadow: 0 20px 60px rgb(0 0 0 / .6); }
+        .confirm-summary { display: grid; gap: .35rem; margin: 1rem 0; padding: .8rem; border-radius: 8px; background: var(--surface); }
+        .confirm-actions { display: flex; gap: .65rem; }
+        .confirm-actions button { flex: 1 1 10rem; }
         @media (max-width: 560px) {
             h1 { font-size: 1.65rem; }
             .match-meta, .role-grid { grid-template-columns: 1fr; }
             .match-meta .topic { grid-column: auto; }
+            .confirm-actions { flex-direction: column; }
         }
     </style>
 </head>
@@ -42,6 +48,7 @@
     <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>
         <ul>
+            <li>請使用賽會人員提供的專屬連結填寫隊名及辯員姓名。</li>
             <li>每個連結只可提交一次；提交後如需修改，請聯絡賽會人員重開填寫。</li>
             <li>請確認隊名及四位辯員姓名正確後才提交。</li>
         </ul>
@@ -63,15 +70,16 @@
             <p class="side-caption">請完整填寫以下資料。</p>
             <div class="field">
                 <label id="teamLabel" for="team"></label>
-                <input id="team" autocomplete="organization">
+                <input id="team" autocomplete="organization" required>
             </div>
             <div class="role-grid">
-                <div class="field"><label id="d1l" for="d1"></label><input id="d1" autocomplete="name"></div>
-                <div class="field"><label id="d2l" for="d2"></label><input id="d2" autocomplete="name"></div>
-                <div class="field"><label id="d3l" for="d3"></label><input id="d3" autocomplete="name"></div>
-                <div class="field"><label id="d4l" for="d4"></label><input id="d4" autocomplete="name"></div>
+                <div class="field"><label id="d1l" for="d1"></label><input id="d1" autocomplete="name" required></div>
+                <div class="field"><label id="d2l" for="d2"></label><input id="d2" autocomplete="name" required></div>
+                <div class="field"><label id="d3l" for="d3"></label><input id="d3" autocomplete="name" required></div>
+                <div class="field"><label id="d4l" for="d4"></label><input id="d4" autocomplete="name" required></div>
             </div>
             <div id="message"></div>
+            <p class="side-caption">提交後不可自行修改；請先核對所有資料。</p>
             <button class="primary submit" type="submit">提交名單</button>
         </form>
     </section>
@@ -79,6 +87,9 @@
 
 <div id="busy" class="busy-overlay"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
 <div id="toast" class="toast"></div>
+<div id="confirmSubmitDialog" class="confirm-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <section class="confirm-dialog"><h2 id="confirmTitle">確認提交名單？</h2><p>每個連結只可提交一次。請再次核對：</p><div id="confirmSummary" class="confirm-summary"></div><div class="confirm-actions"><button id="confirmSubmit" class="primary" type="button">確認提交</button><button id="cancelSubmit" type="button">返回檢查</button></div></section>
+</div>
 <script src="/shared/vote-ui.js"></script>
 <script>
 (() => {
@@ -87,7 +98,7 @@
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
     }[char]));
-    let roster;
+    let roster, pendingPayload = null, submitting = false;
 
     const setBusy = active => VoteUI.setBusy($("busy"), active);
     const message = (text, kind = "warn") => {
@@ -141,20 +152,17 @@
         }
     }
 
-    $("form").addEventListener("submit", async event => {
-        event.preventDefault();
+    async function submitRoster(payload) {
+        if (submitting) return;
+        submitting = true;
+        $("confirmSubmit").disabled = true;
+        $("form").querySelector(".submit").disabled = true;
         setBusy(true);
         try {
             const response = await fetch(`/api/team-roster/submit?token=${encodeURIComponent(token)}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    team_name: $("team").value,
-                    debater_1: $("d1").value,
-                    debater_2: $("d2").value,
-                    debater_3: $("d3").value,
-                    debater_4: $("d4").value,
-                }),
+                body: JSON.stringify(payload),
             });
             const data = await response.json();
             if (!response.ok || !data.ok) {
@@ -167,8 +175,27 @@
             message(error.message);
         } finally {
             setBusy(false);
+            submitting = false;
+            $("confirmSubmit").disabled = false;
+            $("form").querySelector(".submit").disabled = false;
         }
+    }
+
+    $("form").addEventListener("submit", event => {
+        event.preventDefault();
+        pendingPayload = {
+            team_name: $("team").value.trim(), debater_1: $("d1").value.trim(),
+            debater_2: $("d2").value.trim(), debater_3: $("d3").value.trim(),
+            debater_4: $("d4").value.trim(),
+        };
+        const rows = [["隊名", pendingPayload.team_name], ["主辯", pendingPayload.debater_1], ["一副", pendingPayload.debater_2], ["二副", pendingPayload.debater_3], ["結辯", pendingPayload.debater_4]];
+        $("confirmSummary").innerHTML = rows.map(([label, value]) => `<div><strong>${esc(label)}：</strong>${esc(value)}</div>`).join("");
+        $("confirmSubmitDialog").classList.remove("hidden");
+        $("cancelSubmit").focus();
     });
+    $("cancelSubmit").addEventListener("click", () => { pendingPayload = null; $("confirmSubmitDialog").classList.add("hidden"); $("form").querySelector(".submit").focus(); });
+    $("confirmSubmit").addEventListener("click", () => { if (!pendingPayload) return; const payload = pendingPayload; pendingPayload = null; $("confirmSubmitDialog").classList.add("hidden"); submitRoster(payload); });
+    document.addEventListener("keydown", event => { if (event.key === "Escape" && !$("confirmSubmitDialog").classList.contains("hidden")) $("cancelSubmit").click(); });
 
     load();
 })();

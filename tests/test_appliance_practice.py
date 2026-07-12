@@ -52,12 +52,13 @@ class AppliancePracticeTests(unittest.TestCase):
         ):
             self.assertIn(marker, html)
 
-    def test_live_and_room_pages_use_kiosk_large_touch_contract(self):
+    def test_live_and_room_pages_keep_large_touch_controls_and_vote_visuals(self):
         live = (ROOT / "templates" / "live_debate.html").read_text(encoding="utf-8")
         room = (ROOT / "templates" / "room_debate.html").read_text(encoding="utf-8")
         for source in (live, room):
-            self.assertIn("--panel:#16181f", source)
+            self.assertIn("--panel:#262730", source)
             self.assertIn("min-height:56px", source)
+            self.assertIn("border-radius:12px", source)
             self.assertIn("返回 AI 練習", source)
 
     def test_network_mock_uses_multiple_gemini_sessions(self):

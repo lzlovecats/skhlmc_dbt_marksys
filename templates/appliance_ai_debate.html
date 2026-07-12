@@ -6,9 +6,9 @@
 <title>AI 辯論練習</title>
 <style>
 :root {
-    --bg:#0e0f13; --panel:#16181f; --panel-2:#1e2129; --border:#2c313d;
-    --text:#eef1f6; --muted:#9aa3b2; --green:#38c172; --green-d:#2fa863;
-    --red:#ff4b4b; --blue:#3b82f6; --amber:#ff9800;
+    --bg:#0e1117; --panel:#262730; --panel-2:#171923; --border:#3a3d46;
+    --text:#fafafa; --muted:#9aa0ab; --green:#29b46b; --green-d:#249b5c;
+    --red:#ff5c5c; --blue:#4c9bff; --amber:#ffd27d;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { min-height:100%; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans HK","PingFang HK",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
@@ -46,11 +46,24 @@ input[type="search"] { margin-bottom:12px; }
 .note { margin-top:20px; text-align:center; color:#737b8b; }
 .hidden { display:none !important; }
 @media(max-width:760px) {
-    .topbar { align-items:stretch; flex-direction:column; }
-    .back-link { text-align:center; }
-    .brand .sub { display:block; margin:4px 0 0; }
+    body { padding-bottom:calc(1rem + env(safe-area-inset-bottom)); }
+    .topbar { align-items:stretch; flex-direction:column; padding:max(.85rem,env(safe-area-inset-top)) .85rem .85rem; gap:.65rem; }
+    .back-link { min-height:2.7rem; padding:.55rem .9rem; border-width:1px; border-radius:8px; text-align:center; font-size:16px; }
+    .brand { font-size:1.5rem; }
+    .brand .sub { display:block; margin:4px 0 0; font-size:.8rem; }
+    .wrap { padding:.85rem; }
     .grid { grid-template-columns:1fr; }
-    .panel-card { border-radius:18px; }
+    .panel-card { border-radius:12px; padding:1rem; margin-bottom:.85rem; }
+    .field { margin-bottom:1rem; }
+    .title { margin-bottom:.4rem; font-size:1rem; }
+    textarea,select,input[type="search"],input[type="text"],input[type="number"] { min-height:2.7rem; padding:.55rem .7rem; border-width:1px; border-radius:8px; font-size:16px; font-weight:500; }
+    textarea { min-height:7rem; }
+    .toggle-row,.action-row { gap:.5rem; }
+    .toggle { flex-basis:calc(50% - .25rem); }
+    .toggle span,.action-tab { min-height:2.7rem; padding:.6rem .7rem; border-width:1px; border-radius:999px; font-size:16px; }
+    .start-btn { min-height:3.25rem; padding:.7rem 1rem; border-radius:8px; font-size:18px; box-shadow:none; }
+    .topic-status,.info,.note { font-size:.9rem; }
+    .info { border-left-width:3px; border-radius:8px; padding:.75rem; }
 }
 </style>
 </head>
