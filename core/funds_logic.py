@@ -19,6 +19,12 @@ AI_FUND_LOW_BALANCE_DEFAULT = 100.0
 AI_FUND_PAYMENT_DEFAULT = "請按賽會指示付款，並提交交易編號供 AI基金管理員確認。"
 AI_TRANSACTION_TYPES = {"member_deposit", "provider_topup", "refund", "adjustment"}
 AI_PROVIDERS = {"openrouter", "gemini", "openai", "general", "other"}
+AI_USAGE_FEATURES = (
+    "speech_review", "strategy", "web_research", "fact_check",
+    "free_debate_live", "full_mock_live", "vote_review",
+    "vote_analysis", "vote_discussion", "tts_review",
+    "tts_script_analysis", "llm_review",
+)
 
 
 def _now():
@@ -125,6 +131,48 @@ def _ensure_ai(db):
     db.execute(CREATE_AI_FUND_TRANSACTIONS); db.execute(CREATE_AI_FUND_USAGE_LOGS)
     db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
     db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
+    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS {TABLE_AI_FUND_USAGE_LOGS}_feature_check")
+    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature")
+    allowed = ", ".join(f"'{feature}'" for feature in AI_USAGE_FEATURES)
+    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD CONSTRAINT chk_ai_fund_usage_feature CHECK (feature IN ({allowed}))")
+
+
+def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
+    """Record one non-Streamlit AI call using actual provider token metadata."""
+    if feature not in AI_USAGE_FEATURES:
+        raise ValueError("不支援的 AI 功能類型。")
+    db = _resolve_db(db)
+    _ensure_ai(db)
+    usage = usage or {}
+    model_label = str(usage.get("model_label") or "Gemini 3.5 Flash")
+    provider = str(usage.get("provider") or "gemini").lower()
+    if provider not in AI_PROVIDERS:
+        provider = "other"
+    params = {
+        "user": user_id,
+        "feature": feature,
+        "model": model_label,
+        "provider": provider,
+        "usd": _float(usage.get("estimated_cost_usd")) if success else 0,
+        "hkd": _float(usage.get("estimated_cost_hkd")) if success else 0,
+        "input": int(usage.get("input_tokens") or 0) if success else 0,
+        "output": int(usage.get("output_tokens") or 0) if success else 0,
+        "audio": int(usage.get("audio_tokens") or 0) if success else 0,
+        "search": int(usage.get("search_calls") or 0) if success else 0,
+        "source": str(usage.get("cost_source") or "estimate") if success else "failed",
+        "status": "success" if success else "failed",
+        "error": str(error_message or "")[:1000],
+        "now": _now(),
+    }
+    db.execute(
+        f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}(
+            user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,
+            input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at
+        ) VALUES(
+            :user,:feature,:model,:provider,:usd,:hkd,:input,:output,:audio,:search,:source,:status,:error,:now
+        )""",
+        params,
+    )
 
 
 def _config(db, key, default=""):

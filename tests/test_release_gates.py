@@ -107,6 +107,25 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('free && ["星島", "基本法盃"].includes', html)
         self.assertIn("structure == \"free\" and debate_format not in FREE_DEBATE_FORMATS", server)
 
+    def test_vote_html_keeps_ai_markdown_separate_and_accounts_for_usage(self):
+        html = (ROOT / "frontend" / "vote" / "index.html").read_text(encoding="utf-8")
+        api = (ROOT / "api" / "vote_api.py").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "vote_ai.py").read_text(encoding="utf-8")
+        funds = (ROOT / "core" / "funds_logic.py").read_text(encoding="utf-8")
+        self.assertIn('/shared/markdown.js', html)
+        self.assertIn('SafeMarkdown.render', html)
+        self.assertIn('c.user_id === AI_COMMENT_USER ?', html)
+        self.assertIn(': `<div>${esc(c.comment_text)}</div>`', html)
+        for feature in ('"vote_review"', '"vote_analysis"', '"vote_discussion"'):
+            self.assertIn(feature, api)
+            self.assertIn(feature, funds)
+        self.assertIn("較常支持：", core)
+        self.assertIn("- 難度 {diff_label}", core)
+        self.assertIn("status='pending' LIMIT 1", api)
+        for marker in ('id="deposeSearch"', 'id="deposeCategory"', '已選 ${selected} 條', 'item.source_changed'):
+            self.assertIn(marker, html)
+        self.assertIn("analysis_source_signature", api)
+
     def test_video_chapter_navigation_seeks_existing_player(self):
         html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(encoding="utf-8")
         self.assertIn("player.seekTo", html)

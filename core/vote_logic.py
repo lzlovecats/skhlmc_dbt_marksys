@@ -697,15 +697,37 @@ def load_saved_analysis(kind, db=None):
         "analysis": system_config_get(prefix, db=db) or "",
         "analysed_at": system_config_get(f"{prefix}_at", db=db) or "",
         "analysed_by": system_config_get(f"{prefix}_by", db=db) or "",
+        "source_signature": system_config_get(f"{prefix}_source_signature", db=db) or "",
     }
 
 
-def save_analysis(kind, analysis_text, user_id, db=None):
+def analysis_source_signature(kind, db=None, vote_df=None):
+    """Stable fingerprint of the source data used by a saved AI analysis."""
+    db = _resolve_db(db)
+    if kind == "bank":
+        frame = db.query(
+            f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS} ORDER BY topic_text"
+        )
+    elif kind == "history":
+        frame = vote_df if vote_df is not None else fetch_vote_history_analysis_data(db=db)
+    else:
+        raise ValueError("kind must be 'bank' or 'history'")
+    if frame.empty:
+        payload = "[]"
+    else:
+        normalized = frame.fillna("").astype(str)
+        normalized = normalized.sort_values(list(normalized.columns), kind="stable")
+        payload = json.dumps(normalized.to_dict("records"), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def save_analysis(kind, analysis_text, user_id, source_signature="", db=None):
     prefix = "vote_bank_analysis" if kind == "bank" else "vote_history_analysis"
     return system_config_set_many({
         prefix: analysis_text,
         f"{prefix}_at": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
         f"{prefix}_by": user_id or "",
+        f"{prefix}_source_signature": source_signature or analysis_source_signature(kind, db=db),
     }, db=db)
 
 
