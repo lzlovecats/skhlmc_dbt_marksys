@@ -20,6 +20,7 @@ import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, event, text
 from starlette.websockets import WebSocketDisconnect
 
@@ -33,12 +34,14 @@ from schema import (
 )
 from debate_timing import (  # pure helpers, no side effects
     get_full_mock_sequence,
+    split_mock_into_sessions,
+    full_mock_total_seconds,
     get_debate_timer_config,
     FREE_DEBATE_FORMATS,
     DEBATE_FORMATS,
 )
 from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
-from prompts import build_free_debate_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
+from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
 from api.auth_api import router as committee_router
@@ -47,64 +50,32 @@ from api.home_api import router as home_router
 from api.bug_report_api import router as bug_report_router
 from api.registration_api import router as registration_router
 from api.registration_admin_api import router as registration_admin_router
+from api.video_replay_api import router as video_replay_router
+from api.video_admin_api import router as video_admin_router
+from api.match_photos_api import router as match_photos_router
+from api.team_roster_api import router as team_roster_router
+from api.match_info_api import router as match_info_router
+from api.schedule_api import router as schedule_router
+from api.management_api import router as management_router
+from api.judging_api import router as judging_router
+from api.review_api import router as review_router
+from api.funds_api import router as funds_router
+from api.chairperson_api import router as chairperson_router
+from api.ai_coach_api import router as ai_coach_router
+from api.ai_training_api import router as ai_training_router
+from api.admin_console_api import router as admin_console_router
 
 
-STREAMLIT_HTTP_URL = os.getenv("STREAMLIT_HTTP_URL", "http://127.0.0.1:8501")
-STREAMLIT_WS_URL = os.getenv("STREAMLIT_WS_URL", "ws://127.0.0.1:8501")
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 CACHE_NO_CACHE = "no-cache"
 CACHE_HTML = "public, max-age=300, stale-while-revalidate=3600"
 CACHE_MANIFEST = "public, max-age=86400"
 CACHE_STATIC = "public, max-age=31536000, immutable"
-STREAMLIT_STATIC_RE = re.compile(
-    r"^(static|vendor)/|"
-    r"\.(?:js|mjs|css|map|woff2?|ttf|otf|png|jpe?g|gif|webp|svg|ico)$",
-    re.IGNORECASE,
-)
-
-PWA_HEAD = """
-<!-- skh-pwa-head -->
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/app-icon-180.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="聖呂中辯">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#000000">
-<meta name="color-scheme" content="dark">
-<style>
-html, body, #root {
-    background: #000000 !important;
-}
-input, textarea, select {
-    font-size: 16px !important;
-}
-</style>
-<script>
-if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(function () {});
-}
-</script>
-"""
-
-HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-}
-
 
 app = FastAPI()
-# JSON API for the HTML voting page. Registered before the catch-all proxy
-# routes at the bottom of this file so /api/vote/* is served locally instead of
-# being forwarded to Streamlit.
+app.mount("/shared", StaticFiles(directory=BASE_DIR / "frontend" / "shared"), name="shared")
+# Register all explicit HTML/API routes before the final 404 handlers.
 app.include_router(vote_router)
 app.include_router(committee_router)
 app.include_router(open_db_router)
@@ -112,91 +83,27 @@ app.include_router(home_router)
 app.include_router(bug_report_router)
 app.include_router(registration_router)
 app.include_router(registration_admin_router)
+app.include_router(video_replay_router)
+app.include_router(video_admin_router)
+app.include_router(match_photos_router)
+app.include_router(team_roster_router)
+app.include_router(match_info_router)
+app.include_router(schedule_router)
+app.include_router(management_router)
+app.include_router(judging_router)
+app.include_router(review_router)
+app.include_router(funds_router)
+app.include_router(chairperson_router)
+app.include_router(ai_coach_router)
+app.include_router(ai_training_router)
+app.include_router(admin_console_router)
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
 _streamlit_secrets = None
 
 
-def _proxy_headers(headers):
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "host"
-    }
-
-
-def _response_headers(headers):
-    blocked = HOP_BY_HOP_HEADERS | {"content-length", "content-encoding"}
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in blocked
-    }
-
-
 def _cache_headers(cache_control):
     return {"Cache-Control": cache_control}
-
-
-def _streamlit_cache_control(path, content_type):
-    if not path or path == "/":
-        return CACHE_NO_CACHE
-
-    normalized = path.lstrip("/")
-    lowered_type = (content_type or "").lower()
-    if "text/html" in lowered_type:
-        return CACHE_NO_CACHE
-    if STREAMLIT_STATIC_RE.search(normalized):
-        return CACHE_STATIC
-    return None
-
-
-def _websocket_headers(headers):
-    blocked = HOP_BY_HOP_HEADERS | {
-        "host",
-        "origin",
-        "sec-websocket-accept",
-        "sec-websocket-extensions",
-        "sec-websocket-key",
-        "sec-websocket-protocol",
-        "sec-websocket-version",
-    }
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in blocked
-    }
-
-
-def _inject_pwa_head(content):
-    try:
-        html = content.decode("utf-8")
-    except UnicodeDecodeError:
-        return content
-
-    if "<!-- skh-pwa-head -->" in html or "</head>" not in html:
-        return content
-
-    # Streamlit ships its own viewport meta tag. iOS is sensitive to multiple
-    # viewport/theme declarations, so strip them and inject one authoritative
-    # PWA block before the page reaches the device.
-    for meta_name in (
-        "viewport",
-        "theme-color",
-        "color-scheme",
-        "apple-mobile-web-app-capable",
-        "mobile-web-app-capable",
-        "apple-mobile-web-app-title",
-        "apple-mobile-web-app-status-bar-style",
-    ):
-        html = re.sub(
-            rf"\s*<meta\b(?=[^>]*\bname=[\"']{re.escape(meta_name)}[\"'])[^>]*>\s*",
-            "\n",
-            html,
-            flags=re.IGNORECASE,
-        )
-
-    return html.replace("</head>", PWA_HEAD + "\n</head>", 1).encode("utf-8")
 
 
 def _get_db_url():
@@ -309,6 +216,10 @@ class _ProxyDb:
             result = conn.execute(text(sql_str), params or {})
             return result.rowcount
 
+    def transaction(self):
+        """Yield one database transaction for an atomic domain operation."""
+        return self._engine.begin()
+
 
 def get_vote_db():
     """The DB executor passed to ``core.vote_logic`` from the API handlers."""
@@ -416,6 +327,46 @@ def _verify_registration_admin_token(token: str) -> bool:
         return False
     expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, expected)
+
+
+def _sign_judging_token(match_id: str):
+    """Mint a session token restricted to one judge-accessible match."""
+    secret = _get_relay_cookie_secret()
+    if not secret or not match_id:
+        return None
+    subject = f"judging:{match_id}"
+    sig = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
+    return f"{subject}:{sig}"
+
+
+def _verify_judging_token(token: str):
+    if not token or ":" not in token:
+        return None
+    subject, sig = token.rsplit(":", 1)
+    if not subject.startswith("judging:"):
+        return None
+    match_id = subject[len("judging:"):]
+    secret = _get_relay_cookie_secret()
+    if not secret or not match_id:
+        return None
+    expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
+    return match_id if hmac.compare_digest(sig, expected) else None
+
+
+def _sign_review_token(match_id: str):
+    secret = _get_relay_cookie_secret(); subject = f"review:{match_id}"
+    if not secret or not match_id: return None
+    return f"{subject}:{hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()}"
+
+
+def _verify_review_token(token: str):
+    if not token or ":" not in token: return None
+    subject, sig = token.rsplit(":", 1)
+    if not subject.startswith("review:"): return None
+    secret = _get_relay_cookie_secret(); match_id = subject[7:]
+    if not secret or not match_id: return None
+    expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
+    return match_id if hmac.compare_digest(sig, expected) else None
 
 
 def _require_committee_user(request: Request):
@@ -1207,6 +1158,126 @@ async def registration_admin_page():
                         headers=_cache_headers(CACHE_HTML))
 
 
+@app.get("/video-replay")
+async def video_replay_page():
+    """Primary HTML committee replay page."""
+    return FileResponse(BASE_DIR / "frontend" / "video_replay" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/video-admin")
+@app.get("/video_admin", include_in_schema=False)
+async def video_admin_page():
+    """Primary HTML organiser video-management page; underscore path is legacy alias."""
+    return FileResponse(BASE_DIR / "frontend" / "video_admin" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/match-photos")
+async def match_photos_page():
+    """Primary HTML committee match-photo gallery."""
+    return FileResponse(BASE_DIR / "frontend" / "match_photos" / "index.html",
+                        media_type="text/html",
+                        headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/team-roster")
+async def team_roster_page():
+    return FileResponse(BASE_DIR / "frontend" / "team_roster" / "index.html",
+                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/match-info")
+@app.get("/match_info", include_in_schema=False)
+async def match_info_page():
+    return FileResponse(BASE_DIR / "frontend" / "match_info" / "index.html",
+                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/draw-match-schedule")
+@app.get("/draw_match_schedule", include_in_schema=False)
+async def draw_match_schedule_page():
+    return FileResponse(BASE_DIR / "frontend" / "draw_match_schedule" / "index.html",
+                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/management")
+async def management_page():
+    return FileResponse(BASE_DIR / "frontend" / "management" / "index.html",
+                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/judging")
+async def judging_page():
+    return FileResponse(BASE_DIR / "frontend" / "judging" / "index.html",
+                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/review")
+async def review_page():
+    return FileResponse(BASE_DIR / "frontend" / "review" / "index.html",
+                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+@app.get("/admin-hub")
+async def admin_hub_page():
+    return FileResponse(BASE_DIR / "frontend" / "admin_hub" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/chairperson")
+async def chairperson_page():
+    return FileResponse(BASE_DIR / "frontend" / "chairperson" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/ai-coach")
+async def ai_coach_page():
+    return FileResponse(BASE_DIR / "frontend" / "ai_coach" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/ai-coach/room/{code}")
+async def ai_coach_room_page(code: str, request: Request):
+    _require_committee_user(request)
+    room = ROOMS.get((code or "").upper())
+    if not room or room.phase == "ended":
+        return _practice_error_page("房間不存在", "房間已結束或不存在。", "/ai-coach")
+    html = (BASE_DIR / "templates" / "room_debate.html").read_text(encoding="utf-8")
+    html = html.replace("__ROOM_CODE__", json.dumps(room.code))
+    html = html.replace("__ROOM_WS_BASE__", json.dumps(_get_proxy_secret("ROOM_WS_BASE", "") or ""))
+    html = html.replace("__MODE__", json.dumps(room.mode))
+    html = html.replace("__BELL_SRC__", json.dumps(_practice_bell_src()))
+    return Response(content=html, media_type="text/html")
+
+
+@app.get("/ai-training")
+async def ai_training_page():
+    return FileResponse(BASE_DIR / "frontend" / "ai_training" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/db-mgmt")
+@app.get("/db_mgmt", include_in_schema=False)
+async def db_management_page():
+    return FileResponse(BASE_DIR / "frontend" / "db_mgmt" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/dev-settings")
+@app.get("/dev_settings", include_in_schema=False)
+async def developer_settings_page():
+    return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/lateness-fund")
+@app.get("/lateness_fund", include_in_schema=False)
+async def lateness_fund_page():
+    return FileResponse(BASE_DIR / "frontend" / "lateness_fund" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/ai-fund")
+@app.get("/ai_fund", include_in_schema=False)
+async def ai_fund_page():
+    return FileResponse(BASE_DIR / "frontend" / "ai_fund" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
 @app.get("/api/practice/bell")
 async def appliance_practice_bell():
     return FileResponse(BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg",
@@ -1324,7 +1395,7 @@ def _mint_gemini_live_token(duration_minutes: float):
     return token_name, None
 
 
-def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_starts):
+def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_starts, *, segments=None, tokens=None, session_labels=None, session_label="自由辯論"):
     """Server-render templates/live_debate.html the same way ai_coach does, so the
     kiosk gets the identical Live engine. Free-debate only — mock fields empty."""
     html = (BASE_DIR / "templates" / "live_debate.html").read_text(encoding="utf-8")
@@ -1343,14 +1414,16 @@ def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_star
         "__LIVE_MINUTES__": json.dumps(float(live_minutes or 2.5)),
         "__BELL_SRC__": json.dumps(_practice_bell_src()),
         "__BELL_SCHEDULE__": json.dumps(bell_schedule or [], ensure_ascii=False),
-        "__MOCK_SEGMENTS__": json.dumps([]),
-        "__MOCK_TOKENS__": json.dumps([]),
-        "__MOCK_SESSION_LABELS__": json.dumps([]),
+        "__MOCK_SEGMENTS__": json.dumps(segments or [], ensure_ascii=False),
+        "__MOCK_TOKENS__": json.dumps(tokens or [], ensure_ascii=False),
+        "__MOCK_SESSION_LABELS__": json.dumps(session_labels or [], ensure_ascii=False),
         "__AI_STARTS__": json.dumps(bool(ai_starts)),
         "__LIVE_PROMPTS__": json.dumps(LIVE_RUNTIME_PROMPTS, ensure_ascii=False),
     }
     for key, value in replacements.items():
         html = html.replace(key, value)
+    if session_label != "自由辯論":
+        html = html.replace("自由辯論", session_label)
     return html
 
 
@@ -1400,12 +1473,16 @@ async def appliance_ai_debate_live(request: Request):
     topic = (q.get("topic") or "").strip()
     side = (q.get("side") or "正方").strip()
     debate_format = (q.get("format") or _PRACTICE_LIVE_FORMATS[0]).strip()
+    mode = (q.get("mode") or "free").strip()
+    from api.ai_coach_api import consume_live_brief, record_live_usage
+    research_brief=consume_live_brief(q.get("brief_id"),user_id)
     if not topic:
         return _practice_error_page("未有辯題", "請先輸入辯題再開始。")
     if side not in ("正方", "反方"):
         side = "正方"
-    if debate_format not in _PRACTICE_LIVE_FORMATS:
-        debate_format = _PRACTICE_LIVE_FORMATS[0]
+    allowed_formats = DEBATE_FORMATS if mode == "mock" else _PRACTICE_LIVE_FORMATS
+    if debate_format not in allowed_formats:
+        debate_format = allowed_formats[0]
 
     if debate_format == "聯中":
         try:
@@ -1416,6 +1493,23 @@ async def appliance_ai_debate_live(request: Request):
     else:
         live_minutes = 2.5
 
+    if mode == "mock":
+        segments = get_full_mock_sequence(debate_format, free_debate_minutes=live_minutes if debate_format == "聯中" else None)
+        sessions = split_mock_into_sessions(segments)
+        total_minutes = full_mock_total_seconds(segments) / 60
+        tokens=[]
+        for session in sessions:
+            token,error=_mint_gemini_live_token(max(3,full_mock_total_seconds(session["segments"])/60+2))
+            if error:return _practice_error_page("未能開始",error)
+            tokens.append(token)
+        flat=[]
+        for index,session in enumerate(sessions):
+            flat.extend({**segment,"session":index} for segment in session["segments"])
+        prompt=build_full_mock_live_prompt(topic,side,debate_format,free_debate_minutes=live_minutes if debate_format=="聯中" else None,research_brief=research_brief)
+        record_live_usage(user_id,"full_mock_live",total_minutes)
+        html=_render_live_debate_html(tokens[0],prompt,total_minutes,[],False,segments=flat,tokens=tokens,session_labels=[s["label"] for s in sessions],session_label="Mock")
+        return Response(content=html,media_type="text/html")
+
     bell_schedule = get_debate_timer_config(
         debate_format, free_debate_minutes=live_minutes,
     )["bell_schedules"].get("free", [])
@@ -1425,7 +1519,8 @@ async def appliance_ai_debate_live(request: Request):
     if mint_error:
         return _practice_error_page("未能開始", mint_error)
 
-    prompt = build_free_debate_live_prompt(topic, side, "")
+    prompt = build_free_debate_live_prompt(topic, side, research_brief)
+    record_live_usage(user_id,"free_debate_live",live_minutes*2)
     html = _render_live_debate_html(token, prompt, live_minutes, bell_schedule, side == "反方")
     return Response(content=html, media_type="text/html")
 
@@ -1701,6 +1796,16 @@ class Room:
             return "正方"
         return None
 
+    def is_open_free_segment(self):
+        """Whether the current segment is a timed, alternating free debate.
+
+        A full Mock also contains a ``雙方`` free-debate segment.  The old code
+        checked ``structure == 'free'`` and therefore skipped side timers and
+        Gemini activity handling during that Mock segment.
+        """
+        seg = self.current_segment()
+        return bool(self.phase == "active" and seg and seg.get("side") == "雙方")
+
     def state_msg(self):
         seg = self.current_segment()
         now = _now_ms()
@@ -1749,13 +1854,19 @@ def _active_room_count():
 
 async def _room_broadcast(room, msg, exclude=None):
     text = json.dumps(msg, ensure_ascii=False)
-    for m in list(room.members.values()):
-        if not m.connected or (exclude and m.user_id == exclude):
-            continue
+    recipients = [m for m in list(room.members.values())
+                  if m.connected and not (exclude and m.user_id == exclude)]
+
+    async def send(member):
         try:
-            await m.ws.send_text(text)
+            # A stalled mobile client must not block audio fan-out to everyone
+            # else.  The next reconnect rehydrates room state and transcript.
+            await asyncio.wait_for(member.ws.send_text(text), timeout=1.0)
         except Exception:
-            m.connected = False
+            member.connected = False
+
+    if recipients:
+        await asyncio.gather(*(send(member) for member in recipients))
 
 
 async def _room_tick(room):
@@ -2198,11 +2309,11 @@ async def _room_handle_audio(room, member, msg):
         return  # defense-in-depth: drop non-active speaker's audio
     if room.active_turn_user and room.active_turn_user != member.user_id:
         return  # only the accepted active turn may send audio
-    if room.structure == "free" and member.role in room.side_elapsed_ms:
+    if room.is_open_free_segment() and member.role in room.side_elapsed_ms:
         used = room.side_elapsed_ms.get(member.role, 0)
         if room.active_turn_side == member.role and room.active_turn_started_ms is not None:
             used += max(0, _now_ms() - room.active_turn_started_ms)
-        if used >= int(room.free_minutes * 60 * 1000):
+        if used >= int((seg.get("seconds") or 0) * 1000):
             return
     data, mime = _audio_fields(msg)
     if not data:
@@ -2216,7 +2327,7 @@ async def _room_handle_audio(room, member, msg):
     # Free structure streams the human's audio to Gemini (the AI hears them).
     # Mock structure is text-cue driven (see _room_cue_ai_segment) — the AI is
     # cued from the SpeechRecognition transcript, not the raw audio.
-    if room.mode == "B" and room.structure == "free":
+    if room.mode == "B" and room.is_open_free_segment():
         await _room_forward_audio_to_gemini(room, member, data, mime)
 
 
@@ -2254,8 +2365,8 @@ async def _room_handle_turn(room, member, speaking):
                 "message": f"自由辯論由{expected_side}先發言。",
             }, ensure_ascii=False))
             return
-        if room.structure == "free" and member.role in room.side_elapsed_ms:
-            if room.side_elapsed_ms.get(member.role, 0) >= int(room.free_minutes * 60 * 1000):
+        if room.is_open_free_segment() and member.role in room.side_elapsed_ms:
+            if room.side_elapsed_ms.get(member.role, 0) >= int((seg.get("seconds") or 0) * 1000):
                 return
         room.active_turn_user = member.user_id
         room.active_turn_side = member.role
@@ -2276,7 +2387,7 @@ async def _room_handle_turn(room, member, speaking):
     await _room_broadcast(room, room.state_msg())
     # Free structure: bracket the human's streamed audio with activity markers so
     # Gemini generates a rebuttal after each turn.
-    if room.mode == "B" and room.structure == "free" and room.gemini_ws is not None:
+    if room.mode == "B" and room.is_open_free_segment() and room.gemini_ws is not None:
         try:
             key = "activityStart" if speaking else "activityEnd"
             await room.gemini_ws.send(json.dumps({"realtimeInput": {key: {}}}))
@@ -2285,7 +2396,7 @@ async def _room_handle_turn(room, member, speaking):
     # Mock structure: after a human finishes a 雙方 (free-debate) turn, cue the AI
     # to give a short rebuttal from the transcript.
     if (room.mode == "B" and room.structure == "mock" and not speaking
-            and (room.current_segment() or {}).get("side") == "雙方"):
+            and room.is_open_free_segment()):
         await _room_cue_ai_segment(room, room.current_segment())
 
 
@@ -2446,6 +2557,8 @@ async def _room_handle_message(room, member, msg):
         room.active_turn_side = None
         room.active_turn_started_ms = None
         room.free_first_done = False
+        if room.current_segment() and room.current_segment().get("side") == "雙方":
+            room.side_elapsed_ms = {"正方": 0, "反方": 0}
         await _room_broadcast(room, room.state_msg())
         await _room_on_segment_enter(room)
         return
@@ -2480,6 +2593,10 @@ async def _room_handle_message(room, member, msg):
             "client_ts": msg.get("client_ts"),
             "server_now_ms": _now_ms(),
         }, ensure_ascii=False))
+        return
+
+    if mtype == "heartbeat":
+        await member.ws.send_text(json.dumps({"type": "heartbeat_ack", "server_now_ms": _now_ms()}))
         return
 
     if mtype == "test_audio":
@@ -2572,6 +2689,21 @@ async def room_create(request: Request):
                 "model": gem.get("model") or "",
                 "session_labels": gem.get("session_labels") or [],
             }
+        else:
+            # Direct HTML clients never receive an ephemeral token.  Mint it
+            # server-side, exactly as the former Streamlit page did, so the
+            # shared room remains usable with HttpOnly-cookie authentication.
+            token, mint_error = _mint_gemini_live_token(20 if structure == "mock" else 14)
+            if not token:
+                raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
+            prompt = (
+                build_full_mock_live_prompt(topic, room.human_side, debate_format,
+                                            free_debate_minutes=free_minutes if debate_format == "聯中" else None)
+                if structure == "mock"
+                else build_free_debate_live_prompt(topic, room.human_side, "")
+            )
+            room.gemini = {"tokens": [token], "sigs": {}, "prompt": prompt,
+                           "model": FREE_DEBATE_LIVE_MODEL, "session_labels": []}
     ROOMS[code] = room
     return {"ok": True, "code": code, "mode": mode}
 
@@ -2626,7 +2758,12 @@ async def room_ws(websocket: WebSocket, code: str):
     # Auth before accept(): only committee-signed tokens (user_id:sig) get in,
     # mirroring the Gemini relay's reject-before-handshake discipline.
     token = websocket.query_params.get("u", "")
+    # Direct HTML pages use an HttpOnly committee cookie, while the old
+    # Streamlit component used a localStorage bearer token.  Accept either so
+    # a room does not fail merely because the browser cannot read HttpOnly.
     user_id = _verify_committee_token(token)
+    if not user_id:
+        user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
     if not user_id:
         await websocket.close(code=1008)
         return
@@ -2716,111 +2853,26 @@ async def room_ws(websocket: WebSocket, code: str):
     except Exception as e:
         logger.exception("room_ws error (%s): %s", code, e)
     finally:
-        member.connected = False
-        await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
-        await _room_broadcast(room, {
-            "type": "roster", "roster": room.roster(),
-            "position_labels": room.position_labels(),
-            "required_positions": room.required_positions(),
-        })
+        # A reconnect replaces ``member.ws`` before the old receive loop gets
+        # its disconnect event.  Only the currently registered socket may mark
+        # the member offline; otherwise the old loop drops the new connection
+        # and audio appears to disappear until another reconnect happens.
+        if member.ws is websocket:
+            member.connected = False
+            await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
+            await _room_broadcast(room, {
+                "type": "roster", "roster": room.roster(),
+                "position_labels": room.position_labels(),
+                "required_positions": room.required_positions(),
+            })
         _gc_rooms()
 
 
 @app.websocket("/{path:path}")
-async def websocket_proxy(websocket: WebSocket, path: str):
-    # Streamlit repurposes Sec-WebSocket-Protocol to carry tokens. The first
-    # entry ("streamlit") is the actual subprotocol and MUST be echoed back to
-    # the browser on accept — otherwise the browser rejects the handshake and
-    # reconnects endlessly, leaving a blank page. The full list is forwarded to
-    # the backend so it can read the xsrf token / session id entries.
-    raw_subprotocols = websocket.headers.get("sec-websocket-protocol", "")
-    requested_subprotocols = [p.strip() for p in raw_subprotocols.split(",") if p.strip()]
-    selected_subprotocol = requested_subprotocols[0] if requested_subprotocols else None
-    await websocket.accept(subprotocol=selected_subprotocol)
-
-    query = f"?{websocket.url.query}" if websocket.url.query else ""
-    backend_url = f"{STREAMLIT_WS_URL}/{path}{query}"
-    headers = _websocket_headers(websocket.headers)
-    headers["Host"] = "127.0.0.1:8501"
-    headers["Origin"] = STREAMLIT_HTTP_URL
-
-    connect_kwargs = {"subprotocols": requested_subprotocols} if requested_subprotocols else {}
-
-    try:
-        try:
-            backend = await websockets.connect(backend_url, additional_headers=headers, **connect_kwargs)
-        except TypeError:
-            backend = await websockets.connect(backend_url, extra_headers=headers, **connect_kwargs)
-    except Exception as e:
-        logger.exception("WebSocket backend connection failed for %s: %s", backend_url, e)
-        await websocket.close(code=1011)
-        return
-
-    async with backend:
-        async def client_to_backend():
-            while True:
-                message = await websocket.receive()
-                if message.get("type") == "websocket.disconnect":
-                    await backend.close()
-                    break
-                elif "text" in message:
-                    await backend.send(message["text"])
-                elif "bytes" in message:
-                    await backend.send(message["bytes"])
-
-        async def backend_to_client():
-            async for message in backend:
-                if isinstance(message, bytes):
-                    await websocket.send_bytes(message)
-                else:
-                    await websocket.send_text(message)
-
-        tasks = [
-            asyncio.create_task(client_to_backend()),
-            asyncio.create_task(backend_to_client()),
-        ]
-        try:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            for task in done:
-                task.result()
-        except WebSocketDisconnect:
-            return
-        except Exception as e:
-            logger.exception("WebSocket proxy failed for %s: %s", backend_url, e)
-            try:
-                await websocket.close(code=1011)
-            except RuntimeError:
-                pass
+async def websocket_not_found(websocket: WebSocket, path: str):
+    await websocket.close(code=1008, reason="Unknown WebSocket route")
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
-async def http_proxy(request: Request, path: str):
-    query = f"?{request.url.query}" if request.url.query else ""
-    backend_url = f"{STREAMLIT_HTTP_URL}/{path}{query}"
-
-    async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
-        backend_response = await client.request(
-            request.method,
-            backend_url,
-            content=await request.body(),
-            headers=_proxy_headers(request.headers),
-        )
-
-    content = backend_response.content
-    content_type = backend_response.headers.get("content-type", "")
-    if "text/html" in content_type.lower():
-        content = _inject_pwa_head(content)
-
-    headers = _response_headers(backend_response.headers)
-    cache_control = _streamlit_cache_control(path, content_type)
-    if cache_control:
-        headers["Cache-Control"] = cache_control
-
-    return Response(
-        content=content,
-        status_code=backend_response.status_code,
-        headers=headers,
-        media_type=None,
-    )
+async def http_not_found(request: Request, path: str):
+    return Response(content=json.dumps({"detail": "Not Found"}), status_code=404, media_type="application/json")

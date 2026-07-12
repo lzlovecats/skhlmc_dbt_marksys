@@ -2,6 +2,8 @@
 
 > 聖呂中辯電子分紙系統
 
+Current release candidate: **4.0.0** — 全 HTML/FastAPI production runtime。
+
 一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、隊伍自助提交名單、評判電子分紙、比賽片段重溫及成績統計。
 
 A full-featured electronic scoring and management platform for school debate competitions, covering topic voting, match management, team roster self-submission, live judge scoring, match video replay, and automated result aggregation.
@@ -10,7 +12,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ## 🌟 主要功能 | Key Features
 
-### 🗳️ 辯題徵集與投票系統 | Topic Voting System (`vote.py`)
+### 🗳️ 辯題徵集與投票系統 | Topic Voting System (`/vote`)
 **中文：**
 - 委員會成員可提出新辯題，由所有成員投票表決
 - 動態入庫門檻：`max(5, ⌈活躍成員數 × 40%⌉)` 票，且同意多於不同意
@@ -29,7 +31,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### ✨ AI 辯論易 | AI Debate Coach (`ai_coach.py`)
+### ✨ AI 辯論易 | AI Debate Coach (`/ai-coach`)
 **中文：**
 - 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini、DeepSeek 或 GPT 模型
 - **發言檢查**：輸入文字稿或粵語錄音（錄音分析需選 Gemini 模型），AI 根據正式評分標準（內容、辭鋒、組織、風度）提供詳細反饋及預估分數
@@ -58,7 +60,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 🏠 主頁導航 | Home Page (`home.py`)
+### 🏠 主頁導航 | Home Page (`/`)
 **中文：**
 - 以身份分區（評判、賽會人員、參賽隊伍、一般人員、內部委員會成員）展示所有入口
 - 每個區塊提供一鍵跳轉對應頁面的快捷連結
@@ -73,7 +75,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 📝 比賽報名 | Competition Registration (`registration.py`, `registration_admin.py`)
+### 📝 比賽報名 | Competition Registration (`/registration`, `/registration-admin`)
 **中文：**
 - 報名時間內開放公開報名頁，收集隊名、四位辯員姓名及聯絡人資料
 - 同一屆比賽不可重覆提交相同隊名
@@ -87,7 +89,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 📋 場次管理 | Match Management (`match_info.py`)
+### 📋 場次管理 | Match Management (`/match-info`)
 **中文：**
 - 建立及編輯比賽場次（日期、時間、辯題、隊伍、辯員）
 - 為正反方產生隨機專屬名單提交連結，讓隊伍自行填寫隊名及辯員姓名
@@ -108,7 +110,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 🎬 比賽片段重溫 | Match Video Replay (`video_replay.py`, `video_admin.py`)
+### 🎬 比賽片段重溫 | Match Video Replay (`/video-replay`, `/video-admin`)
 **中文：**
 - 賽會人員可為現有場次新增多條 YouTube 比賽片段連結
 - 未使用電子分紙系統的舊比賽，可手動輸入比賽名稱、辯題及正反方隊名
@@ -125,7 +127,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 🖥️ 數據庫管理控制台 | Database Management Console (`db_mgmt.py`)
+### 🖥️ 數據庫管理控制台 | Database Management Console (`/db-mgmt`)
 **中文：**
 - 賽會人員專用 SQL 控制台，直接查詢及操作生產數據庫
 - SELECT / INSERT / UPDATE / DELETE 均支援，結果以表格呈現
@@ -138,7 +140,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### ⚖️ 電子評判分紙 | Live Judging Interface (`judging.py`)
+### ⚖️ 電子評判分紙 | Live Judging Interface (`/judging`)
 **中文：**
 - 實時電子分紙，適合平板及手提電腦使用
 - 雲端自動暫存（PostgreSQL `score_drafts`），防止頁面刷新導致資料遺失
@@ -153,7 +155,7 @@ A full-featured electronic scoring and management platform for school debate com
 
 ---
 
-### 📊 賽果統計與查分 | Results & Score Review (`management.py`, `review.py`)
+### 📊 賽果統計與查分 | Results & Score Review (`/management`, `/review`)
 **中文：**
 - 即時統計多位評判的投票及得分
 - 評判提交後可選擇手動排名最佳辯論員（亦可自動根據發言分數填入或略過）
@@ -186,14 +188,15 @@ A full-featured electronic scoring and management platform for school debate com
 
 | 組件 / Component | 技術 / Technology |
 |---|---|
-| 前端框架 / Frontend | [Streamlit](https://streamlit.io/) |
-| 數據庫 / Database | PostgreSQL (via `st.connection` + SQLAlchemy) |
+| 前端 / Frontend | 原生 HTML/CSS/JavaScript（共用 Vote UI design system） |
+| API / Runtime | FastAPI + Uvicorn；業務規則集中於 `core/` |
+| 數據庫 / Database | PostgreSQL（SQLAlchemy executor） |
 | 數據處理 / Data | Pandas, NumPy |
 | 文件輸出 / Document Export | ReportLab + pypdf PDF template overlay |
 | AI 整合 / AI | Google Gemini (`google-genai`) + OpenRouter (`openai` SDK) |
-| 身份管理 / Auth | Cookie-based sessions (`extra-streamlit-components`) |
-| 手機捷徑 / Mobile Shortcut | Streamlit static serving + web app manifest |
-| 部署 / Deployment | Streamlit Community Cloud |
+| 身份管理 / Auth | FastAPI 簽署 HttpOnly cookie sessions |
+| 手機捷徑 / Mobile Shortcut | Web app manifest + service worker + Web Push |
+| 部署 / Deployment | Render Docker（`deploy/proxy.py`） |
 
 ---
 
@@ -210,9 +213,9 @@ A full-featured electronic scoring and management platform for school debate com
 pip install -r requirements.txt
 ```
 
-如部署至 Streamlit Community Cloud，`packages.txt` 只會安裝 CJK 字型，不再安裝 LibreOffice。
+正式環境使用 `deploy/Dockerfile` 及 `deploy/start.sh` 在 Render 啟動 FastAPI。`packages.txt` 保留 CJK 字型依賴，供 PDF 及舊版相容流程使用。
 
-On Streamlit Community Cloud, `packages.txt` only installs CJK fonts and no longer installs LibreOffice.
+Production uses `deploy/Dockerfile` and `deploy/start.sh` to run FastAPI on Render. `packages.txt` retains the CJK font dependency for PDF output and legacy compatibility.
 
 **2. 設定資料庫憑證 / Configure database credentials**
 
@@ -273,7 +276,7 @@ INSERT INTO system_config (key, value, updated_at) VALUES
 
 **4. 啟動應用 / Run the app**
 ```bash
-streamlit run main.py
+uvicorn deploy.proxy:app --host 0.0.0.0 --port 8000
 ```
 
 ## 🗄️ 資料庫結構 | Database Structure

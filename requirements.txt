@@ -1,9 +1,7 @@
-streamlit>=1.36.0
 gspread
 google-auth
 pandas
 numpy
-extra-streamlit-components
 SQLAlchemy
 psycopg2-binary
 bcrypt

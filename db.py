@@ -5,6 +5,8 @@ Everything else (functions.py, auth.py, pages) depends on this module, and it
 depends on nothing internal — so it never causes a circular import.
 """
 
+from contextlib import contextmanager
+
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
@@ -96,6 +98,18 @@ class StreamlitDb:
 
     def execute_count(self, sql_str, params=None):
         return execute_query_count(sql_str, params)
+
+    @contextmanager
+    def transaction(self):
+        """Yield and commit one SQLAlchemy session for atomic domain writes."""
+        conn = get_connection()
+        with conn.session as session:
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
 
 def default_db():
