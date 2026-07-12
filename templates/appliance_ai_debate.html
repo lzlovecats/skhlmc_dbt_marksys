@@ -6,133 +6,204 @@
 <title>AI 辯論練習</title>
 <style>
 :root {
-    --bg: #0e0f13; --panel: #16181f; --panel-2: #1e2129; --border: #2c313d;
-    --text: #eef1f6; --muted: #9aa3b2; --green: #38c172; --green-d: #2fa863;
-    --red: #ff4b4b; --blue: #3b82f6;
+    --bg:#0e0f13; --panel:#16181f; --panel-2:#1e2129; --border:#2c313d;
+    --text:#eef1f6; --muted:#9aa3b2; --green:#38c172; --green-d:#2fa863;
+    --red:#ff4b4b; --blue:#3b82f6; --amber:#ff9800;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body {
-    background: var(--bg); color: var(--text); min-height: 100%;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK", "PingFang HK", Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-}
-body { display: flex; flex-direction: column; min-height: 100vh; }
-
-.topbar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; padding: 18px clamp(16px, 3vw, 40px);
-    border-bottom: 1px solid var(--border); background: var(--panel);
-}
-.brand { font-size: clamp(22px, 2.6vw, 34px); font-weight: 800; }
-.brand .sub { color: var(--muted); font-weight: 600; font-size: .62em; margin-left: 10px; }
-.back-link {
-    font-size: clamp(16px, 1.7vw, 22px); font-weight: 700; color: var(--muted);
-    text-decoration: none; background: var(--panel-2); border: 2px solid var(--border);
-    border-radius: 12px; padding: 10px 20px; white-space: nowrap;
-}
-
-.wrap { flex: 1; display: flex; justify-content: center; padding: clamp(18px, 3vw, 40px); }
-form { width: 100%; max-width: 880px; }
-
-.field { margin-bottom: clamp(20px, 3vh, 34px); }
-.field > label.title { display: block; font-size: clamp(18px, 2vw, 26px); font-weight: 800; margin-bottom: 12px; }
-
-textarea, select {
-    width: 100%; font-size: clamp(20px, 2.2vw, 30px); font-weight: 600; color: var(--text);
-    background: var(--panel-2); border: 2px solid var(--border); border-radius: 14px;
-    padding: 16px 18px; font-family: inherit;
-}
-textarea { resize: vertical; min-height: 96px; line-height: 1.5; }
-
-.toggle-row { display: flex; gap: 14px; flex-wrap: wrap; }
-.toggle {
-    flex: 1 1 200px; position: relative; cursor: pointer;
-}
-.toggle input { position: absolute; opacity: 0; pointer-events: none; }
-.toggle span {
-    display: block; text-align: center; font-size: clamp(22px, 2.4vw, 32px); font-weight: 800;
-    background: var(--panel-2); border: 2px solid var(--border); border-radius: 16px;
-    padding: 20px 8px; color: var(--muted); transition: all .15s;
-}
-.toggle input:checked + span { color: #fff; border-color: var(--blue); background: #1e335c; }
-
-#minutes-field { display: none; }
-
-.start-btn {
-    width: 100%; font-size: clamp(24px, 3vw, 40px); font-weight: 800; color: #fff;
-    background: var(--green); border: none; border-radius: 20px; cursor: pointer;
-    padding: clamp(18px, 2.6vw, 30px); margin-top: 8px;
-    box-shadow: 0 6px 20px rgba(56, 193, 114, .3); transition: background .15s;
-}
-.start-btn:hover { background: var(--green-d); }
-.start-btn:active { transform: translateY(2px); }
-
-.note {
-    margin-top: 22px; font-size: clamp(14px, 1.5vw, 19px); color: #6b7280;
-    line-height: 1.6; text-align: center;
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { min-height:100%; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans HK","PingFang HK",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
+body { min-height:100vh; overflow-x:hidden; }
+.topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px clamp(16px,3vw,40px); border-bottom:1px solid var(--border); background:var(--panel); }
+.brand { font-size:clamp(22px,2.6vw,34px); font-weight:800; }
+.brand .sub { color:var(--muted); font-weight:600; font-size:.62em; margin-left:10px; }
+.back-link { font-size:clamp(16px,1.7vw,22px); font-weight:700; color:var(--muted); text-decoration:none; background:var(--panel-2); border:2px solid var(--border); border-radius:12px; padding:10px 20px; white-space:nowrap; }
+.wrap { display:flex; justify-content:center; padding:clamp(18px,3vw,40px); }
+.setup { width:100%; max-width:1000px; }
+.panel-card { background:var(--panel); border:1px solid var(--border); border-radius:24px; padding:clamp(20px,3.4vw,36px); margin-bottom:22px; }
+.field { margin-bottom:clamp(20px,3vh,32px); }
+.field:last-child { margin-bottom:0; }
+.title { display:block; font-size:clamp(18px,2vw,26px); font-weight:800; margin-bottom:12px; }
+textarea,select,input[type="search"],input[type="text"],input[type="number"] { width:100%; min-height:60px; font-size:clamp(20px,2.1vw,29px); font-weight:650; color:var(--text); background:var(--panel-2); border:2px solid var(--border); border-radius:14px; padding:14px 18px; font-family:inherit; }
+textarea { min-height:104px; resize:vertical; line-height:1.5; }
+input[type="search"] { margin-bottom:12px; }
+.toggle-row,.action-row { display:flex; gap:14px; flex-wrap:wrap; }
+.toggle { flex:1 1 210px; position:relative; cursor:pointer; }
+.toggle input { position:absolute; opacity:0; pointer-events:none; }
+.toggle span,.action-tab { display:block; width:100%; text-align:center; font-size:clamp(20px,2.25vw,31px); font-weight:800; background:var(--panel-2); border:2px solid var(--border); border-radius:16px; padding:20px 10px; color:var(--muted); transition:.15s; }
+.toggle input:checked + span,.action-tab.active { color:#fff; border-color:var(--blue); background:#1e335c; }
+.action-tab { flex:1 1 210px; cursor:pointer; font-family:inherit; }
+.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+.topic-tools { display:grid; gap:12px; }
+.topic-status,.info,.note { color:var(--muted); font-size:clamp(15px,1.45vw,19px); line-height:1.6; }
+.topic-status.error,.message.error { color:#ffb4b4; }
+.info { border-left:5px solid var(--blue); background:#111c31; border-radius:12px; padding:14px 16px; }
+.message { display:none; margin-bottom:20px; border-radius:14px; padding:15px 18px; background:#362716; color:#ffd08a; font-size:clamp(16px,1.6vw,21px); font-weight:700; }
+.message.show { display:block; }
+.start-btn { width:100%; min-height:78px; font-size:clamp(24px,3vw,40px); font-weight:800; color:#fff; background:var(--green); border:none; border-radius:20px; cursor:pointer; padding:clamp(18px,2.5vw,28px); box-shadow:0 6px 20px rgba(56,193,114,.3); font-family:inherit; }
+.start-btn:hover { background:var(--green-d); }
+.start-btn.secondary { background:var(--blue); box-shadow:0 6px 20px rgba(59,130,246,.25); }
+.start-btn:disabled { opacity:.55; cursor:wait; }
+.note { margin-top:20px; text-align:center; color:#737b8b; }
+.hidden { display:none !important; }
+@media(max-width:760px) {
+    .topbar { align-items:stretch; flex-direction:column; }
+    .back-link { text-align:center; }
+    .brand .sub { display:block; margin:4px 0 0; }
+    .grid { grid-template-columns:1fr; }
+    .panel-card { border-radius:18px; }
 }
 </style>
 </head>
 <body>
-<div class="topbar">
-    <div class="brand">🤖 AI 辯論練習<span class="sub">自由辯論</span></div>
+<header class="topbar">
+    <div class="brand">🤖 AI 辯論練習<span class="sub">單人／聯機 · Free De／完整 Mock</span></div>
     <a class="back-link" href="/practice">◀ 返回練習</a>
-</div>
+</header>
 
-<div class="wrap">
-    <form method="get" action="/practice/ai-debate/live">
-        <div class="field">
-            <label class="title" for="topic">辯題</label>
-            <textarea id="topic" name="topic" required placeholder="例如：中學生應該擁有智能電話"></textarea>
-        </div>
+<main class="wrap"><div class="setup">
+    <div id="message" class="message" role="status"></div>
 
+    <section class="panel-card">
         <div class="field">
-            <label class="title">你嘅立場</label>
+            <label class="title">練習方式</label>
             <div class="toggle-row">
-                <label class="toggle">
-                    <input type="radio" name="side" value="正方" checked>
-                    <span>正方</span>
-                </label>
-                <label class="toggle">
-                    <input type="radio" name="side" value="反方">
-                    <span>反方</span>
-                </label>
+                <label class="toggle"><input type="radio" name="session_type" value="solo" checked><span>👤 單人對 AI</span></label>
+                <label class="toggle"><input type="radio" name="session_type" value="room"><span>🎧 聯機練習</span></label>
             </div>
         </div>
+    </section>
 
+    <section id="topic-panel" class="panel-card">
         <div class="field">
-            <label class="title" for="format">賽制</label>
-            <select id="format" name="format" onchange="onFormatChange()">
-                <option value="校園隨想">校園隨想（自由辯論 2:30）</option>
-                <option value="聯中">聯中（自由辯論可調）</option>
-            </select>
+            <label class="title">辯題來源</label>
+            <div class="toggle-row">
+                <label class="toggle"><input type="radio" name="topic_source" value="bank" checked><span>📚 從辯題庫選擇</span></label>
+                <label class="toggle"><input type="radio" name="topic_source" value="manual"><span>⌨️ 手動輸入</span></label>
+            </div>
         </div>
-
-        <div class="field" id="minutes-field">
-            <label class="title" for="minutes">每邊發言時間（分鐘）</label>
-            <select id="minutes" name="minutes">
-                <option value="3">3 分鐘</option>
-                <option value="4">4 分鐘</option>
-                <option value="5" selected>5 分鐘</option>
-                <option value="6">6 分鐘</option>
-            </select>
+        <div class="field" id="bank-topic-field">
+            <label class="title" for="topic-search">選擇辯題</label>
+            <div class="topic-tools">
+                <input type="search" id="topic-search" placeholder="搜尋辯題、類別或難度">
+                <select id="topic-bank" aria-label="辯題庫"></select>
+                <div class="topic-status" id="topic-status">正在載入辯題庫…</div>
+            </div>
         </div>
-
-        <button type="submit" class="start-btn">▶ 開始練習</button>
-
-        <div class="note">
-            開始後需要委員帳戶（部機已登入即可）＋ 允許麥克風權限。<br>
-            AI 會即場同你自由辯論並自動計時、響叮。練習完可按 <b>Alt + F4</b> 返主選單。
+        <div class="field hidden" id="manual-topic-field">
+            <label class="title" for="topic-manual">輸入辯題</label>
+            <textarea id="topic-manual" placeholder="例如：中學生應該擁有智能電話"></textarea>
         </div>
+    </section>
+
+    <form id="solo-form" method="get" action="/practice/ai-debate/live">
+        <section class="panel-card">
+            <div class="field">
+                <label class="title">練習模式</label>
+                <div class="toggle-row">
+                    <label class="toggle"><input type="radio" name="mode" value="free" checked><span>⚡ Free De</span></label>
+                    <label class="toggle"><input type="radio" name="mode" value="mock"><span>🏆 完整 Mock</span></label>
+                </div>
+            </div>
+            <input type="hidden" id="solo-topic" name="topic">
+            <input type="hidden" name="source" value="kiosk">
+            <div class="field">
+                <label class="title">你嘅立場</label>
+                <div class="toggle-row">
+                    <label class="toggle"><input type="radio" name="side" value="正方" checked><span>正方</span></label>
+                    <label class="toggle"><input type="radio" name="side" value="反方"><span>反方</span></label>
+                </div>
+            </div>
+            <div class="field">
+                <label class="title" for="format">賽制</label>
+                <select id="format" name="format"></select>
+            </div>
+            <div class="field hidden" id="minutes-field">
+                <label class="title" for="minutes">自由辯論每邊時間</label>
+                <select id="minutes" name="minutes"><option value="3">3 分鐘</option><option value="4">4 分鐘</option><option value="5" selected>5 分鐘</option><option value="6">6 分鐘</option></select>
+            </div>
+            <button type="submit" class="start-btn">▶ 開始單人練習</button>
+            <div class="note">使用同 AI Coach 相同嘅 Gemini Live、提示詞、計時及完整 Mock 流程。</div>
+        </section>
     </form>
-</div>
+
+    <section id="room-panel" class="hidden">
+        <section class="panel-card">
+            <div class="field">
+                <label class="title">房間操作</label>
+                <div class="action-row">
+                    <button type="button" id="show-create" class="action-tab active">➕ 建立房間</button>
+                    <button type="button" id="show-join" class="action-tab">🔑 加入房間</button>
+                </div>
+            </div>
+        </section>
+
+        <form id="create-room-form">
+            <section class="panel-card">
+                <div class="field">
+                    <label class="title" for="room-mode">對戰模式</label>
+                    <select id="room-mode"><option value="A">真人對真人（AI 評判）</option><option value="B">多人一隊對 AI</option></select>
+                </div>
+                <div class="field">
+                    <label class="title">練習模式</label>
+                    <div class="toggle-row">
+                        <label class="toggle"><input type="radio" name="room_structure" value="free" checked><span>⚡ Free De</span></label>
+                        <label class="toggle"><input type="radio" name="room_structure" value="mock"><span>🏆 完整 Mock</span></label>
+                    </div>
+                </div>
+                <div class="grid">
+                    <div class="field"><label class="title" for="room-format">賽制</label><select id="room-format"></select></div>
+                    <div class="field hidden" id="room-minutes-field"><label class="title" for="room-minutes">自由辯論每邊時間</label><select id="room-minutes"><option value="3">3 分鐘</option><option value="4">4 分鐘</option><option value="5" selected>5 分鐘</option><option value="6">6 分鐘</option></select></div>
+                    <div class="field"><label class="title" for="room-side" id="room-side-title">你嘅立場</label><select id="room-side"><option>正方</option><option>反方</option></select></div>
+                    <div class="field hidden" id="room-capacity-field"><label class="title" for="room-capacity">隊員人數上限</label><select id="room-capacity"><option value="1">1 人</option><option value="2">2 人</option><option value="3">3 人</option><option value="4" selected>4 人</option></select></div>
+                </div>
+                <div class="field"><div class="info" id="room-info"></div></div>
+                <button type="submit" class="start-btn secondary">➕ 建立並進入房間</button>
+            </section>
+        </form>
+
+        <form id="join-room-form" class="hidden">
+            <section class="panel-card">
+                <div class="field"><label class="title" for="join-code">房間代碼</label><input type="text" id="join-code" maxlength="8" autocomplete="off" placeholder="例如：ABC123" required></div>
+                <button type="submit" class="start-btn secondary">🔑 加入房間</button>
+                <div class="note">由建立房間嘅隊員提供房間代碼；所有人需要使用委員帳戶。</div>
+            </section>
+        </form>
+    </section>
+</div></main>
 
 <script>
-function onFormatChange() {
-    var fmt = document.getElementById("format").value;
-    document.getElementById("minutes-field").style.display = (fmt === "聯中") ? "block" : "none";
-}
-onFormatChange();
+var allTopics=[];
+var FREE_FORMATS=["校園隨想","聯中"];
+var MOCK_FORMATS=["校園隨想","聯中","星島","基本法盃"];
+var roomAction="create";
+var $=function(id){return document.getElementById(id)};
+function selected(name){var input=document.querySelector('input[name="'+name+'"]:checked');return input?input.value:""}
+function escError(error){return error&&error.message?error.message:"操作失敗"}
+function showMessage(text,isError){var el=$("message");el.textContent=text;el.className="message show"+(isError?" error":"");el.scrollIntoView({behavior:"smooth",block:"start"})}
+async function api(url,options){var response=await fetch(url,{credentials:"same-origin",headers:{"Content-Type":"application/json"},...(options||{})});var data=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(data.detail||"操作失敗");return data}
+function topicValue(){return selected("topic_source")==="manual"?$("topic-manual").value.trim():$("topic-bank").value.trim()}
+function topicLabel(item){var meta=[item.category,item.difficulty_label].filter(Boolean).join(" · ");return item.topic_text+(meta?"　｜　"+meta:"")}
+function filterTopics(){var q=$("topic-search").value.trim().toLowerCase();var filtered=allTopics.filter(function(item){return [item.topic_text,item.category,item.difficulty_label].join(" ").toLowerCase().includes(q)});$("topic-bank").innerHTML="";filtered.forEach(function(item){var option=document.createElement("option");option.value=item.topic_text;option.textContent=topicLabel(item);$("topic-bank").appendChild(option)});$("topic-status").textContent=filtered.length?"搵到 "+filtered.length+" 條辯題；打開下拉選單即可選用。":"搵唔到符合條件嘅辯題，可以改用手動輸入。"}
+async function loadTopics(){try{var data=await api("/api/open-db/data");allTopics=Array.isArray(data.topics)?data.topics.filter(function(x){return x.topic_text}):[];filterTopics();if(!allTopics.length)throw new Error("辯題庫目前為空")}catch(error){allTopics=[];filterTopics();$("topic-status").textContent="暫時未能載入辯題庫（"+escError(error)+"），請改用手動輸入。";$("topic-status").className="topic-status error"}}
+function fillFormats(selectId,mode){var el=$(selectId),previous=el.value,formats=mode==="mock"?MOCK_FORMATS:FREE_FORMATS;el.innerHTML="";formats.forEach(function(name){var option=document.createElement("option");option.value=name;option.textContent=name+(name==="聯中"?"（時間可調）":"");el.appendChild(option)});el.value=formats.includes(previous)?previous:formats[0]}
+function syncTopicSource(){var manual=selected("topic_source")==="manual";$("bank-topic-field").classList.toggle("hidden",manual);$("manual-topic-field").classList.toggle("hidden",!manual)}
+function syncSolo(){var mode=selected("mode");fillFormats("format",mode);$("minutes-field").classList.toggle("hidden",$("format").value!=="聯中")}
+function syncRoom(){var mode=$("room-mode").value,structure=selected("room_structure");fillFormats("room-format",structure);var format=$("room-format").value;$("room-minutes-field").classList.toggle("hidden",format!=="聯中");$("room-capacity-field").classList.toggle("hidden",mode!=="B"||structure==="mock");$("room-side-title").textContent=mode==="B"?"你哋嘅立場（AI 代表另一方）":"你嘅立場";if(mode==="B"&&structure==="mock"){var count=format==="星島"?3:4;$("room-info").textContent="完整 Mock（多人對 AI）：必須啱啱好 "+count+" 位隊員入房並選好辯位；AI 自動負責另一方。"}else if(mode==="B"){$("room-info").textContent="Free De（多人對 AI）：1–4 位隊員輪流發言，AI 代表另一方即時攻防。"}else{$("room-info").textContent=(structure==="mock"?"完整 Mock":"Free De")+"（真人對真人）：雙方連線練習，完成後由 AI 根據逐字稿評判。"}}
+function syncSession(){var room=selected("session_type")==="room";$("solo-form").classList.toggle("hidden",room);$("room-panel").classList.toggle("hidden",!room);syncTopicVisibility()}
+function syncTopicVisibility(){var needsTopic=selected("session_type")==="solo"||roomAction==="create";$("topic-panel").classList.toggle("hidden",!needsTopic)}
+function switchRoomAction(action){roomAction=action;var create=action==="create";$("create-room-form").classList.toggle("hidden",!create);$("join-room-form").classList.toggle("hidden",create);$("show-create").classList.toggle("active",create);$("show-join").classList.toggle("active",!create);syncTopicVisibility()}
+function requireTopic(){var topic=topicValue();if(!topic)showMessage("請先選擇或輸入辯題。",true);return topic}
+function roomUrl(code){return "/ai-coach/room/"+encodeURIComponent(code)+"?from=practice"}
+document.querySelectorAll('input[name="session_type"]').forEach(function(x){x.addEventListener("change",syncSession)});
+document.querySelectorAll('input[name="topic_source"]').forEach(function(x){x.addEventListener("change",syncTopicSource)});
+document.querySelectorAll('input[name="mode"]').forEach(function(x){x.addEventListener("change",syncSolo)});
+document.querySelectorAll('input[name="room_structure"]').forEach(function(x){x.addEventListener("change",syncRoom)});
+$("topic-search").addEventListener("input",filterTopics);$("room-mode").addEventListener("change",syncRoom);$("room-format").addEventListener("change",function(){var mode=selected("room_structure");var chosen=$("room-format").value;$("room-minutes-field").classList.toggle("hidden",chosen!=="聯中");syncRoom()});$("format").addEventListener("change",function(){$("minutes-field").classList.toggle("hidden",$("format").value!=="聯中")});
+$("show-create").addEventListener("click",function(){switchRoomAction("create")});$("show-join").addEventListener("click",function(){switchRoomAction("join")});
+$("solo-form").addEventListener("submit",function(event){var topic=requireTopic();if(!topic){event.preventDefault();return}$("solo-topic").value=topic});
+$("create-room-form").addEventListener("submit",async function(event){event.preventDefault();var topic=requireTopic();if(!topic)return;var button=event.submitter;button.disabled=true;try{var mode=$("room-mode").value,structure=selected("room_structure"),format=$("room-format").value;var payload={mode:mode,structure:structure,debate_format:format,topic:topic,free_minutes:format==="聯中"?Number($("room-minutes").value):2.5};if(mode==="A")payload.side=$("room-side").value;else{payload.human_side=$("room-side").value;payload.capacity=structure==="mock"?(format==="星島"?3:4):Number($("room-capacity").value)}var data=await api("/api/room/create",{method:"POST",body:JSON.stringify(payload)});location.href=roomUrl(data.code)}catch(error){showMessage("未能建立房間："+escError(error),true);button.disabled=false}});
+$("join-room-form").addEventListener("submit",async function(event){event.preventDefault();var code=$("join-code").value.trim().toUpperCase(),button=event.submitter;if(!code)return;button.disabled=true;try{var data=await api("/api/room/"+encodeURIComponent(code));location.href=roomUrl(data.code)}catch(error){showMessage("未能加入房間："+escError(error),true);button.disabled=false}});
+syncTopicSource();syncSolo();syncRoom();syncSession();loadTopics();
 </script>
 </body>
 </html>

@@ -380,7 +380,7 @@
         body: JSON.stringify({mode, topic, side, debate_format: format, model_label: $("globalModel").value}),
       });
       location.href = "/practice/ai-debate/live?" + new URLSearchParams({
-        mode, topic, side, format, minutes, brief_id: data.brief_id,
+        mode, topic, side, format, minutes, brief_id: data.brief_id, source: "coach",
       });
     } catch (error) {
       toast(`⚠️ ${error.message}`);

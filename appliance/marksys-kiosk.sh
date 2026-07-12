@@ -34,8 +34,23 @@ fi
 xset s off -dpms s noblank 2>/dev/null || true
 command -v unclutter >/dev/null 2>&1 && unclutter -idle 3 &
 
+set_max_volume() {
+    # The practice page fixes its own bell mix at 100%; also make the dedicated
+    # appliance's current default sink audible after reboot or speaker changes.
+    if command -v wpctl >/dev/null 2>&1; then
+        wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 >/dev/null 2>&1 || true
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 1.0 >/dev/null 2>&1 || true
+    elif command -v pactl >/dev/null 2>&1; then
+        pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1 || true
+        pactl set-sink-volume @DEFAULT_SINK@ 100% >/dev/null 2>&1 || true
+    elif command -v amixer >/dev/null 2>&1; then
+        amixer -q sset Master 100% unmute >/dev/null 2>&1 || true
+    fi
+}
+
 launch() {
     local url="$1"
+    set_max_volume
     # clear stale singleton locks so a hard power-off doesn't block startup
     rm -f "$HOME/.marksys-chrome/Singleton"* 2>/dev/null || true
     "$CHROME" \

@@ -24,7 +24,7 @@ html, body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK", "PingFang HK", Roboto, sans-serif;
     height: 100%; -webkit-font-smoothing: antialiased;
 }
-body { display: flex; flex-direction: column; min-height: 100vh; }
+body { display: flex; flex-direction: column; min-height: 100vh; overflow-x: hidden; }
 
 /* ---- top bar ---- */
 .topbar {
@@ -56,13 +56,22 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
     display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: flex-end;
     margin-bottom: 22px;
 }
-.field { display: flex; flex-direction: column; gap: 8px; }
+.field { display: flex; flex: 1 1 250px; min-width: 0; flex-direction: column; gap: 8px; }
 .field label { font-size: clamp(15px, 1.4vw, 20px); color: var(--muted); font-weight: 700; }
 .field select, .field input {
     font-size: clamp(20px, 2vw, 28px); font-weight: 700; color: var(--text);
     background: var(--panel-2); border: 2px solid var(--border); border-radius: 12px;
-    padding: 12px 16px; min-width: 200px;
+    padding: 12px 16px; min-width: 0; width: 100%;
 }
+.output-btn {
+    font-size: clamp(18px, 1.8vw, 25px); font-weight: 800; color: #fff;
+    background: var(--blue); border: 2px solid var(--blue); border-radius: 12px;
+    padding: 12px 18px; min-height: 58px; width: 100%; cursor: pointer;
+}
+.output-btn:hover { background: #2f6fe0; }
+.output-status { max-width: 330px; color: var(--muted); font-size: clamp(14px, 1.2vw, 17px); font-weight: 650; }
+.output-status.ready { color: var(--green); }
+.output-status.warn { color: var(--amber); }
 
 /* ---- stage selector ---- */
 .stage-selector {
@@ -135,6 +144,16 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 }
 .ai-launch:hover { background: #2f6fe0; }
 .ai-note { margin-top: 24px; font-size: clamp(14px, 1.4vw, 19px); color: #6b7280; }
+@media (max-width: 1400px) {
+    .topbar { align-items: stretch; flex-direction: column; }
+    .mode-switch { width: 100%; }
+    .mode-btn { flex: 1 1 0; }
+}
+@media (max-width: 680px) {
+    .brand .sub { display: block; margin: 4px 0 0; }
+    .mode-switch { flex-direction: column; }
+    .mode-btn { width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -161,6 +180,11 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
             <div class="field">
                 <label>結辯準備（分鐘）</label>
                 <input type="number" id="closing-prep" value="2" min="0.5" max="10" step="0.5" onchange="reloadConfig()">
+            </div>
+            <div class="field">
+                <label>鈴聲輸出（網頁音量固定 100%）</label>
+                <button type="button" class="output-btn" id="speaker-button" onclick="selectSpeaker()">🔊 連接 Bluetooth／喇叭</button>
+                <div class="output-status" id="speaker-status">目前使用系統預設喇叭</div>
             </div>
         </div>
 
@@ -216,13 +240,54 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 <script>
 // ---------- bell audio (Web Audio; falls back to a synth tone) ----------
 const BELL_SRC = "/api/practice/bell";
-const BELL_VOLUME = 8.0;
-let bellBuffer = null, bellLoading = null, audioCtx = null;
+const BELL_BOOST = 12.0;
+let bellBuffer = null, bellLoading = null, audioCtx = null, bellMaster = null;
 
 function getAudioCtx() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") audioCtx.resume();
     return audioCtx;
+}
+function getBellOutput() {
+    const ctx = getAudioCtx();
+    if (!bellMaster) {
+        const boost = ctx.createGain(), limiter = ctx.createDynamicsCompressor();
+        boost.gain.value = BELL_BOOST;
+        limiter.threshold.value = -8; limiter.knee.value = 0; limiter.ratio.value = 20;
+        limiter.attack.value = 0.003; limiter.release.value = 0.25;
+        boost.connect(limiter); limiter.connect(ctx.destination);
+        bellMaster = boost;
+    }
+    return bellMaster;
+}
+async function selectSpeaker() {
+    const status = document.getElementById("speaker-status");
+    const button = document.getElementById("speaker-button");
+    try {
+        const ctx = await prepareBell();
+        if (!navigator.mediaDevices || typeof navigator.mediaDevices.selectAudioOutput !== "function" || typeof ctx.setSinkId !== "function") {
+            status.textContent = "此瀏覽器未能直接揀輸出；請先喺系統 Bluetooth 設定連線，鈴聲會跟系統預設喇叭。";
+            status.className = "output-status warn";
+            return;
+        }
+        button.disabled = true; button.textContent = "正在選擇喇叭…";
+        const device = await navigator.mediaDevices.selectAudioOutput();
+        await ctx.setSinkId(device.deviceId);
+        status.textContent = "已連接：" + (device.label || "所選喇叭") + "（網頁音量 100%）";
+        status.className = "output-status ready";
+        button.textContent = "🔊 更改 Bluetooth／喇叭";
+        await playBell(1);
+    } catch (error) {
+        if (error && error.name === "NotAllowedError") {
+            status.textContent = "未有選擇喇叭，繼續使用系統預設輸出。";
+        } else {
+            status.textContent = "未能切換喇叭：" + (error.message || "請檢查 Bluetooth 連線");
+        }
+        status.className = "output-status warn";
+    } finally {
+        button.disabled = false;
+        if (button.textContent === "正在選擇喇叭…") button.textContent = "🔊 連接 Bluetooth／喇叭";
+    }
 }
 async function prepareBell() {
     const ctx = getAudioCtx();
@@ -247,7 +312,7 @@ function playTone(count) {
         osc.type = "sine"; osc.frequency.value = 850;
         gain.gain.setValueAtTime(0.45, ctx.currentTime + i * 0.35);
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.35 + 0.22);
-        osc.connect(gain); gain.connect(ctx.destination);
+        osc.connect(gain); gain.connect(getBellOutput());
         osc.start(ctx.currentTime + i * 0.35); osc.stop(ctx.currentTime + i * 0.35 + 0.22);
     }
 }
@@ -257,9 +322,9 @@ async function playBell(count) {
     if (!bellBuffer) await loadBell();
     if (!bellBuffer) { playTone(count); return; }
     for (let i = 0; i < count; i++) {
-        const src = ctx.createBufferSource(), gain = ctx.createGain();
-        src.buffer = bellBuffer; gain.gain.value = BELL_VOLUME;
-        src.connect(gain); gain.connect(ctx.destination);
+        const src = ctx.createBufferSource();
+        src.buffer = bellBuffer;
+        src.connect(getBellOutput());
         src.start(ctx.currentTime + i * 0.8);
     }
 }

@@ -4,89 +4,105 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --bg:#0e0f13; --panel:#16181f; --panel-2:#1e2129;
+    --border:#2c313d; --text:#eef1f6; --muted:#9aa3b2; --green:#38c172;
+    --blue:#3b82f6; --red:#ff4b4b; --amber:#ff9800; }
   * { box-sizing: border-box; }
   body {
     margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
       "PingFang HK", "Noto Sans CJK HK", "Microsoft JhengHei", sans-serif;
-    background: #0e1117; color: #e6e6e6; padding: 12px;
+    background:var(--bg); color:var(--text); padding:clamp(12px,2.5vw,30px);
+    max-width:1100px; margin:0 auto;
   }
-  .card { background:#161b22; border:1px solid #262d38; border-radius:12px;
-    padding:14px 16px; margin-bottom:12px; }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .practice-nav { display:flex; justify-content:space-between; align-items:center; gap:14px;
+    margin-bottom:18px; }
+  .practice-nav strong { font-size:clamp(22px,2.6vw,34px); }
+  .back-link { color:var(--muted); text-decoration:none; background:var(--panel-2);
+    border:2px solid var(--border); border-radius:12px; padding:12px 20px;
+    font-size:clamp(16px,1.7vw,22px); font-weight:800; white-space:nowrap; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:20px;
+    padding:clamp(18px,2.5vw,28px); margin-bottom:18px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
   .grow { flex:1 1 auto; }
-  h2 { margin:0 0 4px; font-size:18px; }
-  .muted { color:#8b949e; font-size:13px; }
+  h2 { margin:0 0 6px; font-size:clamp(22px,2.4vw,31px); }
+  .muted { color:var(--muted); font-size:clamp(15px,1.5vw,19px); line-height:1.5; }
   .code {
-    font-size:30px; font-weight:700; letter-spacing:5px; color:#58a6ff;
+    font-size:clamp(30px,4vw,48px); font-weight:800; letter-spacing:6px; color:#60a5fa;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   button {
-    font-size:15px; padding:9px 16px; border-radius:9px; border:1px solid #30363d;
-    background:#21262d; color:#e6e6e6; cursor:pointer; transition:.12s;
+    min-height:56px; font-size:clamp(17px,1.7vw,22px); font-weight:750; padding:12px 20px;
+    border-radius:14px; border:2px solid var(--border); background:var(--panel-2);
+    color:var(--text); cursor:pointer; transition:.12s;
   }
   button:hover:not(:disabled) { background:#30363d; }
   button:disabled { opacity:.4; cursor:not-allowed; }
-  button.primary { background:#238636; border-color:#2ea043; }
-  button.primary:hover:not(:disabled) { background:#2ea043; }
+  button.primary { background:var(--green); border-color:var(--green); color:#fff; }
+  button.primary:hover:not(:disabled) { background:#2fa863; }
   button.warn { background:#3d1f1f; border-color:#6e2b2b; }
-  button.pick.active { background:#1f6feb; border-color:#388bfd; }
+  button.pick.active { background:var(--blue); border-color:var(--blue); }
   .talk {
-    width:100%; font-size:20px; font-weight:700; padding:22px; margin-top:8px;
-    background:#1f6feb; border-color:#388bfd;
+    width:100%; min-height:94px; font-size:clamp(24px,2.8vw,36px); font-weight:800;
+    padding:22px; margin-top:14px; background:var(--blue); border-color:var(--blue);
   }
   .talk.live { background:#da3633; border-color:#f85149; animation:pulse 1s infinite; }
   @keyframes pulse { 50% { opacity:.7; } }
-  .timer { font-size:46px; font-weight:800; font-variant-numeric:tabular-nums;
-    text-align:center; margin:6px 0; }
-  .side-timers { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:8px 0; }
-  .side-timer { background:#0d1117; border:1px solid #262d38; border-radius:8px; padding:8px; text-align:center; }
-  .side-timer strong { display:block; font-size:13px; margin-bottom:4px; }
-  .side-timer span { font-size:24px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .timer { font-size:clamp(54px,8vw,86px); font-weight:800; font-variant-numeric:tabular-nums;
+    text-align:center; margin:10px 0; }
+  .side-timers { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:14px 0; }
+  .side-timer { background:#0d1117; border:1px solid var(--border); border-radius:14px; padding:14px; text-align:center; }
+  .side-timer strong { display:block; font-size:clamp(15px,1.5vw,19px); margin-bottom:6px; }
+  .side-timer span { font-size:clamp(28px,4vw,44px); font-weight:800; font-variant-numeric:tabular-nums; }
   .side-timer.over span { color:#f85149; }
-  .seg { text-align:center; font-size:17px; font-weight:600; }
+  .seg { text-align:center; font-size:clamp(22px,2.5vw,32px); font-weight:800; }
   .sidechip { display:inline-block; padding:2px 10px; border-radius:20px;
-    font-size:13px; margin-left:6px; }
+    font-size:clamp(14px,1.4vw,18px); margin-left:6px; }
   .side-正方 { background:#132e1c; color:#3fb950; }
   .side-反方 { background:#2e1616; color:#f85149; }
   .side-雙方, .side-準備 { background:#22272e; color:#8b949e; }
-  .poschip { display:inline-block; padding:1px 7px; border-radius:6px;
-    font-size:11px; background:#1f2937; color:#c9d1d9; }
+  .poschip { display:inline-block; padding:3px 9px; border-radius:8px;
+    font-size:14px; background:#1f2937; color:#c9d1d9; }
   ul.roster { list-style:none; margin:6px 0 0; padding:0; }
-  ul.roster li { padding:6px 8px; border-radius:8px; background:#0d1117;
-    margin-bottom:5px; display:flex; gap:8px; align-items:center; }
+  ul.roster li { padding:12px 14px; border-radius:12px; background:#0d1117;
+    margin-bottom:8px; display:flex; gap:10px; align-items:center; font-size:clamp(16px,1.6vw,20px); }
   .dot { width:9px; height:9px; border-radius:50%; background:#3fb950; }
   .dot.off { background:#6e7681; }
-  .badge { font-size:11px; padding:1px 7px; border-radius:6px; background:#30363d; }
-  .meterwrap { height:8px; background:#0d1117; border-radius:5px; overflow:hidden;
-    margin-top:8px; }
+  .badge { font-size:14px; padding:3px 9px; border-radius:8px; background:#30363d; }
+  .meterwrap { height:12px; background:#0d1117; border-radius:7px; overflow:hidden;
+    margin-top:12px; }
   .meter { height:100%; width:0%; background:#3fb950; transition:width .08s; }
-  #log { font-size:12px; color:#8b949e; max-height:120px; overflow:auto;
+  #log { font-size:16px; color:var(--muted); max-height:170px; overflow:auto;
     white-space:pre-wrap; line-height:1.5; }
-  #transcript, #judgement { font-size:13px; color:#c9d1d9; max-height:180px; overflow:auto;
-    white-space:pre-wrap; line-height:1.55; }
+  #transcript, #judgement { font-size:clamp(16px,1.55vw,20px); color:#c9d1d9; max-height:260px; overflow:auto;
+    white-space:pre-wrap; line-height:1.7; }
   #judgement { color:#f0f6fc; }
-  .test-result { margin-top:8px; font-size:13px; color:#c9d1d9; white-space:pre-wrap; line-height:1.5; }
+  .test-result { margin-top:8px; font-size:clamp(16px,1.5vw,19px); color:#c9d1d9; white-space:pre-wrap; line-height:1.6; }
   .hidden { display:none !important; }
-  .status { font-size:13px; color:#d29922; }
+  .status { font-size:clamp(16px,1.55vw,20px); color:#f3bd55; line-height:1.5; }
   @media (max-width: 560px) {
-    body { padding: 8px; }
-    .card { border-radius:10px; padding:10px 12px; margin-bottom:8px; }
+    body { padding:10px; }
+    .practice-nav { align-items:stretch; flex-direction:column; }
+    .back-link { text-align:center; }
+    .card { border-radius:16px; padding:16px; margin-bottom:12px; }
     .row { gap:8px; }
     .top-row { align-items:flex-start; }
-    .code { font-size:24px; letter-spacing:3px; }
-    button { width:100%; min-height:44px; padding:10px 12px; }
+    .code { font-size:30px; letter-spacing:4px; }
+    button { width:100%; min-height:58px; padding:12px 14px; }
     #rolePick button { flex:1 1 0; }
     #hostControls .row button, #networkTest .row button { flex:1 1 45%; }
-    .talk { min-height:76px; font-size:19px; padding:18px; }
-    .timer { font-size:38px; margin:2px 0; }
-    .side-timer span { font-size:19px; }
-    #log { max-height:90px; }
-    #transcript, #judgement { max-height:140px; }
+    .talk { min-height:88px; font-size:24px; padding:18px; }
+    .timer { font-size:54px; margin:4px 0; }
+    .side-timer span { font-size:28px; }
+    #log { max-height:130px; }
+    #transcript, #judgement { max-height:200px; }
   }
 </style>
 </head>
 <body>
+  <div class="practice-nav hidden" id="practiceNav">
+    <strong>🎧 聯機辯論練習</strong>
+    <a class="back-link" href="/practice/ai-debate">◀ 返回 AI 練習</a>
+  </div>
   <div class="card">
     <div class="row top-row">
       <div class="grow">
@@ -184,6 +200,9 @@
   let bellCtx = null, bellBuffer = null, bellLoading = null;
 
   const $ = (id) => document.getElementById(id);
+  if (new URLSearchParams(location.search).get("from") === "practice") {
+    $("practiceNav").classList.remove("hidden");
+  }
   function log(msg) {
     const el = $("log");
     el.textContent += (el.textContent ? "\n" : "") + msg;

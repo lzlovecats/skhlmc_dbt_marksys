@@ -2,23 +2,31 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 * { box-sizing: border-box; }
+:root { --bg:#0e0f13; --panel:#16181f; --panel-2:#1e2129; --border:#2c313d;
+    --text:#eef1f6; --muted:#9aa3b2; --green:#38c172; --blue:#3b82f6; --red:#ff4b4b; }
 body {
-    margin: 0; padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #111; color: #eee;
+    margin:0 auto; padding:clamp(12px,2.5vw,30px); max-width:1100px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans HK","PingFang HK",Roboto,sans-serif;
+    background:var(--bg); color:var(--text);
 }
-.live-wrap { border: 1px solid #333; border-radius: 8px; overflow: hidden; background: #171717; }
+.practice-nav { display:flex; justify-content:space-between; align-items:center; gap:14px; margin-bottom:18px; }
+.practice-nav strong { font-size:clamp(22px,2.6vw,34px); }
+.back-link { color:var(--muted); text-decoration:none; background:var(--panel-2); border:2px solid var(--border);
+    border-radius:12px; padding:12px 20px; font-size:clamp(16px,1.7vw,22px); font-weight:800; white-space:nowrap; }
+.hidden { display:none !important; }
+.live-wrap { border:1px solid var(--border); border-radius:22px; overflow:hidden; background:var(--panel); }
 .topbar {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 12px; border-bottom: 1px solid #333; background: #202020;
+    padding:clamp(18px,2.4vw,28px); border-bottom:1px solid var(--border); background:var(--panel-2);
 }
 .status-wrap { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .status-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .badge {
     flex: 0 0 auto; min-width: 58px; text-align: center;
-    border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 800;
+    border-radius:999px; padding:6px 12px; font-size:clamp(14px,1.35vw,18px); font-weight:800;
     background: #3f3f46; color: #f4f4f5;
 }
 .badge.ready { background: #14532d; color: #dcfce7; }
@@ -26,41 +34,41 @@ body {
 .badge.wait { background: #854d0e; color: #fef3c7; }
 .badge.reply { background: #7c2d12; color: #ffedd5; }
 .badge.error { background: #7f1d1d; color: #fee2e2; }
-.status { font-size: 14px; color: #e5e7eb; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.substatus { font-size: 12px; color: #aaa; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status { font-size:clamp(17px,1.7vw,22px); color:#e5e7eb; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.substatus { font-size:clamp(15px,1.4vw,19px); color:var(--muted); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .buttons { display: flex; gap: 8px; flex-shrink: 0; }
 button {
-    border: none; border-radius: 8px; padding: 9px 14px; font-weight: 700;
-    cursor: pointer; color: white; background: #444;
+    min-height:56px; border:none; border-radius:14px; padding:12px 20px; font-size:clamp(17px,1.65vw,22px);
+    font-weight:800; cursor:pointer; color:white; background:#444; font-family:inherit;
 }
-button.primary { background: #16a34a; }
-button.danger { background: #dc2626; }
+button.primary { background:var(--green); }
+button.danger { background:var(--red); }
 button.secondary { background: #52525b; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 .session-panel {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px;
-    padding: 12px; border-bottom: 1px solid #333; background: #18181b;
+    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px;
+    padding:clamp(18px,2.4vw,28px); border-bottom:1px solid var(--border); background:var(--panel);
 }
 .talk-area { min-width: 0; }
 .talk-btn {
-    width: 100%; min-height: 86px; border-radius: 8px;
-    font-size: 22px; letter-spacing: 0; background: #2563eb;
+    width:100%; min-height:104px; border-radius:18px;
+    font-size:clamp(25px,3vw,38px); letter-spacing:0; background:var(--blue);
     touch-action: none; user-select: none;
 }
 .talk-btn.recording { background: #dc2626; }
 .talk-btn.waiting { background: #854d0e; }
-.talk-hint { margin-top: 8px; color: #aaa; font-size: 13px; min-height: 18px; }
+.talk-hint { margin-top:10px; color:var(--muted); font-size:clamp(15px,1.45vw,19px); min-height:22px; }
 .timer-box {
-    width: 150px; border: 1px solid #3f3f46; border-radius: 8px;
+    width:190px; border:1px solid var(--border); border-radius:16px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding: 10px; background: #111;
 }
-.timer-label { color: #aaa; font-size: 12px; }
-.timer-value { margin-top: 4px; font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.meter { height: 8px; background: #2b2b2b; }
+.timer-label { color:var(--muted); font-size:clamp(14px,1.3vw,17px); }
+.timer-value { margin-top:4px; font-size:clamp(32px,4vw,48px); font-weight:800; font-variant-numeric:tabular-nums; }
+.meter { height:12px; background:#2b2b2b; }
 .meter-fill { height: 100%; width: 0%; background: #22c55e; transition: width .08s linear; }
-.log { height: 430px; overflow-y: auto; padding: 12px 12px 24px; background: #101010; scroll-behavior: smooth; }
-.line { margin: 0 0 10px; line-height: 1.45; font-size: 15px; }
+.log { height:430px; overflow-y:auto; padding:clamp(18px,2.4vw,28px); background:#101010; scroll-behavior:smooth; }
+.line { margin:0 0 14px; line-height:1.65; font-size:clamp(17px,1.65vw,21px); }
 .line.pending { color: #d4d4d8; }
 .line.ai-active {
     margin-left: -4px; margin-right: -4px; padding: 8px 10px;
@@ -72,7 +80,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .who.system { color: #c4b5fd; }
 .hint {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    color: #888; font-size: 13px; padding: 10px 12px; border-top: 1px solid #333;
+    color:var(--muted); font-size:clamp(15px,1.4vw,18px); padding:16px 20px; border-top:1px solid var(--border);
 }
 .retry { display: none; flex-shrink: 0; }
 .retry.show { display: inline-block; }
@@ -85,30 +93,34 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 .busy.show { display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.mock-bar { padding: 12px; border-bottom: 1px solid #333; background: #14161c; }
+.mock-bar { padding:clamp(18px,2.4vw,28px); border-bottom:1px solid var(--border); background:#14161c; }
 .mock-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.mock-progress { font-size: 13px; color: #9ca3af; }
-.mock-stage { font-size: 17px; font-weight: 800; color: #f4f4f5; }
-.mock-side { flex: 0 0 auto; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 800; background: #3f3f46; color: #f4f4f5; }
+.mock-progress { font-size:clamp(15px,1.4vw,18px); color:#9ca3af; }
+.mock-stage { font-size:clamp(21px,2.2vw,28px); font-weight:800; color:#f4f4f5; }
+.mock-side { flex:0 0 auto; border-radius:999px; padding:6px 12px; font-size:clamp(14px,1.3vw,17px); font-weight:800; background:#3f3f46; color:#f4f4f5; }
 .mock-side.pro { background: #1d4ed8; color: #dbeafe; }
 .mock-side.con { background: #7c2d12; color: #ffedd5; }
 .mock-side.prep { background: #854d0e; color: #fef3c7; }
 .mock-side.both { background: #166534; color: #dcfce7; }
-.mock-timer { margin: 8px 0; font-size: 40px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; color: #4caf50; }
+.mock-timer { margin:12px 0; font-size:clamp(54px,8vw,86px); font-weight:800; text-align:center; font-variant-numeric:tabular-nums; color:#4caf50; }
 .mock-timer.overtime { color: #f44336; }
 .mock-btns { display: flex; gap: 8px; justify-content: center; }
-.mock-btns button { flex: 1; max-width: 160px; }
-.mock-note { text-align: center; font-size: 12px; color: #888; margin-top: 6px; }
-.mock-bar h4 { margin: 0 0 6px; font-size: 13px; color: #9ca3af; }
-.bell-item { font-size: 12px; padding: 2px 0; color: #6b7280; }
+.mock-btns button { flex:1; max-width:240px; }
+.mock-note { text-align:center; font-size:clamp(15px,1.4vw,18px); color:var(--muted); margin-top:10px; }
+.mock-bar h4 { margin:0 0 8px; font-size:clamp(15px,1.4vw,18px); color:#9ca3af; }
+.bell-item { font-size:clamp(14px,1.3vw,17px); padding:3px 0; color:#6b7280; }
 .bell-item.fired { color: #4caf50; font-weight: 700; }
 @media (max-width: 560px) {
+    body { padding:10px; }
+    .practice-nav { align-items:stretch; flex-direction:column; }
+    .back-link { text-align:center; }
+    .live-wrap { border-radius:16px; }
     .topbar { align-items: stretch; flex-direction: column; }
     .buttons { width: 100%; }
     .buttons button { flex: 1; }
     .session-panel { grid-template-columns: 1fr; }
     .timer-box { width: 100%; }
-    .talk-btn { min-height: 76px; font-size: 20px; }
+    .talk-btn { min-height:92px; font-size:25px; }
     .log { height: 360px; }
     .hint { align-items: stretch; flex-direction: column; }
     .hint button { width: 100%; }
@@ -120,6 +132,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 </style>
 </head>
 <body>
+<div class="practice-nav" id="practiceNav">
+    <strong>🤖 AI 辯論練習</strong>
+    <a class="back-link" id="liveBack" href="/practice/ai-debate">◀ 返回 AI 練習</a>
+</div>
 <div class="live-wrap">
     <div class="topbar">
         <div class="status-wrap">
@@ -187,6 +203,11 @@ const MOCK_TOKENS = (__MOCK_TOKENS__ || []);
 const MOCK_SESSION_LABELS = (__MOCK_SESSION_LABELS__ || []);
 const AI_STARTS = __AI_STARTS__;
 const LIVE_PROMPTS = (__LIVE_PROMPTS__ || {});
+const LIVE_SOURCE = new URLSearchParams(location.search).get("source") || "kiosk";
+if (LIVE_SOURCE === "coach") {
+    document.getElementById("liveBack").href = "/ai-coach";
+    document.getElementById("liveBack").textContent = "◀ 返回 AI 辯論易";
+}
 function fillTemplate(tpl, map) {
     return String(tpl || "").replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
 }
