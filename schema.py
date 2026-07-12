@@ -635,13 +635,13 @@ CREATE TABLE IF NOT EXISTS {TABLE_MOTION_COMMENTS} (
 
 # Table: AI_FUND_TRANSACTIONS
 # Internal ledger for the AI funding pool.
-# transaction_type: 'member_deposit' | 'provider_topup' | 'refund' | 'adjustment'
+# transaction_type: 'member_deposit' | 'provider_topup' | 'provider_refund' | 'member_refund' | 'adjustment'
 # status: 'pending' | 'confirmed' | 'rejected'
 CREATE_AI_FUND_TRANSACTIONS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
     id                  SERIAL      PRIMARY KEY,
     transaction_type    TEXT        NOT NULL
-                                CHECK (transaction_type IN ('member_deposit', 'provider_topup', 'refund', 'adjustment')),
+                                CHECK (transaction_type IN ('member_deposit', 'provider_topup', 'provider_refund', 'member_refund', 'adjustment')),
     status              TEXT        DEFAULT 'pending'
                                 CHECK (status IN ('pending', 'confirmed', 'rejected')),
     provider            TEXT,

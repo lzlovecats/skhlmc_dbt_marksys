@@ -13,6 +13,17 @@ from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 router = APIRouter(prefix="/api", tags=["funds"])
 
 
+def _csv_response(filename, headers, rows):
+    stream = io.StringIO()
+    writer = csv.writer(stream)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    encoded = ("\ufeff" + stream.getvalue()).encode("utf-8")
+    return Response(encoded, media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+    })
+
+
 def _context(request):
     from deploy.proxy import _require_committee_user, get_vote_db
     return _require_committee_user(request), get_vote_db()
@@ -284,6 +295,54 @@ def ai_usage(request: Request, page: int = 1):
     return payload(logic._rows(rows), page, total)
 
 
+@router.get("/ai-fund/usage-summary")
+def ai_usage_summary(request: Request, page: int = 1):
+    from core import funds_logic as logic
+    user, db = _context(request); treasurer = logic.ai_data(user, db=db)["is_treasurer"]
+    rows = logic.ai_usage_summary(user, treasurer, db=db)
+    page, _, offset = bounds(page); total = len(rows)
+    return payload(logic._rows(rows.iloc[offset:offset + PAGE_SIZE]), page, total)
+
+
+def _ai_export_context(request):
+    from core import funds_logic as logic
+    user, db = _context(request)
+    return user, db, logic.ai_data(user, db=db)["is_treasurer"], logic
+
+
+@router.get("/ai-fund/export/transactions.csv")
+def ai_transactions_csv(request: Request):
+    from schema import TABLE_AI_FUND_TRANSACTIONS
+    user, db, treasurer, logic = _ai_export_context(request)
+    where, params = ("", {}) if treasurer else ("WHERE created_by=:user", {"user": user})
+    rows = db.query(f"SELECT * FROM {TABLE_AI_FUND_TRANSACTIONS} {where} ORDER BY created_at DESC,id DESC", params)
+    labels = logic.AI_TRANSACTION_LABELS; providers = logic.AI_PROVIDER_LABELS
+    statuses = {"pending":"待確認","confirmed":"已確認","rejected":"已拒絕"}
+    return _csv_response("ai基金交易紀錄.csv",
+        ["編號","類型","狀態","Provider","金額(HKD)","付款方式","Reference","備註","提交者","提交時間","確認者","確認時間","拒絕者","拒絕時間","狀態備註"],
+        [[r.get("id"),labels.get(r.get("transaction_type"),r.get("transaction_type")),statuses.get(r.get("status"),r.get("status")),providers.get(r.get("provider"),r.get("provider")),r.get("amount_hkd"),r.get("payment_method"),r.get("reference_no"),r.get("note"),r.get("created_by"),r.get("created_at"),r.get("confirmed_by"),r.get("confirmed_at"),r.get("rejected_by"),r.get("rejected_at"),r.get("status_note")] for r in logic._rows(rows)])
+
+
+@router.get("/ai-fund/export/usage.csv")
+def ai_usage_csv(request: Request):
+    from schema import TABLE_AI_FUND_USAGE_LOGS
+    user, db, treasurer, logic = _ai_export_context(request)
+    where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
+    rows = db.query(f"SELECT * FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC", params)
+    statuses = {"success":"成功","failed":"失敗"}
+    return _csv_response("ai用量估算紀錄.csv",
+        ["編號","用戶","功能","模型","Provider","估算成本(USD)","估算成本(HKD)","Input tokens","Output tokens","Audio tokens","搜尋次數","成本來源","狀態","錯誤訊息","時間"],
+        [[r.get("id"),r.get("user_id"),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),r.get("estimated_cost_usd"),r.get("estimated_cost_hkd"),r.get("input_tokens"),r.get("output_tokens"),r.get("audio_tokens"),r.get("search_calls"),r.get("cost_source"),statuses.get(r.get("status"),r.get("status")),r.get("error_message"),r.get("created_at")] for r in logic._rows(rows)])
+
+
+@router.get("/ai-fund/export/usage-summary.csv")
+def ai_usage_summary_csv(request: Request):
+    user, db, treasurer, logic = _ai_export_context(request)
+    rows = logic._rows(logic.ai_usage_summary(user, treasurer, db=db))
+    return _csv_response("ai用量統計.csv", ["月份","用戶","Provider","功能","模型","使用次數","估算成本(HKD)"],
+        [[r.get("month"),r.get("user_id"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),r.get("uses"),r.get("estimated_cost_hkd")] for r in rows])
+
+
 @router.get("/ai-fund/openrouter-credit")
 async def openrouter_credit(request: Request):
     """Same live OpenRouter credit lookup used by the Streamlit fund overview."""
@@ -328,14 +387,17 @@ def ai_status(transaction_id: int, body: StatusBody, request: Request):
     from core import funds_logic as logic
     user, db = _context(request)
     if not logic.ai_data(user, db=db)["is_treasurer"]: raise HTTPException(403, "只有 AI基金管理員可處理入數。")
-    return {"ok": bool(logic.set_ai_transaction_status(transaction_id, body.status, user, body.note, db=db))}
+    try: updated = logic.set_ai_transaction_status(transaction_id, body.status, user, body.note, db=db)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    if not updated: raise HTTPException(409, "此入數已被處理。")
+    return {"ok": True}
 
 
 @router.post("/ai-fund/admin/settings")
 def ai_settings(body: AdminBody, request: Request):
     from core import funds_logic as logic
     user, db = _context(request)
-    try: logic.save_ai_admin(user, body.model_dump(), db=db)
+    try: result = logic.save_ai_admin(user, body.model_dump(), db=db)
     except PermissionError as exc: raise HTTPException(403, str(exc))
     except ValueError as exc: raise HTTPException(400, str(exc))
-    return {"ok": True}
+    return {"ok": True, **(result or {})}
