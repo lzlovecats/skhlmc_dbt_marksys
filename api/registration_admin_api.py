@@ -35,6 +35,26 @@ def _require_admin(request: Request):
         raise HTTPException(401, "未登入")
 
 
+def _record_filters(edition: int, status: str, search: str = ""):
+    from core.registration_logic import STATUS_LABELS
+    params = {"edition": edition}
+    where = "WHERE competition_edition=:edition"
+    if status in STATUS_LABELS:
+        where += " AND status=:status"
+        params["status"] = status
+    search = (search or "").strip()[:100]
+    if search:
+        params["search"] = f"%{search}%"
+        where += """ AND (
+            CAST(id AS TEXT) ILIKE :search OR team_name ILIKE :search OR
+            main_debater_name ILIKE :search OR first_deputy_name ILIKE :search OR
+            second_deputy_name ILIKE :search OR closing_debater_name ILIKE :search OR
+            contact_name ILIKE :search OR contact_class ILIKE :search OR
+            contact_phone ILIKE :search
+        )"""
+    return where, params
+
+
 @router.post("/login")
 def login(body: LoginBody, response: Response):
     from core import registration_logic as logic
@@ -64,23 +84,21 @@ def data(request: Request, edition: int | None = None, status: str = "全部"):
 
 
 @router.get("/records")
-def records(request: Request, edition: int, status: str = "全部", page: int = 1):
-    from core.registration_logic import STATUS_LABELS, _record_payload
+def records(request: Request, edition: int, status: str = "全部", search: str = "", page: int = 1):
+    from core.registration_logic import _record_payload
     from schema import TABLE_COMPETITION_REGISTRATIONS
     _require_admin(request); db = _db(); page, _, offset = bounds(page)
-    params = {"edition": edition}; where = "WHERE competition_edition=:edition"
-    if status in STATUS_LABELS: where += " AND status=:status"; params["status"] = status
+    where, params = _record_filters(edition, status, search)
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_COMPETITION_REGISTRATIONS} {where}", params)
     params.update(limit=PAGE_SIZE, offset=offset)
     frame = db.query(f"SELECT id,competition_edition,team_name,main_debater_name,first_deputy_name,second_deputy_name,closing_debater_name,contact_name,contact_class,contact_phone,status,submitted_at,updated_at FROM {TABLE_COMPETITION_REGISTRATIONS} {where} ORDER BY submitted_at DESC,id DESC LIMIT :limit OFFSET :offset", params)
     return payload([_record_payload(row) for _, row in frame.iterrows()], page, total)
 
 @router.get("/export")
-def export_records(request: Request, edition: int, status: str = "全部"):
-    from core.registration_logic import STATUS_LABELS, _record_payload
+def export_records(request: Request, edition: int, status: str = "全部", search: str = ""):
+    from core.registration_logic import _record_payload
     from schema import TABLE_COMPETITION_REGISTRATIONS
-    _require_admin(request); db=_db(); params={"edition":edition}; where="WHERE competition_edition=:edition"
-    if status in STATUS_LABELS: where+=" AND status=:status"; params["status"]=status
+    _require_admin(request); db=_db(); where,params=_record_filters(edition,status,search)
     frame=db.query(f"SELECT id,competition_edition,team_name,main_debater_name,first_deputy_name,second_deputy_name,closing_debater_name,contact_name,contact_class,contact_phone,status,submitted_at,updated_at FROM {TABLE_COMPETITION_REGISTRATIONS} {where} ORDER BY submitted_at DESC,id DESC",params)
     columns=[("id","編號"),("competition_edition","屆數"),("team_name","隊名"),("main_debater_name","主辯"),("first_deputy_name","一副"),("second_deputy_name","二副"),("closing_debater_name","結辯"),("contact_name","聯絡人"),("contact_class","班別"),("contact_phone","聯絡電話"),("status_label","狀態"),("submitted_at","提交時間"),("updated_at","更新時間")]
     output=io.StringIO(); writer=csv.writer(output); writer.writerow([x[1] for x in columns])

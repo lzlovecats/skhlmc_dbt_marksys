@@ -3,7 +3,7 @@ import unittest
 
 import pandas as pd
 
-from core.registration_logic import HKT, submit_registration
+from core.registration_logic import HKT, save_registration_settings, submit_registration, update_registration_status
 
 
 VALID = {
@@ -28,6 +28,7 @@ class RegistrationDb:
             "updated_at": now,
         }])
         self.inserted = []
+        self.changed = 1
 
     def query(self, sql, params=None):
         if "competition_registration_settings" in sql and "SELECT" in sql:
@@ -39,6 +40,9 @@ class RegistrationDb:
     def execute(self, sql, params=None):
         if "INSERT INTO competition_registrations (" in sql:
             self.inserted.append(dict(params or {}))
+
+    def execute_count(self, sql, params=None):
+        return self.changed
 
 
 class RegistrationSubmissionTests(unittest.TestCase):
@@ -54,6 +58,15 @@ class RegistrationSubmissionTests(unittest.TestCase):
         result = submit_registration(VALID, 4, db=db)
         self.assertTrue(result["ok"])
         self.assertEqual(db.inserted[0]["competition_edition"], 4)
+
+    def test_admin_rejects_invalid_edition_and_missing_record(self):
+        db = RegistrationDb()
+        invalid = save_registration_settings(0, "2026-10-01T08:30", "2026-10-31T23:45", db=db)
+        self.assertFalse(invalid["ok"])
+        db.changed = 0
+        missing = update_registration_status(999, "confirmed", db=db)
+        self.assertFalse(missing["ok"])
+        self.assertIn("找不到", missing["message"])
 
 
 if __name__ == "__main__":

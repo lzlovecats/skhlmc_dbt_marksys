@@ -56,6 +56,18 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertNotIn("請至側邊欄查閱賽規", html)
         self.assertIn("只供賽會處理本次報名、聯絡及跟進用途", html)
 
+    def test_registration_admin_loads_paged_records_and_server_csv(self):
+        html = (ROOT / "frontend" / "registration_admin" / "index.html").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "registration_logic.py").read_text(encoding="utf-8")
+        for marker in ("loadRecords", "VoteUI.serverPaged", "/api/registration-admin/records", "/api/registration-admin/export", 'id="recordSearch"', "search=${encodeURIComponent(search)}"):
+            self.assertIn(marker, html)
+        api = (ROOT / "api" / "registration_admin_api.py").read_text(encoding="utf-8")
+        for marker in ("def _record_filters", "team_name ILIKE :search", "contact_phone ILIKE :search"):
+            self.assertIn(marker, api)
+        self.assertNotIn("user-scalable=no", html)
+        self.assertIn("changed = db.execute_count", core)
+        self.assertIn("比賽屆數必須為正整數", core)
+
     def test_judging_uses_server_scoring_contract_and_submission_safeguards(self):
         html = (ROOT / "frontend" / "judging" / "index.html").read_text(encoding="utf-8")
         ux = (ROOT / "frontend" / "shared" / "judging-ux.js").read_text(encoding="utf-8")
