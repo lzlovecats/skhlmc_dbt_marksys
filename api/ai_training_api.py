@@ -7,11 +7,12 @@ import json
 import re
 import zipfile
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
 
@@ -21,12 +22,19 @@ from schema import (
     TABLE_LLM_TRAINING_SUBMISSIONS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
     TABLE_TTS_VOICE_CONSENTS, TABLE_TTS_VOICE_RECORDINGS,
 )
+from prompts import (
+    TTS_COVERAGE_SYSTEM_PROMPT, TTS_REGENERATE_SYSTEM_PROMPT,
+    build_tts_coverage_prompt, build_tts_regenerate_prompt,
+)
 
 router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
 CONSENT_VERSION = "tts_voice_v1_2026_07"
 CONSENT_TEXT = "我同意聖呂中辯收集本人在本頁提交的錄音，用作廣東話 TTS（文字轉語音）、讀音檢查及相關 AI 研究測試。錄音可能用於分析本人聲線及建立語音模型。我明白可向開發者要求撤回未來使用授權。"
 ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_reviewers"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
+ADMIN_RECORDING_PAGE_SIZE = 5
+SUPPORTED_AUDIO_MIMES = {"audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"}
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
 
 # Kept here (rather than in the browser) so every fresh database is usable.
 DEFAULT_SCRIPT_BANK = [
@@ -95,6 +103,7 @@ class ActiveBody(BaseModel):
 
 class SuggestionsBody(BaseModel):
     items: list[dict]
+    deactivate_ids: list[str] = Field(default_factory=list)
 
 
 class ManuscriptBody(BaseModel):
@@ -159,6 +168,55 @@ def _rows(frame):
     return [dict(row) for row in frame.to_dict(orient="records")]
 
 
+def _audio_payload(body):
+    try:
+        audio = base64.b64decode(body.audio_base64, validate=True)
+    except Exception as exc:
+        raise HTTPException(400, "錄音資料無法讀取") from exc
+    mime = (body.mime_type or "").split(";", 1)[0].lower()
+    if mime not in SUPPORTED_AUDIO_MIMES:
+        raise HTTPException(400, "錄音格式不受支援")
+    if len(audio) < 1000:
+        raise HTTPException(400, "錄音太短或沒有聲音資料")
+    if len(audio) > MAX_AUDIO_BYTES:
+        raise HTTPException(400, "錄音超過 10MB")
+    if not 1 <= int(body.duration_seconds or 0) <= 60:
+        raise HTTPException(400, "錄音長度必須為 1 至 60 秒")
+    return audio, mime
+
+
+def _audio_ext(mime):
+    return {"audio/webm": "webm", "audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg"}.get(mime, "webm")
+
+
+def _gemini_usage(response_data, model_label="Gemini 2.5 Flash"):
+    meta = response_data.get("usageMetadata") or {}
+    prompt_tokens = int(meta.get("promptTokenCount") or 0)
+    output_tokens = int(meta.get("candidatesTokenCount") or 0)
+    audio_tokens = sum(
+        int(item.get("tokenCount") or 0)
+        for item in (meta.get("promptTokensDetails") or [])
+        if "AUDIO" in str(item.get("modality") or "").upper()
+    )
+    text_tokens = max(0, prompt_tokens - audio_tokens)
+    usd = (text_tokens * 0.30 + audio_tokens * 1.00 + output_tokens * 2.50) / 1_000_000
+    return {
+        "model_label": model_label, "provider": "gemini", "input_tokens": text_tokens,
+        "output_tokens": output_tokens, "audio_tokens": audio_tokens, "search_calls": 0,
+        "estimated_cost_usd": round(usd, 6), "estimated_cost_hkd": round(usd * 7.8, 4),
+        "cost_source": "actual_tokens",
+    }
+
+
+def _log_ai(user, db, feature, success, response_data=None, error=""):
+    try:
+        from core.funds_logic import log_ai_usage
+        usage = _gemini_usage(response_data or {}) if success else None
+        log_ai_usage(user, feature, success, usage=usage, error_message=error, db=db)
+    except Exception:
+        pass
+
+
 @router.get("/data")
 def data(request: Request):
     user, db = _ctx(request)
@@ -169,7 +227,10 @@ def data(request: Request):
     # Recorder selection only needs one status per script; full history is paged below.
     mine = _rows(db.query(f"SELECT DISTINCT ON (script_id) id,script_id,status,created_at FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user ORDER BY script_id,created_at DESC", {"user":user}))
     llm = []
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm}
+    plan_path = Path(__file__).resolve().parents[1] / "assets" / "tts_rd_plan.md"
+    try: rd_plan = plan_path.read_text(encoding="utf-8").strip()
+    except OSError: rd_plan = "研發計劃書暫時未能讀取。"
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm}
     if admin:
         result["recordings"] = []; result["submissions"] = []
     return result
@@ -197,14 +258,16 @@ def collection(kind: str, request: Request, page: int = 1):
 
 @router.get("/admin/recordings")
 def admin_recordings(request: Request, page: int = 1, status: str = "all", speaker: str = ""):
-    _user, db = _admin(request); page, _, offset = bounds(page)
+    _user, db = _admin(request)
+    page = max(1, int(page or 1)); offset = (page - 1) * ADMIN_RECORDING_PAGE_SIZE
     clauses, params = ["1=1"], {}
     if status != "all": clauses.append("status=:status"); params["status"] = status
     if speaker.strip(): clauses.append("speaker_user_id=:speaker"); params["speaker"] = speaker.strip()
     where = " AND ".join(clauses); total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE {where}", params)
-    params.update(limit=PAGE_SIZE, offset=offset)
+    params.update(limit=ADMIN_RECORDING_PAGE_SIZE, offset=offset)
     rows = _rows(db.query(f"SELECT id,speaker_user_id,script_id,prompt_text,mime_type,size_bytes,duration_seconds,status,ai_review_status,ai_review_json,ai_transcript,review_note,created_at FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE {where} ORDER BY created_at DESC LIMIT :limit OFFSET :offset", params))
-    return payload(rows, page, total)
+    return {"items": json_safe(rows), "page": page, "page_size": ADMIN_RECORDING_PAGE_SIZE,
+            "total": total, "total_pages": max(1, (total + ADMIN_RECORDING_PAGE_SIZE - 1) // ADMIN_RECORDING_PAGE_SIZE)}
 
 
 @router.get("/admin/stats")
@@ -260,12 +323,23 @@ def recording(body: RecordingBody, request: Request):
     if active.empty: raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id":body.script_id})
     if script.empty: raise HTTPException(404, "錄音句子不存在或已停用")
-    try: audio = base64.b64decode(body.audio_base64)
-    except Exception as exc: raise HTTPException(400, "錄音資料無法讀取") from exc
-    if not audio or len(audio)>25*1024*1024: raise HTTPException(400, "錄音大小不正確")
+    audio, mime = _audio_payload(body)
+    duplicate = db.query(
+        f"SELECT 1 FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user AND script_id=:script "
+        "AND status IN ('pending','accepted') LIMIT 1",
+        {"user": user, "script": body.script_id},
+    )
+    if not duplicate.empty: raise HTTPException(409, "此句已有待審核或已接受錄音，請勿重複提交")
+    review = body.ai_review or {}
+    provider_review = review.get("review") if isinstance(review.get("review"), dict) else {}
+    if not body.manual_review and not (
+        review.get("ok") is True and review.get("status") == "passed"
+        and provider_review.get("passed") is True and provider_review.get("matches_prompt") is True
+    ):
+        raise HTTPException(400, "錄音未通過 AI 音質及稿件一致性檢查")
     review_status = "error" if body.manual_review else "passed"
     db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id,script_id,prompt_text,audio_data,mime_type,file_ext,size_bytes,duration_seconds,ai_review_status,ai_review_json,ai_transcript,status,created_at)
-                   VALUES(:user,:script,:prompt,:audio,:mime,:ext,:size,:duration,:review_status,:review_json,:transcript,'pending',:now)""", {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],"audio":audio,"mime":body.mime_type,"ext":"webm","size":len(audio),"duration":max(0,body.duration_seconds),"review_status":review_status,"review_json":json.dumps(body.ai_review or {},ensure_ascii=False),"transcript":str((body.ai_review or {}).get("transcript") or ""),"now":datetime.now()})
+                   VALUES(:user,:script,:prompt,:audio,:mime,:ext,:size,:duration,:review_status,:review_json,:transcript,'pending',:now)""", {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],"audio":audio,"mime":mime,"ext":_audio_ext(mime),"size":len(audio),"duration":int(body.duration_seconds),"review_status":review_status,"review_json":json.dumps(body.ai_review or {},ensure_ascii=False),"transcript":str((body.ai_review or {}).get("transcript") or ""),"now":datetime.now()})
     return {"ok":True, "message":"錄音已提交，等待人工審核。"}
 
 
@@ -273,35 +347,49 @@ def recording(body: RecordingBody, request: Request):
 async def recording_quality_check(body: RecordingBody, request: Request):
     """Run the deterministic gate before the provider-assisted/manual review.
 
-    Browsers do not reliably report duration, so duration zero is accepted; the
-    byte-size and supported-container checks still catch empty/corrupt captures.
+    Manual review may bypass a provider outage, but never these deterministic
+    format, duration and byte-size safeguards.
     """
     user, db = _ctx(request)
     if user not in _users(db, ALLOWED_KEY): raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
-    try: audio = base64.b64decode(body.audio_base64, validate=True)
-    except Exception as exc: raise HTTPException(400, "錄音資料無法讀取") from exc
-    mime = (body.mime_type or "").split(";", 1)[0].lower()
-    supported = {"audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"}
-    problems = []
-    if mime not in supported: problems.append("錄音格式不受支援")
-    if len(audio) < 1000: problems.append("錄音太短或沒有聲音資料")
-    if len(audio) > 25 * 1024 * 1024: problems.append("錄音超過 25MB")
-    if problems:
-        return {"ok": False, "status": "failed", "problems": problems, "message": "；".join(problems)}
+    audio, mime = _audio_payload(body)
+    consent = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user": user, "version": CONSENT_VERSION})
+    if consent.empty: raise HTTPException(400, "請先確認錄音同意")
+    script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id": body.script_id})
+    if script.empty: raise HTTPException(404, "錄音句子不存在或已停用")
+    duplicate = db.query(
+        f"SELECT 1 FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user AND script_id=:script "
+        "AND status IN ('pending','accepted') LIMIT 1",
+        {"user": user, "script": body.script_id},
+    )
+    if not duplicate.empty: raise HTTPException(409, "此句已有待審核或已接受錄音，毋須再作 AI 檢查")
     from deploy.proxy import _get_proxy_secret
     key = _get_proxy_secret("GEMINI_API_KEY").strip()
     if not key:
+        _log_ai(user, db, "tts_review", False, error="GEMINI_API_KEY missing")
         raise HTTPException(503, "未設定 GEMINI_API_KEY，暫時未能進行 AI 音質檢查")
-    prompt = "以廣東話 TTS 資料審核員身份檢查錄音清晰度、雜音、截斷及內容可用性。只回覆 JSON：{\"passed\":true,\"transcript\":\"\",\"problems\":[],\"note\":\"\"}"
-    payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": body.mime_type, "data": body.audio_base64}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
+    prompt = (
+        "以廣東話 TTS 資料審核員身份檢查錄音清晰度、雜音、截斷，以及是否逐字符合指定稿句。"
+        f"\n指定稿句：{script.iloc[0]['text']}\n"
+        "只回覆 JSON：{\"passed\":true,\"matches_prompt\":true,\"speech_clarity\":\"clear\","
+        "\"volume\":\"ok\",\"noise_level\":\"low\",\"clipping\":false,\"transcript\":\"\",\"problems\":[],\"note\":\"\"}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": body.audio_base64}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
     try:
         async with httpx.AsyncClient(timeout=60) as client: response = await client.post(url, json=payload)
-        response.raise_for_status(); raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        response.raise_for_status(); response_data = response.json(); raw = response_data["candidates"][0]["content"]["parts"][0]["text"]
         review = json.loads(raw)
     except Exception as exc:
+        _log_ai(user, db, "tts_review", False, error=str(exc))
         raise HTTPException(502, f"AI 音質檢查失敗：{str(exc)[:160]}") from exc
-    passed = bool(review.get("passed"))
+    _log_ai(user, db, "tts_review", True, response_data=response_data)
+    passed = (
+        bool(review.get("passed")) and bool(review.get("matches_prompt"))
+        and review.get("speech_clarity") == "clear" and review.get("volume") == "ok"
+        and review.get("noise_level") in ("low", "medium") and not bool(review.get("clipping"))
+    )
+    review["passed"] = bool(passed)
     return {"ok": passed, "status": "passed" if passed else "failed", "problems": review.get("problems") or [],
             "transcript": review.get("transcript") or "", "review": review,
             "message": review.get("note") or ("AI 音質檢查通過。" if passed else "AI 音質檢查未通過。")}
@@ -321,13 +409,18 @@ async def llm(body: LlmBody, request: Request):
     if not body.manual_review:
         from deploy.proxy import _get_proxy_secret
         key = _get_proxy_secret("GEMINI_API_KEY").strip()
-        if not key: raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查")
+        if not key:
+            _log_ai(user, db, "llm_review", False, error="GEMINI_API_KEY missing")
+            raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查")
         prompt = "審核以下香港粵語辯論訓練文字，只回覆 JSON，含 passed(boolean), reason, relevance, quality, anonymization, permission_risk。\n" + normalized
         try:
             url=f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
             async with httpx.AsyncClient(timeout=60) as client: response=await client.post(url,json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0}})
-            response.raise_for_status(); review=json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
-        except Exception as exc: raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查") from exc
+            response.raise_for_status(); response_data=response.json(); review=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
+            _log_ai(user, db, "llm_review", True, response_data=response_data)
+        except Exception as exc:
+            _log_ai(user, db, "llm_review", False, error=str(exc))
+            raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查") from exc
         if not bool(review.get("passed")): return {"ok":False,"status":"failed","message":review.get("reason") or "AI 預檢未通過", "review":review}
     db.execute(f"""INSERT INTO {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by,data_type,title,topic_text,side,content_text,source_note,anonymized,permission_confirmed,ai_review_status,ai_review_json,status,created_at)
                    VALUES(:user,:type,:title,:topic,:side,:content,:source,TRUE,TRUE,:ai_status,:review,'pending',:now)""", {"user":user,"type":body.data_type,"title":body.title.strip() or None,"topic":body.topic_text.strip() or None,"side":body.side,"content":body.content_text.strip(),"source":body.source_note.strip() or None,"ai_status":review_status,"review":json.dumps(review,ensure_ascii=False),"now":datetime.now()})
@@ -348,13 +441,15 @@ def withdraw_llm(submission_id: int, request: Request):
 def lexicon(body: LexiconBody, request: Request):
     user, db = _ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可修改讀音字典")
+    term, reading = body.term.strip(), body.reading.strip()
+    if not term or not reading: raise HTTPException(400, "詞語與讀法都必須填寫")
     lid = body.lexicon_id.strip()
     if not lid:
         existing=_rows(db.query(f"SELECT lexicon_id FROM {TABLE_TTS_LEXICON} WHERE lexicon_id LIKE 'lex_%'")); nums=[int(m.group(1)) for x in existing if (m:=re.match(r"lex_(\\d+)$",str(x['lexicon_id'])))]
         lid=f"lex_{max(nums,default=0)+1:04d}"
     db.execute(f"""INSERT INTO {TABLE_TTS_LEXICON}(lexicon_id,term,reading,jyutping,example,note,category,is_active,created_by,updated_at)
                    VALUES(:id,:term,:reading,:jyutping,:example,:note,:category,TRUE,:user,:now)
-                   ON CONFLICT(lexicon_id) DO UPDATE SET term=EXCLUDED.term,reading=EXCLUDED.reading,jyutping=EXCLUDED.jyutping,example=EXCLUDED.example,note=EXCLUDED.note,category=EXCLUDED.category,updated_at=EXCLUDED.updated_at""", {"id":lid,"term":body.term.strip(),"reading":body.reading.strip(),"jyutping":body.jyutping.strip(),"example":body.example.strip(),"note":body.note.strip(),"category":body.category.strip(),"user":user,"now":datetime.now()})
+                   ON CONFLICT(lexicon_id) DO UPDATE SET term=EXCLUDED.term,reading=EXCLUDED.reading,jyutping=EXCLUDED.jyutping,example=EXCLUDED.example,note=EXCLUDED.note,category=EXCLUDED.category,updated_at=EXCLUDED.updated_at""", {"id":lid,"term":term,"reading":reading,"jyutping":body.jyutping.strip(),"example":body.example.strip(),"note":body.note.strip(),"category":body.category.strip(),"user":user,"now":datetime.now()})
     return {"ok":True}
 
 
@@ -362,9 +457,11 @@ def lexicon(body: LexiconBody, request: Request):
 def script(body: ScriptBody, request: Request):
     user, db = _ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可修改句庫")
-    sid=body.script_id.strip() or f"custom_{int(datetime.now().timestamp())}"
+    category, value = body.category.strip(), body.text.strip()
+    if not category or not value: raise HTTPException(400, "類別與句子內容都必須填寫")
+    sid=body.script_id.strip() or f"custom_{int(datetime.now().timestamp() * 1000)}"
     db.execute(f"""INSERT INTO {TABLE_TTS_SCRIPTS}(script_id,category,text,is_active,sort_order,created_by,updated_at) VALUES(:id,:cat,:text,TRUE,:sort,:user,:now)
-                   ON CONFLICT(script_id) DO UPDATE SET category=EXCLUDED.category,text=EXCLUDED.text,sort_order=EXCLUDED.sort_order,updated_at=EXCLUDED.updated_at""", {"id":sid,"cat":body.category.strip(),"text":body.text.strip(),"sort":body.sort_order,"user":user,"now":datetime.now()})
+                   ON CONFLICT(script_id) DO UPDATE SET category=EXCLUDED.category,text=EXCLUDED.text,sort_order=EXCLUDED.sort_order,updated_at=EXCLUDED.updated_at""", {"id":sid,"cat":category,"text":value,"sort":body.sort_order,"user":user,"now":datetime.now()})
     return {"ok":True}
 
 
@@ -391,13 +488,15 @@ def save_manuscript(body: ManuscriptBody, request: Request):
     if not title: raise HTTPException(400, "請輸入完整稿標題")
     manuscript_id = f"ms_{int(datetime.now().timestamp() * 1000)}"
     segments = _segments(body.text)
-    for index, value in enumerate(segments, 1):
-        db.execute(f"""INSERT INTO {TABLE_TTS_SCRIPTS}
+    now = datetime.now()
+    with db.transaction() as conn:
+      for index, value in enumerate(segments, 1):
+        conn.execute(text(f"""INSERT INTO {TABLE_TTS_SCRIPTS}
             (script_id,category,text,is_active,sort_order,script_type,manuscript_id,manuscript_title,created_by,updated_at)
-            VALUES(:id,:category,:text,:active,:sort,'full',:mid,:title,:user,:now)""",
+            VALUES(:id,:category,:text,:active,:sort,'full',:mid,:title,:user,:now)"""),
             {"id": f"{manuscript_id}_{index:03d}", "category": body.category.strip() or "完整稿",
              "text": value, "active": body.active, "sort": index, "mid": manuscript_id,
-             "title": title, "user": user, "now": datetime.now()})
+             "title": title, "user": user, "now": now})
     return {"ok": True, "manuscript_id": manuscript_id, "segments": len(segments)}
 
 
@@ -419,6 +518,38 @@ def coverage(request: Request):
     for row in rows:
         row["missing"] = max(0, int(row["scripts"] or 0) - int(row["recorded"] or 0))
     return {"items": rows, "complete": bool(rows) and all(row["missing"] == 0 for row in rows)}
+
+
+@router.post("/coverage/ai")
+async def coverage_ai(request: Request):
+    user, db = _admin(request)
+    from deploy.proxy import _get_proxy_secret
+    key = _get_proxy_secret("GEMINI_API_KEY").strip()
+    if not key:
+        _log_ai(user, db, "tts_script_analysis", False, error="GEMINI_API_KEY missing")
+        raise HTTPException(503, "未設定 GEMINI_API_KEY，未能進行 AI 缺口分析")
+    rows = _rows(db.query(f"""SELECT s.script_id,s.category,s.text,r.status,COUNT(r.id) AS n
+        FROM {TABLE_TTS_SCRIPTS} s LEFT JOIN {TABLE_TTS_VOICE_RECORDINGS} r
+          ON r.script_id=s.script_id AND r.status IN ('accepted','pending')
+        WHERE s.is_active=TRUE GROUP BY s.script_id,s.category,s.text,r.status
+        ORDER BY s.category,s.script_id"""))
+    grouped = {}
+    for row in rows:
+        item = grouped.setdefault(row["script_id"], {"category":row["category"], "text":row["text"], "accepted":0, "pending":0})
+        if row.get("status") in ("accepted", "pending"): item[row["status"]] = int(row.get("n") or 0)
+    summary = "\n".join(f"[{x['category']}] {sid}｜accepted={x['accepted']}｜pending={x['pending']}｜{x['text']}" for sid,x in grouped.items()) or "（句庫為空）"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+    body = {"systemInstruction":{"parts":[{"text":TTS_COVERAGE_SYSTEM_PROMPT}]}, "contents":[{"parts":[{"text":build_tts_coverage_prompt(summary)}]}], "generationConfig":{"responseMimeType":"application/json","temperature":.4}}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client: response = await client.post(url, json=body)
+        response.raise_for_status(); response_data=response.json()
+        analysis=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"])
+        if not isinstance(analysis, dict): raise ValueError("AI 回覆格式不正確")
+        _log_ai(user, db, "tts_script_analysis", True, response_data=response_data)
+        return {"analysis": analysis}
+    except Exception as exc:
+        _log_ai(user, db, "tts_script_analysis", False, error=str(exc))
+        raise HTTPException(502, f"AI 缺口分析失敗：{str(exc)[:160]}") from exc
 
 
 @router.get("/inventory")
@@ -445,7 +576,15 @@ def deactivate_complete(request: Request):
     rows=db.query(f"""SELECT s.script_id FROM {TABLE_TTS_SCRIPTS}s LEFT JOIN {TABLE_TTS_VOICE_RECORDINGS}r
       ON r.script_id=s.script_id AND r.status IN ('pending','accepted') AND r.speaker_user_id=ANY(:users)
       WHERE s.is_active=TRUE GROUP BY s.script_id HAVING COUNT(DISTINCT r.speaker_user_id)>=:required""",{"users":allowed,"required":len(allowed)})
-    ids=[str(x) for x in rows["script_id"].tolist()] if not rows.empty else []
+    complete_ids={str(x) for x in rows["script_id"].tolist()} if not rows.empty else set()
+    active = _rows(db.query(f"SELECT script_id,script_type,manuscript_id FROM {TABLE_TTS_SCRIPTS} WHERE is_active=TRUE"))
+    ids = [str(x["script_id"]) for x in active if x.get("script_type") != "full" and str(x["script_id"]) in complete_ids]
+    manuscripts = {}
+    for item in active:
+        if item.get("script_type") == "full" and item.get("manuscript_id"):
+            manuscripts.setdefault(str(item["manuscript_id"]), []).append(str(item["script_id"]))
+    for segment_ids in manuscripts.values():
+        if segment_ids and all(sid in complete_ids for sid in segment_ids): ids.extend(segment_ids)
     if ids: db.execute(f"UPDATE {TABLE_TTS_SCRIPTS} SET is_active=FALSE,updated_at=:now WHERE script_id=ANY(:ids)",{"ids":ids,"now":datetime.now()})
     return {"ok":True,"deactivated":len(ids)}
 
@@ -458,26 +597,42 @@ def apply_suggestions(body: SuggestionsBody, request: Request):
         if not value: continue
         sid=f"ai_{int(datetime.now().timestamp()*1000)}_{added:02d}"
         db.execute(f"INSERT INTO {TABLE_TTS_SCRIPTS}(script_id,category,text,is_active,sort_order,created_by,updated_at) VALUES(:id,:cat,:text,TRUE,0,:user,:now)",{"id":sid,"cat":category,"text":value,"user":user,"now":datetime.now()}); added+=1
-    return {"ok":True,"added":added}
+    locked = _rows(db.query(f"SELECT DISTINCT script_id FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE status IN ('pending','accepted')"))
+    locked_ids = {str(x["script_id"]) for x in locked}
+    deactivate = [str(x) for x in body.deactivate_ids[:50] if str(x) not in locked_ids]
+    deactivated = 0
+    if deactivate:
+        deactivated = db.execute_count(f"UPDATE {TABLE_TTS_SCRIPTS} SET is_active=FALSE,updated_at=:now WHERE script_id=ANY(:ids) AND is_active=TRUE", {"ids":deactivate,"now":datetime.now()})
+    return {"ok":True,"added":added,"deactivated":deactivated}
 
 
 @router.post("/regenerate-suggestions")
 async def regenerate_suggestions(request: Request):
-    _user, db = _admin(request)
+    user, db = _admin(request)
     from deploy.proxy import _get_proxy_secret
     key = _get_proxy_secret("GEMINI_API_KEY").strip()
-    if not key: raise HTTPException(503, "未設定 GEMINI_API_KEY，暫時未能重出句庫")
-    rows = _rows(db.query(f"SELECT category,text FROM {TABLE_TTS_SCRIPTS} WHERE is_active=TRUE ORDER BY category,sort_order"))
-    sample = "\n".join(f"[{x['category']}] {x['text']}" for x in rows[:120])
-    prompt = "為香港粵語辯論 TTS 句庫提出最多20條補充句，覆蓋數字、專名、語氣及辯論用語。避免重複。只回覆 JSON array，每項含 category,text。現有句庫：\n" + sample
+    if not key:
+        _log_ai(user, db, "tts_script_analysis", False, error="GEMINI_API_KEY missing")
+        raise HTTPException(503, "未設定 GEMINI_API_KEY，暫時未能重出句庫")
+    rows = _rows(db.query(f"SELECT script_id AS id,category,text FROM {TABLE_TTS_SCRIPTS} WHERE is_active=TRUE ORDER BY category,sort_order"))
+    locked_rows = _rows(db.query(f"SELECT DISTINCT script_id FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE status IN ('pending','accepted')"))
+    locked_ids = {str(x["script_id"]) for x in locked_rows}
+    locked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) in locked_ids) or "（暫時冇已錄音句子）"
+    unlocked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) not in locked_ids) or "（暫時冇未錄音句子）"
+    prompt = build_tts_regenerate_prompt(locked, unlocked)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .4}}
+    payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5}}
     try:
         async with httpx.AsyncClient(timeout=60) as client: response = await client.post(url, json=payload)
-        response.raise_for_status(); raw=response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        suggestions=json.loads(raw)
-    except Exception as exc: raise HTTPException(502, f"AI 重出句庫失敗：{str(exc)[:160]}") from exc
-    return {"items": suggestions if isinstance(suggestions, list) else []}
+        response.raise_for_status(); response_data=response.json(); raw=response_data["candidates"][0]["content"]["parts"][0]["text"]
+        plan=json.loads(raw)
+        if not isinstance(plan, dict): raise ValueError("AI 回覆格式不正確")
+        plan["deactivate_candidates"] = [x for x in (plan.get("deactivate_candidates") or []) if str(x.get("script_id")) not in locked_ids]
+        _log_ai(user, db, "tts_script_analysis", True, response_data=response_data)
+    except Exception as exc:
+        _log_ai(user, db, "tts_script_analysis", False, error=str(exc))
+        raise HTTPException(502, f"AI 重出句庫失敗：{str(exc)[:160]}") from exc
+    return {"plan": plan}
 
 
 @router.get("/export/recordings.zip")
@@ -515,6 +670,9 @@ def review_recording(record_id:int, body:ReviewBody, request:Request):
     user,db=_ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可審核")
     if body.status not in ('accepted','rejected'): raise HTTPException(400,"狀態不正確")
+    row = db.query(f"SELECT status FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id", {"id": record_id})
+    if row.empty: raise HTTPException(404, "找不到錄音")
+    if row.iloc[0]["status"] != "pending": raise HTTPException(409, "只有待審核錄音可以更新")
     db.execute(f"UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":record_id}); return {"ok":True}
 
 
@@ -522,5 +680,8 @@ def review_recording(record_id:int, body:ReviewBody, request:Request):
 def review_llm(submission_id:int, body:ReviewBody, request:Request):
     user,db=_ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可審核")
-    if body.status not in ('accepted','rejected','withdrawn'): raise HTTPException(400,"狀態不正確")
+    if body.status not in ('accepted','rejected'): raise HTTPException(400,"狀態不正確")
+    row = db.query(f"SELECT status FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id", {"id": submission_id})
+    if row.empty: raise HTTPException(404, "找不到提交")
+    if row.iloc[0]["status"] != "pending": raise HTTPException(409, "只有待審核資料可以更新")
     db.execute(f"UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":submission_id}); return {"ok":True}

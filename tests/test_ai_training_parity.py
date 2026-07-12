@@ -37,3 +37,32 @@ def test_fallback_duplicate_guard_withdraw_and_export_parity():
     assert "alert(" not in js and "prompt(" not in js and "confirm(" not in js
     assert 'def export_recordings(request: Request, speaker: str = "")' in api
     assert 'archive.writestr("metadata.csv"' in api
+
+
+def test_recording_gate_and_public_training_guidance_match_legacy():
+    api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
+    html = (ROOT / "frontend/ai_training/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "frontend/ai_training/app.js").read_text(encoding="utf-8")
+    for marker in ("_audio_payload(body)", "matches_prompt", "duration_seconds", "tts_review", "llm_review"):
+        assert marker in api
+    for marker in ('id="lexicon-view"', 'id="rdPlan"', 'id="resetSkipped"', 'id="clearLlm"'):
+        assert marker in html
+    for marker in ("recordedSeconds", "resetRecording", "重新錄製跳過的句子", "SafeMarkdown.render"):
+        assert marker in html + js
+
+
+def test_admin_ai_planning_is_selective_and_protects_recorded_scripts():
+    api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
+    js = (ROOT / "frontend/ai_training/app.js").read_text(encoding="utf-8")
+    assert '@router.post("/coverage/ai")' in api
+    assert "build_tts_coverage_prompt" in api
+    assert "build_tts_regenerate_prompt" in api
+    assert "deactivate_candidates" in api
+    assert "status IN ('pending','accepted')" in api
+    assert "deactivate_ids" in api and "data-suggestion" in js
+
+
+def test_recording_review_uses_streamlit_page_size():
+    api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
+    assert "ADMIN_RECORDING_PAGE_SIZE = 5" in api
+    assert '"page_size": ADMIN_RECORDING_PAGE_SIZE' in api

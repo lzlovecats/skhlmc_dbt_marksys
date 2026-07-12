@@ -1254,6 +1254,15 @@ async def ai_training_page():
     return FileResponse(BASE_DIR / "frontend" / "ai_training" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
 
 
+@app.get("/ai-training/app.js")
+async def ai_training_script():
+    return FileResponse(
+        BASE_DIR / "frontend" / "ai_training" / "app.js",
+        media_type="text/javascript",
+        headers=_cache_headers(CACHE_STATIC),
+    )
+
+
 @app.get("/db-mgmt")
 @app.get("/db_mgmt", include_in_schema=False)
 async def db_management_page():
@@ -1264,6 +1273,11 @@ async def db_management_page():
 @app.get("/dev_settings", include_in_schema=False)
 async def developer_settings_page():
     return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+
+
+@app.get("/dev-settings/lateness-managers.js")
+async def developer_lateness_managers_script():
+    return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "lateness-managers.js", media_type="application/javascript", headers=_cache_headers(CACHE_STATIC))
 
 
 @app.get("/lateness-fund")
@@ -1302,10 +1316,16 @@ async def appliance_practice_timer_config(request: Request):
         except (TypeError, ValueError):
             return None
 
+    free_minutes = _opt_float("free_minutes")
+    prep_minutes = _opt_float("closing_prep_minutes")
+    if free_minutes is not None:
+        free_minutes = min(10.0, max(2.0, free_minutes))
+    if prep_minutes is not None:
+        prep_minutes = min(10.0, max(0.5, prep_minutes))
     config = get_debate_timer_config(
         debate_format,
-        free_debate_minutes=_opt_float("free_minutes"),
-        closing_prep_minutes=_opt_float("closing_prep_minutes"),
+        free_debate_minutes=free_minutes,
+        closing_prep_minutes=prep_minutes,
     )
     return {"format": debate_format, "formats": DEBATE_FORMATS, **config}
 
@@ -1365,7 +1385,7 @@ def _practice_bell_src() -> str:
         return ""
 
 
-def _mint_gemini_live_token(duration_minutes: float):
+def _mint_gemini_live_token(duration_minutes: float, start_delay_minutes: float = 0):
     """Create a single-use Gemini Live ephemeral token. Reimplements
     ai_coach_helpers.create_gemini_live_ephemeral_token without the Streamlit
     dependency. Returns (token_name, None) or (None, error_message)."""
@@ -1377,13 +1397,20 @@ def _mint_gemini_live_token(duration_minutes: float):
     except Exception:
         return None, "伺服器未安裝 Gemini SDK。"
     token_minutes = max(3, math.ceil(float(duration_minutes)))
-    expire = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=token_minutes + 2)
+    start_delay = max(0, float(start_delay_minutes or 0))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # Later Mock tokens are minted together with section 1.  Keep each token
+    # valid until its planned hand-off; otherwise Google rejects the new Live
+    # session before that chapter begins.  Five minutes is a pause/transition
+    # allowance on top of the planned elapsed time.
+    new_session_expire = now + datetime.timedelta(minutes=start_delay + 5)
+    expire = now + datetime.timedelta(minutes=start_delay + token_minutes + 5)
     try:
         client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
         token = client.auth_tokens.create(config={
             "uses": 1,
             "expire_time": expire,
-            "new_session_expire_time": expire,
+            "new_session_expire_time": new_session_expire,
             "http_options": {"api_version": "v1alpha"},
         })
     except Exception as e:
@@ -1397,14 +1424,18 @@ def _mint_gemini_live_token(duration_minutes: float):
 
 def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_starts, *, segments=None, tokens=None, session_labels=None, session_label="自由辯論"):
     """Server-render templates/live_debate.html the same way ai_coach does, so the
-    kiosk gets the identical Live engine. Free-debate only — mock fields empty."""
+    kiosk gets the identical Live engine for Free De and multi-session Mock."""
     html = (BASE_DIR / "templates" / "live_debate.html").read_text(encoding="utf-8")
     relay_ws_base = _get_proxy_secret("LIVE_RELAY_WS_BASE", "") or ""
     token_sigs = {}
     if relay_ws_base:
-        sig = _sign_relay_token(token)
-        if sig:
-            token_sigs[token] = sig
+        # Mock reconnects with a fresh single-use token at every session boundary.
+        # Sign every token up front; signing only the first makes section 2 fail
+        # authentication whenever the Singapore relay is enabled.
+        for live_token in dict.fromkeys([token, *(tokens or [])]):
+            sig = _sign_relay_token(live_token)
+            if sig:
+                token_sigs[live_token] = sig
     replacements = {
         "__RELAY_WS_BASE__": json.dumps(relay_ws_base),
         "__TOKEN_SIGS__": json.dumps(token_sigs),
@@ -1498,10 +1529,15 @@ async def appliance_ai_debate_live(request: Request):
         sessions = split_mock_into_sessions(segments)
         total_minutes = full_mock_total_seconds(segments) / 60
         tokens=[]
+        planned_elapsed_minutes = 0.0
         for session in sessions:
-            token,error=_mint_gemini_live_token(max(3,full_mock_total_seconds(session["segments"])/60+2))
+            session_minutes = full_mock_total_seconds(session["segments"]) / 60
+            token,error=_mint_gemini_live_token(
+                max(3, session_minutes + 2), start_delay_minutes=planned_elapsed_minutes
+            )
             if error:return _practice_error_page("未能開始",error)
             tokens.append(token)
+            planned_elapsed_minutes += session_minutes
         flat=[]
         for index,session in enumerate(sessions):
             flat.extend({**segment,"session":index} for segment in session["segments"])
@@ -1729,6 +1765,7 @@ class Room:
         # mode B / judge (Gemini leg wired in phase 2)
         self.human_side = None           # 正方/反方 the humans take in mode B
         self.gemini = None               # {tokens, sigs, prompt, model, session_labels}
+        self.gemini_session_index = 0
         self.gemini_ws = None
         self.gemini_task = None
         self.tick_task = None
@@ -1976,7 +2013,7 @@ def _audio_fields(msg):
     return msg.get("data"), msg.get("mimeType")
 
 
-# --- Gemini leg (mode B): one server-owned Gemini Live session per room ------
+# --- Gemini leg (mode B): server-owned Gemini Live sessions per room ---------
 #
 # The server (not any browser) owns the single upstream Gemini Live socket, so
 # the ephemeral token never leaves the server, the whole team shares one AI
@@ -1988,7 +2025,8 @@ async def _room_start_gemini_if_needed(room):
     if room.mode != "B" or room.gemini is None or room.gemini_ws is not None:
         return
     tokens = room.gemini.get("tokens") or []
-    token = tokens[0] if tokens else ""
+    session_index = min(room.gemini_session_index, max(0, len(tokens) - 1))
+    token = tokens[session_index] if tokens else ""
     model = room.gemini.get("model") or ""
     prompt = room.gemini.get("prompt") or ""
     if not token or not model:
@@ -2013,6 +2051,14 @@ async def _room_start_gemini_if_needed(room):
         tts_provider_configured()
         and _get_proxy_secret("ROOM_TTS_ENABLED", "1").strip() != "0"
     )
+    if session_index and room.transcript:
+        recent = room.transcript[-24:]
+        continuity = "\n".join(
+            f"{item.get('side') or item.get('speaker')}：{item.get('text')}"
+            for item in recent if item.get("text")
+        )
+        if continuity:
+            prompt += "\n\n## 上一節接力內容\n以下係之前環節逐字稿，請延續同一場辯論：\n" + continuity
     setup = {
         "setup": {
             "model": "models/" + model,
@@ -2286,6 +2332,12 @@ async def _room_on_segment_enter(room):
         return
     seg = room.current_segment()
     if not seg:
+        return
+    target_session = int(seg.get("session") or 0)
+    if target_session != room.gemini_session_index:
+        await _room_close_gemini(room)
+        room.gemini_session_index = target_session
+        await _room_start_gemini_if_needed(room)
         return
     ai_side = "反方" if room.human_side == "正方" else "正方"
     if seg.get("side") == ai_side:
@@ -2693,17 +2745,44 @@ async def room_create(request: Request):
             # Direct HTML clients never receive an ephemeral token.  Mint it
             # server-side, exactly as the former Streamlit page did, so the
             # shared room remains usable with HttpOnly-cookie authentication.
-            token, mint_error = _mint_gemini_live_token(20 if structure == "mock" else 14)
-            if not token:
-                raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
             prompt = (
                 build_full_mock_live_prompt(topic, room.human_side, debate_format,
                                             free_debate_minutes=free_minutes if debate_format == "聯中" else None)
                 if structure == "mock"
                 else build_free_debate_live_prompt(topic, room.human_side, "")
             )
-            room.gemini = {"tokens": [token], "sigs": {}, "prompt": prompt,
-                           "model": FREE_DEBATE_LIVE_MODEL, "session_labels": []}
+            if structure == "mock":
+                sessions = split_mock_into_sessions(room.segments)
+                tokens = []
+                # Rooms may wait for teammates before the host starts.  Give
+                # the lobby 30 minutes, then offset every chapter token by the
+                # planned duration of all previous chapters.
+                planned_elapsed_minutes = 30.0
+                for session in sessions:
+                    session_minutes = full_mock_total_seconds(session["segments"]) / 60
+                    duration = max(3, session_minutes + 2)
+                    token, mint_error = _mint_gemini_live_token(
+                        duration, start_delay_minutes=planned_elapsed_minutes
+                    )
+                    if not token:
+                        raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
+                    tokens.append(token)
+                    planned_elapsed_minutes += session_minutes
+                room.segments = [
+                    {**segment, "session": session_index}
+                    for session_index, session in enumerate(sessions)
+                    for segment in session["segments"]
+                ]
+                session_labels = [session["label"] for session in sessions]
+            else:
+                token, mint_error = _mint_gemini_live_token(14, start_delay_minutes=30)
+                if not token:
+                    raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
+                tokens = [token]
+                session_labels = []
+            room.gemini = {"tokens": tokens, "sigs": {}, "prompt": prompt,
+                           "model": FREE_DEBATE_LIVE_MODEL,
+                           "session_labels": session_labels}
     ROOMS[code] = room
     return {"ok": True, "code": code, "mode": mode}
 

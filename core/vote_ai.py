@@ -34,11 +34,43 @@ def is_successful_ai_result(result: str | None) -> bool:
 
 def _model_config(model_label=None):
     label = model_label or NON_MANUAL_DEFAULT_AI_MODEL
-    return (
+    config = (
         NON_MANUAL_MODEL_OPTIONS.get(label)
         or AI_MODEL_OPTIONS.get(label)
         or NON_MANUAL_MODEL_OPTIONS.get(NON_MANUAL_DEFAULT_AI_MODEL)
     )
+    if not config:
+        return None
+    return {**config, "label": label if label in AI_MODEL_OPTIONS or label in NON_MANUAL_MODEL_OPTIONS else NON_MANUAL_DEFAULT_AI_MODEL}
+
+
+def _read_attr(value, *names):
+    for name in names:
+        if isinstance(value, dict) and name in value:
+            return value[name]
+        if hasattr(value, name):
+            return getattr(value, name)
+    return None
+
+
+def _usage_record(model, input_tokens=0, output_tokens=0):
+    input_tokens = int(input_tokens or 0)
+    output_tokens = int(output_tokens or 0)
+    usd = (
+        input_tokens * float(model.get("input_price_per_million") or 0)
+        + output_tokens * float(model.get("output_price_per_million") or 0)
+    ) / 1_000_000
+    return {
+        "model_label": model.get("label") or NON_MANUAL_DEFAULT_AI_MODEL,
+        "provider": model.get("provider") or "other",
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "audio_tokens": 0,
+        "search_calls": 0,
+        "estimated_cost_usd": round(usd, 6),
+        "estimated_cost_hkd": round(usd * 7.8, 4),
+        "cost_source": "actual_tokens",
+    }
 
 
 def _format_ai_error(provider, error):
@@ -73,7 +105,13 @@ def _generate_gemini(model, system_prompt, user_text, secrets):
                 temperature=0.7,
             ),
         )
-        return response.text or "AI 未能生成回覆，請再試一次。", None
+        meta = _read_attr(response, "usage_metadata", "usageMetadata")
+        usage = _usage_record(
+            model,
+            _read_attr(meta, "prompt_token_count", "promptTokenCount"),
+            _read_attr(meta, "candidates_token_count", "candidatesTokenCount"),
+        )
+        return response.text or "AI 未能生成回覆，請再試一次。", usage
     except Exception as e:
         return _format_ai_error("Gemini", e), None
 
@@ -96,7 +134,13 @@ def _generate_openrouter(model, system_prompt, user_text, secrets):
             ],
             temperature=0.7,
         )
-        return response.choices[0].message.content or "AI 未能生成回覆，請再試一次。", None
+        usage_meta = _read_attr(response, "usage")
+        usage = _usage_record(
+            model,
+            _read_attr(usage_meta, "prompt_tokens", "promptTokens"),
+            _read_attr(usage_meta, "completion_tokens", "completionTokens"),
+        )
+        return response.choices[0].message.content or "AI 未能生成回覆，請再試一次。", usage
     except Exception as e:
         return _format_ai_error("OpenRouter", e), None
 
@@ -248,7 +292,20 @@ def gather_vote_history_analysis_context(vote_df, db):
         against = n - agree
         topic_n = int((member_df["motion_type"] == "辯題投票").sum())
         removal_n = int((member_df["motion_type"] == "罷免投票").sum())
-        member_lines.append(f"- {uid}：投票 {n} 次；同意率 {agree / n * 100:.0f}%（同意 {agree}／反對 {against}）；辯題投票 {topic_n}、罷免投票 {removal_n}")
+        agree_cats = (
+            member_df[(member_df["motion_type"] == "辯題投票") & (member_df["vote_choice"] == "agree")]["category"]
+            .replace("", "未分類").value_counts().head(2)
+        )
+        against_cats = (
+            member_df[(member_df["motion_type"] == "辯題投票") & (member_df["vote_choice"] != "agree")]["category"]
+            .replace("", "未分類").value_counts().head(2)
+        )
+        support_txt = "、".join(f"{cat}({int(count)})" for cat, count in agree_cats.items()) or "—"
+        oppose_txt = "、".join(f"{cat}({int(count)})" for cat, count in against_cats.items()) or "—"
+        member_lines.append(
+            f"- {uid}：投票 {n} 次；同意率 {agree / n * 100:.0f}%（同意 {agree}／反對 {against}）；"
+            f"辯題投票 {topic_n}、罷免投票 {removal_n}；較常支持：{support_txt}；較常反對：{oppose_txt}"
+        )
 
     category_lines = []
     topic_motions = motions[motions["motion_type"] == "辯題投票"]
@@ -258,6 +315,14 @@ def gather_vote_history_analysis_context(vote_df, db):
             passed = int((cat_df["status"] == "passed").sum())
             rejected = int((cat_df["status"] == "rejected").sum())
             category_lines.append(f"- 類別 {cat}：議案 {n}；通過 {passed}；否決 {rejected}；通過率 {passed / n * 100:.0f}%")
+        for diff, diff_df in topic_motions.groupby(topic_motions["difficulty"]):
+            try:
+                diff_label = DIFFICULTY_OPTIONS.get(int(diff), str(diff))
+            except (TypeError, ValueError):
+                diff_label = str(diff) or "—"
+            n = len(diff_df)
+            passed = int((diff_df["status"] == "passed").sum())
+            category_lines.append(f"- 難度 {diff_label}：議案 {n}；通過 {passed}；通過率 {passed / n * 100:.0f}%")
     reason_counts = {}
     if "against_reasons" in ballots.columns:
         for raw in ballots["against_reasons"].tolist():

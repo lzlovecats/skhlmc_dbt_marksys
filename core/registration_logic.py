@@ -150,13 +150,20 @@ def submit_registration(data, competition_edition, db=None):
     latest_status = get_registration_status(db)
     if not latest_status["is_open"]:
         return {"ok": False, "message": "報名時間已關閉，未能提交報名。"}
+    current_edition = int(latest_status["settings"]["competition_edition"])
+    try:
+        submitted_edition = int(competition_edition)
+    except (TypeError, ValueError):
+        submitted_edition = -1
+    if submitted_edition != current_edition:
+        return {"ok": False, "message": "報名屆數已更新，請重新載入頁面後再提交。"}
 
     duplicate = db.query(
         f"""
         SELECT 1 FROM {TABLE_COMPETITION_REGISTRATIONS}
         WHERE competition_edition = :competition_edition AND team_name = :team_name
         """,
-        {"competition_edition": int(competition_edition), "team_name": form_data["team_name"]},
+        {"competition_edition": current_edition, "team_name": form_data["team_name"]},
     )
     if not duplicate.empty:
         return {"ok": False, "message": "此隊名已於本屆提交報名，請勿重覆提交。"}
@@ -175,7 +182,7 @@ def submit_registration(data, competition_edition, db=None):
                 :contact_phone, 'submitted', :submitted_at, :updated_at
             )
             """,
-            {"competition_edition": int(competition_edition), **form_data,
+            {"competition_edition": current_edition, **form_data,
              "submitted_at": now, "updated_at": now},
         )
     except Exception as exc:
@@ -250,6 +257,12 @@ def registration_admin_data(competition_edition=None, status="全部", db=None):
 def save_registration_settings(competition_edition, registration_start, registration_end, db=None):
     db = _resolve_db(db)
     try:
+        competition_edition = int(competition_edition)
+    except (TypeError, ValueError):
+        return {"ok": False, "message": "比賽屆數必須為正整數。"}
+    if competition_edition < 1:
+        return {"ok": False, "message": "比賽屆數必須為正整數。"}
+    try:
         start = dt.datetime.fromisoformat(str(registration_start))
         end = dt.datetime.fromisoformat(str(registration_end))
     except ValueError:
@@ -268,7 +281,7 @@ def save_registration_settings(competition_edition, registration_start, registra
             registration_end = EXCLUDED.registration_end,
             updated_at = EXCLUDED.updated_at
         """,
-        {"competition_edition": int(competition_edition), "registration_start": start,
+        {"competition_edition": competition_edition, "registration_start": start,
          "registration_end": end, "updated_at": _now()},
     )
     return {"ok": True, "message": "報名設定已更新。"}
@@ -278,10 +291,12 @@ def update_registration_status(registration_id, status, db=None):
     if status not in STATUS_LABELS:
         return {"ok": False, "message": "請選擇有效的新狀態。"}
     db = _resolve_db(db)
-    db.execute(
+    changed = db.execute_count(
         f"UPDATE {TABLE_COMPETITION_REGISTRATIONS} SET status = :status, updated_at = :updated_at WHERE id = :id",
         {"status": status, "updated_at": _now(), "id": int(registration_id)},
     )
+    if not changed:
+        return {"ok": False, "message": "找不到指定的報名紀錄。"}
     return {"ok": True, "message": "報名狀態已更新。"}
 
 

@@ -212,11 +212,28 @@ def auto_derive_ranking_order(pro_scores, con_scores):
 def submit_best_debater_rankings(match_id, judge_name, rankings, db=None):
     db = _resolve_db(db)
     judge = normalize_judge_name(judge_name)
-    assigned = sorted(int(item.get("rank", 0)) for item in rankings)
+    if not judge:
+        raise ValueError("請輸入評判姓名！")
+    if not has_final_submission(match_id, judge, db=db):
+        raise ValueError("請先正式提交本場評分，才可提交最佳辯論員排名。")
+    if len(rankings) != 8:
+        raise ValueError("排名資料必須包含本場 8 位辯員。")
+    try:
+        slots = [(str(item.get("side", "")), int(item.get("position", 0))) for item in rankings]
+        assigned = sorted(int(item.get("rank", 0)) for item in rankings)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("排名資料格式不正確。") from exc
+    expected_slots = {(side, position) for side in ("pro", "con") for position in range(1, 5)}
+    if set(slots) != expected_slots or len(set(slots)) != 8:
+        raise ValueError("排名資料必須完整包含正反方各四個辯位。")
     if assigned != list(range(1, 9)):
         raise ValueError("每個名次（1–8）必須恰好使用一次，請檢查是否有重複或遺漏。")
-    for item in rankings:
-        db.execute(f"""INSERT INTO {TABLE_BEST_DEBATER_RANKINGS} (match_id,judge_name,side,position,rank)
+    params = [
+        {"match_id": match_id, "judge_name": judge, "side": side, "position": position, "rank": int(item["rank"])}
+        for item, (side, position) in zip(rankings, slots)
+    ]
+    with db.transaction() as session:
+        session.execute(text(f"""INSERT INTO {TABLE_BEST_DEBATER_RANKINGS} (match_id,judge_name,side,position,rank)
             VALUES (:match_id,:judge_name,:side,:position,:rank)
-            ON CONFLICT (match_id,judge_name,side,position) DO UPDATE SET rank=EXCLUDED.rank""", {"match_id":match_id,"judge_name":judge,"side":item["side"],"position":int(item["position"]),"rank":int(item["rank"])})
+            ON CONFLICT (match_id,judge_name,side,position) DO UPDATE SET rank=EXCLUDED.rank"""), params)
     return True

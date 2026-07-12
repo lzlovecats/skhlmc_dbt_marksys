@@ -114,7 +114,7 @@ def dev_logout(response:Response): response.delete_cookie("developer_session",pa
 def dev_data(request:Request):
     _require(request,"developer"); db=_db(); db.execute(CREATE_BUG_REPORTS)
     bugs=[]; accounts=[]
-    configs={k:_config(db,k) or "" for k in ("maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","ai_enabled_providers","ai_default_model")}
+    configs={k:_config(db,k) or "" for k in ("maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")}
     subs=[]
     return {"version":APP_VERSION,"bugs":bugs,"accounts":accounts,"configs":configs,"subscriptions":subs}
 
@@ -170,8 +170,9 @@ def delete_account(uid:str,request:Request): _require(request,"developer"); _db(
 
 @router.post("/developer/settings")
 def developer_settings(body:JsonSettings,request:Request):
-    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","ai_enabled_providers","ai_default_model"}
+    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model"}
     for key,value in body.values.items():
         if key not in allowed: raise HTTPException(400,f"不允許的設定：{key}")
+        if key=="lateness_fund_managers" and (not isinstance(value,list) or not any(str(item).strip() for item in value)): raise HTTPException(400,"至少保留一位遲到基金管理員")
         _set(db,key,json.dumps(value,ensure_ascii=False) if isinstance(value,(dict,list)) else str(value))
     return {"ok":True}

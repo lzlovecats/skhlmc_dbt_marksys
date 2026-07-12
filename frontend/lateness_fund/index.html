@@ -1,7 +1,206 @@
-<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e1117"><title>遲到罰款基金</title><link rel="stylesheet" href="/shared/vote-ui.css"><link rel="stylesheet" href="/shared/app-shell.css"><style>
-main{max-width:84rem;margin:auto}.head{margin-bottom:1rem}h1{margin:.15rem 0;font-size:2rem}.tabs{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0}.tabs button.active{background:var(--accent);border-color:var(--accent);font-weight:700}.pane{display:none}.pane.active{display:block}.grid{display:grid;gap:1rem}.metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.metric{padding:1rem}.metric b{display:block;font-size:1.4rem;margin-top:.25rem}.split{grid-template-columns:1fr 1fr}.actions{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1rem}.actions button{width:auto}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem}.form-grid .wide{grid-column:1/-1}table{width:100%;border-collapse:collapse;font-size:.9rem}th,td{border:1px solid var(--border);padding:.55rem;text-align:left;vertical-align:top}th{color:var(--muted)}.table-wrap{overflow:auto}.danger{border-color:var(--against);color:var(--against)}.success{color:var(--ok)}@media(max-width:720px){.metrics,.split,.form-grid{grid-template-columns:1fr}.metric b{font-size:1.2rem}}
-</style></head><body><main><a class="back" href="/">← 返回主頁</a><header class="head"><h1>遲到罰款基金</h1><p class="caption">計算罰款公式：該成員於本年度第 N 次遲到 × 遲到分鐘。基金以每年 9 月至翌年 8 月劃分。</p></header><section id="login" class="card hidden"><h2>內部委員會成員登入</h2><form class="login" id="loginForm"><label>用戶名稱<input id="loginUser" required></label><label>密碼<input id="loginPassword" type="password" required></label><button class="primary">登入</button></form></section><section id="app" class="hidden"><div class="card"><label>選擇年度<select id="year"></select></label><p id="range" class="caption"></p></div><nav class="tabs"><button class="active" data-pane="overview">總覽</button><button data-pane="input">新增紀錄</button><button data-pane="history">紀錄管理</button></nav><section id="overview" class="pane active"><div id="metrics" class="grid metrics"></div><div class="card"><h2>年度結餘設定</h2><p class="caption">Bal c/d = Bal b/d + 本年度已收罰款 − 本年度支出。</p><div class="form-grid"><label>Bal b/d（HKD）<input id="opening" type="number" step=".01"></label><div class="actions"><button id="saveOpening" class="primary">儲存 Bal b/d</button><button id="carry">沿用上一年度結餘</button></div></div></div><div class="card"><h2>成員統計</h2><div id="summary"></div></div><div class="card"><h2>基金支出</h2><div id="expensesOverview"></div></div></section><section id="input" class="pane"><div class="grid split"><form id="recordForm" class="card"><h2>新增遲到紀錄</h2><div class="form-grid"><label>日期<input id="lateDate" type="date" required></label><label>帳戶<select id="member" required></select></label><label>遲到分鐘<input id="minutes" type="number" min="1" value="1" required></label><label>已繳金額（HKD）<input id="paid" type="number" min="0" step=".01" value="0"></label><label class="wide">備註<input id="lateNote"></label></div><p id="preview" class="caption"></p><button class="primary">新增遲到紀錄</button></form><form id="expenseForm" class="card"><h2>新增基金支出</h2><label>支出日期<input id="expenseDate" type="date" required></label><label>支出金額（HKD）<input id="expenseAmount" type="number" min=".01" step=".01" required></label><label>支出用途 / 備註<input id="expenseNote"></label><button class="primary">新增支出紀錄</button></form></div></section><section id="history" class="pane"><div class="card"><h2>遲到紀錄</h2><div id="records"></div></div><div class="card"><h2>支出紀錄</h2><div id="expenses"></div></div></section></section></main><div id="toast" class="toast"></div><div id="busy" class="busy"><div class="busy-pill"><i class="spinner"></i>處理中…</div></div><script src="/shared/vote-ui.js"></script><script>
-(()=>{const $=id=>document.getElementById(id),money=n=>'HKD '+Number(n||0).toLocaleString('en-HK',{minimumFractionDigits:2,maximumFractionDigits:2}),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),today=new Date().toISOString().slice(0,10);let data;
-async function api(url,opt={}){const r=await fetch('/api'+url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});if(r.status===401){$('app').classList.add('hidden');$('login').classList.remove('hidden');throw Error('請先登入。')}const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||'操作失敗。');return d}async function load(){VoteUI.setBusy($('busy'),true);try{data=await api('/lateness-fund/data'+($('year').value?'?year='+encodeURIComponent($('year').value):''));render()}catch(e){if(e.message!=='請先登入。')VoteUI.toast($('toast'),'⚠️ '+e.message)}finally{VoteUI.setBusy($('busy'),false)}}function table(rows,cols,actions=''){if(!rows.length)return '<p class="caption">暫無紀錄。</p>';return '<div class="table-wrap"><table><thead><tr>'+cols.map(c=>'<th>'+c[0]+'</th>').join('')+(actions?'<th>操作</th>':'')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(c[1](r))+'</td>').join('')+(actions?'<td>'+actions(r)+'</td>':'')+'</tr>').join('')+'</tbody></table></div>'}function render(){ $('login').classList.add('hidden');$('app').classList.remove('hidden');$('year').innerHTML=data.years.map(y=>`<option value="${y}" ${y===data.year?'selected':''}>${y}-${String((y+1)%100).padStart(2,'0')}</option>`).join('');$('range').textContent=`目前年度：${data.label}（${data.range[0]} 至 ${data.range[1]}）`;$('opening').value=data.metrics.opening;$('metrics').innerHTML=[['Bal b/d',data.metrics.opening],['本年度已收罰款',data.metrics.received],['本年度支出',data.metrics.expenses],['Bal c/d',data.metrics.closing],['本年度應收罰款',data.metrics.penalties],['本年度未收罰款',data.metrics.outstanding],['本年度罰款次數',data.metrics.count]].map(x=>`<div class="card metric"><span class="caption">${x[0]}</span><b>${typeof x[1]==='number'&&x[0]!=='本年度罰款次數'?money(x[1]):x[1]}</b></div>`).join('');$('summary').innerHTML=table(data.summary,[['排名',r=>r.late_rank],['帳戶',r=>r.member_user_id],['遲到次數',r=>r.late_count],['累計遲到分鐘',r=>r.total_late_minutes],['應繳罰款',r=>money(r.penalty_amount)],['已繳金額',r=>money(r.paid_amount)],['結餘',r=>money(r.balance)]]);const ecols=[['日期',r=>r.expense_date?.slice(0,10)],['金額',r=>money(r.amount_hkd)],['備註',r=>r.note],['記錄人',r=>r.created_by]];$('expensesOverview').innerHTML=table(data.expenses,ecols);$('records').innerHTML=table(data.records,[['日期',r=>r.late_date?.slice(0,10)],['帳戶',r=>r.member_user_id],['分鐘',r=>r.late_minutes],['第幾次',r=>r.late_no],['應繳',r=>money(r.penalty_amount)],['已繳',r=>money(r.paid_amount)],['備註',r=>r.note]],r=>`<button data-paid="${r.id}">更新已繳</button> <button class="danger" data-delete-record="${r.id}">刪除</button>`);$('expenses').innerHTML=table(data.expenses,ecols,r=>`<button class="danger" data-delete-expense="${r.id}">刪除</button>`);$('member').innerHTML=data.members.map(x=>`<option>${esc(x)}</option>`).join('');preview();}
-function preview(){if(!data)return;let count=data.records.filter(r=>r.member_user_id===$('member').value).length+1;$('preview').textContent=`按現有紀錄計算，今次是該帳戶於 ${data.label} 年度第 ${count} 次遲到，應繳 ${money(count*Number($('minutes').value||0))}。`}$('lateDate').value=$('expenseDate').value=today;$('year').onchange=load;$('member').onchange=preview;$('minutes').oninput=preview;document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.pane).classList.add('active')});async function mutate(url,opt,msg){VoteUI.setBusy($('busy'),true);try{await api(url,opt);VoteUI.toast($('toast'),'✅ '+msg);await load()}catch(e){VoteUI.toast($('toast'),'⚠️ '+e.message)}finally{VoteUI.setBusy($('busy'),false)}}$('saveOpening').onclick=()=>mutate('/lateness-fund/opening/'+data.year,{method:'POST',body:JSON.stringify({amount:+$('opening').value})},'已更新 Bal b/d。');$('carry').onclick=()=>mutate('/lateness-fund/carry/'+data.year,{method:'POST'},'已沿用上一年度結餘。');$('recordForm').onsubmit=e=>{e.preventDefault();mutate('/lateness-fund/records',{method:'POST',body:JSON.stringify({late_date:$('lateDate').value,member_user_id:$('member').value,late_minutes:+$('minutes').value,paid_amount:+$('paid').value,note:$('lateNote').value})},'已新增遲到紀錄。')};$('expenseForm').onsubmit=e=>{e.preventDefault();mutate('/lateness-fund/expenses',{method:'POST',body:JSON.stringify({expense_date:$('expenseDate').value,amount:+$('expenseAmount').value,note:$('expenseNote').value})},'已新增支出紀錄。')};document.body.onclick=e=>{let b=e.target;if(b.dataset.paid){let r=data.records.find(x=>x.id==b.dataset.paid),amount=prompt('更新已繳金額（HKD）',r.paid_amount);if(amount!==null)mutate('/lateness-fund/records/'+b.dataset.paid,{method:'PATCH',body:JSON.stringify({amount:+amount})},'已更新已繳金額。')}if(b.dataset.deleteRecord&&confirm('確定永久刪除此遲到紀錄？'))mutate('/lateness-fund/records/'+b.dataset.deleteRecord,{method:'DELETE'},'已刪除遲到紀錄。');if(b.dataset.deleteExpense&&confirm('確定永久刪除這筆支出？'))mutate('/lateness-fund/expenses/'+b.dataset.deleteExpense,{method:'DELETE'},'已刪除支出紀錄。')};$('loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/committee/login',{method:'POST',body:JSON.stringify({user_id:$('loginUser').value,password:$('loginPassword').value})});load()}catch(x){VoteUI.toast($('toast'),'⚠️ '+x.message)}};load()})();
-</script><script src="/shared/server-tables.js"></script></body></html>
+<!doctype html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0e1117">
+    <title>遲到罰款基金</title>
+    <link rel="stylesheet" href="/shared/vote-ui.css">
+    <link rel="stylesheet" href="/shared/app-shell.css">
+    <style>
+        main { width: min(100%, 84rem); margin: auto; }
+        .head { margin-bottom: 1rem; }
+        h1 { margin: .15rem 0; font-size: 2rem; }
+        .caption { color: var(--muted); }
+        .topbar, .actions { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+        .topbar { justify-content: space-between; margin-bottom: .8rem; }
+        .topbar .actions { justify-content: flex-end; }
+        .tabs { display: flex; gap: .5rem; margin: 1rem 0; overflow-x: auto; }
+        .tabs button { flex: 0 0 auto; }
+        .tabs button.active { border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 700; }
+        .pane { display: none; }
+        .pane.active { display: block; }
+        .grid { display: grid; gap: 1rem; }
+        .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .metric { padding: 1rem; }
+        .metric b { display: block; margin-top: .25rem; overflow-wrap: anywhere; font-size: 1.35rem; }
+        .split { grid-template-columns: 1fr 1fr; align-items: start; }
+        .split.single { grid-template-columns: minmax(0, 48rem); }
+        .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+        .form-grid .wide { grid-column: 1 / -1; }
+        .form-actions { margin-top: 1rem; }
+        .member-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .manager-badge { border: 1px solid var(--accent); border-radius: 999px; padding: .3rem .65rem; color: var(--accent-strong); }
+        .table-wrap { overflow: auto; }
+        table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: .9rem; }
+        th, td { border: 1px solid var(--border); padding: .55rem; text-align: left; vertical-align: top; }
+        th { color: var(--muted); background: var(--surface); }
+        td.actions-cell { min-width: 12rem; white-space: nowrap; }
+        .danger { border-color: var(--against); color: var(--against); }
+        .download-row { display: flex; gap: .6rem; flex-wrap: wrap; margin: .8rem 0; }
+        .dialog { position: fixed; inset: 0; z-index: 60; display: none; place-items: center; padding: 1rem; background: rgb(0 0 0 / .72); }
+        .dialog.show { display: grid; }
+        .dialog .card { width: min(100%, 32rem); max-height: calc(100dvh - 2rem); overflow: auto; }
+        .dialog .actions button { flex: 1 1 10rem; }
+        .hidden { display: none !important; }
+        @media (max-width: 720px) {
+            h1 { font-size: 1.65rem; }
+            .metrics, .split, .form-grid, .member-metrics { grid-template-columns: 1fr; }
+            .form-grid .wide { grid-column: auto; }
+            .topbar { align-items: stretch; flex-direction: column; }
+            .topbar .actions, .form-actions, .form-actions button, .download-row a { width: 100%; }
+            .topbar .actions button { flex: 1; }
+            .dialog .actions { align-items: stretch; flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <a class="back" href="/">← 返回主頁</a>
+    <header class="head">
+        <h1>遲到罰款基金</h1>
+        <p class="caption">計算罰款公式：該成員於本年度第 N 次遲到 × 遲到分鐘。基金以年度（每年 9 月至翌年 8 月）劃分，設有 Bal b/d 及 Bal c/d。</p>
+    </header>
+    <details class="guide"><summary>ℹ️ 遲到罰款基金使用指南</summary><ul><li>計算罰款公式：該成員於本年度第 N 次遲到 × 遲到分鐘。</li><li>基金以年度（每年 9 月至翌年 8 月）劃分，設有Bal b/d及Bal c/d。</li></ul></details>
+    <section id="login" class="card hidden"><h2>內部委員會成員登入</h2><form class="login" id="loginForm"><label>用戶名稱<input id="loginUser" required></label><label>密碼<input id="loginPassword" type="password" required></label><button class="primary">登入</button></form></section>
+    <section id="app" class="hidden">
+        <div class="topbar"><span id="role" class="caption"></span><div class="actions"><button id="logout" type="button">登出</button></div></div>
+        <section class="card"><label>選擇年度<select id="year"></select></label><p id="range" class="caption"></p></section>
+        <nav class="tabs"><button class="active" data-pane="overview">總覽</button><button data-pane="input">新增紀錄</button><button data-pane="history">紀錄管理</button></nav>
+        <section id="overview" class="pane active">
+            <div id="metrics" class="grid metrics"></div>
+            <section id="openingCard" class="card hidden"><h2>年度結餘設定</h2><p class="caption">Bal c/d ＝ Bal b/d ＋ 本年度已收罰款 － 本年度支出。</p><div class="form-grid"><label>Bal b/d（HKD）<input id="opening" type="number" step=".01"></label><div class="actions"><button id="saveOpening" class="primary" type="button">儲存 Bal b/d</button><button id="carry" type="button">沿用上一年度結餘</button></div></div></section>
+            <section class="card"><h2>成員統計</h2><div id="summary"></div></section>
+            <section id="notifyCard" class="card hidden"><h2>發送遲到罰款通知</h2><p id="outstanding" class="caption"></p><div class="form-grid"><label>發送對象<select id="notifyTarget"><option value="outstanding">只發送給有結欠的委員</option><option value="all">發送給所有委員</option></select></label><label class="wide">通知內容（可留空使用預設）<input id="notifyMessage" placeholder="例：請盡快找數！"></label></div><div class="form-actions"><button id="sendNotify" class="primary" type="button">發送通知</button></div></section>
+            <section class="card"><h2>搜尋帳戶</h2><label>帳戶<select id="memberSearch"></select></label><div id="memberMetrics" class="grid member-metrics"></div><h3>該成員遲到紀錄</h3><div id="memberRecords"></div></section>
+            <section class="card"><h2>基金支出</h2><div id="expensesOverview"></div></section>
+        </section>
+        <section id="input" class="pane"><div id="inputGrid" class="grid split">
+            <form id="recordForm" class="card"><h2>新增遲到紀錄</h2><div class="form-grid"><label>日期<input id="lateDate" type="date" required></label><label>帳戶<select id="member" required></select></label><label>遲到分鐘<input id="minutes" type="number" min="1" value="1" required></label><label id="paidWrap">已繳金額（HKD）<input id="paid" type="number" min="0" step=".01" value="0" required></label><label class="wide">備註（如有）<input id="lateNote"></label></div><p id="preview" class="caption" aria-live="polite"></p><div class="form-actions"><button id="recordSubmit" class="primary">新增遲到紀錄</button></div></form>
+            <form id="expenseForm" class="card hidden"><h2>新增基金支出</h2><label>支出日期<input id="expenseDate" type="date" required></label><label>支出金額（HKD）<input id="expenseAmount" type="number" min=".01" step=".01" required></label><label>支出用途 / 備註<input id="expenseNote"></label><div class="form-actions"><button class="primary">新增支出紀錄</button></div></form>
+        </div></section>
+        <section id="history" class="pane">
+            <section class="card"><h2>遲到紀錄</h2><div class="download-row"><a id="recordsCsv" class="button primary">下載本年度遲到紀錄 CSV</a></div><div id="records"></div></section>
+            <section class="card"><h2>支出紀錄</h2><div class="download-row"><a id="expensesCsv" class="button primary">下載本年度支出紀錄 CSV</a></div><div id="expenses"></div></section>
+        </section>
+    </section>
+</main>
+<div id="toast" class="toast"></div><div id="busy" class="busy"><div class="busy-pill"><i class="spinner"></i>處理中…</div></div>
+<div id="actionDialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle"><section class="card"><h2 id="dialogTitle"></h2><p id="dialogSummary"></p><label id="dialogAmountWrap" class="hidden">已繳金額（HKD）<input id="dialogAmount" type="number" min="0" step=".01"></label><div id="dialogMessage"></div><div class="actions"><button id="dialogConfirm" class="primary" type="button">確認</button><button id="dialogCancel" type="button">返回</button></div></section></div>
+<script src="/shared/vote-ui.js"></script>
+<script>
+(() => {
+    const $ = id => document.getElementById(id);
+    const money = value => `HKD ${Number(value || 0).toLocaleString("en-HK", {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+    const dateHK = value => { const text = String(value || "").slice(0, 10), parts = text.split("-"); return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : text; };
+    const todayHK = () => new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Hong_Kong", year: "numeric", month: "2-digit", day: "2-digit"}).format(new Date());
+    let data, recordRows = {}, expenseRows = {}, pendingAction = null, previewRequest = 0;
+
+    async function api(url, options = {}) {
+        const response = await fetch(`/api${url}`, {credentials: "same-origin", headers: {"Content-Type": "application/json", ...(options.headers || {})}, ...options});
+        if (response.status === 401) { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); throw Error("請先登入。"); }
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.ok === false) throw Error(payload.detail || payload.message || "操作失敗。");
+        return payload;
+    }
+    const table = (rows, columns, action) => rows.length ? `<div class="table-wrap"><table><thead><tr>${columns.map(column => `<th>${column[0]}</th>`).join("")}${action ? "<th>操作</th>" : ""}</tr></thead><tbody>${rows.map(row => `<tr>${columns.map(column => `<td>${esc(column[1](row))}</td>`).join("")}${action ? `<td class="actions-cell">${action(row)}</td>` : ""}</tr>`).join("")}</tbody></table></div>` : '<p class="caption">暫無紀錄。</p>';
+    const recordColumns = [["日期", row => dateHK(row.late_date)], ["帳戶", row => row.member_user_id], ["分鐘", row => row.late_minutes], ["第幾次", row => row.late_no], ["應繳", row => money(row.penalty_amount)], ["已繳", row => money(row.paid_amount)], ["備註", row => row.note]];
+    const expenseColumns = [["日期", row => dateHK(row.expense_date)], ["金額", row => money(row.amount_hkd)], ["備註", row => row.note], ["記錄人", row => row.created_by]];
+
+    async function loadCollections() {
+        const year = data.year;
+        await Promise.all([
+            VoteUI.serverPaged($("summary"), `/api/lateness-fund/summary?year=${year}`, rows => table(rows, [["排名", row => row.late_rank], ["帳戶", row => row.member_user_id], ["遲到次數", row => row.late_count], ["累計遲到分鐘", row => row.total_late_minutes], ["應繳罰款", row => money(row.penalty_amount)], ["已繳金額", row => money(row.paid_amount)], ["結餘", row => money(row.balance)]])),
+            VoteUI.serverPaged($("expensesOverview"), `/api/lateness-fund/expenses?year=${year}`, rows => table(rows, expenseColumns)),
+            VoteUI.serverPaged($("records"), `/api/lateness-fund/records?year=${year}`, rows => { recordRows = Object.fromEntries(rows.map(row => [String(row.id), row])); return table(rows, recordColumns, data.is_manager ? row => `<button data-paid="${row.id}">更新已繳</button> <button class="danger" data-delete-record="${row.id}">刪除</button>` : null); }),
+            VoteUI.serverPaged($("expenses"), `/api/lateness-fund/expenses?year=${year}`, rows => { expenseRows = Object.fromEntries(rows.map(row => [String(row.id), row])); return table(rows, expenseColumns, data.is_manager ? row => `<button class="danger" data-delete-expense="${row.id}">刪除</button>` : null); }),
+        ]);
+    }
+
+    async function loadMember() {
+        const member = $("memberSearch").value;
+        if (!member) { $("memberMetrics").innerHTML = '<p class="caption">暫時未有可選帳戶。</p>'; $("memberRecords").innerHTML = ""; return; }
+        const detail = await api(`/lateness-fund/member-summary?year=${data.year}&member=${encodeURIComponent(member)}`);
+        const row = detail.member;
+        $("memberMetrics").innerHTML = row ? [["累計遲到分鐘", row.total_late_minutes], ["遲到次數", row.late_count], ["應繳罰款", money(row.penalty_amount)], ["餘額", money(row.balance)]].map(item => `<div class="card metric"><span class="caption">${esc(item[0])}</span><b>${esc(item[1])}</b></div>`).join("") : '<p class="caption">此帳戶本年度暫無遲到紀錄。</p>';
+        await VoteUI.serverPaged($("memberRecords"), `/api/lateness-fund/records?year=${data.year}&member=${encodeURIComponent(member)}`, rows => table(rows, recordColumns));
+    }
+
+    async function render() {
+        $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+        $("role").innerHTML = data.is_manager ? '<span class="manager-badge">遲到基金管理員</span>' : "委員檢視／新增模式";
+        $("year").innerHTML = data.years.map(year => `<option value="${year}" ${year === data.year ? "selected" : ""}>${year}-${String((year + 1) % 100).padStart(2, "0")}</option>`).join("");
+        $("range").textContent = `目前年度：${data.label}（${dateHK(data.range[0])} 至 ${dateHK(data.range[1])}）`;
+        $("opening").value = data.metrics.opening;
+        $("metrics").innerHTML = [["Bal b/d", data.metrics.opening], ["本年度已收罰款", data.metrics.received], ["本年度支出", data.metrics.expenses], ["Bal c/d", data.metrics.closing], ["本年度應收罰款", data.metrics.penalties], ["本年度未收罰款", data.metrics.outstanding], ["本年度罰款次數", data.metrics.count]].map(item => `<div class="card metric"><span class="caption">${item[0]}</span><b>${typeof item[1] === "number" && item[0] !== "本年度罰款次數" ? money(item[1]) : item[1]}</b></div>`).join("");
+        ["openingCard", "notifyCard", "expenseForm", "paidWrap"].forEach(id => $(id).classList.toggle("hidden", !data.is_manager));
+        $("inputGrid").classList.toggle("single", !data.is_manager);
+        const previous = data.year - 1; $("carry").textContent = `沿用上一年度（${previous}-${String((previous + 1) % 100).padStart(2, "0")}）結餘`;
+        const owed = data.outstanding_members || [];
+        $("outstanding").textContent = `本年度有結欠的委員：${owed.length} 人${owed.length ? `（${owed.map(row => row.member_user_id).join("、")}）` : ""}`;
+        const memberOptions = data.members.map(member => `<option value="${esc(member)}">${esc(member)}</option>`).join("");
+        $("member").innerHTML = memberOptions; $("memberSearch").innerHTML = memberOptions;
+        $("recordSubmit").disabled = !data.members.length;
+        $("recordsCsv").href = `/api/lateness-fund/export/records.csv?year=${data.year}`;
+        $("expensesCsv").href = `/api/lateness-fund/export/expenses.csv?year=${data.year}`;
+        if (!$("lateDate").value) $("lateDate").value = todayHK();
+        if (!$("expenseDate").value) $("expenseDate").value = todayHK();
+        await Promise.all([loadCollections(), loadMember(), preview()]);
+    }
+
+    async function load() {
+        VoteUI.setBusy($("busy"), true);
+        try { data = await api(`/lateness-fund/data${$("year").value ? `?year=${encodeURIComponent($("year").value)}` : ""}`); await render(); }
+        catch (error) { if (error.message !== "請先登入。") VoteUI.toast($("toast"), `⚠️ ${error.message}`); }
+        finally { VoteUI.setBusy($("busy"), false); }
+    }
+
+    async function preview() {
+        if (!data || !$("member").value || !$("lateDate").value) return;
+        const request = ++previewRequest;
+        try {
+            const result = await api(`/lateness-fund/member-count?member=${encodeURIComponent($("member").value)}&late_date=${encodeURIComponent($("lateDate").value)}`);
+            if (request !== previewRequest) return;
+            const count = result.count + 1;
+            $("preview").textContent = `按現有紀錄計算，今次是 ${$("member").value} 於 ${result.label} 年度第 ${count} 次遲到，應繳 ${money(count * Number($("minutes").value || 0))}。`;
+        } catch (error) { if (request === previewRequest) $("preview").textContent = error.message; }
+    }
+
+    async function mutate(url, options, success, reset) {
+        VoteUI.setBusy($("busy"), true);
+        try { await api(url, options); reset?.(); VoteUI.toast($("toast"), `✅ ${success}`); await load(); }
+        catch (error) { VoteUI.toast($("toast"), `⚠️ ${error.message}`); }
+        finally { VoteUI.setBusy($("busy"), false); }
+    }
+
+    function openDialog({title, summary, amount, confirmText = "確認", action}) {
+        pendingAction = action; $("dialogTitle").textContent = title; $("dialogSummary").textContent = summary;
+        $("dialogAmountWrap").classList.toggle("hidden", amount === undefined); if (amount !== undefined) $("dialogAmount").value = amount;
+        $("dialogConfirm").textContent = confirmText; $("dialogMessage").innerHTML = ""; $("actionDialog").classList.add("show"); $("dialogCancel").focus();
+    }
+    function closeDialog() { pendingAction = null; $("actionDialog").classList.remove("show"); }
+
+    document.querySelectorAll(".tabs button").forEach(button => button.addEventListener("click", () => { document.querySelectorAll(".tabs button,.pane").forEach(item => item.classList.remove("active")); button.classList.add("active"); $(button.dataset.pane).classList.add("active"); }));
+    $("year").addEventListener("change", load); $("memberSearch").addEventListener("change", loadMember);
+    ["member", "lateDate"].forEach(id => $(id).addEventListener("change", preview)); $("minutes").addEventListener("input", preview);
+    $("saveOpening").addEventListener("click", () => mutate(`/lateness-fund/opening/${data.year}`, {method:"POST", body:JSON.stringify({amount:Number($("opening").value)})}, "已更新 Bal b/d。"));
+    $("carry").addEventListener("click", () => mutate(`/lateness-fund/carry/${data.year}`, {method:"POST"}, "已沿用上一年度結餘。"));
+    $("recordForm").addEventListener("submit", event => { event.preventDefault(); mutate("/lateness-fund/records", {method:"POST", body:JSON.stringify({late_date:$("lateDate").value, member_user_id:$("member").value, late_minutes:Number($("minutes").value), paid_amount:data.is_manager ? Number($("paid").value) : 0, note:$("lateNote").value})}, "已新增遲到紀錄。", () => { $("lateDate").value=todayHK(); $("minutes").value=1; $("paid").value=0; $("lateNote").value=""; }); });
+    $("expenseForm").addEventListener("submit", event => { event.preventDefault(); mutate("/lateness-fund/expenses", {method:"POST", body:JSON.stringify({expense_date:$("expenseDate").value, amount:Number($("expenseAmount").value), note:$("expenseNote").value})}, "已新增支出紀錄。", () => { $("expenseDate").value=todayHK(); $("expenseAmount").value=""; $("expenseNote").value=""; }); });
+    $("sendNotify").addEventListener("click", async () => { VoteUI.setBusy($("busy"),true); try { const result=await api(`/lateness-fund/notify/${data.year}`,{method:"POST",body:JSON.stringify({target:$("notifyTarget").value,message:$("notifyMessage").value})}); VoteUI.toast($("toast"), result.sent_devices ? `✅ 已向 ${result.notified_members} 位委員發送通知（共 ${result.sent_devices} 部裝置）。` : "⚠️ 未能發送通知，對象可能未開啟推送通知。"); } catch(error){ VoteUI.toast($("toast"),`⚠️ ${error.message}`); } finally { VoteUI.setBusy($("busy"),false); } });
+    document.addEventListener("click", event => {
+        const button = event.target.closest("button"); if (!button) return;
+        if (button.dataset.paid) { const row=recordRows[button.dataset.paid]; if(row) openDialog({title:"更新已繳金額",summary:`#${row.id}｜${row.member_user_id}｜${dateHK(row.late_date)}｜應繳 ${money(row.penalty_amount)}`,amount:row.paid_amount,confirmText:"更新",action:amount=>mutate(`/lateness-fund/records/${row.id}`,{method:"PATCH",body:JSON.stringify({amount})},"已更新已繳金額。")} ); }
+        if (button.dataset.deleteRecord) { const row=recordRows[button.dataset.deleteRecord]; if(row) openDialog({title:"永久刪除遲到紀錄？",summary:`#${row.id}｜${row.member_user_id}｜${dateHK(row.late_date)}｜應繳 ${money(row.penalty_amount)}`,confirmText:"永久刪除",action:()=>mutate(`/lateness-fund/records/${row.id}`,{method:"DELETE"},"已刪除遲到紀錄。")} ); }
+        if (button.dataset.deleteExpense) { const row=expenseRows[button.dataset.deleteExpense]; if(row) openDialog({title:"永久刪除支出紀錄？",summary:`#${row.id}｜${dateHK(row.expense_date)}｜${money(row.amount_hkd)}｜${row.note||"無備註"}`,confirmText:"永久刪除",action:()=>mutate(`/lateness-fund/expenses/${row.id}`,{method:"DELETE"},"已刪除支出紀錄。")} ); }
+    });
+    $("dialogCancel").addEventListener("click", closeDialog); $("dialogConfirm").addEventListener("click", async () => { if (!pendingAction) return; const amount=$("dialogAmountWrap").classList.contains("hidden") ? undefined : Number($("dialogAmount").value); if (amount !== undefined && amount < 0) { $("dialogMessage").innerHTML='<div class="notice warn">已繳金額不能為負數。</div>'; return; } const action=pendingAction; closeDialog(); await action(amount); });
+    document.addEventListener("keydown", event => { if (event.key === "Escape" && $("actionDialog").classList.contains("show")) closeDialog(); });
+    $("logout").addEventListener("click", async () => { await api("/committee/logout", {method:"POST"}); location.reload(); });
+    $("loginForm").addEventListener("submit", async event => { event.preventDefault(); try { await api("/committee/login", {method:"POST", body:JSON.stringify({user_id:$("loginUser").value,password:$("loginPassword").value})}); await load(); } catch(error) { VoteUI.toast($("toast"),`⚠️ ${error.message}`); } });
+    load();
+})();
+</script>
+</body>
+</html>

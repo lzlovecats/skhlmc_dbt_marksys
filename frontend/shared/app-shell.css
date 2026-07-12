@@ -37,7 +37,7 @@ p { margin: .35rem 0 .85rem; }
 
 .back-link, .back { display: inline-flex; align-items: center; gap: .3rem; color: var(--accent); text-decoration: none; margin-bottom: .6rem; }
 .back-link:hover, .back:hover { text-decoration: underline; }
-.caption, .intro { color: var(--muted); font-size: .9rem; }
+.caption, .intro, .sub { color: var(--muted); font-size: .9rem; }
 
 .card, .guide, details, .notice {
     background: var(--card);
@@ -45,6 +45,7 @@ p { margin: .35rem 0 .85rem; }
     border-radius: var(--radius);
     padding: 1rem;
 }
+.card { border-radius: 12px; }
 .card, details, .notice { margin: 1rem 0; }
 .guide { margin: 0 0 1rem; }
 summary { cursor: pointer; color: var(--text); font-weight: 600; }
@@ -105,6 +106,7 @@ th { background: var(--surface); color: var(--muted); white-space: nowrap; }
 .guide { border-radius: 12px; padding: .85rem 1rem; }
 .guide > summary { color: var(--text); font-weight: 600; }
 .guide ul, .guide ol, .guide .sub { line-height: 1.95; }
+.guide .sub { margin-top: .55rem; }
 .guide ul, .guide ol { margin-block: .55rem 0; }
 
 .notice.ok, .ok, .success { border-color: #357a52; color: var(--ok); }
@@ -124,4 +126,6 @@ th { background: var(--surface); color: var(--muted); white-space: nowrap; }
     body { padding-inline: .85rem; }
     h1 { font-size: 1.65rem; }
     .grid2, .grid3, .grid4, .split, .metrics { grid-template-columns: 1fr; gap: .65rem; }
+    .tabs { display: flex; gap: .4rem; overflow-x: auto; scroll-snap-type: x proximity; padding-bottom: .2rem; }
+    .tabs > button, .tabs > .tab { flex: 0 0 auto; min-width: max-content; scroll-snap-align: start; }
 }

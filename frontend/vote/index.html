@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>辯題徵集、投票及罷免</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#111827">
     <link rel="stylesheet" href="/shared/app-shell.css"><style>
         /* Always dark, to match the Streamlit app (config.toml base="dark").
@@ -130,6 +130,9 @@
         .multi-opt { display: flex; gap: .5rem; align-items: flex-start; padding: .35rem .45rem; border-radius: 6px; cursor: pointer; }
         .multi-opt:hover { background: var(--chip); }
         .multi-opt input { margin-top: .2rem; }
+        .depose-filter-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(10rem, 1fr); gap: .55rem; margin-bottom: .55rem; }
+        .selection-summary { margin: .1rem 0 .45rem; color: var(--chip-text); font-size: .9rem; font-weight: 600; }
+        .filter-empty { color: var(--muted); text-align: center; padding: .8rem; }
         .toast { position: fixed; right: max(1rem, env(safe-area-inset-right)); top: max(1rem, env(safe-area-inset-top)); background: #000; color: #fff; border: 1px solid #333; padding: 1rem 1.25rem; border-radius: 12px; font-size: 1.05rem; line-height: 1.5; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: min(32rem, 92vw); text-align: left; box-shadow: 0 14px 40px rgba(0,0,0,.6); z-index: 20; }
         .toast.show { opacity: 1; }
         .notice-backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.72); display: grid; place-items: center; padding: 1rem; }
@@ -140,6 +143,7 @@
         @media (max-width: 520px) {
             h1 { font-size: 1.65rem; }
             .metric-grid { grid-template-columns: 1fr; }
+            .depose-filter-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -180,7 +184,8 @@
 <div id="noticeRoot"></div>
 <div id="confirmRoot"></div>
 
-<script src="/shared/vote-ui.js"></script><script>
+<script src="/shared/vote-ui.js"></script>
+<script src="/shared/markdown.js"></script><script>
 (function () {
     "use strict";
     const content = document.getElementById("content");
@@ -236,37 +241,7 @@
         return `<div class="progress-label">${esc(label)}：${esc(count)} / ${esc(threshold || "—")}</div><div class="progress ${kind}-bar"><span style="width:${pct}%"></span></div>`;
     }
     function md(s) {
-        let text = esc(s || "");
-        text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-                   .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-                   .replace(/`([^`]+)`/g, "<code>$1</code>")
-                   .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-        const lines = text.split(/\r?\n/);
-        let html = "", listType = "";
-        function closeList() {
-            if (listType) html += `</${listType}>`;
-            listType = "";
-        }
-        for (const line of lines) {
-            const heading = line.match(/^(#{1,4})\s+(.+)$/);
-            const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
-            if (heading) {
-                closeList();
-                const level = heading[1].length;
-                html += `<h${level}>${heading[2]}</h${level}>`;
-            } else if (/^\s*[-•]\s+/.test(line)) {
-                if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; }
-                html += `<li>${line.replace(/^\s*[-•]\s+/, "")}</li>`;
-            } else if (ordered) {
-                if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; }
-                html += `<li>${ordered[1]}</li>`;
-            } else {
-                closeList();
-                if (line.trim()) html += `<p>${line}</p>`;
-            }
-        }
-        closeList();
-        return html || "<p></p>";
+        return SafeMarkdown.render(s || "");
     }
     function invalidateCache() {
         Object.keys(CACHE).forEach(k => delete CACHE[k]);
@@ -584,16 +559,26 @@
         if (!bankTopics.length)
             return `<div class="card"><div class="topic">提出罷免動議</div><div class="sub" style="margin-bottom:.6rem">${esc(deposeInfo)}</div><div class="sub">辯題庫暫無可提出罷免的辯題。</div></div>`;
         const opts = bankTopics.map(t => `
-            <label class="multi-opt">
+            <label class="multi-opt" data-category="${esc(t.category || "未分類")}">
                 <input type="checkbox" value="${esc(t.topic_text)}">
                 <span>${esc(t.topic_text)}</span>
             </label>`).join("");
+        const availableCategories = Array.from(new Set(bankTopics.map(t => t.category || "未分類")));
+        const categoryOpts = availableCategories.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
         const reasonOpts = DEPOSE_REASONS.map(r => `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`).join("");
         return `
             <div class="card" id="deposeForm">
                 <div class="topic">提出罷免動議</div>
                 <div class="sub" style="margin-bottom:.6rem">${esc(deposeInfo)}</div>
-                <div class="field"><label>請選擇要提出罷免動議的辯題（可多選）</label><div class="multi-select" id="deposeTopic">${opts}</div></div>
+                <div class="field">
+                    <label>請選擇要提出罷免動議的辯題（可多選）</label>
+                    <div class="depose-filter-grid">
+                        <input type="search" id="deposeSearch" placeholder="搜尋辯題關鍵字" aria-label="搜尋罷免辯題">
+                        <select id="deposeCategory" aria-label="按類別篩選罷免辯題"><option value="">全部類別</option>${categoryOpts}</select>
+                    </div>
+                    <div class="selection-summary" id="deposeSelectionSummary" aria-live="polite"></div>
+                    <div class="multi-select" id="deposeTopic">${opts}<div class="filter-empty" id="deposeFilterEmpty" hidden>沒有符合條件的辯題。</div></div>
+                </div>
                 <div class="field"><label>請選擇提出罷免動議的原因（可多選）</label><div class="pill-list reason-opts">${reasonOpts}</div></div>
                 <div class="field"><label>其他補充原因（如有）</label><textarea id="deposeOther" rows="2" placeholder="例如：題目最近已在其他比賽打過。"></textarea></div>
                 <button class="btn-primary" data-act="depose-submit" ${canPropose ? "" : "disabled"}>提出罷免動議</button>
@@ -640,11 +625,33 @@
             ${inactiveDepose}
             ${deposeWarning}
             ${deposeProposeForm(data.bank_topics || [], deposeInfo, canPropose && !deposeFull)}`;
+        filterDeposeTopics();
+    }
+
+    function filterDeposeTopics() {
+        const form = document.getElementById("deposeForm");
+        if (!form) return;
+        const query = (form.querySelector("#deposeSearch")?.value || "").trim().toLocaleLowerCase("zh-HK");
+        const category = form.querySelector("#deposeCategory")?.value || "";
+        const options = Array.from(form.querySelectorAll("#deposeTopic .multi-opt"));
+        let visible = 0;
+        options.forEach(opt => {
+            const topic = (opt.textContent || "").toLocaleLowerCase("zh-HK");
+            const show = (!query || topic.includes(query)) && (!category || opt.dataset.category === category);
+            opt.hidden = !show;
+            if (show) visible += 1;
+        });
+        const selected = options.filter(opt => opt.querySelector("input:checked")).length;
+        const summary = form.querySelector("#deposeSelectionSummary");
+        if (summary) summary.textContent = `已選 ${selected} 條 ｜ 顯示 ${visible} / ${options.length} 條`;
+        const empty = form.querySelector("#deposeFilterEmpty");
+        if (empty) empty.hidden = visible !== 0;
     }
 
     // ── member stats tab ─────────────────────────────────────────────────────
     function metric(label, value) {
-        return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(value || "—")}</div></div>`;
+        const shown = value === null || value === undefined || value === "" ? "—" : value;
+        return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(shown)}</div></div>`;
     }
     function renderMemberStats(data) {
         const stats = (data.stats || []).slice().sort((a, b) => {
@@ -708,7 +715,7 @@
         const max = isPct ? 100 : (rows.reduce((m, r) => Math.max(m, Number(r.value) || 0), 0) || 1);
         const body = rows.length ? rows.map(r => {
             const val = Number(r.value) || 0;
-            const width = Math.min(100, Math.max(2, val / max * 100));
+            const width = val <= 0 ? 0 : Math.min(100, Math.max(2, val / max * 100));
             return `<div class="chart-row"><div>${esc(r.label)}</div><div class="chart-track"><div class="chart-fill" style="width:${width}%"></div></div><div>${esc(Math.round(val * 10) / 10)}${suffix || ""}</div></div>`;
         }).join("") : '<div class="sub">暫時未有數據。</div>';
         return `<div class="card"><div class="topic">${esc(title)}</div><div class="chart">${body}</div></div>`;
@@ -720,12 +727,15 @@
         const bank = data.bank || {};
         const history = data.history || {};
         const visuals = data.history_visuals || { metrics: {}, charts: {} };
+        const changedHint = item => item.analysis && item.source_changed
+            ? '<div class="member-state inactive">⚠️ 分析完成後相關資料已有變動，以下 AI 內容可能未反映最新資料；建議重新分析。</div>' : "";
         const bankHtml = `
             <div class="card">
                 <div class="topic">辯題庫分析</div>
                 <div class="sub">由 AI 分析辯題庫的類別／難度分佈、題目質素，並提出未來方向及即時可做建議。</div>
                 <div class="actions"><button data-act="refresh">🔄 重新整理</button></div>
                 <div class="sub">🕒 ${bank.analysed_at ? `上次分析時間：${esc(bank.analysed_at)}${bank.analysed_by ? `（由 ${esc(bank.analysed_by)} 執行）` : ""}` : "尚未有分析紀錄。"}</div>
+                ${changedHint(bank)}
                 <div class="actions" style="margin-top:1rem"><button data-act="ai-analysis" data-kind="bank">AI 分析辯題庫</button></div>
                 ${bank.analysis ? `<details open><summary>AI 分析結果</summary><div class="ai-box">${md(bank.analysis)}</div></details>` : ""}
             </div>`;
@@ -747,6 +757,7 @@
             ${chart("各委員同意率", visuals.charts.member_agree_rate, "%")}
             <div class="card">
                 <div class="sub">🕒 ${history.analysed_at ? `上次分析時間：${esc(history.analysed_at)}${history.analysed_by ? `（由 ${esc(history.analysed_by)} 執行）` : ""}` : "尚未有分析紀錄。"}</div>
+                ${changedHint(history)}
                 <div class="actions" style="margin-top:1rem"><button data-act="ai-analysis" data-kind="history">AI 分析過往投票紀錄</button></div>
                 ${history.analysis ? `<details open><summary>AI 分析結果</summary><div class="ai-box">${md(history.analysis)}</div></details>` : ""}
             </div>`;
@@ -1082,6 +1093,16 @@
     }
 
     // ── event delegation ──────────────────────────────────────────────────────
+    content.addEventListener("input", function (ev) {
+        if (ev.target.id === "deposeSearch") filterDeposeTopics();
+    });
+
+    content.addEventListener("change", function (ev) {
+        if (ev.target.id === "deposeCategory" || ev.target.closest("#deposeTopic")) {
+            filterDeposeTopics();
+        }
+    });
+
     content.addEventListener("click", function (ev) {
         const optEl = ev.target.closest(".reason-opt");
         if (optEl) { optEl.classList.toggle("sel"); return; }

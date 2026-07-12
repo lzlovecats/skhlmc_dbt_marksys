@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>比賽報名</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0e1117">
     <link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/app-icon-180.png">
     <link rel="stylesheet" href="/shared/app-shell.css"><style>
@@ -20,19 +20,20 @@
     <div id="loading" class="notice">載入中…</div>
     <section id="closed" class="hidden"><div id="closedMessage" class="notice warn"></div><div id="schedule" class="caption"></div></section>
     <section id="open" class="hidden">
-        <div class="card"><h2 id="editionTitle"></h2><p>報名流程：填寫隊伍資料 → 確認聯絡方法 → 提交報名</p><p>請至側邊欄查閱賽規。如有疑問，請WhatsApp 52698715。</p><div id="timeRange" class="caption"></div></div>
+        <div class="card"><h2 id="editionTitle"></h2><p>報名流程：填寫隊伍資料 → 確認聯絡方法 → 提交報名</p><p>如有疑問，請 <a href="https://wa.me/85252698715" target="_blank" rel="noopener noreferrer">WhatsApp 52698715</a>。</p><details><summary>📋 查看參賽隊伍賽規</summary><div id="rulesContent">載入中…</div></details><div id="timeRange" class="caption"></div></div>
         <form id="registrationForm">
             <h2>隊伍資訊</h2>
-            <label for="teamName">隊名</label><input id="teamName">
-            <div class="grid2"><div><label for="mainDebater">主辯姓名</label><input id="mainDebater"></div><div><label for="secondDeputy">二副姓名</label><input id="secondDeputy"></div><div><label for="firstDeputy">一副姓名</label><input id="firstDeputy"></div><div><label for="closingDebater">結辯姓名</label><input id="closingDebater"></div></div>
+            <label for="teamName">隊名</label><input id="teamName" required autocomplete="organization">
+            <div class="grid2"><div><label for="mainDebater">主辯姓名</label><input id="mainDebater" required autocomplete="name"><label for="firstDeputy">一副姓名</label><input id="firstDeputy" required autocomplete="name"></div><div><label for="secondDeputy">二副姓名</label><input id="secondDeputy" required autocomplete="name"><label for="closingDebater">結辯姓名</label><input id="closingDebater" required autocomplete="name"></div></div>
             <h2 style="margin-top:1.3rem">聯絡人資料</h2>
-            <div class="grid3"><div><label for="contactName">聯絡人姓名</label><input id="contactName"></div><div><label for="contactClass">聯絡人班別</label><input id="contactClass"></div><div><label for="contactPhone">聯絡電話號碼</label><input id="contactPhone" inputmode="numeric" maxlength="8"></div></div>
+            <p class="caption">姓名、班別及電話只供賽會處理本次報名、聯絡及跟進用途。</p>
+            <div class="grid3"><div><label for="contactName">聯絡人姓名</label><input id="contactName" required autocomplete="name"></div><div><label for="contactClass">聯絡人班別</label><input id="contactClass" required autocomplete="organization-title"></div><div><label for="contactPhone">聯絡電話號碼</label><input id="contactPhone" type="tel" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" required autocomplete="tel" aria-describedby="phoneHelp"><div id="phoneHelp" class="caption">請輸入 8 位香港電話號碼。</div></div></div>
             <div id="formMessage"></div><button id="submitButton" type="submit">提交報名</button>
         </form>
     </section>
     <section id="success" class="hidden"><div id="successMessage" class="notice success"></div><button id="anotherTeam" class="secondary" type="button">提交另一隊報名</button></section>
 </main>
-<script src="/shared/vote-ui.js"></script>
+<script src="/shared/vote-ui.js"></script><script src="/shared/markdown.js"></script>
 <script>
 (() => { "use strict";
     const $ = id => document.getElementById(id); let payload = null;
@@ -45,8 +46,9 @@
         const settings = data.settings; $("editionTitle").textContent = `第 ${settings.competition_edition} 屆比賽報名`; $("timeRange").textContent = `報名時間（香港時間／HKT）：${displayTime(settings.registration_start)} 至 ${displayTime(settings.registration_end)}`; $("open").classList.remove("hidden");
     }
     async function load() { try { const response = await fetch("/api/registration/data"); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); render(data); } catch (error) { $("loading").textContent = `連線錯誤: ${error.message}`; } }
+    async function loadRules() { try { const response = await fetch("/api/home/rules?role=" + encodeURIComponent("參賽隊伍")); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); $("rulesContent").innerHTML = SafeMarkdown.render(data.markdown || "暫未有賽規內容。"); } catch (error) { $("rulesContent").textContent = "賽規暫時未能載入，請返回主頁查看。"; } }
     $("registrationForm").addEventListener("submit", async event => { event.preventDefault(); const button = $("submitButton"); button.disabled = true; message("", ""); const data = { competition_edition:payload.settings.competition_edition, team_name:$("teamName").value, main_debater_name:$("mainDebater").value, first_deputy_name:$("firstDeputy").value, second_deputy_name:$("secondDeputy").value, closing_debater_name:$("closingDebater").value, contact_name:$("contactName").value, contact_class:$("contactClass").value, contact_phone:$("contactPhone").value }; try { const response = await fetch("/api/registration/submit", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data) }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`); if (!result.ok) { message("error", result.message); return; } $("open").classList.add("hidden"); $("successMessage").textContent = `已收到「${result.team_name}」的報名。賽會人員稍後會按聯絡資料跟進。`; $("success").classList.remove("hidden"); } catch (error) { message("error", error.message); } finally { button.disabled = false; } });
-    $("anotherTeam").addEventListener("click", () => { $("registrationForm").reset(); $("success").classList.add("hidden"); $("open").classList.remove("hidden"); message("", ""); }); load();
+    $("anotherTeam").addEventListener("click", () => { $("registrationForm").reset(); $("success").classList.add("hidden"); $("open").classList.remove("hidden"); message("", ""); }); load(); loadRules();
 })();
 </script>
 </body>

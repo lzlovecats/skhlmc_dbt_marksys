@@ -42,6 +42,46 @@ def _ai_secrets():
     }
 
 
+def _log_vote_ai(user_id, feature, text, usage, db):
+    """Usage accounting must never turn a completed AI response into an error."""
+    try:
+        from core.funds_logic import log_ai_usage
+        from core.vote_ai import is_successful_ai_result
+
+        success = is_successful_ai_result(text)
+        log_ai_usage(
+            user_id, feature, success, usage=usage,
+            error_message="" if success else str(text), db=db,
+        )
+    except Exception:
+        pass
+
+
+def _require_pending_motion(motion_type, motion_key, db):
+    from schema import TABLE_TOPIC_REMOVAL_VOTES, TABLE_TOPIC_VOTES
+
+    table = TABLE_TOPIC_VOTES if motion_type == "topic_vote" else TABLE_TOPIC_REMOVAL_VOTES
+    rows = db.query(
+        f"SELECT status FROM {table} WHERE topic_text=:topic AND status='pending' LIMIT 1",
+        {"topic": motion_key},
+    )
+    if not rows.empty:
+        return
+    existing = db.query(f"SELECT 1 FROM {table} WHERE topic_text=:topic LIMIT 1", {"topic": motion_key})
+    if existing.empty:
+        raise HTTPException(404, "motion not found")
+    raise HTTPException(409, "motion already resolved")
+
+
+def _validate_ai_selection(category, difficulty):
+    from core.vote_ai import CATEGORIES, DIFFICULTY_OPTIONS
+
+    if category not in CATEGORIES:
+        raise HTTPException(400, "不支援的辯題類別")
+    if difficulty not in DIFFICULTY_OPTIONS:
+        raise HTTPException(400, "辯題難度必須為 1、2 或 3")
+
+
 # ── serialization ─────────────────────────────────────────────────────────────
 def _jsonify_pending(row: dict) -> dict:
     """Shape one pending-topic dict from vote_logic into a JSON-safe payload."""
@@ -370,9 +410,14 @@ def comments(motion_type: str, motion_key: str, user_id: str = Depends(_committe
     from core.vote_logic import fetch_comments
 
     db = _vote_db()
+    motion_type = _validate_motion_type(motion_type)
+    motion_key = (motion_key or "").strip()
+    if not motion_key:
+        raise HTTPException(400, "motion_key is required")
+    _require_pending_motion(motion_type, motion_key, db)
     return {
         "user_id": user_id,
-        "comments": fetch_comments(_validate_motion_type(motion_type), motion_key, db=db),
+        "comments": fetch_comments(motion_type, motion_key, db=db),
     }
 
 
@@ -387,6 +432,7 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
         raise HTTPException(400, "motion_key is required")
 
     db = _vote_db()
+    _require_pending_motion(motion_type, motion_key, db)
     text = (body.text or "").strip()
     if text:
         vl.insert_comment(motion_type, motion_key, user_id, text, db=db)
@@ -406,9 +452,10 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
     if should_ai:
         vl.ensure_ai_comment_account(db=db)
         existing = vl.fetch_comments(motion_type, motion_key, db=db)
-        ai_text, _usage = vote_ai.discussion_reply(
+        ai_text, usage = vote_ai.discussion_reply(
             motion_type, motion_key, existing, db, _ai_secrets(), question=question
         )
+        _log_vote_ai(user_id, "vote_discussion", ai_text, usage, db)
         if vote_ai.is_successful_ai_result(ai_text):
             vl.insert_comment(motion_type, motion_key, "Gemini", ai_text, db=db)
         else:
@@ -438,7 +485,10 @@ def ai_review(body: AiReviewBody, user_id: str = Depends(_committee_user)):
     topic = (body.topic or "").strip()
     if not topic:
         raise HTTPException(400, "請先輸入完整辯題")
-    text, _usage = review_topic(topic, body.category, body.difficulty, _vote_db(), _ai_secrets())
+    _validate_ai_selection(body.category, body.difficulty)
+    db = _vote_db()
+    text, usage = review_topic(topic, body.category, body.difficulty, db, _ai_secrets())
+    _log_vote_ai(user_id, "vote_review", text, usage, db)
     return {"status": "ok", "review": text}
 
 
@@ -447,17 +497,24 @@ def analysis(user_id: str = Depends(_committee_user)):
     from core.vote_logic import (
         find_stale_removed_topics,
         fetch_vote_history_analysis_data,
+        analysis_source_signature,
         load_saved_analysis,
         vote_history_chart_data,
     )
 
     db = _vote_db()
     history_df = fetch_vote_history_analysis_data(db=db)
+    bank_saved = load_saved_analysis("bank", db=db)
+    history_saved = load_saved_analysis("history", db=db)
+    bank_signature = analysis_source_signature("bank", db=db)
+    history_signature = analysis_source_signature("history", db=db, vote_df=history_df)
+    bank_saved["source_changed"] = bool(bank_saved["analysis"]) and bank_saved.get("source_signature") != bank_signature
+    history_saved["source_changed"] = bool(history_saved["analysis"]) and history_saved.get("source_signature") != history_signature
     return {
         "user_id": user_id,
         "stale_topics": find_stale_removed_topics(db=db),
-        "bank": load_saved_analysis("bank", db=db),
-        "history": load_saved_analysis("history", db=db),
+        "bank": bank_saved,
+        "history": history_saved,
         "history_visuals": vote_history_chart_data(history_df),
     }
 
@@ -473,16 +530,19 @@ def run_analysis(body: AiAnalysisBody, user_id: str = Depends(_committee_user)):
 
     db = _vote_db()
     if body.kind == "bank":
-        text, _usage = vote_ai.analyze_topic_bank(db, _ai_secrets())
+        source_signature = vl.analysis_source_signature("bank", db=db)
+        text, usage = vote_ai.analyze_topic_bank(db, _ai_secrets())
         if vote_ai.is_successful_ai_result(text):
-            vl.save_analysis("bank", text, user_id, db=db)
+            vl.save_analysis("bank", text, user_id, source_signature=source_signature, db=db)
     elif body.kind == "history":
         history_df = vl.fetch_vote_history_analysis_data(db=db)
-        text, _usage = vote_ai.analyze_vote_history(history_df, db, _ai_secrets())
+        source_signature = vl.analysis_source_signature("history", db=db, vote_df=history_df)
+        text, usage = vote_ai.analyze_vote_history(history_df, db, _ai_secrets())
         if vote_ai.is_successful_ai_result(text):
-            vl.save_analysis("history", text, user_id, db=db)
+            vl.save_analysis("history", text, user_id, source_signature=source_signature, db=db)
     else:
         raise HTTPException(400, "kind must be 'bank' or 'history'")
+    _log_vote_ai(user_id, "vote_analysis", text, usage, db)
     if not vote_ai.is_successful_ai_result(text):
         raise HTTPException(502, text)
     return {"status": "ok", "analysis": text}
@@ -508,6 +568,7 @@ def propose(body: ProposeBody, user_id: str = Depends(_committee_user)):
     topic = (body.topic or "").strip()
     if not topic:
         raise HTTPException(400, "請輸入辯題內容")
+    _validate_ai_selection(body.category, body.difficulty)
 
     db = _vote_db()
     if not is_active_member(user_id, db=db):
@@ -547,7 +608,7 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     from core import vote_logic as vl
     from core.members import is_active_member, count_active_members
 
-    topics = [str(t).strip() for t in (body.topics or []) if str(t).strip()]
+    topics = list(dict.fromkeys(str(t).strip() for t in (body.topics or []) if str(t).strip()))
     if body.topic:
         single = str(body.topic).strip()
         if single and single not in topics:
@@ -564,6 +625,10 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     if vl.count_pending_deposes(db=db) >= 10:
         raise HTTPException(409, "目前已有 10 個罷免動議，請先完成投票再提交")
 
+    missing = [topic for topic in topics if not vl.topic_in_bank(topic, db=db)]
+    if missing:
+        raise HTTPException(404, f"「{missing[0]}」不在辯題庫中")
+
     threshold = vl.depose_threshold(count_active_members(db=db))
     created = []
     skipped = []
@@ -573,8 +638,6 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
         if pending_now >= 10:
             skipped.append(topic)
             continue
-        if not vl.topic_in_bank(topic, db=db):
-            raise HTTPException(404, f"「{topic}」不在辯題庫中")
         if vl.depose_pending_exists(topic, db=db):
             skipped.append(topic)
             continue

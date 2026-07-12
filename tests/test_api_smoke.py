@@ -2,6 +2,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from api.registration_admin_api import _record_filters
 from deploy.proxy import app
 
 
@@ -28,10 +29,22 @@ class ApiSmokeTests(unittest.TestCase):
             "/api/ai-fund/data", "/api/ai-training/data", "/api/video-replay/data",
             "/api/match-photos/data", "/api/registration-admin/data",
             "/api/chairperson/data", "/api/management/data",
+            "/api/review/data", "/api/review/pdf",
+            "/api/lateness-fund/data", "/api/lateness-fund/export/records.csv?year=2025",
         )
         for path in paths:
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 401)
+
+    def test_lateness_manager_script_is_served(self):
+        self.assertEqual(self.client.get("/dev-settings/lateness-managers.js").status_code, 200)
+
+    def test_registration_search_filters_records_and_export_consistently(self):
+        where, params = _record_filters(3, "confirmed", " 測試隊 ")
+        self.assertIn("status=:status", where)
+        self.assertIn("team_name ILIKE :search", where)
+        self.assertIn("contact_phone ILIKE :search", where)
+        self.assertEqual(params, {"edition": 3, "status": "confirmed", "search": "%測試隊%"})
 
 
 if __name__ == "__main__":
