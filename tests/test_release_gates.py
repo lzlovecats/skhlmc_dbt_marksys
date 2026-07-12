@@ -169,6 +169,37 @@ class MigrationParityRegressionTests(unittest.TestCase):
             self.assertIn(marker, core)
         self.assertIn("lateness_fund_managers", admin)
 
+    def test_ai_fund_has_streamlit_exports_summary_and_safe_admin_actions(self):
+        html = (ROOT / "frontend" / "ai_fund" / "index.html").read_text(encoding="utf-8")
+        api = (ROOT / "api" / "funds_api.py").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "funds_logic.py").read_text(encoding="utf-8")
+        for marker in ("AI基金使用指南", "usage-summary", "export/transactions.csv", "export/usage.csv", "statusDialog", "resetConfirm", "loadCollections", 'id="logout"'):
+            self.assertIn(marker, html)
+        self.assertNotIn('/shared/server-tables.js', html)
+        for marker in ('usage-summary', 'transactions.csv', 'usage.csv', 'HTTPException(409', 'result or {}'):
+            self.assertIn(marker, api)
+        for marker in ('AI_PAYMENT_METHODS', 'COALESCE(account_disabled,FALSE)=FALSE', 'def ai_usage_summary', '不能為負數', '_AI_SCHEMA_LOCK'):
+            self.assertIn(marker, core)
+        self.assertNotIn('DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature', core)
+        for marker in ("provider_refund", "member_refund", "Provider 退款予基金", "退款予委員"):
+            self.assertIn(marker, html)
+            self.assertIn(marker, core)
+        self.assertIn("WHEN transaction_type='member_refund' THEN -amount_hkd", core)
+
+    def test_ai_training_reviews_preserve_server_page(self):
+        app = (ROOT / "frontend" / "ai_training" / "app.js").read_text(encoding="utf-8")
+        html = (ROOT / "frontend" / "ai_training" / "index.html").read_text(encoding="utf-8")
+        for marker in ("preservePage=false", "target._voteServerSpec?.page", "loadRecordings(resetPage=false)", '"adminLlm"'):
+            self.assertIn(marker, app)
+        self.assertIn('loadRecordings(true)', app)
+        self.assertIn('4.0.15-ai-training-3', html)
+
+    def test_home_displays_release_version(self):
+        home = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
+        version = (ROOT / "version.py").read_text(encoding="utf-8")
+        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.0.15）", home)
+        self.assertIn('APP_VERSION = "4.0.15"', version)
+
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
         browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")

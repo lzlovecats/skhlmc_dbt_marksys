@@ -31,6 +31,8 @@ class ApiSmokeTests(unittest.TestCase):
             "/api/chairperson/data", "/api/management/data",
             "/api/review/data", "/api/review/pdf",
             "/api/lateness-fund/data", "/api/lateness-fund/export/records.csv?year=2025",
+            "/api/ai-fund/usage-summary", "/api/ai-fund/export/transactions.csv",
+            "/api/ai-fund/export/usage.csv", "/api/ai-fund/export/usage-summary.csv",
         )
         for path in paths:
             with self.subTest(path=path):

@@ -1,6 +1,7 @@
 """Streamlit-free ledger logic shared by the lateness and AI fund pages."""
 
 import json
+import threading
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -17,8 +18,26 @@ HKD_PER_USD = 7.8
 AI_FUND_TARGET_DEFAULT = 500.0
 AI_FUND_LOW_BALANCE_DEFAULT = 100.0
 AI_FUND_PAYMENT_DEFAULT = "請按賽會指示付款，並提交交易編號供 AI基金管理員確認。"
-AI_TRANSACTION_TYPES = {"member_deposit", "provider_topup", "refund", "adjustment"}
+AI_TRANSACTION_TYPES = {"member_deposit", "provider_topup", "provider_refund", "member_refund", "adjustment"}
 AI_PROVIDERS = {"openrouter", "gemini", "openai", "general", "other"}
+AI_PAYMENT_METHODS = {"FPS", "現金", "Alipay", "PayMe", "其他"}
+AI_TRANSACTION_LABELS = {
+    "member_deposit": "成員入數", "provider_topup": "AI provider 充值 / 帳單",
+    "provider_refund": "Provider 退款予基金", "member_refund": "退款予委員",
+    "adjustment": "手動調整",
+}
+AI_PROVIDER_LABELS = {
+    "general": "整體AI基金", "gemini": "Gemini", "openrouter": "OpenRouter",
+    "openai": "GPT", "other": "其他",
+}
+AI_FEATURE_LABELS = {
+    "speech_review": "練習發言", "strategy": "主線策劃", "web_research": "搵料易",
+    "fact_check": "Fact Check易", "free_debate_live": "打Free De",
+    "full_mock_live": "打完整Mock", "vote_review": "辯題審查",
+    "vote_analysis": "辯題庫 / 往績分析", "vote_discussion": "委員討論回應",
+    "tts_review": "AI訓練·錄音檢查", "tts_script_analysis": "AI訓練·句庫分析",
+    "llm_review": "AI訓練·文字審查",
+}
 AI_USAGE_FEATURES = (
     "speech_review", "strategy", "web_research", "fact_check",
     "free_debate_live", "full_mock_live", "vote_review",
@@ -26,6 +45,8 @@ AI_USAGE_FEATURES = (
     "tts_script_analysis", "llm_review",
 )
 LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
+_AI_SCHEMA_LOCK = threading.Lock()
+_AI_SCHEMA_READY = False
 
 
 def _now():
@@ -181,13 +202,35 @@ def delete_lateness(kind, row_id, db=None):
 
 
 def _ensure_ai(db):
-    db.execute(CREATE_AI_FUND_TRANSACTIONS); db.execute(CREATE_AI_FUND_USAGE_LOGS)
-    db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
-    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
-    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS {TABLE_AI_FUND_USAGE_LOGS}_feature_check")
-    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature")
-    allowed = ", ".join(f"'{feature}'" for feature in AI_USAGE_FEATURES)
-    db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD CONSTRAINT chk_ai_fund_usage_feature CHECK (feature IN ({allowed}))")
+    global _AI_SCHEMA_READY
+    if _AI_SCHEMA_READY: return
+    with _AI_SCHEMA_LOCK:
+        if _AI_SCHEMA_READY: return
+        db.execute(CREATE_AI_FUND_TRANSACTIONS); db.execute(CREATE_AI_FUND_USAGE_LOGS)
+        db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
+        db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
+        db.execute(f"""DO $$
+        DECLARE item RECORD;
+        BEGIN
+          PERFORM pg_advisory_xact_lock(hashtext('ai_fund_transaction_type_v2'));
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+            WHERE t.relname='{TABLE_AI_FUND_TRANSACTIONS}' AND c.contype='c'
+              AND pg_get_constraintdef(c.oid) ILIKE '%provider_refund%'
+              AND pg_get_constraintdef(c.oid) ILIKE '%member_refund%'
+          ) THEN
+            FOR item IN SELECT c.conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+              WHERE t.relname='{TABLE_AI_FUND_TRANSACTIONS}' AND c.contype='c'
+                AND pg_get_constraintdef(c.oid) ILIKE '%transaction_type%'
+            LOOP
+              EXECUTE format('ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} DROP CONSTRAINT %I',item.conname);
+            END LOOP;
+            UPDATE {TABLE_AI_FUND_TRANSACTIONS} SET transaction_type='provider_refund' WHERE transaction_type='refund';
+            ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD CONSTRAINT chk_ai_fund_transaction_type
+              CHECK (transaction_type IN ('member_deposit','provider_topup','provider_refund','member_refund','adjustment'));
+          END IF;
+        END $$""")
+        _AI_SCHEMA_READY = True
 
 
 def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
@@ -243,26 +286,27 @@ def ai_data(user_id, db=None):
     except (TypeError, json.JSONDecodeError): treasurers = []
     treasurer = user_id in treasurers
     settings = {"treasurers":treasurers,"target_hkd":_float(_config(db,"ai_fund_target_hkd",AI_FUND_TARGET_DEFAULT)),"low_balance_hkd":_float(_config(db,"ai_fund_low_balance_hkd",AI_FUND_LOW_BALANCE_DEFAULT)),"payment_instruction":_config(db,"ai_fund_payment_instruction",AI_FUND_PAYMENT_DEFAULT)}
-    balance = db.query(f"SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','adjustment') THEN amount_hkd ELSE 0 END),0) amount FROM {TABLE_AI_FUND_TRANSACTIONS} WHERE status='confirmed'")
+    balance = db.query(f"SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) amount FROM {TABLE_AI_FUND_TRANSACTIONS} WHERE status='confirmed'")
     pending = db.query(f"SELECT COALESCE(SUM(amount_hkd),0) amount FROM {TABLE_AI_FUND_TRANSACTIONS} WHERE status='pending' AND transaction_type='member_deposit'")
     since = (datetime.now(ZoneInfo("Asia/Hong_Kong"))-timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     recent = db.query(f"SELECT COALESCE(SUM(estimated_cost_hkd),0) amount FROM {TABLE_AI_FUND_USAGE_LOGS} WHERE status='success' AND created_at>=:since", {"since":since})
-    where = "" if treasurer else "WHERE created_by=:user"; params = {"user":user_id} if not treasurer else {}
     transactions = []
-    usage_where = "" if treasurer else "WHERE user_id=:user"; usage_params = {"user":user_id} if not treasurer else {}
     usage = []
-    accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') ORDER BY user_id")
+    accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id")
     amount = _float(balance.iloc[0]["amount"]); account_count = len(accounts)
     google = _config(db,"google_ai_studio_balance_usd","")
-    return {"user_id":user_id,"is_treasurer":treasurer,"settings":settings,"summary":{"balance_hkd":amount,"pending_deposits_hkd":_float(pending.iloc[0]["amount"]),"recent_usage_hkd":_float(recent.iloc[0]["amount"]),"member_count":account_count,"suggested_total_hkd":max(0,settings["target_hkd"]-amount),"suggested_per_member_hkd":max(0,settings["target_hkd"]-amount)/account_count if account_count else 0},"transactions":transactions,"usage":usage,"accounts":[str(v) for v in accounts.get("user_id",[])],"google_balance":{"balance_usd":None if google=="" else _float(google),"updated_at":_config(db,"google_ai_studio_balance_updated_at"),"updated_by":_config(db,"google_ai_studio_balance_updated_by")}}
+    return {"user_id":user_id,"is_treasurer":treasurer,"settings":settings,"summary":{"balance_hkd":amount,"pending_deposits_hkd":_float(pending.iloc[0]["amount"]),"recent_usage_hkd":_float(recent.iloc[0]["amount"]),"target_hkd":settings["target_hkd"],"low_balance_hkd":settings["low_balance_hkd"],"member_count":account_count,"suggested_total_hkd":max(0,settings["target_hkd"]-amount),"suggested_per_member_hkd":max(0,settings["target_hkd"]-amount)/account_count if account_count else 0},"transactions":transactions,"usage":usage,"accounts":[str(v) for v in accounts.get("user_id",[])],"google_balance":{"balance_usd":None if google=="" else _float(google),"updated_at":_config(db,"google_ai_studio_balance_updated_at"),"updated_by":_config(db,"google_ai_studio_balance_updated_by")}}
 
 
 def add_ai_transaction(user_id, transaction_type, amount, provider="general", payment_method="", reference_no="", note="", confirmed=False, db=None):
     if transaction_type not in AI_TRANSACTION_TYPES: raise ValueError("不支援的交易類型。")
     amount = _float(amount)
     if (transaction_type != "adjustment" and amount <= 0) or (transaction_type == "adjustment" and amount == 0): raise ValueError("金額不正確。")
+    method = str(payment_method or "").strip()
+    if transaction_type == "member_deposit" and method not in AI_PAYMENT_METHODS:
+        raise ValueError("不支援的付款方式。")
     db = _resolve_db(db); _ensure_ai(db); provider = str(provider or "other").lower(); provider = provider if provider in AI_PROVIDERS else "other"; now = _now()
-    db.execute(f"INSERT INTO {TABLE_AI_FUND_TRANSACTIONS}(transaction_type,status,provider,amount_hkd,payment_method,reference_no,note,created_by,created_at,confirmed_by,confirmed_at) VALUES(:type,:status,:provider,:amount,:method,:ref,:note,:user,:now,:confirmed_by,:confirmed_at)", {"type":transaction_type,"status":"confirmed" if confirmed else "pending","provider":provider,"amount":amount,"method":str(payment_method or "").strip(),"ref":str(reference_no or "").strip(),"note":str(note or "").strip(),"user":user_id,"now":now,"confirmed_by":user_id if confirmed else None,"confirmed_at":now if confirmed else None})
+    db.execute(f"INSERT INTO {TABLE_AI_FUND_TRANSACTIONS}(transaction_type,status,provider,amount_hkd,payment_method,reference_no,note,created_by,created_at,confirmed_by,confirmed_at) VALUES(:type,:status,:provider,:amount,:method,:ref,:note,:user,:now,:confirmed_by,:confirmed_at)", {"type":transaction_type,"status":"confirmed" if confirmed else "pending","provider":provider,"amount":amount,"method":method,"ref":str(reference_no or "").strip(),"note":str(note or "").strip(),"user":user_id,"now":now,"confirmed_by":user_id if confirmed else None,"confirmed_at":now if confirmed else None})
 
 
 def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None):
@@ -271,16 +315,34 @@ def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None)
     return _resolve_db(db).execute_count(f"UPDATE {TABLE_AI_FUND_TRANSACTIONS} SET status=:status,{field}_by=:user,{field}_at=:now,status_note=:note WHERE id=:id AND status='pending'", {"id":int(transaction_id),"status":status,"user":user_id,"now":now,"note":str(note or "").strip()})
 
 
+def ai_usage_summary(user_id, treasurer=False, db=None):
+    db = _resolve_db(db); _ensure_ai(db)
+    where = "WHERE status='success'" if treasurer else "WHERE status='success' AND user_id=:user"
+    params = {} if treasurer else {"user": user_id}
+    return db.query(f"""SELECT TO_CHAR(created_at,'YYYY-MM') AS "month",user_id,
+        COALESCE(provider,'other') AS provider,feature,model_label,COUNT(*) AS uses,
+        ROUND(SUM(estimated_cost_hkd)::numeric,4) AS estimated_cost_hkd
+        FROM {TABLE_AI_FUND_USAGE_LOGS} {where}
+        GROUP BY TO_CHAR(created_at,'YYYY-MM'),user_id,COALESCE(provider,'other'),feature,model_label
+        ORDER BY "month" DESC,estimated_cost_hkd DESC""", params)
+
+
 def save_ai_admin(user_id, payload, db=None):
     db = _resolve_db(db)
     data = ai_data(user_id, db=db)
     if not data["is_treasurer"]: raise PermissionError("只有 AI基金管理員可更改設定。")
     kind = payload.get("kind")
     if kind == "settings":
-        _save_config(db,"ai_fund_target_hkd",f"{_float(payload.get('target_hkd')):.2f}"); _save_config(db,"ai_fund_low_balance_hkd",f"{_float(payload.get('low_balance_hkd')):.2f}"); _save_config(db,"ai_fund_payment_instruction",str(payload.get("payment_instruction") or AI_FUND_PAYMENT_DEFAULT).strip())
+        target = _float(payload.get("target_hkd")); low = _float(payload.get("low_balance_hkd"))
+        if target < 0 or low < 0: raise ValueError("目標金額及低餘額警戒線不能為負數。")
+        _save_config(db,"ai_fund_target_hkd",f"{target:.2f}"); _save_config(db,"ai_fund_low_balance_hkd",f"{low:.2f}"); _save_config(db,"ai_fund_payment_instruction",str(payload.get("payment_instruction") or AI_FUND_PAYMENT_DEFAULT).strip())
+        return {"updated": True}
     elif kind == "google_balance":
         value = _float(payload.get("balance_usd"));
         if value < 0: raise ValueError("Google AI Studio 餘額不能為負數。")
         _save_config(db,"google_ai_studio_balance_usd",f"{value:.4f}"); _save_config(db,"google_ai_studio_balance_updated_at",_now()); _save_config(db,"google_ai_studio_balance_updated_by",user_id)
-    elif kind == "reset_usage": db.execute(f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS}")
+        return {"updated": True}
+    elif kind == "reset_usage":
+        deleted = db.execute_count(f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS}")
+        return {"deleted": int(deleted or 0)}
     else: raise ValueError("不支援的管理操作。")

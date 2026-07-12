@@ -351,7 +351,7 @@ if fund_admin_tab is not None:
         with st.form("ai_fund_treasurer_tx_form"):
             treasurer_tx_type = st.selectbox(
                 "交易類型",
-                ["provider_topup", "refund", "adjustment"],
+                ["provider_topup", "provider_refund", "member_refund", "adjustment"],
                 format_func=lambda x: AI_FUND_TRANSACTION_LABELS.get(x, x),
             )
             treasurer_provider = st.selectbox(

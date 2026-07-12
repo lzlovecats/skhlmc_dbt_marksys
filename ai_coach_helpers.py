@@ -104,7 +104,8 @@ AI_FUND_USAGE_FEATURES = tuple(AI_FEATURE_LABELS.keys())
 AI_FUND_TRANSACTION_LABELS = {
     "member_deposit": "成員入數",
     "provider_topup": "AI provider 充值 / 帳單",
-    "refund": "退款",
+    "provider_refund": "Provider 退款予基金",
+    "member_refund": "退款予委員",
     "adjustment": "手動調整",
 }
 
@@ -480,12 +481,33 @@ def _now_hk_timestamp() -> str:
 
 
 def ensure_ai_fund_tables() -> bool:
-    if st.session_state.get("_ai_fund_tables_ready") == "usage_actual_v4":
+    if st.session_state.get("_ai_fund_tables_ready") == "refund_split_v5":
         return True
     try:
         execute_query(CREATE_AI_FUND_TRANSACTIONS)
         execute_query(CREATE_AI_FUND_USAGE_LOGS)
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
+        execute_query(f"""DO $$
+        DECLARE item RECORD;
+        BEGIN
+          PERFORM pg_advisory_xact_lock(hashtext('ai_fund_transaction_type_v2'));
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+            WHERE t.relname='{TABLE_AI_FUND_TRANSACTIONS}' AND c.contype='c'
+              AND pg_get_constraintdef(c.oid) ILIKE '%provider_refund%'
+              AND pg_get_constraintdef(c.oid) ILIKE '%member_refund%'
+          ) THEN
+            FOR item IN SELECT c.conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+              WHERE t.relname='{TABLE_AI_FUND_TRANSACTIONS}' AND c.contype='c'
+                AND pg_get_constraintdef(c.oid) ILIKE '%transaction_type%'
+            LOOP
+              EXECUTE format('ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} DROP CONSTRAINT %I',item.conname);
+            END LOOP;
+            UPDATE {TABLE_AI_FUND_TRANSACTIONS} SET transaction_type='provider_refund' WHERE transaction_type='refund';
+            ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD CONSTRAINT chk_ai_fund_transaction_type
+              CHECK (transaction_type IN ('member_deposit','provider_topup','provider_refund','member_refund','adjustment'));
+          END IF;
+        END $$""")
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS estimated_cost_usd NUMERIC(12, 6) DEFAULT 0")
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
         execute_query(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} DROP CONSTRAINT IF EXISTS {TABLE_AI_FUND_USAGE_LOGS}_feature_check")
@@ -498,7 +520,7 @@ def ensure_ai_fund_tables() -> bool:
             CHECK (feature IN ({allowed_features}))
             """
         )
-        st.session_state["_ai_fund_tables_ready"] = "usage_actual_v4"
+        st.session_state["_ai_fund_tables_ready"] = "refund_split_v5"
         return True
     except Exception as e:
         logger.warning("ensure_ai_fund_tables failed: %s", e)
@@ -697,7 +719,8 @@ def _confirmed_balance_sql() -> str:
             CASE
                 WHEN transaction_type = 'member_deposit' THEN amount_hkd
                 WHEN transaction_type = 'provider_topup' THEN -amount_hkd
-                WHEN transaction_type = 'refund' THEN amount_hkd
+                WHEN transaction_type IN ('refund', 'provider_refund') THEN amount_hkd
+                WHEN transaction_type = 'member_refund' THEN -amount_hkd
                 WHEN transaction_type = 'adjustment' THEN amount_hkd
                 ELSE 0
             END

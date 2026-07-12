@@ -5,8 +5,9 @@ import pandas as pd
 from fastapi import HTTPException, Response
 
 from core.funds_logic import (
-    add_lateness_record, fiscal_label, fiscal_start, is_lateness_manager,
-    lateness_managers, update_lateness_paid,
+    add_ai_transaction, ai_usage_summary, add_lateness_record, fiscal_label,
+    fiscal_start, is_lateness_manager, lateness_managers, save_ai_admin,
+    update_lateness_paid,
 )
 
 
@@ -92,6 +93,49 @@ class LatenessFundLogicTests(unittest.TestCase):
         self.assertIn("03/02/2026", text)
         self.assertIn("HKD 8.00", text)
         self.assertIn("filename*=UTF-8''", response.headers["content-disposition"])
+
+
+class AiFundLogicTests(unittest.TestCase):
+    def test_member_deposit_rejects_unlisted_payment_method(self):
+        with self.assertRaisesRegex(ValueError, "付款方式"):
+            add_ai_transaction("member", "member_deposit", 10, payment_method="crypto", db=FundDb())
+
+    def test_refund_types_are_distinct_and_require_positive_amounts(self):
+        db = FundDb()
+        add_ai_transaction("staff", "provider_refund", 12, note="provider credit", confirmed=True, db=db)
+        add_ai_transaction("staff", "member_refund", 5, note="member repayment", confirmed=True, db=db)
+        inserts = [params for sql, params in db.executed if "INSERT INTO ai_fund_transactions" in sql]
+        self.assertEqual([row["type"] for row in inserts], ["provider_refund", "member_refund"])
+        with self.assertRaisesRegex(ValueError, "金額不正確"):
+            add_ai_transaction("staff", "member_refund", -1, db=db)
+
+    def test_usage_summary_is_scoped_for_regular_member(self):
+        class SummaryDb:
+            def __init__(self): self.params = None
+            def execute(self, sql, params=None): pass
+            def query(self, sql, params=None):
+                self.params = params
+                self.sql = sql
+                return pd.DataFrame()
+        db = SummaryDb(); ai_usage_summary("member", False, db=db)
+        self.assertIn("user_id=:user", db.sql)
+        self.assertEqual(db.params, {"user": "member"})
+
+    def test_admin_settings_reject_negative_values_and_reset_reports_count(self):
+        with patch("core.funds_logic.ai_data", return_value={"is_treasurer": True}):
+            with self.assertRaisesRegex(ValueError, "不能為負數"):
+                save_ai_admin("staff", {"kind":"settings","target_hkd":-1,"low_balance_hkd":0}, db=FundDb())
+            result = save_ai_admin("staff", {"kind":"reset_usage"}, db=FundDb())
+        self.assertEqual(result, {"deleted": 1})
+
+    def test_already_processed_deposit_returns_conflict(self):
+        from api.funds_api import StatusBody, ai_status
+        with patch("api.funds_api._context", return_value=("staff", FundDb())), \
+             patch("core.funds_logic.ai_data", return_value={"is_treasurer": True}), \
+             patch("core.funds_logic.set_ai_transaction_status", return_value=0):
+            with self.assertRaises(HTTPException) as caught:
+                ai_status(1, StatusBody(status="confirmed"), object())
+        self.assertEqual(caught.exception.status_code, 409)
 
 
 if __name__ == "__main__":
