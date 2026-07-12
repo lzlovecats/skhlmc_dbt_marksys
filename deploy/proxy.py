@@ -1311,10 +1311,16 @@ async def appliance_practice_timer_config(request: Request):
         except (TypeError, ValueError):
             return None
 
+    free_minutes = _opt_float("free_minutes")
+    prep_minutes = _opt_float("closing_prep_minutes")
+    if free_minutes is not None:
+        free_minutes = min(10.0, max(2.0, free_minutes))
+    if prep_minutes is not None:
+        prep_minutes = min(10.0, max(0.5, prep_minutes))
     config = get_debate_timer_config(
         debate_format,
-        free_debate_minutes=_opt_float("free_minutes"),
-        closing_prep_minutes=_opt_float("closing_prep_minutes"),
+        free_debate_minutes=free_minutes,
+        closing_prep_minutes=prep_minutes,
     )
     return {"format": debate_format, "formats": DEBATE_FORMATS, **config}
 

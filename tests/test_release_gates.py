@@ -30,10 +30,19 @@ class ChairpersonTimerTests(unittest.TestCase):
 
     def test_chairperson_uses_api_formats_and_legacy_timer_controls(self):
         html = (ROOT / "frontend" / "chairperson" / "index.html").read_text(encoding="utf-8")
+        proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
         self.assertIn("Array.isArray(cfg.formats)", html)
         self.assertIn("id=\"freeTest\"", html)
         self.assertIn("g.gain.value=5", html)
         self.assertIn("Math.floor(s*100)", html)
+        for marker in ("resetTimers", "freeButton(other", "formSnapshot", "SafeMarkdown.render"):
+            self.assertIn(marker, html)
+        self.assertNotIn("user-scalable=no", html)
+        self.assertIn("max(2.0, free_minutes)", proxy)
+        self.assertIn("max(0.5, prep_minutes)", proxy)
+        markdown = (ROOT / "frontend" / "shared" / "markdown.js").read_text(encoding="utf-8")
+        self.assertNotIn('replace(/__([^_]+)__/g', markdown)
+        self.assertIn('start="${start}"', markdown)
 
 class MigrationParityRegressionTests(unittest.TestCase):
     def test_judging_uses_server_scoring_contract_and_submission_safeguards(self):

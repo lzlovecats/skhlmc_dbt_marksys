@@ -15,7 +15,6 @@ window.SafeMarkdown = (() => {
     text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
     text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
     text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
     return text.replace(/\u0000CODE(\d+)\u0000/g, (_, index) => code[Number(index)]);
   }
@@ -63,6 +62,7 @@ window.SafeMarkdown = (() => {
       if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
         const ordered = /^\s*\d+[.)]\s+/.test(line);
         const tag = ordered ? "ol" : "ul";
+        const start = ordered ? Number((line.match(/^\s*(\d+)[.)]\s+/) || [0, 1])[1]) : 1;
         const items = [];
         while (index < lines.length) {
           const match = lines[index].match(ordered ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-*+]\s+(.+)$/);
@@ -70,7 +70,7 @@ window.SafeMarkdown = (() => {
           items.push(`<li>${inline(match[1])}</li>`);
           index += 1;
         }
-        output.push(`<${tag}>${items.join("")}</${tag}>`);
+        output.push(`<${tag}${ordered && start !== 1 ? ` start="${start}"` : ""}>${items.join("")}</${tag}>`);
         continue;
       }
 
