@@ -1,1 +1,224 @@
-<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><title>查閱比賽分紙</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/shared/vote-ui.css"><link rel="stylesheet" href="/shared/app-shell.css"><style>main{width:min(100%,84rem);margin:auto}h1{font-size:2rem;margin:0 0 .4rem}h2{font-size:1.25rem}.intro,.caption{color:var(--muted)}.card{margin-bottom:1rem}.hidden{display:none!important}.login{max-width:48rem;margin:2rem auto}.field{margin:.8rem 0}.field label{margin-bottom:.3rem}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:.7rem}.metric{border:1px solid var(--border);border-radius:8px;padding:.7rem;background:var(--surface)}.metric .label{color:var(--muted);font-size:.8rem}.metric .value{font-size:1.2rem;font-weight:700}.tabs{display:flex;gap:.5rem;margin:1rem 0}.tab{flex:1;min-width:0;overflow-wrap:anywhere}.tab.active{background:var(--accent);border-color:var(--accent);color:#fff}.panel{display:none}.panel.active{display:block}.table-wrap{overflow:auto}table{width:100%;min-width:650px;border-collapse:collapse}th,td{border:1px solid var(--border);padding:.5rem;text-align:left}th{background:var(--surface);color:var(--muted)}.notice{margin:.8rem 0}.notice.warn{border-color:#927126;color:var(--warn)}@media(max-width:600px){h1{font-size:1.65rem}.metrics{grid-template-columns:1fr}.tabs{flex-wrap:wrap}.tab{flex:1 1 10rem}}</style></head><body><main><a class="back-link" href="/">← 返回主頁</a><h1>查閱比賽分紙</h1><p class="intro">驗證場次查閱密碼後，可查看每位評判已正式提交的完整分紙。</p><details class="guide"><summary>ℹ️ 首次使用指南</summary><ul><li>選擇場次並輸入查閱分紙密碼。</li><li>選擇評判查看正式分紙；未有評分紀錄時請稍後再試。</li></ul></details><div id="loading" class="notice">載入中…</div><section id="login" class="card login hidden"><h2>查閱分紙驗證</h2><div class="field"><label for="match">請選擇場次</label><select id="match"></select></div><form id="form"><label for="password">請輸入查閱分紙密碼</label><input id="password" type="password"><div id="msg"></div><button class="primary" type="submit">登入</button></form></section><section id="app" class="hidden"><section class="card"><div class="field"><label for="judge">請選擇評判</label><select id="judge"></select></div><button id="logout" type="button">登出</button></section><section id="summary" class="card"></section><section id="best" class="card"></section><section id="details"></section></section></main><div id="busy" class="busy-overlay"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div><script src="/shared/vote-ui.js"></script><script>(()=>{const $=x=>document.getElementById(x),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let state;const busy=v=>VoteUI.setBusy($('busy'),v),msg=t=>$('msg').innerHTML=t?`<div class="notice warn">${esc(t)}</div>`:'';async function api(u,b,m='POST'){const r=await fetch(u,{method:m,credentials:'same-origin',headers:b?{'Content-Type':'application/json'}:{},body:b?JSON.stringify(b):undefined}),d=await r.json();if(!r.ok)throw Error(d.detail||d.message);return d}function tbl(rows){if(!rows?.length)return'<p class="caption">（詳細評分資料不可用）</p>';const keys=Object.keys(rows[0]);return`<div class="table-wrap"><table><thead><tr>${keys.map(k=>`<th>${esc(k)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${keys.map(k=>`<td>${esc(r[k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}function render(){const r=state.record,p=r.pro_total_score,c=r.con_total_score,w=p>c?`正方（${r.pro_team}）`:c>p?`反方（${r.con_team}）`:'平局';$('judge').innerHTML=state.judges.map(j=>`<option ${j===state.selected_judge?'selected':''}>${esc(j)}</option>`).join('');$('summary').innerHTML=`<h2>本張分紙</h2><p>正方：${esc(r.pro_team)} ｜ 反方：${esc(r.con_team)} ｜ 提交時間：${esc(r.submitted_time)}</p><div class="metrics">${[[`正方總分（${r.pro_team}）`,`${p} / 460`],[`反方總分（${r.con_team}）`,`${c} / 460`],['本張分紙勝方',w]].map(x=>`<div class="metric"><div class="label">${esc(x[0])}</div><div class="value">${esc(x[1])}</div></div>`).join('')}</div>`;$('best').innerHTML=state.best_debater?`<h2>最佳辯論員</h2><p>${esc(state.best_debater.role)}（名次總和：${state.best_debater.rank_sum} ｜ 平均分：${state.best_debater.average_score}）</p>`:'<p class="caption">最佳辯論員資料暫時不可用。</p>';if(state.missing_sides.length){$('details').innerHTML=`<div class="notice warn">最終分紙細項資料不完整（缺少：${esc(state.missing_sides.join('、'))}），請聯絡賽會人員。</div>`;return}$('details').innerHTML=`<div class="tabs"><button class="tab active" data-side="正方">正方：${esc(r.pro_team)}</button><button class="tab" data-side="反方">反方：${esc(r.con_team)}</button></div>${['正方','反方'].map((s,i)=>{const d=state.sides[s];return`<section class="panel ${i?'':'active'}" id="p${i}"><section class="card"><h2>${s}：${esc(d.team_name)}</h2><h3>甲：台上發言</h3>${tbl(d.raw_df_a)}<h3>乙：自由辯論</h3>${tbl(d.raw_df_b)}<p>扣分總和：${d.deduction} ｜ 內容連貫：${d.coherence} / 5 ｜ <strong>總分：${d.final_total} / 460</strong></p></section></section>`}).join('')}`;document.querySelectorAll('[data-side]').forEach((b,i)=>b.onclick=()=>{document.querySelectorAll('[data-side]').forEach(x=>x.classList.toggle('active',x===b));$('p0').classList.toggle('active',i===0);$('p1').classList.toggle('active',i===1)})}async function load(j=''){busy(true);try{state=await api('/api/review/data'+(j?'?judge_name='+encodeURIComponent(j):''),null,'GET');$('app').classList.remove('hidden');render()}catch(e){msg(e.message)}finally{busy(false)}}async function init(){try{const d=await api('/api/review/matches',null,'GET');$('match').innerHTML=d.matches.map(m=>`<option value="${esc(m.match_id)}" ${m.is_open?'':'disabled'}>${esc(m.match_id)}</option>`).join('');$('loading').classList.add('hidden');$('login').classList.remove('hidden')}catch(e){$('loading').textContent=e.message}}$('form').onsubmit=async e=>{e.preventDefault();busy(true);try{await api('/api/review/login',{match_id:$('match').value,password:$('password').value});$('login').classList.add('hidden');await load()}catch(x){msg(x.message)}finally{busy(false)}};$('judge').onchange=()=>load($('judge').value);$('logout').onclick=async()=>{await api('/api/review/logout',{});location.reload()};init()})()</script></body></html>
+<!doctype html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8">
+    <title>查閱比賽分紙</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/shared/vote-ui.css">
+    <link rel="stylesheet" href="/shared/app-shell.css">
+    <style>
+        main { width: min(100%, 84rem); margin: auto; }
+        h1 { margin: 0 0 .4rem; font-size: 2rem; }
+        h2 { font-size: 1.25rem; }
+        .intro, .caption { color: var(--muted); }
+        .card { margin-bottom: 1rem; }
+        .hidden { display: none !important; }
+        .login { max-width: 48rem; margin: 2rem auto; }
+        .field { margin: .8rem 0; }
+        .field label { margin-bottom: .3rem; }
+        .login-actions, .toolbar { display: flex; align-items: end; gap: .7rem; }
+        .login-actions button { min-width: 8rem; }
+        .toolbar .field { flex: 1; margin: 0; }
+        .summary-meta { line-height: 1.7; }
+        .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: .7rem; }
+        .metric { border: 1px solid var(--border); border-radius: 8px; padding: .7rem; background: var(--surface); }
+        .metric .label { color: var(--muted); font-size: .8rem; }
+        .metric .value { overflow-wrap: anywhere; font-size: 1.2rem; font-weight: 700; }
+        .best-summary { margin-bottom: .8rem; }
+        .tabs { display: flex; gap: .5rem; margin: 1rem 0; }
+        .tab { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .tab.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+        .table-wrap { overflow: auto; }
+        table { width: 100%; min-width: 650px; border-collapse: collapse; }
+        th, td { border: 1px solid var(--border); padding: .5rem; text-align: left; }
+        th { background: var(--surface); color: var(--muted); }
+        .side-facts { display: grid; gap: .5rem; margin: 1rem 0; }
+        .side-total { max-width: 24rem; }
+        .notice { margin: .8rem 0; }
+        .notice.warn { border-color: #927126; color: var(--warn); }
+        @media (max-width: 600px) {
+            h1 { font-size: 1.65rem; }
+            .metrics { grid-template-columns: 1fr; }
+            .tabs { flex-wrap: wrap; }
+            .tab { flex: 1 1 10rem; }
+            .login-actions, .toolbar { align-items: stretch; flex-direction: column; }
+            .login-actions button, .toolbar button, .toolbar a { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <a class="back-link" href="/">← 返回主頁</a>
+    <h1>查閱比賽分紙</h1>
+    <p class="intro">驗證場次查閱密碼後，可查看每位評判已正式提交的完整分紙。</p>
+    <details class="guide">
+        <summary>ℹ️ 首次使用指南</summary>
+        <ul>
+            <li>先選擇場次，再輸入由賽會人員提供的查閱分紙密碼。</li>
+            <li>登入後可選擇評判，查看該場次已提交的完整分紙內容。</li>
+            <li>如目前未有評分紀錄，請稍後再試或向賽會人員查詢。</li>
+        </ul>
+    </details>
+    <div id="loading" class="notice" aria-live="polite">載入中…</div>
+    <section id="login" class="card login hidden">
+        <h2>查閱分紙驗證</h2>
+        <form id="form">
+            <div class="field">
+                <label for="match">請選擇要查看的場次</label>
+                <select id="match"></select>
+            </div>
+            <div class="field">
+                <label for="password">請輸入由賽會人員提供的查閱分紙密碼。</label>
+                <input id="password" type="password" aria-describedby="msg" required>
+            </div>
+            <div id="msg" aria-live="polite"></div>
+            <div class="login-actions"><button id="loginButton" class="primary" type="submit">登入</button></div>
+        </form>
+    </section>
+    <section id="app" class="hidden">
+        <section class="card toolbar">
+            <div class="field"><label for="judge">請選擇評判</label><select id="judge"></select></div>
+            <button id="logout" type="button">登出</button>
+        </section>
+        <div id="appMessage" aria-live="polite"></div>
+        <section id="summary" class="card"></section>
+        <section id="best" class="card"></section>
+        <section id="details"></section>
+    </section>
+</main>
+<div id="busy" class="busy-overlay"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
+<script src="/shared/vote-ui.js"></script>
+<script>
+(() => {
+    const $ = id => document.getElementById(id);
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[char]));
+    let state, matches = [];
+    const busy = active => VoteUI.setBusy($("busy"), active);
+    const notice = (text, target = "msg", kind = "warn") => {
+        $(target).innerHTML = text ? `<div class="notice ${kind}">${esc(text)}</div>` : "";
+    };
+
+    async function api(url, body, method = "POST") {
+        const response = await fetch(url, {
+            method, credentials: "same-origin",
+            headers: body ? { "Content-Type": "application/json" } : {},
+            body: body ? JSON.stringify(body) : undefined,
+        });
+        const data = await response.json();
+        if (!response.ok) throw Error(data.detail || data.message);
+        return data;
+    }
+
+    function table(rows) {
+        if (!rows?.length) return '<p class="caption">（詳細評分資料不可用）</p>';
+        const keys = Object.keys(rows[0]);
+        return `<div class="table-wrap"><table><thead><tr>${keys.map(key => `<th>${esc(key)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${keys.map(key => `<td>${esc(row[key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    }
+
+    function renderBestDebater() {
+        if (!state.best_debater) {
+            $("best").innerHTML = '<p class="caption">最佳辯論員資料暫時不可用。</p>';
+            return;
+        }
+        const best = state.best_debater;
+        const ranking = (state.best_debaters || []).map(item => ({
+            "辯位": item.role, "名次總和": item.rank_sum, "平均得分": item.average_score,
+        }));
+        $("best").innerHTML = `<p class="best-summary">本場最佳辯論員：<strong>${esc(best.role)}</strong>（名次總和：${esc(best.rank_sum)} ｜ 平均分：${esc(best.average_score)}）</p>${ranking.length ? `<details><summary>查看最佳辯論員排名</summary>${table(ranking)}</details>` : ""}`;
+    }
+
+    function render() {
+        if (!state.has_scores || !state.record || !state.judges?.length) {
+            $("summary").classList.add("hidden");
+            $("best").classList.add("hidden");
+            $("details").innerHTML = "";
+            notice("此場次暫未有評分紀錄。請稍後再試或向賽會人員查詢。", "appMessage");
+            return;
+        }
+        $("summary").classList.remove("hidden");
+        $("best").classList.remove("hidden");
+        notice("", "appMessage");
+        const record = state.record;
+        const pro = record.pro_total_score, con = record.con_total_score;
+        const winner = pro > con ? `正方 (${record.pro_team})` : con > pro ? `反方 (${record.con_team})` : "平局";
+        $("judge").innerHTML = state.judges.map(judge => `<option value="${esc(judge)}" ${judge === state.selected_judge ? "selected" : ""}>${esc(judge)}</option>`).join("");
+        $("summary").innerHTML = `<h2>本張分紙</h2><p class="summary-meta"><strong>正方：</strong> ${esc(record.pro_team)}<br><strong>反方：</strong> ${esc(record.con_team)}<br><strong>提交時間（香港時間／HKT）：</strong> ${esc(record.submitted_time)}</p><div class="metrics">${[[`正方總分（${record.pro_team}）`, `${pro} / 460`], [`反方總分（${record.con_team}）`, `${con} / 460`], ["本張分紙勝方", winner]].map(item => `<div class="metric"><div class="label">${esc(item[0])}</div><div class="value">${esc(item[1])}</div></div>`).join("")}</div>`;
+        renderBestDebater();
+        if (state.missing_sides.length) {
+            $("details").innerHTML = `<div class="notice warn">此評判的最終分紙細項資料不完整（缺少：${esc(state.missing_sides.join("、"))}），請聯絡賽會人員。</div>`;
+            return;
+        }
+        const pdfUrl = `/api/review/pdf?judge_name=${encodeURIComponent(state.selected_judge)}`;
+        $("details").innerHTML = `<div class="toolbar"><h2>評分詳情</h2><a class="button primary" href="${pdfUrl}">匯出 PDF</a></div><div class="tabs"><button class="tab active" data-side="正方">正方：${esc(record.pro_team)}</button><button class="tab" data-side="反方">反方：${esc(record.con_team)}</button></div>${["正方", "反方"].map((side, index) => {
+            const data = state.sides[side];
+            return `<section class="panel ${index ? "" : "active"}" id="p${index}"><section class="card"><h2>${side}：${esc(data.team_name)}</h2><h3>甲：台上發言</h3>${table(data.raw_df_a)}<h3>乙：自由辯論</h3>${table(data.raw_df_b)}<div class="side-facts"><span>扣分總和：${esc(data.deduction)}</span><span>內容連貫：${esc(data.coherence)} / 5</span></div><div class="metric side-total"><div class="label">${side}總分</div><div class="value">${esc(data.final_total)} / 460</div></div></section></section>`;
+        }).join("")}`;
+        document.querySelectorAll("[data-side]").forEach((button, index) => {
+            button.onclick = () => {
+                document.querySelectorAll("[data-side]").forEach(item => item.classList.toggle("active", item === button));
+                $("p0").classList.toggle("active", index === 0);
+                $("p1").classList.toggle("active", index === 1);
+            };
+        });
+    }
+
+    async function load(judge = "") {
+        busy(true);
+        try {
+            state = await api(`/api/review/data${judge ? `?judge_name=${encodeURIComponent(judge)}` : ""}`, null, "GET");
+            $("app").classList.remove("hidden");
+            render();
+        } catch (error) {
+            notice(error.message, "appMessage");
+        } finally { busy(false); }
+    }
+
+    function selectedMatch() { return matches.find(item => item.match_id === $("match").value); }
+    function syncMatchAvailability() {
+        const current = selectedMatch();
+        const open = Boolean(current?.is_open);
+        $("password").disabled = !open;
+        $("loginButton").disabled = !open;
+        $("password").value = "";
+        notice(open ? "" : "此場次尚未設定查閱分紙密碼，請聯絡賽會人員。");
+    }
+
+    async function init() {
+        try {
+            const data = await api("/api/review/matches", null, "GET");
+            matches = data.matches || [];
+            $("loading").classList.add("hidden");
+            if (!matches.length) {
+                $("loading").classList.remove("hidden");
+                $("loading").textContent = "目前未有可查閱的評分紀錄。請稍後再試或向賽會人員查詢。";
+                return;
+            }
+            $("match").innerHTML = matches.map(item => `<option value="${esc(item.match_id)}">${esc(item.match_id)}</option>`).join("");
+            $("login").classList.remove("hidden");
+            syncMatchAvailability();
+        } catch (error) { $("loading").textContent = error.message; }
+    }
+
+    $("match").addEventListener("change", syncMatchAvailability);
+    $("form").addEventListener("submit", async event => {
+        event.preventDefault();
+        if (!selectedMatch()?.is_open) return syncMatchAvailability();
+        busy(true);
+        try {
+            await api("/api/review/login", { match_id: $("match").value, password: $("password").value });
+            $("login").classList.add("hidden");
+            await load();
+        } catch (error) { notice(error.message); }
+        finally { busy(false); }
+    });
+    $("judge").addEventListener("change", () => load($("judge").value));
+    $("logout").addEventListener("click", async () => { await api("/api/review/logout", {}); location.reload(); });
+    init();
+})();
+</script>
+</body>
+</html>

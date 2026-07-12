@@ -127,6 +127,17 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('expected_slots', core)
         self.assertIn('with db.transaction() as session', core)
 
+    def test_review_restores_streamlit_score_sheet_features(self):
+        html = (ROOT / "frontend" / "review" / "index.html").read_text(encoding="utf-8")
+        api = (ROOT / "api" / "review_api.py").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "review_logic.py").read_text(encoding="utf-8")
+        for marker in ("匯出 PDF", "查看最佳辯論員排名", "香港時間／HKT", "此場次尚未設定查閱分紙密碼", "目前未有可查閱的評分紀錄"):
+            self.assertIn(marker, html)
+        self.assertIn("@router.get('/pdf')", api)
+        self.assertIn("build_score_sheet_pdf", api)
+        self.assertIn('row["總分（100）"]', core)
+        self.assertIn('f"總分（{FREE_DEBATE_MAX}）"', core)
+
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
         browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")

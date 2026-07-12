@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import Response as BinaryResponse
 from pydantic import BaseModel
+from urllib.parse import quote
 router=APIRouter(prefix="/api/review",tags=["review"]); COOKIE="review_match"
 class LoginBody(BaseModel): match_id:str; password:str
 def db():
@@ -28,5 +29,22 @@ def login(body:LoginBody,response:Response):
 def data(request:Request,judge_name:str|None=None):
  from core.review_logic import review_data
  return review_data(scope(request),judge_name,db())
+@router.get('/pdf')
+def pdf(request:Request,judge_name:str|None=None):
+ from core.review_logic import review_data
+ from schema import TABLE_MATCHES
+ match_id=scope(request)
+ from score_sheet_pdf import build_score_sheet_pdf
+ database=db(); payload=review_data(match_id,judge_name,database)
+ if not payload.get('has_scores') or not payload.get('record'): raise HTTPException(404,'此場次暫未有評分紀錄。請稍後再試或向賽會人員查詢。')
+ if payload.get('missing_sides'): raise HTTPException(409,f"此評判的最終分紙細項資料不完整（缺少：{'、'.join(payload['missing_sides'])}），請聯絡賽會人員。")
+ match_rows=database.query(f"SELECT match_id,match_date,match_time,topic_text FROM {TABLE_MATCHES} WHERE match_id=:match_id",{'match_id':match_id})
+ if match_rows.empty: raise HTTPException(404,'找不到場次資料。')
+ try: content=build_score_sheet_pdf(match_rows.iloc[0],payload['record'],payload['sides']['正方'],payload['sides']['反方'])
+ except Exception as exc: raise HTTPException(500,f'產生 PDF 失敗：{exc}') from exc
+ safe_match=''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in str(match_id))
+ safe_judge=''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in str(payload['selected_judge']))
+ filename=f'{safe_match}_{safe_judge}_評判評分表.pdf'
+ return BinaryResponse(content,media_type='application/pdf',headers={'Content-Disposition':f"attachment; filename*=UTF-8''{quote(filename)}"})
 @router.post('/logout')
 def logout(response:Response): response.delete_cookie(COOKIE,path='/'); return {"ok":True}
