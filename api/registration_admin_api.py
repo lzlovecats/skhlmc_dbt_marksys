@@ -73,6 +73,12 @@ def login(body: LoginBody, response: Response):
     return {"ok": True}
 
 
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
 @router.get("/data")
 def data(request: Request, edition: int | None = None, status: str = "全部"):
     from core import registration_logic as logic

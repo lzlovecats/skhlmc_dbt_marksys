@@ -138,6 +138,16 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('row["總分（100）"]', core)
         self.assertIn('f"總分（{FREE_DEBATE_MAX}）"', core)
 
+    def test_management_has_complete_ranking_guard_and_logout(self):
+        html = (ROOT / "frontend" / "management" / "index.html").read_text(encoding="utf-8")
+        core = (ROOT / "core" / "results_logic.py").read_text(encoding="utf-8")
+        api = (ROOT / "api" / "registration_admin_api.py").read_text(encoding="utf-8")
+        for marker in ("使用賽會人員密碼登入後", 'id="logout"', "/api/registration-admin/logout", "🏆勝方：正方"):
+            self.assertIn(marker, html)
+        for marker in ("expected_slots", "complete_ranking", "ranks == set(range(1, 9))"):
+            self.assertIn(marker, core)
+        self.assertIn('@router.post("/logout")', api)
+
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
         browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")

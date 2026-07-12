@@ -71,7 +71,20 @@ def _best_debaters(match_id, scores, db):
         {"match_id": match_id},
     )
     judges = scores["judge_name"].tolist()
-    explicit = not rank_df.empty and all(judge in rank_df["judge_name"].values for judge in judges)
+    expected_slots = {(side, position) for side in ("pro", "con") for position in range(1, 5)}
+
+    def complete_ranking(judge):
+        judge_rows = rank_df[rank_df["judge_name"] == judge]
+        if len(judge_rows) != 8:
+            return False
+        slots = {(str(row["side"]).strip(), int(row["position"])) for _, row in judge_rows.iterrows()}
+        try:
+            ranks = {int(value) for value in judge_rows["rank"].tolist()}
+        except (TypeError, ValueError):
+            return False
+        return slots == expected_slots and ranks == set(range(1, 9))
+
+    explicit = not rank_df.empty and all(complete_ranking(judge) for judge in judges)
     if explicit:
         rows = []
         for judge in judges:
