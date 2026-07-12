@@ -37,7 +37,7 @@ p { margin: .35rem 0 .85rem; }
 
 .back-link, .back { display: inline-flex; align-items: center; gap: .3rem; color: var(--accent); text-decoration: none; margin-bottom: .6rem; }
 .back-link:hover, .back:hover { text-decoration: underline; }
-.caption, .intro { color: var(--muted); font-size: .9rem; }
+.caption, .intro, .sub { color: var(--muted); font-size: .9rem; }
 
 .card, .guide, details, .notice {
     background: var(--card);
@@ -105,6 +105,7 @@ th { background: var(--surface); color: var(--muted); white-space: nowrap; }
 .guide { border-radius: 12px; padding: .85rem 1rem; }
 .guide > summary { color: var(--text); font-weight: 600; }
 .guide ul, .guide ol, .guide .sub { line-height: 1.95; }
+.guide .sub { margin-top: .55rem; }
 .guide ul, .guide ol { margin-block: .55rem 0; }
 
 .notice.ok, .ok, .success { border-color: #357a52; color: var(--ok); }

@@ -54,24 +54,57 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('/api/ai-coach/prepare-live', browser)
         self.assertIn('mode == "mock"', proxy)
         self.assertIn('split_mock_into_sessions', proxy)
+        self.assertIn('selection_label', (ROOT / "api" / "ai_coach_api.py").read_text(encoding="utf-8"))
+        self.assertNotIn('沿用現有 Gemini Live 引擎', html)
+        self.assertIn('使用「練習發言」輸入文字稿或錄音', html)
 
     def test_ai_coach_live_research_and_usage_accounting(self):
         api = (ROOT / "api" / "ai_coach_api.py").read_text(encoding="utf-8")
+        provider = (ROOT / "core" / "ai_provider.py").read_text(encoding="utf-8")
         proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
         self.assertIn('@router.post("/prepare-live")', api)
         self.assertIn('consume_live_brief', proxy)
         self.assertIn('record_live_usage', proxy)
         self.assertIn('research_brief=research_brief', proxy)
+        self.assertIn('_LIVE_BRIEF_TABLE', api)
+        self.assertNotIn('_LIVE_BRIEFS = {}', api)
+        self.assertIn('from core.ai_provider import generate_text', api)
+        self.assertIn('"openrouter:web_search"', provider)
+        self.assertIn('## 可核查來源', provider)
+        self.assertIn('actual.get("cost_source")', api)
+        self.assertIn('def _match_context', api)
 
     def test_ai_coach_motion_sources_qa_timer_and_downloads(self):
         browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")
-        for text in ("從辯題庫選擇", "從系統場次載入", "台下發問", "交互答問", "speechClock", "發言評語.md"):
+        markdown = (ROOT / "frontend" / "shared" / "markdown.js").read_text(encoding="utf-8")
+        html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
+        for text in ("從辯題庫選擇", "從系統場次載入", "台下發問", "交互答問", "speechClock", "分析結果.txt"):
             self.assertIn(text, browser)
+        self.assertIn('const manual = mode.value === "手動輸入"', browser)
+        self.assertIn('document.querySelectorAll("[data-topic-source]").forEach(topicSource)', browser)
+        self.assertIn('AI 正在賽前搵料，準備攻防', browser)
+        self.assertIn('match_id: selectedMatchId', browser)
+        self.assertIn('SafeMarkdown.render(data.markdown)', browser)
+        self.assertLess(html.index('/shared/markdown.js'), html.index('/shared/ai-parity.js'))
+        for marker in ('<table>', '<blockquote>', '<pre><code', 'escapeHtml'):
+            self.assertIn(marker, markdown)
+
+    def test_ai_coach_base_fallback_and_audio_guards(self):
+        html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
+        browser = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")
+        self.assertIn('meta = await api("/api/ai-coach/data")', browser)
+        self.assertIn('$("mockForm").addEventListener("submit"', browser)
+        self.assertIn('brief_id: data.brief_id', browser)
+        self.assertIn("duration < 1 || duration > 60", browser)
+        self.assertIn("blob.size > 15 * 1024 * 1024", browser)
+        self.assertIn("bytes.subarray(index, index + 32768)", browser)
+        self.assertNotIn("String.fromCharCode(...new Uint8Array", browser)
+        self.assertLess(html.index('data-pane="fact"'), html.index('data-pane="research"'))
 
     def test_free_debate_room_formats_are_restricted_at_both_layers(self):
-        html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
+        html = (ROOT / "frontend" / "shared" / "ai-parity.js").read_text(encoding="utf-8")
         server = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
-        self.assertIn("free&&['星島','基本法盃'].includes", html)
+        self.assertIn('free && ["星島", "基本法盃"].includes', html)
         self.assertIn("structure == \"free\" and debate_format not in FREE_DEBATE_FORMATS", server)
 
     def test_video_chapter_navigation_seeks_existing_player(self):
