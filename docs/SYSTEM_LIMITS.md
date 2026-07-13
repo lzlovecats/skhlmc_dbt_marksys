@@ -36,23 +36,32 @@ GET /api/dev-settings/system-limits
 
 ## Merge到main後令設定生效
 
-`deploy/render.yaml`目前是`autoDeploy: false`，所以merge本身不會更新production：
+Production Render service已開啟auto-deploy，並以`main`作部署branch。即使
+`deploy/render.yaml`未改，任何push到`main`都可能立即觸發live deployment；所以日常工作只推
+`develop`，不可把`main`當一般同步branch。
 
-1. 確認main branch CI／全套tests通過。
-2. 到Render為`skhlmc-dbt-marksys`執行 **Manual Deploy → Deploy latest commit**。
-3. 在Render Environment檢查舊limit overrides：刪除佢哋以採用repo defaults，或者改成
+安全發布次序：
+
+1. 先push `develop`，確認remote commit、CI及全套tests通過；production不應跟隨此branch。
+2. 在本機比較`main...develop`及migration／secret／startup變更，確定rollback commit及低流量發布窗口。
+3. 再次在Render核對部署branch確為`main`、auto-deploy仍開啟、現時production commit正常；此步只讀，不先按Manual Deploy。
+4. 發布窗口內才把已驗證commit合併並push到`main`一次。push本身就是部署動作，不另按
+   **Manual Deploy → Deploy latest commit**，避免重複deploy。
+5. 立即監察Render build、startup及health check；如失敗，使用事前準備的rollback commit，
+   不在production臨場混入其他修正。
+6. 在Render Environment檢查舊limit overrides：刪除佢哋以採用repo defaults，或者改成
    與`system_limits.py`一致。儲存environment變更會觸發restart。
-4. 同一時間更新當月bandwidth snapshot三個runtime state值：
+7. 同一時間更新當月bandwidth snapshot三個runtime state值：
    `BANDWIDTH_MONTH_BASE_BYTES`、`BANDWIDTH_BASELINE_AS_OF`、
    `BANDWIDTH_BASELINE_TRACKED_BYTES`。佢哋係當月meter snapshot，唔係固定limit，
    所以唔會寫死在repo。
-5. 部署成功後登入開發者設定，讀取`/api/dev-settings/system-limits`，核對3.0／3.5／
+8. 部署成功後登入開發者設定，讀取`/api/dev-settings/system-limits`，核對3.0／3.5／
    4.0GB bandwidth gate、7／8GB R2 gate、Uvicorn 20及其他關鍵值。
-6. 測試一個一般API、相片direct R2 upload、TTS錄音、單人Free De及聯機房；查看Render
+9. 測試一個一般API、相片direct R2 upload、TTS錄音、單人Free De及聯機房；查看Render
    logs確認無startup limit error。
-7. Cloudflare dashboard的外部設定不會由git deploy自動建立：按edge-cache runbook設定
+10. Cloudflare dashboard的外部設定不會由git deploy自動建立：按edge-cache runbook設定
    靜態資源Cache Rule，並在R2 bucket設定只針對`pending/`、48小時後刪除的lifecycle。
-8. 觀察Render RAM／bandwidth及R2用量至少一個實際練習週期，之後先執行R2 finalizer
+11. 觀察Render RAM／bandwidth及R2用量至少一個實際練習週期，之後先執行R2 finalizer
    dry-run；確認production播放正常後才永久drop舊BYTEA columns。
 
 修改任何limit後必須restart/redeploy，因為所有值在Python process import時只讀一次。

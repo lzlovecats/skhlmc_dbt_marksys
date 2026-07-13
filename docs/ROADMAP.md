@@ -23,6 +23,7 @@
 
 ### P0.1 部署 typed `app_config`
 
+- [ ] Render production已對`main`開啟auto-deploy；先只推／驗證`develop`，到低流量發布窗口及rollback commit準備好後才push `main`一次。
 - [ ] Deploy包含 `app_config`及legacy read bridge的版本；保留舊 `system_config`作一個rollback窗口。
 - [ ] 在production只讀比對兩表全部 keys、namespace、type及`is_secret`；不可在log輸出value。
 - [ ] 使用`tools/audit_app_config.py`保存只含metadata及boolean health checks的audit結果；不可加入secret value或hash。

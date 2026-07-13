@@ -4,4 +4,5 @@ services:
     env: docker
     plan: starter
     dockerfilePath: ./deploy/Dockerfile
-    autoDeploy: false
+    # Production follows main. Any push to main can trigger a live deployment.
+    autoDeploy: true
