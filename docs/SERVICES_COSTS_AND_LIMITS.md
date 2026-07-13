@@ -2,9 +2,9 @@
 
 更新日期：2026-07-13
 
-部署前基線：Render production 為 **4.1.2**；目標release為 **4.2.0**，實際版本仍以
-[`version.py`](../version.py)為準。R2 第一轉已完成，148 段錄音及45張相片均已驗證。
-必須先部署及驗收目前release，之後先可以finalizer永久移除兩個舊BYTEA columns。
+目前基線：Render production 為 **4.2.0**，實際版本仍以[`version.py`](../version.py)
+為準。R2 object verification已完成，148段錄音及45張相片均有R2 key；browser smoke、
+可還原backup及正式versioned migration完成前，不可永久移除兩個舊BYTEA columns。
 
 此文件記錄 production architecture、固定月費、免費額度及系統內的保護限制。
 Provider 價格可隨時調整；付款前應以各 provider dashboard 及官方 pricing page
@@ -150,7 +150,7 @@ audio 均需經 Render relay：
 Render 每月只有5GB outbound，扣除一般網站及安全預留後，不適合無限制使用
 Gemini Live。
 
-## 目前release candidate用量上限
+## 目前production用量上限
 
 | 功能 | 每人限制 | 全系統限制 | 時間上限 |
 |---|---:|---:|---:|
@@ -208,9 +208,10 @@ AI Coach request、同時最多兩個
 
 以上預設值全部由[`system_limits.py`](../system_limits.py)提供；同名environment
 variable只係有記錄的部署override。增加前要一併檢查Render 512MB RAM、5GB outbound
-及Supabase 500MB database，而不是只提高單一endpoint限制。靜態HTML、
-CSS、JS、manifest及圖示應由Cloudflare custom domain cache；R2 media及YouTube影片
-保持browser直連，不能恢復經Render proxy binary。
+及Supabase 500MB database，而不是只提高單一endpoint限制。目前Render static回應仍是
+`CF-Cache-Status: DYNAMIC`；日後有Cloudflare custom domain時可只cache公開CSS、JS、
+manifest及圖示。HTML、API、登入、WebSocket及private R2 URL不可套`Cache Everything`；
+R2 media及YouTube影片保持browser直連，不能恢復經Render proxy binary。
 
 保留至少1GB予一般 API、deploy health check、external AI HTTP requests及突發流量。
 
