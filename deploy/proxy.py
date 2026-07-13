@@ -240,14 +240,21 @@ def _verify_committee_token(token: str):
 
     user_id, sig = token.rsplit(":", 1)
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
-        ).fetchone()
+        rows = conn.execute(
+            text("SELECT key,value FROM system_config WHERE key IN ('cookie_secret','login_disabled_accounts')")
+        ).fetchall()
 
-    if row is None:
+    configs = {str(row._mapping["key"]): row._mapping["value"] for row in rows}
+    if "cookie_secret" not in configs:
+        return None
+    try:
+        disabled_accounts = json.loads(str(configs.get("login_disabled_accounts") or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        disabled_accounts = []
+    if isinstance(disabled_accounts, list) and user_id in disabled_accounts:
         return None
 
-    secret = row._mapping["value"]
+    secret = configs["cookie_secret"]
     expected = hmac.new(str(secret).encode(), user_id.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected):
         return user_id
@@ -391,6 +398,21 @@ def _ensure_push_subscriptions_table(conn):
     ))
 
 
+def _validated_push_subscription(payload):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid push subscription")
+    endpoint = str(payload.get("endpoint") or "").strip()
+    keys = payload.get("keys")
+    if (
+        not endpoint.startswith("https://")
+        or not isinstance(keys, dict)
+        or not str(keys.get("p256dh") or "").strip()
+        or not str(keys.get("auth") or "").strip()
+    ):
+        raise HTTPException(status_code=400, detail="Invalid push subscription")
+    return endpoint
+
+
 def _ensure_video_tracking_tables(conn):
     conn.execute(text(CREATE_VIDEO_VIEWS))
     conn.execute(text(CREATE_VIDEO_PROGRESS))
@@ -458,9 +480,7 @@ async def push_subscribe(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    endpoint = str(subscription.get("endpoint", "")).strip() if isinstance(subscription, dict) else ""
-    if not endpoint:
-        raise HTTPException(status_code=400, detail="Missing endpoint")
+    endpoint = _validated_push_subscription(subscription)
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
@@ -548,29 +568,27 @@ async def push_resubscribe(request: Request):
 
     old_endpoint = str(payload.get("old_endpoint", "")).strip() if isinstance(payload, dict) else ""
     subscription = payload.get("subscription") if isinstance(payload, dict) else None
-    new_endpoint = (
-        str(subscription.get("endpoint", "")).strip()
-        if isinstance(subscription, dict) else ""
-    )
-    if not new_endpoint:
-        raise HTTPException(status_code=400, detail="Missing new endpoint")
+    new_endpoint = _validated_push_subscription(subscription)
+    if not old_endpoint:
+        raise HTTPException(status_code=400, detail="Missing old endpoint")
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
         _ensure_push_subscriptions_table(conn)
 
-        # Recover the owning user from the old row (if the old endpoint is known).
-        user_id = None
-        if old_endpoint:
-            row = conn.execute(
-                text(
-                    f"SELECT user_id FROM {TABLE_PUSH_SUBSCRIPTIONS} "
-                    "WHERE endpoint = :old_endpoint"
-                ),
-                {"old_endpoint": old_endpoint},
-            ).fetchone()
-            if row is not None:
-                user_id = row[0]
+        # The old endpoint is the capability that identifies the owning member.
+        # Never create an active orphan subscription when it is missing/unknown;
+        # the authenticated page reconciliation will safely recover it later.
+        row = conn.execute(
+            text(
+                f"SELECT user_id FROM {TABLE_PUSH_SUBSCRIPTIONS} "
+                "WHERE endpoint = :old_endpoint"
+            ),
+            {"old_endpoint": old_endpoint},
+        ).fetchone()
+        user_id = row[0] if row is not None else None
+        if not user_id:
+            raise HTTPException(status_code=404, detail="Old subscription not found")
 
         conn.execute(
             text(

@@ -66,6 +66,15 @@
       .account-picker .caption {
         margin-top: 0.4rem;
       }
+      dialog.card {
+        width: min(32rem, calc(100% - 2rem));
+        max-height: calc(100dvh - 2rem);
+        margin: auto;
+        overflow: auto;
+      }
+      dialog::backdrop {
+        background: rgb(15 23 42 / 55%);
+      }
     </style>
   </head>
   <body>
@@ -159,29 +168,45 @@
             </form>
             <form id="modelsForm" class="card">
               <h2>AI Provider / Model 設定</h2>
-              <label
-                >啟用 Provider（每行一個，例如 gemini）<textarea
-                  id="providers"
-                ></textarea></label
-              ><label>預設模型<input id="defaultModel" /></label
-              ><button class="primary">更新 AI 設定</button>
+              <fieldset class="account-picker">
+                <legend>啟用 Provider</legend>
+                <div id="providerOptions" class="account-options"></div>
+              </fieldset>
+              <label>預設模型<select id="defaultModel"></select></label>
+              <div id="providerKeyStatus" class="caption"></div>
+              <button class="primary">更新 AI 設定</button>
             </form>
           </div>
         </section>
         <section id="system" class="pane">
           <section class="card">
             <h2>維護模式</h2>
+            <p class="caption">開啟後除本頁外，所有頁面均會顯示維護中訊息。</p>
             <p id="maintState"></p>
             <button id="toggleMaint" class="primary"></button>
           </section>
           <section class="card">
             <h2>臨時開放提案</h2>
-            <p class="caption">
-              以 JSON 形式維護 `user_id: YYYY-MM-DD HH:MM`；只供開發者按現行
-              Streamlit 規則處理例外。
-            </p>
-            <label>設定<textarea id="bypass"></textarea></label
-            ><button id="saveBypass" class="primary">儲存臨時權限</button>
+            <p class="caption">只可為非活躍委員臨時開放，權限會在指定時間自動失效。</p>
+            <div id="activeBypasses"></div>
+            <label>選擇委員<select id="bypassUsers" multiple size="6"></select></label>
+            <label>到期時間<input id="bypassExpiry" type="datetime-local" /></label>
+            <div class="actions"><button id="saveBypass" class="primary">啟用臨時權限</button><button id="revokeAllBypass" class="danger">全部撤銷</button></div>
+          </section>
+          <form id="pushForm" class="card">
+            <h2>手動推送通知</h2>
+            <p class="caption">通知會即時送到所有已訂閱裝置，或指定委員的裝置。</p>
+            <label>推送對象<select id="pushTarget"><option value="">所有已訂閱委員</option></select></label>
+            <label>通知標題<input id="pushTitle" value="聖呂中辯" required /></label>
+            <label>通知內容<textarea id="pushBody" required></textarea></label>
+            <label>點擊後開啟路徑<input id="pushUrl" value="/vote" required /></label>
+            <label class="check"><input id="pushConfirmed" type="checkbox" /> 我確認要立即發送此通知</label>
+            <button class="primary">發送推送通知</button>
+          </form>
+          <section class="card danger-zone">
+            <h2>資料庫結構初始化</h2>
+            <p class="caption">適用於首次部署或程式結構更新後；會建立缺少的資料表、視圖及索引，並執行 migrations。</p>
+            <button id="initDb" class="danger">執行 init_db</button>
           </section>
           <section class="card">
             <h2>Push 訂閱狀態</h2>
@@ -193,6 +218,7 @@
             <form class="card passwordForm" data-key="admin_password">
               <h2>更改賽會人員密碼</h2>
               <label>新密碼<input class="new" type="password" required /></label
+              ><label>確認新密碼<input class="confirm" type="password" required /></label
               ><button class="primary">更新</button>
             </form>
             <form class="card passwordForm" data-key="developer_password">
@@ -204,6 +230,7 @@
                   required /></label
               ><label
                 >新密碼<input class="new" type="password" required /></label
+              ><label>確認新密碼<input class="confirm" type="password" required /></label
               ><button class="primary">更新</button>
             </form>
             <form class="card passwordForm" data-key="sql_password">
@@ -215,6 +242,7 @@
                   required /></label
               ><label
                 >新密碼<input class="new" type="password" required /></label
+              ><label>確認新密碼<input class="confirm" type="password" required /></label
               ><button class="primary">更新</button>
             </form>
           </div>
@@ -225,6 +253,14 @@
     <div id="busy" class="busy">
       <div class="busy-pill"><i class="spinner"></i>處理中…</div>
     </div>
+    <dialog id="actionDialog" class="card">
+      <form method="dialog" id="actionDialogForm">
+        <h2 id="dialogTitle"></h2>
+        <p id="dialogMessage" class="caption"></p>
+        <label id="dialogInputLabel" class="hidden">新密碼<input id="dialogInput" type="password" /></label>
+        <div class="actions"><button value="cancel">取消</button><button id="dialogConfirm" value="confirm" class="danger">確認</button></div>
+      </form>
+    </dialog>
     <script src="/shared/vote-ui.js"></script>
     <script>
       (() => {
@@ -298,6 +334,52 @@
           };
           options.onchange = () => updatePickerSummary(id);
           updatePickerSummary(id);
+        }
+        function selectedProviders() {
+          return [...$("providerOptions").querySelectorAll("input:checked")].map(
+            (input) => input.value,
+          );
+        }
+        function refreshModelOptions(preferred) {
+          const enabled = new Set(selectedProviders());
+          const models = (data.ai_options?.models || []).filter((model) =>
+            enabled.has(model.provider),
+          );
+          $("defaultModel").innerHTML = models
+            .map(
+              (model) =>
+                `<option value="${esc(model.label)}">${esc(model.label)}</option>`,
+            )
+            .join("");
+          if (models.some((model) => model.label === preferred))
+            $("defaultModel").value = preferred;
+        }
+        function parseBypasses(raw) {
+          try {
+            const value = JSON.parse(raw || "{}");
+            return value && typeof value === "object" && !Array.isArray(value)
+              ? value
+              : {};
+          } catch {
+            return {};
+          }
+        }
+        function askAction(title, message, withInput = false) {
+          $("dialogTitle").textContent = title;
+          $("dialogMessage").textContent = message;
+          $("dialogInputLabel").classList.toggle("hidden", !withInput);
+          $("dialogInput").value = "";
+          $("actionDialog").showModal();
+          return new Promise((resolve) => {
+            $("actionDialog").onclose = () =>
+              resolve(
+                $("actionDialog").returnValue === "confirm"
+                  ? withInput
+                    ? $("dialogInput").value
+                    : true
+                  : false,
+              );
+          });
         }
         function tab(id) {
           document
@@ -379,39 +461,80 @@
               ["帳戶", (r) => r.user_id],
               ["狀態", (r) => r.account_status],
               ["最後登入", (r) => r.last_login_at || "—"],
-              ["停用", (r) => r.account_disabled],
+              ["登入權限", (r) => (r.login_disabled ? "已停用" : "正常")],
             ],
             (r) =>
               '<button data-reset="' +
               esc(r.user_id) +
-              '">重設密碼</button> <button data-delete="' +
+              '">重設密碼</button> <button data-access="' +
               esc(r.user_id) +
-              '" class="danger">刪除</button>',
+              '" data-disabled="' +
+              String(!r.login_disabled) +
+              '" class="' +
+              (r.login_disabled ? "" : "danger") +
+              '">' +
+              (r.login_disabled ? "重新啟用" : "停用帳戶") +
+              "</button>",
           );
           let c = data.configs;
           renderAccountPicker(
             "ttsAllowed",
-            lines(jsonList(c.tts_recording_allowed_users)),
+            jsonList(c.tts_recording_allowed_users),
           );
           renderAccountPicker(
             "ttsReviewers",
-            lines(jsonList(c.tts_recording_reviewers)),
+            jsonList(c.tts_recording_reviewers),
           );
           renderAccountPicker(
             "treasurers",
-            lines(jsonList(c.ai_fund_treasurers)),
+            jsonList(c.ai_fund_treasurers),
           );
-          $("providers").value = lines(jsonList(c.ai_enabled_providers)).join(
-            "\n",
-          );
-          $("defaultModel").value = c.ai_default_model || "";
+          const enabledProviders = new Set(jsonList(c.ai_enabled_providers));
+          $("providerOptions").innerHTML = (data.ai_options?.providers || [])
+            .map(
+              (provider) =>
+                `<label class="account-option"><input type="checkbox" value="${esc(provider)}" ${enabledProviders.has(provider) ? "checked" : ""}><span>${esc(provider)}</span></label>`,
+            )
+            .join("");
+          $("providerOptions").onchange = () =>
+            refreshModelOptions($("defaultModel").value);
+          refreshModelOptions(c.ai_default_model || data.ai_options?.default_model);
+          $("providerKeyStatus").innerHTML = (data.ai_options?.providers || [])
+            .map((provider) => {
+              const ready = data.ai_options.key_status?.[provider];
+              return `${esc(provider)}：${esc(data.ai_options.key_names?.[provider] || "未指定 key")}（${ready ? "已設定" : "未設定"}）`;
+            })
+            .join("<br>");
           let on = ["true", "1", "yes", "on"].includes(
             String(c.maintenance_mode).toLowerCase(),
           );
           $("maintState").textContent =
             "目前維護模式：" + (on ? "開啟" : "關閉");
           $("toggleMaint").textContent = on ? "關閉維護模式" : "開啟維護模式";
-          $("bypass").value = c.bypass_active_check_until || "{}";
+          const bypasses = parseBypasses(c.bypass_active_check_until);
+          $("activeBypasses").innerHTML =
+            Object.entries(bypasses)
+              .map(
+                ([uid, expiry]) =>
+                  `<div class="actions"><span>${esc(uid)}（至 ${esc(expiry)}）</span><button data-revoke-bypass="${esc(uid)}" class="danger">撤銷</button></div>`,
+              )
+              .join("") || '<p class="caption">目前沒有委員獲臨時提案權限。</p>';
+          $("bypassUsers").innerHTML = (data.inactive_accounts || [])
+            .map((uid) => `<option value="${esc(uid)}">${esc(uid)}</option>`)
+            .join("");
+          if (!$("bypassExpiry").value) {
+            const date = new Date(Date.now() + 7 * 86400000);
+            date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+            $("bypassExpiry").value = date.toISOString().slice(0, 16);
+          }
+          $("pushTarget").innerHTML =
+            '<option value="">所有已訂閱委員</option>' +
+            (data.subscriptions || [])
+              .map(
+                (row) =>
+                  `<option value="${esc(row.user_id)}">${esc(row.user_id)}（${esc(row.device_count)} 個裝置）</option>`,
+              )
+              .join("");
           $("subscriptions").innerHTML = table(data.subscriptions, [
             ["委員", (r) => r.user_id],
             ["已訂閱裝置", (r) => r.device_count],
@@ -500,7 +623,7 @@
               method: "POST",
               body: JSON.stringify({
                 values: {
-                  ai_enabled_providers: lines($("providers").value),
+                  ai_enabled_providers: selectedProviders(),
                   ai_default_model: $("defaultModel").value,
                 },
               }),
@@ -508,39 +631,75 @@
             "AI Provider 設定已更新。",
           );
         };
-        $("toggleMaint").onclick = () =>
+        $("toggleMaint").onclick = async () => {
+          const turningOn = $("toggleMaint").textContent.startsWith("開啟");
+          if (!(await askAction(
+            turningOn ? "開啟維護模式？" : "關閉維護模式？",
+            turningOn
+              ? "開啟後除開發者設定外，所有頁面會暫停供用戶使用。"
+              : "關閉後所有頁面會立即恢復供用戶使用。",
+          ))) return;
           mutate(
             "/api/developer/settings",
             {
               method: "POST",
               body: JSON.stringify({
                 values: {
-                  maintenance_mode: $("toggleMaint").textContent.startsWith(
-                    "開啟",
-                  )
-                    ? "true"
-                    : "false",
+                  maintenance_mode: turningOn ? "true" : "false",
                 },
               }),
             },
             "維護模式已更新。",
           );
+        };
         $("saveBypass").onclick = () => {
-          try {
-            JSON.parse($("bypass").value);
-          } catch (e) {
-            return toast("⚠️ 必須是有效 JSON。");
-          }
+          const users = [...$("bypassUsers").selectedOptions].map(
+            (option) => option.value,
+          );
+          if (!users.length) return toast("⚠️ 請選擇至少一位委員。");
           mutate(
-            "/api/developer/settings",
+            "/api/developer/bypass",
             {
               method: "POST",
               body: JSON.stringify({
-                values: { bypass_active_check_until: $("bypass").value },
+                users,
+                expires_at: $("bypassExpiry").value.replace("T", " "),
               }),
             },
-            "臨時提案權限已更新。",
+            "臨時提案權限已啟用。",
           );
+        };
+        $("revokeAllBypass").onclick = async () => {
+          if (!(await askAction("全部撤銷？", "所有臨時提案權限會立即失效。"))) return;
+          mutate("/api/developer/bypass", { method: "POST", body: JSON.stringify({ revoke_all: true }) }, "所有臨時提案權限已撤銷。");
+        };
+        $("pushForm").onsubmit = async (e) => {
+          e.preventDefault();
+          if (!$("pushConfirmed").checked)
+            return toast("⚠️ 請先確認要立即發送。");
+          busy(true);
+          try {
+            const result = await api("/api/developer/push", {
+              method: "POST",
+              body: JSON.stringify({
+                title: $("pushTitle").value,
+                body: $("pushBody").value,
+                url: $("pushUrl").value,
+                target_user: $("pushTarget").value || null,
+                confirmed: true,
+              }),
+            });
+            toast(result.sent ? `✅ 已發送至 ${result.sent} 個裝置。` : "⚠️ 未有通知成功發送，請檢查訂閱及 VAPID 設定。");
+            $("pushConfirmed").checked = false;
+          } catch (error) {
+            toast("⚠️ " + error.message);
+          } finally {
+            busy(false);
+          }
+        };
+        $("initDb").onclick = async () => {
+          if (!(await askAction("執行資料庫初始化？", "會建立缺少的結構並執行 migrations；過程可能需時。"))) return;
+          mutate("/api/developer/init-db", { method: "POST" }, "資料庫結構初始化完成。");
         };
         document.querySelectorAll(".passwordForm").forEach(
           (f) =>
@@ -553,6 +712,7 @@
                   body: JSON.stringify({
                     current_password: f.querySelector(".current")?.value || "",
                     new_password: f.querySelector(".new").value,
+                    confirm_password: f.querySelector(".confirm").value,
                   }),
                 },
                 "密碼已更新。",
@@ -576,8 +736,10 @@
               "Bug 回覆已更新。",
             );
           }
+          if (b.dataset.revokeBypass)
+            mutate("/api/developer/bypass", { method: "POST", body: JSON.stringify({ revoke_user: b.dataset.revokeBypass }) }, `已撤銷 ${b.dataset.revokeBypass} 的臨時權限。`);
           if (b.dataset.reset) {
-            let password = prompt("輸入新密碼");
+            askAction("重設帳戶密碼", `為 ${b.dataset.reset} 輸入新密碼。`, true).then((password) => {
             if (password)
               mutate(
                 "/api/developer/accounts/" +
@@ -589,13 +751,29 @@
                 },
                 "密碼已重設。",
               );
+            });
           }
-          if (b.dataset.delete && confirm("確定刪除此帳戶？"))
-            mutate(
-              "/api/developer/accounts/" + encodeURIComponent(b.dataset.delete),
-              { method: "DELETE" },
-              "帳戶已刪除。",
-            );
+          if (b.dataset.access) {
+            const disabled = b.dataset.disabled === "true";
+            askAction(
+              disabled ? "停用帳戶？" : "重新啟用帳戶？",
+              disabled
+                ? `${b.dataset.access} 將會立即登出、停止接收通知，並無法再次登入，歷史紀錄會保留。`
+                : `${b.dataset.access} 將可再次登入系統。`,
+            ).then((confirmed) => {
+              if (confirmed)
+                mutate(
+                  "/api/developer/accounts/" +
+                    encodeURIComponent(b.dataset.access) +
+                    "/access",
+                  {
+                    method: "PATCH",
+                    body: JSON.stringify({ disabled }),
+                  },
+                  disabled ? "帳戶已停用。" : "帳戶已重新啟用。",
+                );
+            });
+          }
         };
         load();
       })();

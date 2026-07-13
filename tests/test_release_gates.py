@@ -203,8 +203,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
     def test_home_displays_release_version(self):
         home = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
         version = (ROOT / "version.py").read_text(encoding="utf-8")
-        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.0.15）", home)
-        self.assertIn('APP_VERSION = "4.0.15"', version)
+        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.1.1）", home)
+        self.assertIn('APP_VERSION = "4.1.1"', version)
 
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")

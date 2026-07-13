@@ -1067,8 +1067,9 @@ async def rag_reindex(body: RagReindexBody, request: Request):
     submissions = _rows(db.query(f"""SELECT id,data_type,title,topic_text,side,content_text,source_note
         FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
         AND anonymized=TRUE AND permission_confirmed=TRUE ORDER BY id"""))
-    db.execute(f"UPDATE {TABLE_RAG_DOCUMENTS} SET status='withdrawn' WHERE submission_id IN
-        (SELECT id FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status!='accepted')")
+    db.execute(f"""UPDATE {TABLE_RAG_DOCUMENTS} SET status='withdrawn'
+        WHERE submission_id IN
+        (SELECT id FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status!='accepted')""")
     indexed = 0
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{body.embedding_model}:embedContent"
     async with httpx.AsyncClient(timeout=60) as client:

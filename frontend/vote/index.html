@@ -738,6 +738,10 @@
         let ME = "";
         let ACTIVITY = null;
         let NOTI_CHECKED = false;
+        let PUSH_SYNC_USER = "";
+        let PUSH_SYNC_PROMISE = null;
+        let PUSH_LAST_STATUS = "";
+        const PUSH_OPT_OUT_KEY = "committeePushOptOut";
         let BUSY = 0;
         // Central busy state → shows the "處理中…" overlay so every action button
         // click gives clear loading feedback and double-submits are blocked.
@@ -842,6 +846,9 @@
           ME = "";
           ACTIVITY = null;
           NOTI_CHECKED = false;
+          PUSH_SYNC_USER = "";
+          PUSH_SYNC_PROMISE = null;
+          PUSH_LAST_STATUS = "";
           noticeRoot.innerHTML = "";
           confirmRoot.innerHTML = "";
           tabsEl.style.display = "none";
@@ -1451,6 +1458,7 @@
                 <details open>
                     <summary>通知設定</summary>
                     <div class="sub" style="padding-top:.45rem">啟用後，新議案及投票結果可在 PWA 未開啟時推送到你的裝置。iPhone / iPad 需先將系統加入主畫面。</div>
+                    <div class="sub" id="pushHealth" style="padding-top:.45rem">${esc(PUSH_LAST_STATUS || "正在檢查通知狀態…")}</div>
                     <div class="actions">
                         <button data-act="push-enable">啟用通知</button>
                         <button data-act="push-disable">停用通知</button>
@@ -1556,6 +1564,7 @@
               } else renderVote(d);
             }
             checkNotification();
+            schedulePushReconcile();
           } catch (e) {
             content.innerHTML =
               '<div class="card err"><div class="topic">載入失敗</div>' +
@@ -1820,63 +1829,176 @@
           }
         }
 
-        async function pushEnable() {
-          if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-            toast("⚠️ 此瀏覽器未支援背景通知。");
-            return;
+        function setPushStatus(message) {
+          PUSH_LAST_STATUS = message;
+          const el = document.getElementById("pushHealth");
+          if (el) el.textContent = message;
+        }
+
+        function urlBase64ToUint8Array(base64String) {
+          const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+          const base64 = (base64String + padding)
+            .replace(/-/g, "+")
+            .replace(/_/g, "/");
+          const rawData = window.atob(base64);
+          return Uint8Array.from([...rawData].map((ch) => ch.charCodeAt(0)));
+        }
+
+        function sameApplicationServerKey(subscription, expectedKey) {
+          const actual = subscription.options && subscription.options.applicationServerKey;
+          if (!actual) return true;
+          const bytes = new Uint8Array(actual);
+          return (
+            bytes.length === expectedKey.length &&
+            bytes.every((value, index) => value === expectedKey[index])
+          );
+        }
+
+        async function getPushRegistrationAndKey() {
+          const registrationPromise = navigator.serviceWorker.register("/sw.js", {
+            updateViaCache: "none",
+          });
+          const keyPromise = fetch("/sw.js", { cache: "no-store" })
+            .then((response) => {
+              if (!response.ok) throw new Error("未能讀取 Web Push 設定");
+              return response.text();
+            })
+            .then((source) => {
+              const match = source.match(/const VAPID_PUBLIC_KEY = "([^"]*)"/);
+              if (!match || !match[1]) throw new Error("尚未設定 Web Push 金鑰");
+              return urlBase64ToUint8Array(match[1]);
+            });
+          await registrationPromise;
+          const registration = await navigator.serviceWorker.ready;
+          return { registration, applicationServerKey: await keyPromise };
+        }
+
+        async function persistPushStorage() {
+          if (navigator.storage && navigator.storage.persist) {
+            try {
+              await navigator.storage.persist();
+            } catch (e) {
+              console.warn("Persistent storage request failed", e);
+            }
           }
-          try {
-            const reg = await navigator.serviceWorker.register("/sw.js");
-            const permission = await Notification.requestPermission();
-            if (permission !== "granted") {
-              toast("⚠️ 未允許通知。");
-              return;
-            }
-            const swText = await fetch("/sw.js").then((r) => r.text());
-            const m = swText.match(/const VAPID_PUBLIC_KEY = "([^"]*)"/);
-            const key = m ? m[1] : "";
-            if (!key) {
-              toast("⚠️ 尚未設定 Web Push 金鑰。");
-              return;
-            }
-            function urlBase64ToUint8Array(base64String) {
-              const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-              const base64 = (base64String + padding)
-                .replace(/-/g, "+")
-                .replace(/_/g, "/");
-              const rawData = window.atob(base64);
-              return Uint8Array.from(
-                [...rawData].map((ch) => ch.charCodeAt(0)),
-              );
-            }
-            let sub = await reg.pushManager.getSubscription();
-            if (!sub)
-              sub = await reg.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey: urlBase64ToUint8Array(key),
-              });
-            const { res, data } = await postJSON(
-              "/api/push/subscribe",
-              sub.toJSON(),
+        }
+
+        async function reconcilePushSubscription({ interactive = false } = {}) {
+          if (!ME) return false;
+          if (!interactive && localStorage.getItem(PUSH_OPT_OUT_KEY) === "1") {
+            setPushStatus("通知已在此裝置停用。");
+            return false;
+          }
+          if (
+            !("Notification" in window) ||
+            !("serviceWorker" in navigator) ||
+            !("PushManager" in window)
+          ) {
+            setPushStatus("此瀏覽器未支援背景通知。");
+            return false;
+          }
+          if (!window.isSecureContext) {
+            setPushStatus("背景通知需要 HTTPS 連線。");
+            return false;
+          }
+
+          let permission = Notification.permission;
+          if (interactive && permission !== "granted") {
+            permission = await Notification.requestPermission();
+          }
+          if (permission !== "granted") {
+            setPushStatus(
+              permission === "denied"
+                ? "通知權限已被封鎖，請到 Chrome／系統設定重新允許。"
+                : "通知尚未啟用。",
             );
-            toast(res.ok && data.ok ? "☑️ 通知已啟用。" : "⚠️ 通知啟用失敗。");
+            return false;
+          }
+
+          setPushStatus("正在核對通知訂閱…");
+          const { registration, applicationServerKey } =
+            await getPushRegistrationAndKey();
+          let subscription = await registration.pushManager.getSubscription();
+          if (
+            subscription &&
+            !sameApplicationServerKey(subscription, applicationServerKey)
+          ) {
+            await subscription.unsubscribe();
+            subscription = null;
+          }
+          if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey,
+            });
+          }
+
+          const { res, data } = await postJSON(
+            "/api/push/subscribe",
+            subscription.toJSON(),
+          );
+          if (!res.ok || !data.ok) {
+            throw new Error(data.detail || "訂閱同步失敗");
+          }
+          await persistPushStorage();
+          PUSH_SYNC_USER = ME;
+          setPushStatus("通知已啟用，訂閱狀態正常。");
+          return true;
+        }
+
+        function schedulePushReconcile() {
+          if (!ME || PUSH_SYNC_USER === ME || PUSH_SYNC_PROMISE) return;
+          PUSH_SYNC_PROMISE = reconcilePushSubscription()
+            .catch((error) => {
+              setPushStatus("通知訂閱暫時未能同步，請按「啟用通知」重試。");
+              console.warn("Push subscription reconciliation failed", error);
+            })
+            .finally(() => {
+              PUSH_SYNC_PROMISE = null;
+            });
+        }
+
+        async function pushEnable() {
+          try {
+            localStorage.removeItem(PUSH_OPT_OUT_KEY);
+            const ok = await reconcilePushSubscription({ interactive: true });
+            toast(ok ? "☑️ 通知已啟用。" : "⚠️ 未能啟用通知。");
           } catch (e) {
+            setPushStatus("通知啟用失敗，請稍後再試。");
             toast("⚠️ 通知啟用失敗：" + e.message);
           }
         }
 
         async function pushDisable() {
+          localStorage.setItem(PUSH_OPT_OUT_KEY, "1");
           try {
             const reg = await navigator.serviceWorker.getRegistration();
             const sub = reg ? await reg.pushManager.getSubscription() : null;
             if (sub) {
-              await postJSON("/api/push/unsubscribe", {
-                endpoint: sub.endpoint,
-              });
+              let serverResult = null;
+              let serverError = null;
+              try {
+                serverResult = await postJSON("/api/push/unsubscribe", {
+                  endpoint: sub.endpoint,
+                });
+              } catch (error) {
+                serverError = error;
+              }
               await sub.unsubscribe();
-            } else {
-              await postJSON("/api/push/unsubscribe", {});
+              if (
+                serverError ||
+                !serverResult ||
+                !serverResult.res.ok ||
+                !serverResult.data.ok
+              ) {
+                console.warn(
+                  "Push endpoint was removed locally but server cleanup is pending",
+                  serverError || (serverResult && serverResult.data),
+                );
+              }
             }
+            PUSH_SYNC_USER = "";
+            setPushStatus("通知已停用。");
             toast("☑️ 通知已停用。");
           } catch (e) {
             toast("⚠️ 通知停用失敗：" + e.message);
