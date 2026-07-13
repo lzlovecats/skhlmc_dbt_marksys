@@ -92,14 +92,14 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
                 "deploy/proxy.py",
             },
         )
-        self.assertEqual(len(sites), 23)
+        self.assertEqual(len(sites), 21)
         self.assertEqual(
             set(inventory["references"]),
             reconciliation._RUNTIME_DDL_REFERENCE_ALLOWLIST,
         )
         self.assertEqual(
             set(inventory["direct_statements"]),
-            {"ALTER TABLE", "CREATE EXTENSION"},
+            {"ALTER TABLE"},
         )
         self.assertEqual(
             set(inventory["indirect_statements"]),

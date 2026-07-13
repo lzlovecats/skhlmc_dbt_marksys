@@ -417,6 +417,38 @@ def _rag_chunks(value: str, size: int = 700, overlap: int = 100) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def _require_rag_vector_schema(db):
+    """Fail closed until pgvector is provisioned by a versioned migration."""
+    try:
+        status = db.query(
+            """
+            SELECT
+              EXISTS (
+                SELECT 1 FROM pg_extension WHERE extname='vector'
+              ) AS vector_extension_ready,
+              EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema=current_schema()
+                  AND table_name=:table_name
+                  AND column_name='embedding'
+                  AND udt_name='vector'
+              ) AS embedding_column_ready
+            """,
+            {"table_name": TABLE_RAG_CHUNKS},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            503, "RAG向量schema尚未由正式migration啟用"
+        ) from exc
+    if (
+        status.empty
+        or not bool(status.iloc[0]["vector_extension_ready"])
+        or not bool(status.iloc[0]["embedding_column_ready"])
+    ):
+        raise HTTPException(503, "RAG向量schema尚未由正式migration啟用")
+
+
 def _audio_ext(mime):
     return {"audio/webm": "webm", "audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg"}.get(mime, "webm")
 
@@ -1442,14 +1474,10 @@ async def rag_reindex(body: RagReindexBody, request: Request):
     user, db = _admin(request)
     if body.embedding_model != RAG_EMBEDDING_MODEL or body.embedding_version != RAG_EMBEDDING_VERSION:
         raise HTTPException(400, "embedding model/version 必須使用目前鎖定版本，避免重複建立索引空間")
+    _require_rag_vector_schema(db)
     from deploy.proxy import _get_proxy_secret
     api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
     if not api_key: raise HTTPException(503, "未設定GEMINI_API_KEY")
-    try:
-        db.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        db.execute(f"ALTER TABLE {TABLE_RAG_CHUNKS} ADD COLUMN IF NOT EXISTS embedding vector(768)")
-    except Exception as exc:
-        raise HTTPException(503, "Supabase尚未啟用pgvector extension") from exc
     submissions = _rows(db.query(f"""SELECT s.id,s.data_type,s.title,s.topic_text,s.side,
             s.content_text,s.source_note,d.document_id AS existing_document_id
         FROM {TABLE_LLM_TRAINING_SUBMISSIONS} s

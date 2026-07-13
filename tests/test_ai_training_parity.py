@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from api.ai_training_api import DEFAULT_SCRIPT_BANK, _segments
+import pandas as pd
+import pytest
+from fastapi import HTTPException
+
+from api.ai_training_api import (
+    DEFAULT_SCRIPT_BANK,
+    _require_rag_vector_schema,
+    _segments,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,3 +75,31 @@ def test_recording_review_uses_shared_page_size():
     api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
     assert "ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE" in api
     assert '"page_size": ADMIN_RECORDING_PAGE_SIZE' in api
+
+
+def test_rag_vector_schema_is_read_only_and_fails_closed():
+    class Db:
+        def __init__(self, extension=True, column=True):
+            self.extension = extension
+            self.column = column
+            self.queries = []
+
+        def query(self, sql, params=None):
+            self.queries.append((sql, params))
+            return pd.DataFrame([{
+                "vector_extension_ready": self.extension,
+                "embedding_column_ready": self.column,
+            }])
+
+    ready = Db()
+    _require_rag_vector_schema(ready)
+    assert len(ready.queries) == 1
+    assert ready.queries[0][1] == {"table_name": "rag_chunks"}
+
+    with pytest.raises(HTTPException) as error:
+        _require_rag_vector_schema(Db(column=False))
+    assert error.value.status_code == 503
+
+    api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
+    assert "CREATE EXTENSION IF NOT EXISTS vector" not in api
+    assert "ADD COLUMN IF NOT EXISTS embedding" not in api
