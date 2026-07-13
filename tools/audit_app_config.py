@@ -69,47 +69,52 @@ def build_report(legacy_keys: list[str], typed_rows: list[dict]) -> dict:
     return report
 
 
-def audit(engine) -> dict:
-    with engine.connect() as conn:
-        tables = conn.execute(text("""
-            SELECT
-              to_regclass('public.app_config') IS NOT NULL AS typed_exists,
-              to_regclass('public.system_config') IS NOT NULL AS legacy_exists
-        """)).mappings().one()
-        if not bool(tables["typed_exists"]):
-            return {
-                "typed_table_exists": False,
-                "legacy_table_exists": bool(tables["legacy_exists"]),
-                "migration_complete": False,
-                "rotation_complete": False,
-                "bridge_removal_ready": False,
-            }
+def audit_connection(conn) -> dict:
+    """Audit through an existing connection, including an uncommitted migration."""
+    tables = conn.execute(text("""
+        SELECT
+          to_regclass('public.app_config') IS NOT NULL AS typed_exists,
+          to_regclass('public.system_config') IS NOT NULL AS legacy_exists
+    """)).mappings().one()
+    if not bool(tables["typed_exists"]):
+        return {
+            "typed_table_exists": False,
+            "legacy_table_exists": bool(tables["legacy_exists"]),
+            "migration_complete": False,
+            "rotation_complete": False,
+            "bridge_removal_ready": False,
+        }
 
-        legacy_keys = []
-        if bool(tables["legacy_exists"]):
-            legacy_keys = [
-                str(row[0])
-                for row in conn.execute(text(
-                    "SELECT key FROM system_config ORDER BY key"
-                )).fetchall()
-            ]
-        typed_rows = [dict(row) for row in conn.execute(text("""
-            SELECT key,namespace,value_type,is_secret,jsonb_typeof(value) AS json_type,
-              CASE WHEN key IN ('admin_password','developer_password','sql_password')
-                    AND jsonb_typeof(value)='string'
-                   THEN LEFT(value #>> '{}',4) IN ('$2a$','$2b$','$2y$')
-                        AND LENGTH(value #>> '{}')=60
-                   ELSE NULL END AS credential_is_bcrypt,
-              CASE WHEN key='cookie_secret' AND jsonb_typeof(value)='string'
-                   THEN LENGTH(value #>> '{}')>=32
-                   ELSE NULL END AS cookie_secret_strong
-            FROM app_config ORDER BY key
-        """)).mappings().all()]
+    legacy_keys = []
+    if bool(tables["legacy_exists"]):
+        legacy_keys = [
+            str(row[0])
+            for row in conn.execute(text(
+                "SELECT key FROM system_config ORDER BY key"
+            )).fetchall()
+        ]
+    typed_rows = [dict(row) for row in conn.execute(text("""
+        SELECT key,namespace,value_type,is_secret,jsonb_typeof(value) AS json_type,
+          CASE WHEN key IN ('admin_password','developer_password','sql_password')
+                AND jsonb_typeof(value)='string'
+               THEN LEFT(value #>> '{}',4) IN ('$2a$','$2b$','$2y$')
+                    AND LENGTH(value #>> '{}')=60
+               ELSE NULL END AS credential_is_bcrypt,
+          CASE WHEN key='cookie_secret' AND jsonb_typeof(value)='string'
+               THEN LENGTH(value #>> '{}')>=32
+               ELSE NULL END AS cookie_secret_strong
+        FROM app_config ORDER BY key
+    """)).mappings().all()]
     return {
         "typed_table_exists": True,
         "legacy_table_exists": bool(tables["legacy_exists"]),
         **build_report(legacy_keys, typed_rows),
     }
+
+
+def audit(engine) -> dict:
+    with engine.connect() as conn:
+        return audit_connection(conn)
 
 
 def main() -> int:

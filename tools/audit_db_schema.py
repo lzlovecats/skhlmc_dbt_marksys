@@ -368,6 +368,34 @@ def build_snapshot(
     }
 
 
+def snapshot_summary(snapshot: dict) -> dict:
+    schema = snapshot["schema"]
+    metrics = snapshot["metrics"]["tables"]
+    rls_tables = sorted(
+        str(row["table_name"])
+        for row in schema.get("tables", [])
+        if row.get("rls_enabled")
+    )
+    return {
+        "format_version": snapshot["format_version"],
+        "schema_name": snapshot["schema_name"],
+        "server_version": snapshot["server_version"],
+        "schema_checksum": snapshot["schema_checksum"],
+        "object_counts": {
+            name: len(rows) for name, rows in sorted(schema.items())
+        },
+        "row_count_mode": snapshot["metrics"]["row_count_mode"],
+        "estimated_table_rows": sum(
+            max(0, int(row.get("estimated_rows") or 0)) for row in metrics
+        ),
+        "total_relation_bytes": sum(
+            max(0, int(row.get("total_bytes") or 0)) for row in metrics
+        ),
+        "rls_enabled_tables": rls_tables,
+        "rls_enabled_table_count": len(rls_tables),
+    }
+
+
 def audit(engine, schema_name: str, *, exact_row_counts: bool = False) -> dict:
     with engine.connect() as conn, conn.begin():
         conn.execute(text("SET TRANSACTION READ ONLY"))
@@ -406,6 +434,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="return exit code 1 when the deterministic schema checksum differs",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="print checksum and aggregate object counts instead of definitions",
+    )
     return parser
 
 
@@ -427,7 +460,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"Schema audit failed: {type(exc).__name__}", file=sys.stderr)
         return 1
-    print(json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True))
+    output = snapshot_summary(snapshot) if args.summary else snapshot
+    print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
     expected = args.expect_checksum.strip().lower()
     return int(bool(expected) and snapshot["schema_checksum"].lower() != expected)
 

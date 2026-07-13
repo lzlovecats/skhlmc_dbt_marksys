@@ -33,6 +33,28 @@ class DatabaseSchemaAuditTests(unittest.TestCase):
             schema_audit.schema_checksum(after),
         )
 
+    def test_summary_contains_counts_without_schema_definitions(self):
+        snapshot = schema_audit.build_snapshot(
+            "public",
+            "17",
+            {
+                "tables": [
+                    {"table_name": "accounts", "rls_enabled": False},
+                    {"table_name": "app_config", "rls_enabled": True},
+                ],
+                "columns": [{"column_name": "user_id"}],
+                "functions": [{"definition": "secret implementation"}],
+            },
+            [{"estimated_rows": 5, "total_bytes": 1024}],
+        )
+        summary = schema_audit.snapshot_summary(snapshot)
+        self.assertEqual(summary["object_counts"]["tables"], 2)
+        self.assertEqual(summary["rls_enabled_tables"], ["app_config"])
+        self.assertEqual(summary["estimated_table_rows"], 5)
+        self.assertEqual(summary["total_relation_bytes"], 1024)
+        self.assertNotIn("schema", summary)
+        self.assertNotIn("secret implementation", str(summary))
+
     def test_json_normalization_is_deterministic(self):
         value = {
             "date": dt.date(2026, 7, 13),
