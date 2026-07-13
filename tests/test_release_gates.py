@@ -198,13 +198,13 @@ class MigrationParityRegressionTests(unittest.TestCase):
         for marker in ("preservePage=false", "target._voteServerSpec?.page", "loadRecordings(resetPage=false)", '"adminLlm"'):
             self.assertIn(marker, app)
         self.assertIn('loadRecordings(true)', app)
-        self.assertIn('4.0.15-ai-training-3', html)
+        self.assertIn('4.1.2-r2-only', html)
 
     def test_home_displays_release_version(self):
         home = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
         version = (ROOT / "version.py").read_text(encoding="utf-8")
-        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.1.1）", home)
-        self.assertIn('APP_VERSION = "4.1.1"', version)
+        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.1.2）", home)
+        self.assertIn('APP_VERSION = "4.1.2"', version)
 
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
@@ -257,7 +257,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('$("mockForm").addEventListener("submit"', browser)
         self.assertIn('brief_id: data.brief_id', browser)
         self.assertIn("duration < 1 || duration > 60", browser)
-        self.assertIn("blob.size > 15 * 1024 * 1024", browser)
+        self.assertIn("blob.size > 2 * 1024 * 1024", browser)
         self.assertIn("bytes.subarray(index, index + 32768)", browser)
         self.assertNotIn("String.fromCharCode(...new Uint8Array", browser)
         self.assertLess(html.index('data-pane="fact"'), html.index('data-pane="research"'))
@@ -293,13 +293,16 @@ class MigrationParityRegressionTests(unittest.TestCase):
 
     def test_recording_audio_checks_owner_before_streaming(self):
         source = (ROOT / "api" / "ai_training_api.py").read_text(encoding="utf-8")
-        self.assertIn("speaker_user_id,audio_data,mime_type", source)
+        self.assertIn("speaker_user_id,r2_key,mime_type,file_ext", source)
         self.assertIn("owner != str(user).strip() and not _is_admin", source)
+        self.assertNotIn("audio_data", source)
+        self.assertLess(source.index("owner != str(user).strip() and not _is_admin"),
+                        source.index("r2_storage.presign_get"))
 
     def test_ai_training_parity_endpoints_are_registered(self):
         source = (ROOT / "api" / "ai_training_api.py").read_text(encoding="utf-8")
         for route in ("/recordings/quality-check", "/manuscripts", "/coverage", "/coverage/ai", "/inventory", "/regenerate-suggestions",
-                      "/export/recordings.zip", "/export/llm.jsonl"):
+                      "/export/recordings.json", "/export/llm.jsonl"):
             self.assertIn(route, source)
         browser = (
             (ROOT / "frontend" / "ai_training" / "index.html").read_text(encoding="utf-8")

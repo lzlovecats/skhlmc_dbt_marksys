@@ -7,6 +7,8 @@ psycopg2-binary
 bcrypt
 reportlab
 pypdf
+boto3
+Pillow
 google-genai
 openai
 fastapi

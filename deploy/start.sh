@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PROXY_PORT="${PORT:-8000}"
+LIMIT_CONCURRENCY="${UVICORN_LIMIT_CONCURRENCY:-30}"
+WS_MAX_SIZE="${UVICORN_WS_MAX_SIZE:-2097152}"
 
 if [ -f /etc/secrets/secrets.toml ]; then
     mkdir -p .streamlit
@@ -16,4 +18,6 @@ fi
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-65536}"
 
-exec uvicorn deploy.proxy:app --host 0.0.0.0 --port "$PROXY_PORT"
+exec uvicorn deploy.proxy:app --host 0.0.0.0 --port "$PROXY_PORT" \
+    --limit-concurrency "$LIMIT_CONCURRENCY" \
+    --ws-max-size "$WS_MAX_SIZE"

@@ -1,19 +1,19 @@
 """Direct-HTML data API for the AI training workspace."""
+import asyncio
 import base64
-import csv
 import hashlib
-import io
 import json
+import os
 import re
 import subprocess
 import tempfile
-import zipfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
@@ -42,7 +42,9 @@ ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_revie
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
 ADMIN_RECORDING_PAGE_SIZE = 5
 SUPPORTED_AUDIO_MIMES = {"audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"}
-MAX_AUDIO_BYTES = 10 * 1024 * 1024
+MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(2 * 1024 * 1024)))
+MAX_AUDIO_MB = max(1, MAX_AUDIO_BYTES // (1024 * 1024))
+TTS_REVIEW_SEMAPHORE = asyncio.Semaphore(max(1, int(os.getenv("TTS_REVIEW_CONCURRENCY", "2"))))
 
 # Kept here (rather than in the browser) so every fresh database is usable.
 DEFAULT_SCRIPT_BANK = [
@@ -70,11 +72,18 @@ class ConsentBody(BaseModel):
 
 class RecordingBody(BaseModel):
     script_id: str
-    audio_base64: str
     mime_type: str = "audio/webm"
     duration_seconds: int = 0
     manual_review: bool = False
     ai_review: dict | None = None
+    r2_upload_token: str = ""
+
+
+class RecordingUploadIntentBody(BaseModel):
+    script_id: str
+    mime_type: str = "audio/webm"
+    byte_size: int
+    sha256: str
 
 
 class LlmBody(BaseModel):
@@ -208,6 +217,7 @@ def _ctx(request):
         f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER",
         f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS channel_count INTEGER",
         f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS detected_format TEXT",
+        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
     ):
         db.execute(ddl)
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_TTS_SCRIPTS}")
@@ -275,21 +285,36 @@ def _probe_audio(audio: bytes, mime: str, claimed_duration: int) -> dict:
             "sha256": hashlib.sha256(audio).hexdigest()}
 
 
-def _audio_payload(body):
-    try:
-        audio = base64.b64decode(body.audio_base64, validate=True)
-    except Exception as exc:
-        raise HTTPException(400, "錄音資料無法讀取") from exc
-    mime = (body.mime_type or "").split(";", 1)[0].lower()
-    if mime not in SUPPORTED_AUDIO_MIMES:
-        raise HTTPException(400, "錄音格式不受支援")
-    if len(audio) < 1000:
-        raise HTTPException(400, "錄音太短或沒有聲音資料")
-    if len(audio) > MAX_AUDIO_BYTES:
-        raise HTTPException(400, "錄音超過 10MB")
+def _verified_r2_audio_claim(body, user):
+    """Verify one short-lived upload claim and its R2 object without DB binary fallback."""
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 尚未完成設定，錄音功能已暫停")
     if not 1 <= int(body.duration_seconds or 0) <= 60:
         raise HTTPException(400, "錄音長度必須為 1 至 60 秒")
-    return audio, mime, _probe_audio(audio, mime, body.duration_seconds)
+    claim = r2_storage.verify_upload_claim(
+        body.r2_upload_token or "", _get_relay_cookie_secret() or ""
+    )
+    if (
+        not claim or claim.get("kind") != "tts" or claim.get("user") != str(user)
+        or claim.get("script_id") != body.script_id
+    ):
+        raise HTTPException(400, "錄音上載憑證無效或已過期")
+    try:
+        remote = r2_storage.head(claim["r2_key"])
+    except Exception as exc:
+        raise HTTPException(400, "R2 未能確認錄音已完成上載") from exc
+    remote_sha = str((remote.get("Metadata") or {}).get("sha256") or "")
+    remote_mime = str(remote.get("ContentType") or "").split(";", 1)[0].lower()
+    if (
+        not 1_000 <= int(remote.get("ContentLength") or 0) <= MAX_AUDIO_BYTES
+        or int(remote.get("ContentLength") or 0) != int(claim["byte_size"])
+        or remote_sha != claim["sha256"] or remote_mime != claim["mime_type"]
+    ):
+        raise HTTPException(400, "R2 錄音格式、大小或雜湊驗證失敗")
+    return claim
 
 
 def _audit(db, actor, action, target_type, target_id="", details=None):
@@ -374,7 +399,8 @@ def data(request: Request):
     plan_path = Path(__file__).resolve().parents[1] / "assets" / "tts_rd_plan.md"
     try: rd_plan = plan_path.read_text(encoding="utf-8").strip()
     except OSError: rd_plan = "研發計劃書暫時未能讀取。"
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm}
+    from core import r2_storage
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured()}
     if admin:
         result["recordings"] = []; result["submissions"] = []
     return result
@@ -427,7 +453,7 @@ def recording_audio(record_id: int, request: Request):
     """Stream a recording to its submitter or an authenticated reviewer."""
     user, db = _ctx(request)
     row = db.query(
-        f"SELECT speaker_user_id,audio_data,mime_type FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id",
+        f"SELECT speaker_user_id,r2_key,mime_type,file_ext FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id",
         {"id": record_id},
     )
     if row.empty:
@@ -435,10 +461,81 @@ def recording_audio(record_id: int, request: Request):
     owner = str(row.iloc[0]["speaker_user_id"] or "").strip()
     if owner != str(user).strip() and not _is_admin(db, user):
         raise HTTPException(403, "你無權播放此錄音")
-    audio = row.iloc[0]["audio_data"]
-    if isinstance(audio, memoryview):
-        audio = audio.tobytes()
-    return Response(content=bytes(audio), media_type=row.iloc[0]["mime_type"] or "audio/webm")
+    from core import r2_storage
+    r2_key = str(row.iloc[0].get("r2_key") or "").strip()
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 暫時不可用")
+    if not r2_key:
+        raise HTTPException(409, "錄音尚未完成R2遷移")
+    return RedirectResponse(
+        r2_storage.presign_get(
+            r2_key,
+            mime_type=row.iloc[0]["mime_type"] or "audio/webm",
+            file_name=f"recording-{record_id}.{row.iloc[0].get('file_ext') or 'webm'}",
+            expires=1800,
+        ),
+        status_code=307,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.post("/recordings/upload-intent")
+def recording_upload_intent(body: RecordingUploadIntentBody, request: Request):
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+
+    user, db = _ctx(request)
+    if user not in _users(db, ALLOWED_KEY):
+        raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 尚未完成設定。")
+    consent = db.query(
+        f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user "
+        "AND consent_version=:version AND withdrawn_at IS NULL",
+        {"user": user, "version": CONSENT_VERSION},
+    )
+    if consent.empty:
+        raise HTTPException(400, "請先確認錄音同意")
+    mime = (body.mime_type or "").split(";", 1)[0].lower()
+    if mime not in SUPPORTED_AUDIO_MIMES:
+        raise HTTPException(400, "錄音格式不受支援")
+    if not 1_000 <= body.byte_size <= MAX_AUDIO_BYTES:
+        raise HTTPException(400, f"錄音大小必須介乎 1KB 至 {MAX_AUDIO_MB}MB")
+    if not re.fullmatch(r"[0-9a-f]{64}", body.sha256.lower()):
+        raise HTTPException(400, "錄音雜湊格式不正確")
+    script = db.query(
+        f"SELECT 1 FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE",
+        {"id": body.script_id},
+    )
+    if script.empty:
+        raise HTTPException(404, "錄音句子不存在或已停用")
+    duplicate = db.query(
+        f"SELECT 1 FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user AND script_id=:script "
+        "AND status IN ('pending','accepted') LIMIT 1",
+        {"user": user, "script": body.script_id},
+    )
+    if not duplicate.empty:
+        raise HTTPException(409, "此句已有待審核或已接受錄音，請勿重複提交")
+    safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", str(user))[:48] or "member"
+    ext = _audio_ext(mime)
+    key = f"audio/tts/{safe_user}/{uuid.uuid4().hex}.{ext}"
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        raise HTTPException(503, "系統簽署設定不可用。")
+    token = r2_storage.sign_upload_claim({
+        "kind": "tts", "user": str(user), "script_id": body.script_id,
+        "mime_type": mime, "byte_size": body.byte_size,
+        "sha256": body.sha256.lower(), "r2_key": key,
+    }, secret, expires=600)
+    return {
+        "upload_token": token,
+        "url": r2_storage.presign_put(key, mime, body.sha256),
+        "headers": {
+            "Content-Type": mime,
+            "Cache-Control": "private, max-age=86400",
+            "x-amz-meta-sha256": body.sha256.lower(),
+        },
+    }
 
 
 @router.post("/consent")
@@ -487,13 +584,23 @@ def recording(body: RecordingBody, request: Request):
     if active.empty: raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id":body.script_id})
     if script.empty: raise HTTPException(404, "錄音句子不存在或已停用")
-    audio, mime, probe = _audio_payload(body)
     duplicate = db.query(
         f"SELECT 1 FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user AND script_id=:script "
         "AND status IN ('pending','accepted') LIMIT 1",
         {"user": user, "script": body.script_id},
     )
-    if not duplicate.empty: raise HTTPException(409, "此句已有待審核或已接受錄音，請勿重複提交")
+    if not duplicate.empty:
+        raise HTTPException(409, "此句已有待審核或已接受錄音，請勿重複提交")
+    from core import r2_storage
+    claim = _verified_r2_audio_claim(body, user)
+    mime = claim["mime_type"]
+    r2_key = claim["r2_key"]
+    probe = (body.ai_review or {}).get("probe") or {}
+    if not probe:
+        audio = r2_storage.download_bytes(r2_key)
+        probe = _probe_audio(audio, mime, body.duration_seconds)
+    size_bytes = int(claim["byte_size"])
+    audio_sha = claim["sha256"]
     review = body.ai_review or {}
     provider_review = review.get("review") if isinstance(review.get("review"), dict) else {}
     if not body.manual_review and not (
@@ -503,15 +610,15 @@ def recording(body: RecordingBody, request: Request):
         raise HTTPException(400, "錄音未通過 AI 音質及稿件一致性檢查")
     review_status = "error" if body.manual_review else "passed"
     db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_RECORDINGS}
-                   (speaker_user_id,script_id,prompt_text,audio_data,mime_type,file_ext,size_bytes,
+                   (speaker_user_id,script_id,prompt_text,r2_key,mime_type,file_ext,size_bytes,
                     duration_seconds,audio_sha256,measured_duration_seconds,sample_rate_hz,
                     channel_count,detected_format,ai_review_status,ai_review_json,ai_transcript,status,created_at)
-                   VALUES(:user,:script,:prompt,:audio,:mime,:ext,:size,:duration,:sha,:measured,
+                   VALUES(:user,:script,:prompt,:r2_key,:mime,:ext,:size,:duration,:sha,:measured,
                     :sample_rate,:channels,:detected,:review_status,:review_json,:transcript,'pending',:now)""",
-               {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],"audio":audio,
-                "mime":mime,"ext":_audio_ext(mime),"size":len(audio),"duration":int(body.duration_seconds),
-                "sha":probe["sha256"],"measured":probe["duration"],"sample_rate":probe["sample_rate"],
-                "channels":probe["channels"],"detected":probe["format"],"review_status":review_status,
+               {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],
+                "r2_key":r2_key or None,"mime":mime,"ext":_audio_ext(mime),"size":size_bytes,"duration":int(body.duration_seconds),
+                "sha":audio_sha,"measured":probe.get("duration"),"sample_rate":probe.get("sample_rate"),
+                "channels":probe.get("channels"),"detected":probe.get("format"),"review_status":review_status,
                 "review_json":json.dumps(body.ai_review or {},ensure_ascii=False),
                 "transcript":str((body.ai_review or {}).get("transcript") or ""),"now":datetime.now()})
     return {"ok":True, "message":"錄音已提交，等待人工審核。"}
@@ -526,7 +633,6 @@ async def recording_quality_check(body: RecordingBody, request: Request):
     """
     user, db = _ctx(request)
     if user not in _users(db, ALLOWED_KEY): raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
-    audio, mime, _probe = _audio_payload(body)
     consent = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user": user, "version": CONSENT_VERSION})
     if consent.empty: raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id": body.script_id})
@@ -537,6 +643,9 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         {"user": user, "script": body.script_id},
     )
     if not duplicate.empty: raise HTTPException(409, "此句已有待審核或已接受錄音，毋須再作 AI 檢查")
+    from core import r2_storage
+    claim = _verified_r2_audio_claim(body, user)
+    mime = claim["mime_type"]
     from deploy.proxy import _get_proxy_secret
     key = _get_proxy_secret("GEMINI_API_KEY").strip()
     if not key:
@@ -548,15 +657,21 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         "只回覆 JSON：{\"passed\":true,\"matches_prompt\":true,\"speech_clarity\":\"clear\","
         "\"volume\":\"ok\",\"noise_level\":\"low\",\"clipping\":false,\"transcript\":\"\",\"problems\":[],\"note\":\"\"}"
     )
-    payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": body.audio_base64}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
-    try:
-        async with httpx.AsyncClient(timeout=60) as client: response = await client.post(url, json=payload)
-        response.raise_for_status(); response_data = response.json(); raw = response_data["candidates"][0]["content"]["parts"][0]["text"]
-        review = json.loads(raw)
-    except Exception as exc:
-        _log_ai(user, db, "tts_review", False, error=str(exc))
-        raise HTTPException(502, f"AI 音質檢查失敗：{str(exc)[:160]}") from exc
+    async with TTS_REVIEW_SEMAPHORE:
+        try:
+            audio = await asyncio.to_thread(r2_storage.download_bytes, claim["r2_key"])
+        except Exception as exc:
+            raise HTTPException(502, "未能從R2讀取錄音作音質檢查") from exc
+        probe = _probe_audio(audio, mime, body.duration_seconds)
+        payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode("ascii")}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client: response = await client.post(url, json=payload)
+            response.raise_for_status(); response_data = response.json(); raw = response_data["candidates"][0]["content"]["parts"][0]["text"]
+            review = json.loads(raw)
+        except Exception as exc:
+            _log_ai(user, db, "tts_review", False, error=str(exc))
+            raise HTTPException(502, f"AI 音質檢查失敗：{str(exc)[:160]}") from exc
     _log_ai(user, db, "tts_review", True, response_data=response_data)
     passed = (
         bool(review.get("passed")) and bool(review.get("matches_prompt"))
@@ -565,7 +680,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
     )
     review["passed"] = bool(passed)
     return {"ok": passed, "status": "passed" if passed else "failed", "problems": review.get("problems") or [],
-            "transcript": review.get("transcript") or "", "review": review,
+            "transcript": review.get("transcript") or "", "review": review, "probe": probe,
             "message": review.get("note") or ("AI 音質檢查通過。" if passed else "AI 音質檢查未通過。")}
 
 
@@ -811,12 +926,13 @@ async def regenerate_suggestions(request: Request):
     return {"plan": plan}
 
 
-@router.get("/export/recordings.zip")
-def export_recordings(request: Request, speaker: str = ""):
+@router.get("/export/recordings.json")
+def export_recording_manifest(request: Request, speaker: str = ""):
+    """Return metadata and direct R2 URLs; never proxy binary through Render."""
     _user, db = _admin(request)
     where, params = "status='accepted'", {}
     if speaker.strip(): where += " AND speaker_user_id=:speaker"; params["speaker"] = speaker.strip()
-    rows = _rows(db.query(f"""SELECT r.id,r.speaker_user_id,r.script_id,r.prompt_text,r.audio_data,
+    rows = _rows(db.query(f"""SELECT r.id,r.speaker_user_id,r.script_id,r.prompt_text,r.r2_key,
         r.mime_type,r.file_ext,r.audio_sha256,
         COALESCE(r.measured_duration_seconds,r.duration_seconds) AS duration_seconds,
         r.sample_rate_hz,r.channel_count,r.detected_format,r.ai_transcript,
@@ -824,21 +940,22 @@ def export_recordings(request: Request, speaker: str = ""):
         FROM {TABLE_TTS_VOICE_RECORDINGS} r LEFT JOIN {TABLE_TTS_SCRIPTS} s ON s.script_id=r.script_id
         WHERE {where.replace('status', 'r.status').replace('speaker_user_id', 'r.speaker_user_id')}
         ORDER BY r.id""", params))
-    output = io.BytesIO(); manifest = []
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for row in rows:
-            audio = row.pop("audio_data"); audio = audio.tobytes() if isinstance(audio, memoryview) else bytes(audio)
-            ext = re.sub(r"[^a-z0-9]", "", str(row.get("file_ext") or "webm").lower()) or "webm"
-            name = f"audio/{row['id']}_{row['script_id']}.{ext}"; archive.writestr(name, audio)
-            manifest.append({**row, "file": name})
-        csv_buffer=io.StringIO(); fields=["id","speaker_user_id","script_id","prompt_text","mime_type","file_ext","file",
-            "audio_sha256","duration_seconds","sample_rate_hz","channel_count","detected_format","ai_transcript",
-            "manuscript_id","manuscript_title","category"]
-        writer=csv.DictWriter(csv_buffer,fieldnames=fields); writer.writeheader()
-        for item in manifest: writer.writerow({key:item.get(key,"") for key in fields})
-        archive.writestr("metadata.csv", csv_buffer.getvalue().encode("utf-8-sig"))
-    output.seek(0)
-    return StreamingResponse(output, media_type="application/zip", headers={"Content-Disposition": "attachment; filename=tts-accepted.zip"})
+    from core import r2_storage
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 暫時不可用")
+    manifest = []
+    for row in rows:
+        r2_key = str(row.get("r2_key") or "")
+        if not r2_key:
+            raise HTTPException(409, f"錄音 {row['id']} 尚未完成R2遷移")
+        ext = re.sub(r"[^a-z0-9]", "", str(row.get("file_ext") or "webm").lower()) or "webm"
+        row["file"] = f"audio/{row['id']}_{row['script_id']}.{ext}"
+        row["download_url"] = r2_storage.presign_get(
+            r2_key, mime_type=row.get("mime_type") or "audio/webm",
+            file_name=row["file"].split("/", 1)[-1], download=True, expires=3600,
+        )
+        manifest.append(row)
+    return {"storage": "r2", "expires_seconds": 3600, "items": manifest}
 
 
 @router.get("/export/llm.jsonl")
@@ -942,7 +1059,7 @@ def create_snapshot(body: SnapshotBody, request: Request):
         speaker = body.speaker_user_id.strip()
         if not speaker:
             raise HTTPException(400, "TTS snapshot必須指定單一speaker")
-        rows = _rows(db.query(f"""SELECT r.id,r.script_id,r.prompt_text,r.audio_data,r.audio_sha256,
+        rows = _rows(db.query(f"""SELECT r.id,r.script_id,r.prompt_text,r.r2_key,r.audio_sha256,
                 COALESCE(r.measured_duration_seconds,r.duration_seconds,0) duration_seconds,
                 s.manuscript_id,s.category,c.consent_version
             FROM {TABLE_TTS_VOICE_RECORDINGS} r
@@ -954,9 +1071,9 @@ def create_snapshot(body: SnapshotBody, request: Request):
             WHERE r.status='accepted' AND r.speaker_user_id=:speaker ORDER BY r.id""",
             {"speaker": speaker, "version": CONSENT_VERSION}))
         for row in rows:
-            raw = row.pop("audio_data")
-            raw = raw.tobytes() if isinstance(raw, memoryview) else bytes(raw)
-            sha = row.get("audio_sha256") or hashlib.sha256(raw).hexdigest()
+            sha = str(row.get("audio_sha256") or "")
+            if not sha or not str(row.get("r2_key") or ""):
+                raise HTTPException(409, f"錄音 {row['id']} 尚未完成R2遷移或缺少SHA256")
             group = str(row.get("manuscript_id") or row["script_id"])
             seconds = float(row.get("duration_seconds") or 0)
             total_seconds += seconds
@@ -964,7 +1081,8 @@ def create_snapshot(body: SnapshotBody, request: Request):
                 "source_sha256": sha, "consent_version": CONSENT_VERSION,
                 "split_name": _split_name(group), "metadata": {"script_id": row["script_id"],
                 "prompt_text": row["prompt_text"], "manuscript_id": row.get("manuscript_id"),
-                "category": row.get("category"), "duration_seconds": seconds}})
+                "category": row.get("category"), "duration_seconds": seconds,
+                "r2_key": row.get("r2_key")}})
     else:
         speaker = ""
         rows = _rows(db.query(f"""SELECT id,data_type,title,topic_text,side,content_text,source_note

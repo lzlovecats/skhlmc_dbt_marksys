@@ -294,11 +294,11 @@
         const duration = (Date.now() - activeRecorder.startedAt) / 1000;
         stream.getTracks().forEach(track => track.stop());
         recorder = null;
-        if (duration < 1 || duration > 60 || blob.size > 15 * 1024 * 1024) {
+        if (duration < 1 || duration > 60 || blob.size > 2 * 1024 * 1024) {
           audioBase64 = "";
           $("record").textContent = "重新錄音";
           $("recordState").textContent = "錄音無效";
-          toast("⚠️ 錄音必須為 1–60 秒並且不超過 15MB。");
+          toast("⚠️ 錄音必須為1–60秒並且不超過2MB。");
           return;
         }
         audioMime = activeRecorder.mimeType || "audio/webm";

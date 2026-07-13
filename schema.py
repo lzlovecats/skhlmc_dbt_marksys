@@ -51,6 +51,7 @@ TABLE_LATENESS_FUND_RECORDS = "lateness_fund_records"
 TABLE_LATENESS_FUND_EXPENSES = "lateness_fund_expenses"
 TABLE_LATENESS_FUND_PERIODS = "lateness_fund_periods"
 TABLE_BUG_REPORTS = "bug_reports"
+TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -481,7 +482,12 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_PHOTOS} (
     caption         TEXT,
     file_name       TEXT,
     mime_type       TEXT,
-    image_data      BYTEA       NOT NULL,
+    r2_key          TEXT,
+    thumbnail_r2_key TEXT,
+    byte_size       INTEGER,
+    sha256          TEXT,
+    width           INTEGER,
+    height          INTEGER,
     uploaded_by     TEXT,
     created_at      TIMESTAMP   DEFAULT NOW(),
     CONSTRAINT fk_match_photos_video
@@ -518,7 +524,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
     speaker_user_id   TEXT,
     script_id         TEXT        NOT NULL,
     prompt_text       TEXT        NOT NULL,
-    audio_data        BYTEA       NOT NULL,
+    r2_key            TEXT,
     mime_type         TEXT,
     file_ext          TEXT,
     size_bytes        INTEGER,
@@ -543,6 +549,23 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
     CONSTRAINT fk_tts_voice_recordings_reviewer
         FOREIGN KEY (reviewed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
+);
+"""
+
+# One consumed slot per committee member, practice category and Hong Kong day.
+# room_code makes reconnecting to the same room idempotent while preventing a
+# second room of the same category that day.
+CREATE_PRACTICE_DAILY_USAGE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PRACTICE_DAILY_USAGE} (
+    user_id       TEXT,
+    practice_kind TEXT CHECK (practice_kind IN ('multiplayer_free', 'multiplayer_mock')),
+    usage_date    DATE,
+    room_code     TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (user_id, practice_kind, usage_date),
+    CONSTRAINT fk_practice_daily_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
 );
 """
 
@@ -1066,6 +1089,10 @@ CREATE INDEX IF NOT EXISTS idx_match_photos_album_created
     ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_photos_date_created
     ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_match_photos_r2_key
+    ON {TABLE_MATCH_PHOTOS}(r2_key) WHERE r2_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tts_voice_recordings_r2_key
+    ON {TABLE_TTS_VOICE_RECORDINGS}(r2_key) WHERE r2_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
@@ -1155,6 +1182,7 @@ ALL_SCHEMAS = [
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps
     CREATE_BUG_REPORTS,               # → accounts
+    CREATE_PRACTICE_DAILY_USAGE,       # → accounts
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
@@ -1174,6 +1202,13 @@ ALL_SCHEMAS = [
 # ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
 # that deleting/removing a topic also clears its removal-vote row and ballots.
 MIGRATIONS = [
+    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
+    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS thumbnail_r2_key TEXT",
+    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS byte_size INTEGER",
+    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS sha256 TEXT",
+    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS width INTEGER",
+    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS height INTEGER",
+    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
     f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS voice_cloning_confirmed BOOLEAN DEFAULT FALSE",
     f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS cloud_processing_confirmed BOOLEAN DEFAULT FALSE",
     f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS guardian_confirmed BOOLEAN DEFAULT FALSE",

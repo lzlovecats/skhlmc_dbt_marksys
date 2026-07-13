@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/ai-coach", tags=["ai-coach"])
 _LIVE_BRIEF_TABLE = "ai_coach_live_briefs"
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
+MAX_COACH_AUDIO_BYTES = 2 * 1024 * 1024
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 
 
@@ -75,7 +76,8 @@ def record_live_usage(user_id, feature, duration_minutes):
     from deploy.proxy import get_vote_db
     config={"provider":"gemini","input_price_per_million":0,"output_price_per_million":0}
     try:
-        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":datetime.now().isoformat(sep=" ",timespec="seconds")})
+        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":now_hk})
     except Exception: pass
 
 
@@ -240,8 +242,8 @@ async def _generate(config, system, user, body):
             audio_bytes = base64.b64decode(body.audio_base64, validate=True)
         except Exception as exc:
             raise HTTPException(400, "錄音資料無法讀取") from exc
-        if len(audio_bytes) > 15 * 1024 * 1024:
-            raise HTTPException(413, "錄音不可超過 15MB")
+        if len(audio_bytes) > MAX_COACH_AUDIO_BYTES:
+            raise HTTPException(413, "錄音不可超過2MB")
     from core.ai_provider import generate_text
     try:
         return await generate_text(config, system, user, api_key=key,
@@ -344,7 +346,9 @@ async def run(body: CoachRequest, request: Request):
 
 @router.post("/prepare-live")
 async def prepare_live(body:LivePrepareRequest,request:Request):
-    user_id=_context(request);db=__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db();config=_config(body.model_label,db)
+    user_id=_context(request);proxy=__import__('deploy.proxy',fromlist=['get_vote_db','_solo_live_quota_error']);db=proxy.get_vote_db();config=_config(body.model_label,db)
+    quota_error=proxy._solo_live_quota_error(user_id,body.mode)
+    if quota_error: raise HTTPException(429,quota_error)
     if not config.get("supports_web_search"):
         config=AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"

@@ -450,17 +450,137 @@
             $("loading").textContent = `連線錯誤: ${e.message}`;
           }
         }
-        function filePayload(file) {
-          return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onerror = () => reject(new Error("未能讀取圖片。"));
-            reader.onload = () =>
-              resolve({
+        async function api(url, options = {}) {
+          const r = await fetch(url, {
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              ...(options.headers || {}),
+            },
+            ...options,
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+          return data;
+        }
+        async function sha256(blob) {
+          const digest = await crypto.subtle.digest(
+            "SHA-256",
+            await blob.arrayBuffer(),
+          );
+          return [...new Uint8Array(digest)]
+            .map((x) => x.toString(16).padStart(2, "0"))
+            .join("");
+        }
+        function canvasBlob(canvas, quality) {
+          return new Promise((resolve, reject) =>
+            canvas.toBlob(
+              (blob) =>
+                blob ? resolve(blob) : reject(new Error("未能壓縮圖片。")),
+              "image/webp",
+              quality,
+            ),
+          );
+        }
+        async function prepareR2Photo(file) {
+          if (!/^image\/(jpeg|png|webp)$/.test(file.type || ""))
+            throw new Error("圖片格式只支援 JPEG、PNG 或 WebP。");
+          const bitmap = await createImageBitmap(file);
+          const render = async (maxSide, quality) => {
+            const scale = Math.min(
+              1,
+              maxSide / Math.max(bitmap.width, bitmap.height),
+            );
+            const width = Math.max(1, Math.round(bitmap.width * scale));
+            const height = Math.max(1, Math.round(bitmap.height * scale));
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext("2d", { alpha: false });
+            context.fillStyle = "#ffffff";
+            context.fillRect(0, 0, width, height);
+            context.drawImage(bitmap, 0, 0, width, height);
+            return {
+              blob: await canvasBlob(canvas, quality),
+              width,
+              height,
+            };
+          };
+          let original = await render(2000, 0.8);
+          if (original.blob.size > 2 * 1024 * 1024)
+            original = await render(1600, 0.68);
+          if (original.blob.size > 2 * 1024 * 1024) {
+            bitmap.close?.();
+            throw new Error(`${file.name} 壓縮後仍超過 2MB。`);
+          }
+          const thumbnail = await render(480, 0.72);
+          bitmap.close?.();
+          return {
+            original,
+            thumbnail,
+            mimeType: original.blob.type || "image/webp",
+            sha: await sha256(original.blob),
+            thumbSha: await sha256(thumbnail.blob),
+          };
+        }
+        async function putR2(target, blob, mimeType, sha) {
+          const r = await fetch(target.url, {
+            method: "PUT",
+            headers: {
+              "Content-Type": mimeType,
+              "Cache-Control": "private, max-age=86400",
+              "x-amz-meta-sha256": sha,
+              ...(target.headers || {}),
+            },
+            body: blob,
+          });
+          if (!r.ok)
+            throw new Error(`R2 上載失敗（HTTP ${r.status}）。`);
+        }
+        async function uploadR2Photos(files) {
+          const tokens = [];
+          for (const file of files) {
+            const prepared = await prepareR2Photo(file);
+            const intent = await api("/api/match-photos/upload-intent", {
+              method: "POST",
+              body: JSON.stringify({
                 file_name: file.name,
-                mime_type: file.type || "image/jpeg",
-                image_base64: String(reader.result).split(",", 2)[1] || "",
-              });
-            reader.readAsDataURL(file);
+                mime_type: prepared.mimeType,
+                byte_size: prepared.original.blob.size,
+                thumbnail_byte_size: prepared.thumbnail.blob.size,
+                sha256: prepared.sha,
+                thumbnail_sha256: prepared.thumbSha,
+                width: prepared.original.width,
+                height: prepared.original.height,
+              }),
+            });
+            await putR2(
+              intent.original,
+              prepared.original.blob,
+              prepared.mimeType,
+              prepared.sha,
+            );
+            await putR2(
+              intent.thumbnail,
+              prepared.thumbnail.blob,
+              prepared.mimeType,
+              prepared.thumbSha,
+            );
+            tokens.push(intent.upload_token);
+          }
+          const option = $("album").selectedOptions[0];
+          return api("/api/match-photos/upload-complete", {
+            method: "POST",
+            body: JSON.stringify({
+              album_label: $("album").value,
+              match_video_id: option.dataset.video
+                ? Number(option.dataset.video)
+                : null,
+              photo_date: $("photoDate").value,
+              photo_title: $("photoTitle").value,
+              caption: $("caption").value,
+              upload_tokens: tokens,
+            }),
           });
         }
         $("retryLogin").addEventListener("click", load);
@@ -490,32 +610,19 @@
             notice("uploadMessage", "warn", "請先選擇圖片。");
             return;
           }
+          if (files.length > 5) {
+            notice(
+              "uploadMessage",
+              "warn",
+              "每次最多只可上載五張圖片。",
+            );
+            return;
+          }
           try {
-            const o = $("album").selectedOptions[0],
-              payload = {
-                album_label: $("album").value,
-                match_video_id: o.dataset.video
-                  ? Number(o.dataset.video)
-                  : null,
-                photo_date: $("photoDate").value,
-                photo_title: $("photoTitle").value,
-                caption: $("caption").value,
-                files: await Promise.all(files.map(filePayload)),
-              },
-              r = await fetch("/api/match-photos/upload", {
-                method: "POST",
-                credentials: "same-origin",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-              }),
-              d = await r.json();
-            if (!r.ok || !d.ok) {
-              notice("uploadMessage", "warn", d.detail || d.message);
-              return;
-            }
+            const result = await uploadR2Photos(files);
             e.target.reset();
-            toast("☑️ " + d.message);
-            await load();
+            toast("☑️ " + result.message);
+            setTimeout(() => location.reload(), 300);
           } catch (error) {
             notice("uploadMessage", "err", error.message);
           }
