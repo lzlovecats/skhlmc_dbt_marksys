@@ -1,10 +1,16 @@
 import pathlib
+import re
 import unittest
 
 from debate_timing import DEBATE_FORMATS, get_full_mock_sequence
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def compact(source):
+    """Ignore formatter-only whitespace in inline HTML/CSS/JS contracts."""
+    return re.sub(r"\s+", "", source)
 
 
 class AppliancePracticeTests(unittest.TestCase):
@@ -39,7 +45,7 @@ class AppliancePracticeTests(unittest.TestCase):
             self.assertIn(debate_format, html)
 
     def test_ai_setup_exposes_solo_and_all_network_room_modes(self):
-        html = (ROOT / "templates" / "appliance_ai_debate.html").read_text(encoding="utf-8")
+        html = compact((ROOT / "templates" / "appliance_ai_debate.html").read_text(encoding="utf-8"))
         for marker in (
             'name="session_type" value="solo"',
             'name="session_type" value="room"',
@@ -50,16 +56,17 @@ class AppliancePracticeTests(unittest.TestCase):
             'api("/api/room/create"',
             'roomUrl(data.code)',
         ):
-            self.assertIn(marker, html)
+            self.assertIn(compact(marker), html)
 
     def test_live_and_room_pages_keep_large_touch_controls_and_vote_visuals(self):
         live = (ROOT / "templates" / "live_debate.html").read_text(encoding="utf-8")
         room = (ROOT / "templates" / "room_debate.html").read_text(encoding="utf-8")
         for source in (live, room):
+            source = compact(source)
             self.assertIn("--panel:#262730", source)
             self.assertIn("min-height:56px", source)
             self.assertIn("border-radius:12px", source)
-            self.assertIn("返回 AI 練習", source)
+            self.assertIn(compact("返回 AI 練習"), source)
 
     def test_network_mock_uses_multiple_gemini_sessions(self):
         proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")

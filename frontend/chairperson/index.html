@@ -1,7 +1,802 @@
 <!doctype html>
-<html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e1117"><title>主席主持易</title><link rel="stylesheet" href="/shared/app-shell.css"><style>
-main{max-width:84rem}.intro{color:var(--muted)}.login{max-width:40rem;margin:3rem auto}.login form{display:grid;gap:.7rem}.toolbar{display:flex;gap:.6rem;flex-wrap:wrap;align-items:end}.toolbar label{flex:1 1 30rem;margin:0}.projector{margin-left:auto}.profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.debater-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.7rem}.script{white-space:pre-wrap;line-height:1.8;overflow-wrap:anywhere}.script h1,.script h2{margin:1rem 0 .5rem}.pane{display:none}.pane.active{display:block}.tabs button{flex:1 1 12rem}.bellbar{position:sticky;top:.5rem;z-index:12;padding:.65rem;background:var(--surface);border:1px solid var(--border);border-radius:10px;display:flex;gap:.6rem;align-items:center}.bellbar select{width:auto}.bellbar button{margin:0}.timer-options{display:flex;gap:1rem;align-items:end;flex-wrap:wrap}.timer-options label{flex:1 1 14rem}.stage-tabs{display:flex;gap:.45rem;flex-wrap:wrap;margin:1rem 0}.stage-tabs button{flex:1 1 9rem}.clock{font-size:clamp(3rem,9vw,5rem);font-weight:800;text-align:center;font-variant-numeric:tabular-nums;padding:1rem;border-radius:12px;background:#17351f;color:#8ee6b4}.clock.warning{background:#3b2d13;color:var(--warn)}.clock.overtime{background:#3b1c1c;color:var(--against)}.timer-controls{display:flex;justify-content:center;gap:.65rem;margin:1rem 0}.timer-controls button{min-width:7rem}.schedule{margin-top:1rem}.schedule li{color:var(--muted)}.schedule li.fired{color:var(--ok);font-weight:700}.free-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.free-side{text-align:center}.free-side h3{margin:.2rem}.notice.large{font-size:1.05rem}@media(max-width:760px){.profile-grid,.debater-grid,.free-grid{grid-template-columns:1fr}.projector{margin-left:0}.toolbar label{flex-basis:100%}}
-</style></head><body><main><a class="back" href="/">← 返回主頁</a><h1>主席主持易</h1><p class="intro">場次主持稿、賽果結語和比賽計時集中在同一個操作台。</p><details class="guide"><summary>ℹ️ 首次使用指南</summary><ul><li>選擇場次並填寫主持資料；開場稿與結語稿會即時更新。</li><li>叮叮易會按所選賽制沿用現有鈴聲時間表；自由辯論兩邊計時互斥。</li><li>結語需要評判已正式提交分數。</li></ul></details><div id="loading" class="notice">載入中…</div><section id="login" class="card login hidden"><h2>賽會人員登入</h2><form id="loginForm"><label>請輸入賽會人員密碼<input id="password" type="password" autocomplete="current-password" required></label><div id="loginMessage"></div><button class="primary">登入</button></form></section><section id="app" class="hidden"><section class="card"><label>選擇場次<select id="match"></select></label></section><details class="card"><summary>📽 比賽日投影大屏</summary><p class="caption">大屏顯示辯題、正反隊名同而家發言者（不顯示時間）。</p><a class="button projector" href="/projector/control" target="_blank" rel="noopener">🎛️ 開啟投影控制</a><p class="caption">投影機／大屏請開啟 <code>/projector</code>（比賽日專用機模式會自動開啟）。</p></details><details class="card" open><summary>📝 填寫資料</summary><div class="profile-grid"><label>主席姓名<input id="chairman"></label><label>計時員姓名<input id="timekeeper"></label></div><label>評判名單（每行一位，格式：- 稱謂：姓名）<textarea id="judges" rows="5"></textarea></label><h3>正方辯員</h3><div id="proDebaters" class="debater-grid"></div><h3>反方辯員</h3><div id="conDebaters" class="debater-grid"></div></details><section class="card"><div class="bellbar"><label>手動響鈴<select id="manualBell"><option value="1">1 叮</option><option value="2">2 叮</option><option value="3">3 叮</option><option value="5">5 叮</option></select></label><button id="ring">🔔 響叮</button></div></section><nav class="tabs"><button class="active" data-pane="welcome">開場讀稿易</button><button data-pane="closing">結尾完結易</button><button data-pane="timer">叮叮易</button></nav><section id="welcome" class="pane active card"><div id="welcomeScript" class="script"></div></section><section id="closing" class="pane card"><button id="refreshClosing">🔄 重新整理賽果</button><div id="closingScript" class="script"></div></section><section id="timer" class="pane card"><div class="timer-options"><label>賽制<select id="format"><option>校園隨想</option><option>聯中</option><option>星島</option><option>基本法盃</option></select></label><label id="freeMinutesWrap" class="hidden">自由辯論時間（每邊，分鐘）<input id="freeMinutes" type="number" min="2" max="10" step=".5" value="5"></label><label>結辯準備時間（分鐘）<input id="prepMinutes" type="number" min=".5" max="10" step=".5" value="2"></label></div><p id="formatNote" class="caption"></p><div id="stageTabs" class="stage-tabs"></div><section id="singleTimer"><p id="singleLabel" class="caption"></p><div id="singleClock" class="clock">0:00:00.000</div><div class="timer-controls"><button id="singleStart" class="primary">開始</button><button id="singleTest">測試聲音</button><button id="singleReset">重置</button></div><ul id="singleSchedule" class="schedule"></ul></section><section id="freeTimer" class="hidden"><div class="free-grid"><div class="free-side"><h3>正方</h3><div id="proClock" class="clock">0:00:00.000</div><div class="timer-controls"><button data-free="pro" class="primary">開始</button><button data-reset="pro">重置</button></div></div><div class="free-side"><h3>反方</h3><div id="conClock" class="clock">0:00:00.000</div><div class="timer-controls"><button data-free="con" class="primary">開始</button><button data-reset="con">重置</button></div></div></div><div class="timer-controls"><button id="freeTest">測試聲音</button></div><ul id="freeSchedule" class="schedule"></ul></section></section></section></main><div id="toast" class="toast"></div><div id="busy" class="busy"><div class="busy-pill"><i class="spinner"></i>處理中…</div></div><script src="/shared/vote-ui.js"></script><script src="/shared/markdown.js"></script><script>
-(()=>{"use strict";const $=id=>document.getElementById(id),esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])),positions=['主辯','一副','二副','結辯'];let data=null,cfg=null,stage='main',single={elapsed:0,running:false,start:0,fired:new Set()},free={pro:{elapsed:0,running:false,start:0,fired:new Set()},con:{elapsed:0,running:false,start:0,fired:new Set()}},tick=null,audio=null,bellBuffer=null;
-const toast=t=>VoteUI.toast($('toast'),t),busy=v=>VoteUI.setBusy($('busy'),v);async function api(url,opt={}){const r=await fetch(url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt}),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||'操作失敗');return d}function values(){const m=data.match,judges=$('judges').value.split('\n').map(x=>x.trim()).filter(Boolean),pro=positions.map((_,i)=>$('pro'+(i+1)).value),con=positions.map((_,i)=>$('con'+(i+1)).value),judgeList=judges.join('\n')||'- 稱謂：姓名';return {match_id:data.selected_match_id,match_date:m.match_date||'（未設定）',match_time:m.match_time||'（未設定）',chairman_name:$('chairman').value||'______',timekeeper_name:$('timekeeper').value||'______',judge_count:judges.length,judge_list:judgeList,topic_text:m.topic_text||'（未設定辯題）',pro_team:m.pro_team||'（未設定）',con_team:m.con_team||'（未設定）',pro_debaters:positions.map((p,i)=>'- '+p+'：'+(pro[i]||'______')).join('\n'),con_debaters:positions.map((p,i)=>'- '+p+'：'+(con[i]||'______')).join('\n'),first_speaker:pro[0]?'正方主辯 '+pro[0]:'正方主辯',judge_comment_lines:judges.length?judges.map(n=>'有請 '+n.replace(/^-\s*/, '')+' 對今場比賽作出評價。多謝 '+n.replace(/^-\s*/, '')+'。').join('\n\n'):'有請各位評判對今場比賽作出評價。'}}function renderScripts(){if(!data)return;const v=values(),c=data.closing||{};let vote='今日正方 '+v.pro_team+' 得票為 '+c.pro_votes+' 票，反方 '+v.con_team+' 得票為 '+c.con_votes+' 票'+(c.draw_votes?'，另有 '+c.draw_votes+' 位評判給予同分':'')+'。';let winner=c.pro_votes>c.con_votes?'今日嘅勝方係正方 '+v.pro_team:c.con_votes>c.pro_votes?'今日嘅勝方係反方 '+v.con_team:'今日雙方票數相同，須按賽規處理';const repl={...v,best_debater:c.best_debater||'（資料不足，暫時未能判定）',vote_summary:vote,winner_text:winner,pro_votes:c.pro_votes||0,con_votes:c.con_votes||0,draw_votes:c.draw_votes||0};let fill=t=>Object.entries(repl).reduce((x,[k,val])=>x.replaceAll('{'+k+'}',val),t);$('welcomeScript').innerHTML=SafeMarkdown.render(fill(data.welcome_template));$('closingScript').innerHTML=c.has_scores?SafeMarkdown.render(fill(data.closing_template)):'<div class="notice warn large">尚未有評分紀錄，無法生成結語。請確認評判已完成提交。</div>'}function formSnapshot(){if(!data?.match)return null;return {matchId:data.selected_match_id,judges:$('judges').value,pro:positions.map((_,i)=>$('pro'+(i+1)).value),con:positions.map((_,i)=>$('con'+(i+1)).value)}}function renderInputs(saved){if(!data.match){$('app').innerHTML='<div class="notice">目前未有比賽場次。請先在「賽務管理易」建立場次。</div>';return}const m=data.match;$('match').innerHTML=data.matches.map(x=>`<option value="${esc(x.match_id)}" ${x.match_id===data.selected_match_id?'selected':''}>${esc(x.label)}</option>`).join('');$('judges').value=saved?.matchId===data.selected_match_id?saved.judges:data.judge_names.length?data.judge_names.map(x=>'- '+x).join('\n'):'- 稱謂：姓名\n- 稱謂：姓名\n- 稱謂：姓名';for(const side of ['pro','con']){$(side+'Debaters').innerHTML=positions.map((p,i)=>`<label>${p}<input id="${side}${i+1}" value="${esc(saved?.matchId===data.selected_match_id?saved[side][i]:m[side+'_'+(i+1)]||'')}"></label>`).join('')}renderScripts()}async function load(matchId,preserve=false){const saved=preserve?formSnapshot():null;busy(true);try{data=await api('/api/chairperson/data'+(matchId?'?match_id='+encodeURIComponent(matchId):''));$('loading').classList.add('hidden');$('login').classList.add('hidden');$('app').classList.remove('hidden');renderInputs(saved)}catch(e){if(e.message==='未登入'){$('loading').classList.add('hidden');$('login').classList.remove('hidden')}else $('loading').textContent='連線錯誤：'+e.message}finally{busy(false)}}async function bell(count=1){try{if(!audio)audio=new(window.AudioContext||window.webkitAudioContext)();if(audio.state==='suspended')await audio.resume();if(!bellBuffer){bellBuffer=await fetch('/api/practice/bell').then(r=>r.ok?r.arrayBuffer():Promise.reject(Error('鈴聲檔案未能載入'))).then(x=>audio.decodeAudioData(x)).catch(()=>null)}for(let i=0;i<count;i++){if(bellBuffer){const s=audio.createBufferSource(),g=audio.createGain();s.buffer=bellBuffer;g.gain.value=5;s.connect(g);g.connect(audio.destination);s.start(audio.currentTime+i*.8)}else{const o=audio.createOscillator(),g=audio.createGain();o.frequency.value=850;g.gain.setValueAtTime(.4,audio.currentTime+i*.35);g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+i*.35+.2);o.connect(g);g.connect(audio.destination);o.start(audio.currentTime+i*.35);o.stop(audio.currentTime+i*.35+.22)}}}catch(e){toast('⚠️ 未能播放鈴聲：'+e.message)}}function fmt(s){const cs=Math.max(0,Math.floor(s*100)),minutes=Math.floor(cs/6000),seconds=Math.floor(cs%6000/100);return minutes+':'+String(seconds).padStart(2,'0')+':'+String(cs%100).padStart(2,'0')}function current(t){return t.running?t.elapsed+(performance.now()-t.start)/1000:t.elapsed}function styleClock(el,seconds,clockStage=stage){const warning=cfg.warning_times[clockStage],overtime=cfg.overtime_times[clockStage];el.textContent=fmt(seconds);el.className='clock '+(overtime!=null&&seconds>=overtime?'overtime':warning!=null&&seconds>=warning?'warning':'')}function fire(t,clock,schedule,prefix){const sec=current(t),bells=schedule||[];if(t.running)bells.forEach((b,i)=>{if(sec>=b.t&&!t.fired.has(i)){t.fired.add(i);bell(b.rings);const node=$(prefix+i);if(node)node.classList.add('fired')}});styleClock(clock,sec,prefix==='fp'||prefix==='fc'?'free':stage)}function scheduleList(id,schedule,prefix){$(id).innerHTML='<h3>鈴聲時間表</h3>'+schedule.map((b,i)=>`<li id="${prefix}${i}">${esc(b.label)}</li>`).join('')}function stop(t){t.elapsed=current(t);t.running=false}function freeButton(side,label='開始') {const button=document.querySelector(`[data-free="${side}"]`);if(button)button.textContent=label}function resetTimers(){stop(single);single={elapsed:0,running:false,start:0,fired:new Set()};free={pro:{elapsed:0,running:false,start:0,fired:new Set()},con:{elapsed:0,running:false,start:0,fired:new Set()}};$('singleStart').textContent='開始';freeButton('pro');freeButton('con');if(cfg)update()}function update(){if(!cfg)return;if(stage==='free'){fire(free.pro,$('proClock'),cfg.bell_schedules.free,'fp');fire(free.con,$('conClock'),cfg.bell_schedules.free,'fc')}else fire(single,$('singleClock'),cfg.bell_schedules[stage],'sb')}function selectStage(id){resetTimers();stage=id;$('stageTabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.stage===id));const isFree=id==='free';$('singleTimer').classList.toggle('hidden',isFree);$('freeTimer').classList.toggle('hidden',!isFree);if(isFree){$('freeSchedule').innerHTML="<h3>鈴聲時間表</h3>"+cfg.bell_schedules.free.map((b,i)=>"<li id=\"fp"+i+"\">正方 "+esc(b.label)+"</li><li id=\"fc"+i+"\">反方 "+esc(b.label)+"</li>").join('')}else{$('singleLabel').textContent=(cfg.timer_stages.find(x=>x[0]===id)||['',''])[1]+'計時';scheduleList('singleSchedule',cfg.bell_schedules[id],'sb');update()}}async function timerConfig(){const fmt=$('format').value,free=fmt==='聯中'?$('freeMinutes').value:'',prep=$('prepMinutes').value;cfg=await api('/api/practice/timer-config?format='+encodeURIComponent(fmt)+'&free_minutes='+free+'&closing_prep_minutes='+prep);if(Array.isArray(cfg.formats)){$('format').innerHTML=cfg.formats.map(x=>`<option>${esc(x)}</option>`).join('');$('format').value=cfg.format}$('freeMinutesWrap').classList.toggle('hidden',cfg.format!=='聯中');$('formatNote').textContent=cfg.format==='基本法盃'?'基本法盃：主辯及結辯 4 分鐘；一副及二副 3 分鐘；不設自由辯論。':'';$('stageTabs').innerHTML=cfg.timer_stages.map(([id,label])=>`<button data-stage="${id}">${esc(label)}</button>`).join('');$('stageTabs').querySelectorAll('button').forEach(b=>b.onclick=()=>selectStage(b.dataset.stage));selectStage(cfg.timer_stages[0][0])}$('loginForm').onsubmit=async e=>{e.preventDefault();busy(true);try{const r=await fetch('/api/registration-admin/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('password').value})}),d=await r.json();if(!r.ok)throw Error(d.detail||'登入失敗');load()}catch(x){$('loginMessage').innerHTML='<div class="notice err">'+esc(x.message)+'</div>'}finally{busy(false)}};$('match').onchange=()=>{resetTimers();load($('match').value)};document.body.addEventListener('input',e=>{if(e.target.closest('#app'))renderScripts()});document.querySelectorAll('[data-pane]').forEach(b=>b.onclick=()=>{if(b.dataset.pane!=='timer')resetTimers();document.querySelectorAll('[data-pane],.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.pane).classList.add('active')});$('ring').onclick=()=>bell(+$('manualBell').value);$('refreshClosing').onclick=()=>load(data.selected_match_id,true);$('format').onchange=timerConfig;$('freeMinutes').onchange=timerConfig;$('prepMinutes').onchange=timerConfig;$('singleStart').onclick=()=>{if(single.running){stop(single);$('singleStart').textContent='繼續'}else{single.start=performance.now()-single.elapsed*1000;single.running=true;$('singleStart').textContent='暫停'}};$('singleReset').onclick=()=>selectStage(stage);$('singleTest').onclick=()=>bell(1);$('freeTest').onclick=()=>bell(1);document.body.addEventListener('click',e=>{const side=e.target.dataset.free;if(side){const other=side==='pro'?'con':'pro';if(free[side].running){stop(free[side]);freeButton(side,'繼續')}else{stop(free[other]);freeButton(other,free[other].elapsed?'繼續':'開始');free[side].start=performance.now()-free[side].elapsed*1000;free[side].running=true;freeButton(side,'暫停')}}const reset=e.target.dataset.reset;if(reset){free[reset]={elapsed:0,running:false,start:0,fired:new Set()};freeButton(reset);update()}});setInterval(update,25);timerConfig();load()})();
-</script></body></html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>主席主持易</title>
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      main {
+        max-width: 84rem;
+      }
+      .intro {
+        color: var(--muted);
+      }
+      .login {
+        max-width: 40rem;
+        margin: 3rem auto;
+      }
+      .login form {
+        display: grid;
+        gap: 0.7rem;
+      }
+      .toolbar {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+      .toolbar label {
+        flex: 1 1 30rem;
+        margin: 0;
+      }
+      .projector {
+        margin-left: auto;
+      }
+      .profile-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .debater-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.7rem;
+      }
+      .script {
+        white-space: pre-wrap;
+        line-height: 1.8;
+        overflow-wrap: anywhere;
+      }
+      .script h1,
+      .script h2 {
+        margin: 1rem 0 0.5rem;
+      }
+      .pane {
+        display: none;
+      }
+      .pane.active {
+        display: block;
+      }
+      .tabs button {
+        flex: 1 1 12rem;
+      }
+      .bellbar {
+        position: sticky;
+        top: 0.5rem;
+        z-index: 12;
+        padding: 0.65rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        display: flex;
+        gap: 0.6rem;
+        align-items: center;
+      }
+      .bellbar select {
+        width: auto;
+      }
+      .bellbar button {
+        margin: 0;
+      }
+      .timer-options {
+        display: flex;
+        gap: 1rem;
+        align-items: end;
+        flex-wrap: wrap;
+      }
+      .timer-options label {
+        flex: 1 1 14rem;
+      }
+      .stage-tabs {
+        display: flex;
+        gap: 0.45rem;
+        flex-wrap: wrap;
+        margin: 1rem 0;
+      }
+      .stage-tabs button {
+        flex: 1 1 9rem;
+      }
+      .clock {
+        font-size: clamp(3rem, 9vw, 5rem);
+        font-weight: 800;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        padding: 1rem;
+        border-radius: 12px;
+        background: #17351f;
+        color: #8ee6b4;
+      }
+      .clock.warning {
+        background: #3b2d13;
+        color: var(--warn);
+      }
+      .clock.overtime {
+        background: #3b1c1c;
+        color: var(--against);
+      }
+      .timer-controls {
+        display: flex;
+        justify-content: center;
+        gap: 0.65rem;
+        margin: 1rem 0;
+      }
+      .timer-controls button {
+        min-width: 7rem;
+      }
+      .schedule {
+        margin-top: 1rem;
+      }
+      .schedule li {
+        color: var(--muted);
+      }
+      .schedule li.fired {
+        color: var(--ok);
+        font-weight: 700;
+      }
+      .free-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .free-side {
+        text-align: center;
+      }
+      .free-side h3 {
+        margin: 0.2rem;
+      }
+      .notice.large {
+        font-size: 1.05rem;
+      }
+      @media (max-width: 760px) {
+        .profile-grid,
+        .debater-grid,
+        .free-grid {
+          grid-template-columns: 1fr;
+        }
+        .projector {
+          margin-left: 0;
+        }
+        .toolbar label {
+          flex-basis: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back" href="/">← 返回主頁</a>
+      <h1>主席主持易</h1>
+      <p class="intro">場次主持稿、賽果結語和比賽計時集中在同一個操作台。</p>
+      <details class="guide">
+        <summary>ℹ️ 首次使用指南</summary>
+        <ul>
+          <li>選擇場次並填寫主持資料；開場稿與結語稿會即時更新。</li>
+          <li>叮叮易會按所選賽制沿用現有鈴聲時間表；自由辯論兩邊計時互斥。</li>
+          <li>結語需要評判已正式提交分數。</li>
+        </ul>
+      </details>
+      <div id="loading" class="notice">載入中…</div>
+      <section id="login" class="card login hidden">
+        <h2>賽會人員登入</h2>
+        <form id="loginForm">
+          <label
+            >請輸入賽會人員密碼<input
+              id="password"
+              type="password"
+              autocomplete="current-password"
+              required
+          /></label>
+          <div id="loginMessage"></div>
+          <button class="primary">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <section class="card">
+          <label>選擇場次<select id="match"></select></label>
+        </section>
+        <details class="card">
+          <summary>📽 比賽日投影大屏</summary>
+          <p class="caption">
+            大屏顯示辯題、正反隊名同而家發言者（不顯示時間）。
+          </p>
+          <a
+            class="button projector"
+            href="/projector/control"
+            target="_blank"
+            rel="noopener"
+            >🎛️ 開啟投影控制</a
+          >
+          <p class="caption">
+            投影機／大屏請開啟
+            <code>/projector</code>（比賽日專用機模式會自動開啟）。
+          </p>
+        </details>
+        <details class="card" open>
+          <summary>📝 填寫資料</summary>
+          <div class="profile-grid">
+            <label>主席姓名<input id="chairman" /></label
+            ><label>計時員姓名<input id="timekeeper" /></label>
+          </div>
+          <label
+            >評判名單（每行一位，格式：- 稱謂：姓名）<textarea
+              id="judges"
+              rows="5"
+            ></textarea>
+          </label>
+          <h3>正方辯員</h3>
+          <div id="proDebaters" class="debater-grid"></div>
+          <h3>反方辯員</h3>
+          <div id="conDebaters" class="debater-grid"></div>
+        </details>
+        <section class="card">
+          <div class="bellbar">
+            <label
+              >手動響鈴<select id="manualBell">
+                <option value="1">1 叮</option>
+                <option value="2">2 叮</option>
+                <option value="3">3 叮</option>
+                <option value="5">5 叮</option>
+              </select></label
+            ><button id="ring">🔔 響叮</button>
+          </div>
+        </section>
+        <nav class="tabs">
+          <button class="active" data-pane="welcome">開場讀稿易</button
+          ><button data-pane="closing">結尾完結易</button
+          ><button data-pane="timer">叮叮易</button>
+        </nav>
+        <section id="welcome" class="pane active card">
+          <div id="welcomeScript" class="script"></div>
+        </section>
+        <section id="closing" class="pane card">
+          <button id="refreshClosing">🔄 重新整理賽果</button>
+          <div id="closingScript" class="script"></div>
+        </section>
+        <section id="timer" class="pane card">
+          <div class="timer-options">
+            <label
+              >賽制<select id="format">
+                <option>校園隨想</option>
+                <option>聯中</option>
+                <option>星島</option>
+                <option>基本法盃</option>
+              </select></label
+            ><label id="freeMinutesWrap" class="hidden"
+              >自由辯論時間（每邊，分鐘）<input
+                id="freeMinutes"
+                type="number"
+                min="2"
+                max="10"
+                step=".5"
+                value="5" /></label
+            ><label
+              >結辯準備時間（分鐘）<input
+                id="prepMinutes"
+                type="number"
+                min=".5"
+                max="10"
+                step=".5"
+                value="2"
+            /></label>
+          </div>
+          <p id="formatNote" class="caption"></p>
+          <div id="stageTabs" class="stage-tabs"></div>
+          <section id="singleTimer">
+            <p id="singleLabel" class="caption"></p>
+            <div id="singleClock" class="clock">0:00:00.000</div>
+            <div class="timer-controls">
+              <button id="singleStart" class="primary">開始</button
+              ><button id="singleTest">測試聲音</button
+              ><button id="singleReset">重置</button>
+            </div>
+            <ul id="singleSchedule" class="schedule"></ul>
+          </section>
+          <section id="freeTimer" class="hidden">
+            <div class="free-grid">
+              <div class="free-side">
+                <h3>正方</h3>
+                <div id="proClock" class="clock">0:00:00.000</div>
+                <div class="timer-controls">
+                  <button data-free="pro" class="primary">開始</button
+                  ><button data-reset="pro">重置</button>
+                </div>
+              </div>
+              <div class="free-side">
+                <h3>反方</h3>
+                <div id="conClock" class="clock">0:00:00.000</div>
+                <div class="timer-controls">
+                  <button data-free="con" class="primary">開始</button
+                  ><button data-reset="con">重置</button>
+                </div>
+              </div>
+            </div>
+            <div class="timer-controls">
+              <button id="freeTest">測試聲音</button>
+            </div>
+            <ul id="freeSchedule" class="schedule"></ul>
+          </section>
+        </section>
+      </section>
+    </main>
+    <div id="toast" class="toast"></div>
+    <div id="busy" class="busy">
+      <div class="busy-pill"><i class="spinner"></i>處理中…</div>
+    </div>
+    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/markdown.js"></script>
+    <script>
+      (() => {
+        "use strict";
+        const $ = (id) => document.getElementById(id),
+          esc = (v) =>
+            String(v ?? "").replace(
+              /[&<>"']/g,
+              (c) =>
+                ({
+                  "&": "&amp;",
+                  "<": "&lt;",
+                  ">": "&gt;",
+                  '"': "&quot;",
+                  "'": "&#39;",
+                })[c],
+            ),
+          positions = ["主辯", "一副", "二副", "結辯"];
+        let data = null,
+          cfg = null,
+          stage = "main",
+          single = { elapsed: 0, running: false, start: 0, fired: new Set() },
+          free = {
+            pro: { elapsed: 0, running: false, start: 0, fired: new Set() },
+            con: { elapsed: 0, running: false, start: 0, fired: new Set() },
+          },
+          tick = null,
+          audio = null,
+          bellBuffer = null;
+        const toast = (t) => VoteUI.toast($("toast"), t),
+          busy = (v) => VoteUI.setBusy($("busy"), v);
+        async function api(url, opt = {}) {
+          const r = await fetch(url, {
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json",
+                ...(opt.headers || {}),
+              },
+              ...opt,
+            }),
+            d = await r.json().catch(() => ({}));
+          if (!r.ok) throw Error(d.detail || "操作失敗");
+          return d;
+        }
+        function values() {
+          const m = data.match,
+            judges = $("judges")
+              .value.split("\n")
+              .map((x) => x.trim())
+              .filter(Boolean),
+            pro = positions.map((_, i) => $("pro" + (i + 1)).value),
+            con = positions.map((_, i) => $("con" + (i + 1)).value),
+            judgeList = judges.join("\n") || "- 稱謂：姓名";
+          return {
+            match_id: data.selected_match_id,
+            match_date: m.match_date || "（未設定）",
+            match_time: m.match_time || "（未設定）",
+            chairman_name: $("chairman").value || "______",
+            timekeeper_name: $("timekeeper").value || "______",
+            judge_count: judges.length,
+            judge_list: judgeList,
+            topic_text: m.topic_text || "（未設定辯題）",
+            pro_team: m.pro_team || "（未設定）",
+            con_team: m.con_team || "（未設定）",
+            pro_debaters: positions
+              .map((p, i) => "- " + p + "：" + (pro[i] || "______"))
+              .join("\n"),
+            con_debaters: positions
+              .map((p, i) => "- " + p + "：" + (con[i] || "______"))
+              .join("\n"),
+            first_speaker: pro[0] ? "正方主辯 " + pro[0] : "正方主辯",
+            judge_comment_lines: judges.length
+              ? judges
+                  .map(
+                    (n) =>
+                      "有請 " +
+                      n.replace(/^-\s*/, "") +
+                      " 對今場比賽作出評價。多謝 " +
+                      n.replace(/^-\s*/, "") +
+                      "。",
+                  )
+                  .join("\n\n")
+              : "有請各位評判對今場比賽作出評價。",
+          };
+        }
+        function renderScripts() {
+          if (!data) return;
+          const v = values(),
+            c = data.closing || {};
+          let vote =
+            "今日正方 " +
+            v.pro_team +
+            " 得票為 " +
+            c.pro_votes +
+            " 票，反方 " +
+            v.con_team +
+            " 得票為 " +
+            c.con_votes +
+            " 票" +
+            (c.draw_votes ? "，另有 " + c.draw_votes + " 位評判給予同分" : "") +
+            "。";
+          let winner =
+            c.pro_votes > c.con_votes
+              ? "今日嘅勝方係正方 " + v.pro_team
+              : c.con_votes > c.pro_votes
+                ? "今日嘅勝方係反方 " + v.con_team
+                : "今日雙方票數相同，須按賽規處理";
+          const repl = {
+            ...v,
+            best_debater: c.best_debater || "（資料不足，暫時未能判定）",
+            vote_summary: vote,
+            winner_text: winner,
+            pro_votes: c.pro_votes || 0,
+            con_votes: c.con_votes || 0,
+            draw_votes: c.draw_votes || 0,
+          };
+          let fill = (t) =>
+            Object.entries(repl).reduce(
+              (x, [k, val]) => x.replaceAll("{" + k + "}", val),
+              t,
+            );
+          $("welcomeScript").innerHTML = SafeMarkdown.render(
+            fill(data.welcome_template),
+          );
+          $("closingScript").innerHTML = c.has_scores
+            ? SafeMarkdown.render(fill(data.closing_template))
+            : '<div class="notice warn large">尚未有評分紀錄，無法生成結語。請確認評判已完成提交。</div>';
+        }
+        function formSnapshot() {
+          if (!data?.match) return null;
+          return {
+            matchId: data.selected_match_id,
+            judges: $("judges").value,
+            pro: positions.map((_, i) => $("pro" + (i + 1)).value),
+            con: positions.map((_, i) => $("con" + (i + 1)).value),
+          };
+        }
+        function renderInputs(saved) {
+          if (!data.match) {
+            $("app").innerHTML =
+              '<div class="notice">目前未有比賽場次。請先在「賽務管理易」建立場次。</div>';
+            return;
+          }
+          const m = data.match;
+          $("match").innerHTML = data.matches
+            .map(
+              (x) =>
+                `<option value="${esc(x.match_id)}" ${x.match_id === data.selected_match_id ? "selected" : ""}>${esc(x.label)}</option>`,
+            )
+            .join("");
+          $("judges").value =
+            saved?.matchId === data.selected_match_id
+              ? saved.judges
+              : data.judge_names.length
+                ? data.judge_names.map((x) => "- " + x).join("\n")
+                : "- 稱謂：姓名\n- 稱謂：姓名\n- 稱謂：姓名";
+          for (const side of ["pro", "con"]) {
+            $(side + "Debaters").innerHTML = positions
+              .map(
+                (p, i) =>
+                  `<label>${p}<input id="${side}${i + 1}" value="${esc(saved?.matchId === data.selected_match_id ? saved[side][i] : m[side + "_" + (i + 1)] || "")}"></label>`,
+              )
+              .join("");
+          }
+          renderScripts();
+        }
+        async function load(matchId, preserve = false) {
+          const saved = preserve ? formSnapshot() : null;
+          busy(true);
+          try {
+            data = await api(
+              "/api/chairperson/data" +
+                (matchId ? "?match_id=" + encodeURIComponent(matchId) : ""),
+            );
+            $("loading").classList.add("hidden");
+            $("login").classList.add("hidden");
+            $("app").classList.remove("hidden");
+            renderInputs(saved);
+          } catch (e) {
+            if (e.message === "未登入") {
+              $("loading").classList.add("hidden");
+              $("login").classList.remove("hidden");
+            } else $("loading").textContent = "連線錯誤：" + e.message;
+          } finally {
+            busy(false);
+          }
+        }
+        async function bell(count = 1) {
+          try {
+            if (!audio)
+              audio = new (window.AudioContext || window.webkitAudioContext)();
+            if (audio.state === "suspended") await audio.resume();
+            if (!bellBuffer) {
+              bellBuffer = await fetch("/api/practice/bell")
+                .then((r) =>
+                  r.ok
+                    ? r.arrayBuffer()
+                    : Promise.reject(Error("鈴聲檔案未能載入")),
+                )
+                .then((x) => audio.decodeAudioData(x))
+                .catch(() => null);
+            }
+            for (let i = 0; i < count; i++) {
+              if (bellBuffer) {
+                const s = audio.createBufferSource(),
+                  g = audio.createGain();
+                s.buffer = bellBuffer;
+                g.gain.value = 5;
+                s.connect(g);
+                g.connect(audio.destination);
+                s.start(audio.currentTime + i * 0.8);
+              } else {
+                const o = audio.createOscillator(),
+                  g = audio.createGain();
+                o.frequency.value = 850;
+                g.gain.setValueAtTime(0.4, audio.currentTime + i * 0.35);
+                g.gain.exponentialRampToValueAtTime(
+                  0.001,
+                  audio.currentTime + i * 0.35 + 0.2,
+                );
+                o.connect(g);
+                g.connect(audio.destination);
+                o.start(audio.currentTime + i * 0.35);
+                o.stop(audio.currentTime + i * 0.35 + 0.22);
+              }
+            }
+          } catch (e) {
+            toast("⚠️ 未能播放鈴聲：" + e.message);
+          }
+        }
+        function fmt(s) {
+          const cs = Math.max(0, Math.floor(s * 100)),
+            minutes = Math.floor(cs / 6000),
+            seconds = Math.floor((cs % 6000) / 100);
+          return (
+            minutes +
+            ":" +
+            String(seconds).padStart(2, "0") +
+            ":" +
+            String(cs % 100).padStart(2, "0")
+          );
+        }
+        function current(t) {
+          return t.running
+            ? t.elapsed + (performance.now() - t.start) / 1000
+            : t.elapsed;
+        }
+        function styleClock(el, seconds, clockStage = stage) {
+          const warning = cfg.warning_times[clockStage],
+            overtime = cfg.overtime_times[clockStage];
+          el.textContent = fmt(seconds);
+          el.className =
+            "clock " +
+            (overtime != null && seconds >= overtime
+              ? "overtime"
+              : warning != null && seconds >= warning
+                ? "warning"
+                : "");
+        }
+        function fire(t, clock, schedule, prefix) {
+          const sec = current(t),
+            bells = schedule || [];
+          if (t.running)
+            bells.forEach((b, i) => {
+              if (sec >= b.t && !t.fired.has(i)) {
+                t.fired.add(i);
+                bell(b.rings);
+                const node = $(prefix + i);
+                if (node) node.classList.add("fired");
+              }
+            });
+          styleClock(
+            clock,
+            sec,
+            prefix === "fp" || prefix === "fc" ? "free" : stage,
+          );
+        }
+        function scheduleList(id, schedule, prefix) {
+          $(id).innerHTML =
+            "<h3>鈴聲時間表</h3>" +
+            schedule
+              .map((b, i) => `<li id="${prefix}${i}">${esc(b.label)}</li>`)
+              .join("");
+        }
+        function stop(t) {
+          t.elapsed = current(t);
+          t.running = false;
+        }
+        function freeButton(side, label = "開始") {
+          const button = document.querySelector(`[data-free="${side}"]`);
+          if (button) button.textContent = label;
+        }
+        function resetTimers() {
+          stop(single);
+          single = { elapsed: 0, running: false, start: 0, fired: new Set() };
+          free = {
+            pro: { elapsed: 0, running: false, start: 0, fired: new Set() },
+            con: { elapsed: 0, running: false, start: 0, fired: new Set() },
+          };
+          $("singleStart").textContent = "開始";
+          freeButton("pro");
+          freeButton("con");
+          if (cfg) update();
+        }
+        function update() {
+          if (!cfg) return;
+          if (stage === "free") {
+            fire(free.pro, $("proClock"), cfg.bell_schedules.free, "fp");
+            fire(free.con, $("conClock"), cfg.bell_schedules.free, "fc");
+          } else
+            fire(single, $("singleClock"), cfg.bell_schedules[stage], "sb");
+        }
+        function selectStage(id) {
+          resetTimers();
+          stage = id;
+          $("stageTabs")
+            .querySelectorAll("button")
+            .forEach((b) =>
+              b.classList.toggle("active", b.dataset.stage === id),
+            );
+          const isFree = id === "free";
+          $("singleTimer").classList.toggle("hidden", isFree);
+          $("freeTimer").classList.toggle("hidden", !isFree);
+          if (isFree) {
+            $("freeSchedule").innerHTML =
+              "<h3>鈴聲時間表</h3>" +
+              cfg.bell_schedules.free
+                .map(
+                  (b, i) =>
+                    '<li id="fp' +
+                    i +
+                    '">正方 ' +
+                    esc(b.label) +
+                    '</li><li id="fc' +
+                    i +
+                    '">反方 ' +
+                    esc(b.label) +
+                    "</li>",
+                )
+                .join("");
+          } else {
+            $("singleLabel").textContent =
+              (cfg.timer_stages.find((x) => x[0] === id) || ["", ""])[1] +
+              "計時";
+            scheduleList("singleSchedule", cfg.bell_schedules[id], "sb");
+            update();
+          }
+        }
+        async function timerConfig() {
+          const fmt = $("format").value,
+            free = fmt === "聯中" ? $("freeMinutes").value : "",
+            prep = $("prepMinutes").value;
+          cfg = await api(
+            "/api/practice/timer-config?format=" +
+              encodeURIComponent(fmt) +
+              "&free_minutes=" +
+              free +
+              "&closing_prep_minutes=" +
+              prep,
+          );
+          if (Array.isArray(cfg.formats)) {
+            $("format").innerHTML = cfg.formats
+              .map((x) => `<option>${esc(x)}</option>`)
+              .join("");
+            $("format").value = cfg.format;
+          }
+          $("freeMinutesWrap").classList.toggle(
+            "hidden",
+            cfg.format !== "聯中",
+          );
+          $("formatNote").textContent =
+            cfg.format === "基本法盃"
+              ? "基本法盃：主辯及結辯 4 分鐘；一副及二副 3 分鐘；不設自由辯論。"
+              : "";
+          $("stageTabs").innerHTML = cfg.timer_stages
+            .map(
+              ([id, label]) =>
+                `<button data-stage="${id}">${esc(label)}</button>`,
+            )
+            .join("");
+          $("stageTabs")
+            .querySelectorAll("button")
+            .forEach((b) => (b.onclick = () => selectStage(b.dataset.stage)));
+          selectStage(cfg.timer_stages[0][0]);
+        }
+        $("loginForm").onsubmit = async (e) => {
+          e.preventDefault();
+          busy(true);
+          try {
+            const r = await fetch("/api/registration-admin/login", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ password: $("password").value }),
+              }),
+              d = await r.json();
+            if (!r.ok) throw Error(d.detail || "登入失敗");
+            load();
+          } catch (x) {
+            $("loginMessage").innerHTML =
+              '<div class="notice err">' + esc(x.message) + "</div>";
+          } finally {
+            busy(false);
+          }
+        };
+        $("match").onchange = () => {
+          resetTimers();
+          load($("match").value);
+        };
+        document.body.addEventListener("input", (e) => {
+          if (e.target.closest("#app")) renderScripts();
+        });
+        document.querySelectorAll("[data-pane]").forEach(
+          (b) =>
+            (b.onclick = () => {
+              if (b.dataset.pane !== "timer") resetTimers();
+              document
+                .querySelectorAll("[data-pane],.pane")
+                .forEach((x) => x.classList.remove("active"));
+              b.classList.add("active");
+              $(b.dataset.pane).classList.add("active");
+            }),
+        );
+        $("ring").onclick = () => bell(+$("manualBell").value);
+        $("refreshClosing").onclick = () => load(data.selected_match_id, true);
+        $("format").onchange = timerConfig;
+        $("freeMinutes").onchange = timerConfig;
+        $("prepMinutes").onchange = timerConfig;
+        $("singleStart").onclick = () => {
+          if (single.running) {
+            stop(single);
+            $("singleStart").textContent = "繼續";
+          } else {
+            single.start = performance.now() - single.elapsed * 1000;
+            single.running = true;
+            $("singleStart").textContent = "暫停";
+          }
+        };
+        $("singleReset").onclick = () => selectStage(stage);
+        $("singleTest").onclick = () => bell(1);
+        $("freeTest").onclick = () => bell(1);
+        document.body.addEventListener("click", (e) => {
+          const side = e.target.dataset.free;
+          if (side) {
+            const other = side === "pro" ? "con" : "pro";
+            if (free[side].running) {
+              stop(free[side]);
+              freeButton(side, "繼續");
+            } else {
+              stop(free[other]);
+              freeButton(other, free[other].elapsed ? "繼續" : "開始");
+              free[side].start = performance.now() - free[side].elapsed * 1000;
+              free[side].running = true;
+              freeButton(side, "暫停");
+            }
+          }
+          const reset = e.target.dataset.reset;
+          if (reset) {
+            free[reset] = {
+              elapsed: 0,
+              running: false,
+              start: 0,
+              fired: new Set(),
+            };
+            freeButton(reset);
+            update();
+          }
+        });
+        setInterval(update, 25);
+        timerConfig();
+        load();
+      })();
+    </script>
+  </body>
+</html>

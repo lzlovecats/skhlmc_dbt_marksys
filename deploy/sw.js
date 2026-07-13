@@ -22,6 +22,39 @@ self.addEventListener("activate", function (event) {
     event.waitUntil(self.clients.claim());
 });
 
+function retryDelay(milliseconds) {
+    return new Promise(function (resolve) {
+        setTimeout(resolve, milliseconds);
+    });
+}
+
+async function migrateSubscription(oldEndpoint, newSubscription) {
+    if (!oldEndpoint || !newSubscription) return false;
+
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const response = await fetch("/api/push/resubscribe", {
+                method: "POST",
+                credentials: "omit",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    old_endpoint: oldEndpoint,
+                    subscription: newSubscription.toJSON(),
+                }),
+            });
+            if (response.ok) return true;
+            lastError = new Error("Subscription migration failed: " + response.status);
+            if (response.status < 500 && response.status !== 429) break;
+        } catch (error) {
+            lastError = error;
+        }
+        if (attempt < 2) await retryDelay(500 * Math.pow(2, attempt));
+    }
+    console.warn("Push subscription migration will be repaired on next login", lastError);
+    return false;
+}
+
 // Chrome/FCM periodically rotate the push endpoint. Without this handler the
 // old endpoint silently dies, the server prunes it on the next 410, and the
 // member's notifications stay off until they manually re-enable — the "隔一陣
@@ -52,15 +85,7 @@ self.addEventListener("pushsubscriptionchange", function (event) {
         }
         if (!newSub) return;
 
-        try {
-            await fetch("/api/push/resubscribe", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ old_endpoint: oldEndpoint, subscription: newSub }),
-            });
-        } catch (error) {
-            // Best effort — the next explicit subscribe from the page recovers it.
-        }
+        await migrateSubscription(oldEndpoint, newSub);
     })());
 });
 

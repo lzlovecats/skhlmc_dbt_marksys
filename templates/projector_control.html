@@ -1,231 +1,425 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-HK">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>投影控制</title>
-<style>
-  :root { --bg:#0b1220; --panel:#131c31; --muted:#7d8aa6; --text:#f4f7ff;
-          --accent:#f9a825; --pro:#2e7d32; --con:#b3261e; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font-family: "Noto Sans CJK HK","PingFang HK","Microsoft JhengHei",sans-serif;
-    padding: 16px; max-width: 720px; margin: 0 auto;
-  }
-  h1 { font-size: 20px; margin: 8px 0 16px; }
-  .card { background: var(--panel); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
-  label { display:block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-  select, button {
-    font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a3654;
-    background: #0f1830; color: var(--text); width: 100%;
-  }
-  .row { display: flex; gap: 10px; }
-  .row > * { flex: 1; }
-  button { cursor: pointer; border-color: #34406a; }
-  button.primary { background: var(--accent); color: #1a1200; border-color: var(--accent); font-weight: 700; }
-  button.big { font-size: 20px; padding: 16px; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  .meta { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
-  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; }
-  .pill.pro { background: rgba(46,125,50,.3); color:#7ee787; }
-  .pill.con { background: rgba(179,38,30,.3); color:#ff8a80; }
-  .pill.neutral { background:#2a3654; color:#cdd6f0; }
-  #seq { max-height: 40vh; overflow-y: auto; margin-top: 10px; }
-  .seg {
-    padding: 10px 12px; border-radius: 8px; margin-bottom: 6px; cursor: pointer;
-    background: #0f1830; border: 1px solid transparent; display:flex; justify-content:space-between; align-items:center;
-  }
-  .seg.cur { border-color: var(--accent); background: #1c2540; }
-  .seg small { color: var(--muted); }
-  #status { font-size: 13px; min-height: 18px; margin-top: 6px; }
-  .err { color: #ff8a80; }
-  .ok { color: #7ee787; }
-  .toggle-on { background: var(--pro) !important; border-color: var(--pro) !important; color:#fff; }
-  .toggle-off { background: #3a2320 !important; border-color: var(--con) !important; color:#ffd6d0; }
-  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom: 4px; }
-  .back { color: var(--muted); text-decoration: none; font-size: 14px; }
-  .back:hover { color: var(--text); }
-</style>
-</head>
-<body>
-  <div class="topbar">
-    <h1>比賽日投影控制</h1>
-    <a class="back" href="/">← 返回系統</a>
-  </div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>投影控制</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #131c31;
+        --muted: #7d8aa6;
+        --text: #f4f7ff;
+        --accent: #f9a825;
+        --pro: #2e7d32;
+        --con: #b3261e;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          "Noto Sans CJK HK", "PingFang HK", "Microsoft JhengHei", sans-serif;
+        padding: 16px;
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 8px 0 16px;
+      }
+      .card {
+        background: var(--panel);
+        border-radius: 12px;
+        padding: 14px;
+        margin-bottom: 14px;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      select,
+      button {
+        font-size: 16px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #2a3654;
+        background: #0f1830;
+        color: var(--text);
+        width: 100%;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+      }
+      .row > * {
+        flex: 1;
+      }
+      button {
+        cursor: pointer;
+        border-color: #34406a;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #1a1200;
+        border-color: var(--accent);
+        font-weight: 700;
+      }
+      button.big {
+        font-size: 20px;
+        padding: 16px;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .meta {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 8px;
+        line-height: 1.5;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+      }
+      .pill.pro {
+        background: rgba(46, 125, 50, 0.3);
+        color: #7ee787;
+      }
+      .pill.con {
+        background: rgba(179, 38, 30, 0.3);
+        color: #ff8a80;
+      }
+      .pill.neutral {
+        background: #2a3654;
+        color: #cdd6f0;
+      }
+      #seq {
+        max-height: 40vh;
+        overflow-y: auto;
+        margin-top: 10px;
+      }
+      .seg {
+        padding: 10px 12px;
+        border-radius: 8px;
+        margin-bottom: 6px;
+        cursor: pointer;
+        background: #0f1830;
+        border: 1px solid transparent;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .seg.cur {
+        border-color: var(--accent);
+        background: #1c2540;
+      }
+      .seg small {
+        color: var(--muted);
+      }
+      #status {
+        font-size: 13px;
+        min-height: 18px;
+        margin-top: 6px;
+      }
+      .err {
+        color: #ff8a80;
+      }
+      .ok {
+        color: #7ee787;
+      }
+      .toggle-on {
+        background: var(--pro) !important;
+        border-color: var(--pro) !important;
+        color: #fff;
+      }
+      .toggle-off {
+        background: #3a2320 !important;
+        border-color: var(--con) !important;
+        color: #ffd6d0;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 4px;
+      }
+      .back {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 14px;
+      }
+      .back:hover {
+        color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <h1>比賽日投影控制</h1>
+      <a class="back" href="/">← 返回系統</a>
+    </div>
 
-  <div class="card">
-    <label>選擇場次</label>
-    <select id="match"><option value="">載入中…</option></select>
-    <div class="row" style="margin-top:10px;">
-      <div>
-        <label>賽制</label>
-        <select id="format">
-          <option>校園隨想</option>
-          <option>聯中</option>
-          <option>星島</option>
-          <option>基本法盃</option>
-        </select>
+    <div class="card">
+      <label>選擇場次</label>
+      <select id="match">
+        <option value="">載入中…</option>
+      </select>
+      <div class="row" style="margin-top: 10px">
+        <div>
+          <label>賽制</label>
+          <select id="format">
+            <option>校園隨想</option>
+            <option>聯中</option>
+            <option>星島</option>
+            <option>基本法盃</option>
+          </select>
+        </div>
+        <div style="display: flex; align-items: flex-end">
+          <button class="primary" id="apply">套用場次</button>
+        </div>
       </div>
-      <div style="display:flex; align-items:flex-end;">
-        <button class="primary" id="apply">套用場次</button>
+      <div class="meta" id="matchMeta"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button id="toggle" class="big">顯示大屏</button>
       </div>
+      <div id="status"></div>
     </div>
-    <div class="meta" id="matchMeta"></div>
-  </div>
 
-  <div class="card">
-    <div class="row">
-      <button id="toggle" class="big">顯示大屏</button>
+    <div class="card">
+      <label>發言進程（撳一項即跳去，或用下方按鈕）</label>
+      <div class="row">
+        <button id="prev" class="big">◀ 上一位</button>
+        <button id="next" class="big primary">下一位 ▶</button>
+      </div>
+      <div id="seq"></div>
     </div>
-    <div id="status"></div>
-  </div>
 
-  <div class="card">
-    <label>發言進程（撳一項即跳去，或用下方按鈕）</label>
-    <div class="row">
-      <button id="prev" class="big">◀ 上一位</button>
-      <button id="next" class="big primary">下一位 ▶</button>
-    </div>
-    <div id="seq"></div>
-  </div>
+    <script>
+      (function () {
+        var DISPLAY =
+          new URLSearchParams(location.search).get("display") || "main";
+        var el = function (id) {
+          return document.getElementById(id);
+        };
+        var state = {
+          match_id: "",
+          seg_index: 0,
+          seg_total: 0,
+          visible: false,
+          debate_format: "校園隨想",
+        };
+        var segments = [];
 
-<script>
-(function () {
-  var DISPLAY = new URLSearchParams(location.search).get("display") || "main";
-  var el = function (id) { return document.getElementById(id); };
-  var state = { match_id: "", seg_index: 0, seg_total: 0, visible: false, debate_format: "校園隨想" };
-  var segments = [];
+        function setStatus(msg, cls) {
+          var s = el("status");
+          s.textContent = msg || "";
+          s.className = cls || "";
+        }
 
-  function setStatus(msg, cls) {
-    var s = el("status"); s.textContent = msg || ""; s.className = cls || "";
-  }
+        function esc(v) {
+          return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
+            return {
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            }[c];
+          });
+        }
 
-  function esc(v) {
-    return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
+        function authToken() {
+          try {
+            return window.localStorage.getItem("committee_user") || "";
+          } catch (e) {
+            return "";
+          }
+        }
 
-  function authToken() {
-    try { return window.localStorage.getItem("committee_user") || ""; }
-    catch (e) { return ""; }
-  }
+        function api(method, url, body) {
+          var headers = body ? { "Content-Type": "application/json" } : {};
+          var token = authToken();
+          if (token) headers.Authorization = "Bearer " + token;
+          return fetch(url, {
+            method: method,
+            headers: Object.keys(headers).length ? headers : undefined,
+            body: body ? JSON.stringify(body) : undefined,
+            credentials: "same-origin",
+            cache: "no-store",
+          }).then(function (r) {
+            if (r.status === 401)
+              throw new Error(
+                "未登入：請先喺 app 用委員帳戶登入（同一個瀏覽器）。",
+              );
+            if (!r.ok) throw new Error("錯誤 " + r.status);
+            return r.json();
+          });
+        }
 
-  function api(method, url, body) {
-    var headers = body ? { "Content-Type": "application/json" } : {};
-    var token = authToken();
-    if (token) headers.Authorization = "Bearer " + token;
-    return fetch(url, {
-      method: method,
-      headers: Object.keys(headers).length ? headers : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      credentials: "same-origin",
-      cache: "no-store"
-    }).then(function (r) {
-      if (r.status === 401) throw new Error("未登入：請先喺 app 用委員帳戶登入（同一個瀏覽器）。");
-      if (!r.ok) throw new Error("錯誤 " + r.status);
-      return r.json();
-    });
-  }
+        function loadMatches() {
+          api("GET", "/api/projector/matches")
+            .then(function (d) {
+              var sel = el("match");
+              sel.innerHTML = "";
+              var ph = document.createElement("option");
+              ph.value = "";
+              ph.textContent = "— 揀場次 —";
+              sel.appendChild(ph);
+              (d.matches || []).forEach(function (m) {
+                var o = document.createElement("option");
+                o.value = m.match_id;
+                o.dataset.pro = m.pro_team;
+                o.dataset.con = m.con_team;
+                o.dataset.topic = m.topic_text;
+                o.textContent =
+                  (m.match_date || "") +
+                  " " +
+                  (m.pro_team || "?") +
+                  " vs " +
+                  (m.con_team || "?");
+                sel.appendChild(o);
+              });
+              if (state.match_id) sel.value = state.match_id;
+              setStatus("");
+            })
+            .catch(function (e) {
+              setStatus(e.message, "err");
+            });
+        }
 
-  function loadMatches() {
-    api("GET", "/api/projector/matches")
-      .then(function (d) {
-        var sel = el("match");
-        sel.innerHTML = "";
-        var ph = document.createElement("option");
-        ph.value = ""; ph.textContent = "— 揀場次 —"; sel.appendChild(ph);
-        (d.matches || []).forEach(function (m) {
-          var o = document.createElement("option");
-          o.value = m.match_id;
-          o.dataset.pro = m.pro_team; o.dataset.con = m.con_team; o.dataset.topic = m.topic_text;
-          o.textContent = (m.match_date || "") + " " + (m.pro_team || "?") + " vs " + (m.con_team || "?");
-          sel.appendChild(o);
-        });
-        if (state.match_id) sel.value = state.match_id;
-        setStatus("");
-      })
-      .catch(function (e) { setStatus(e.message, "err"); });
-  }
+        function loadSequence(fmt) {
+          return api(
+            "GET",
+            "/api/projector/sequence?format=" + encodeURIComponent(fmt),
+          ).then(function (d) {
+            segments = d.segments || [];
+            renderSeq();
+          });
+        }
 
-  function loadSequence(fmt) {
-    return api("GET", "/api/projector/sequence?format=" + encodeURIComponent(fmt))
-      .then(function (d) { segments = d.segments || []; renderSeq(); });
-  }
+        function sidePill(side) {
+          var cls =
+            side === "正方" ? "pro" : side === "反方" ? "con" : "neutral";
+          return '<span class="pill ' + cls + '">' + side + "</span>";
+        }
 
-  function sidePill(side) {
-    var cls = side === "正方" ? "pro" : side === "反方" ? "con" : "neutral";
-    return '<span class="pill ' + cls + '">' + side + '</span>';
-  }
+        function renderSeq() {
+          var box = el("seq");
+          box.innerHTML = "";
+          segments.forEach(function (seg, i) {
+            var div = document.createElement("div");
+            div.className = "seg" + (i === state.seg_index ? " cur" : "");
+            div.innerHTML =
+              "<span>" + esc(seg.label) + "</span>" + sidePill(seg.side);
+            div.onclick = function () {
+              push({ seg_index: i });
+            };
+            box.appendChild(div);
+          });
+          var cur = box.querySelector(".seg.cur");
+          if (cur) cur.scrollIntoView({ block: "nearest" });
+        }
 
-  function renderSeq() {
-    var box = el("seq"); box.innerHTML = "";
-    segments.forEach(function (seg, i) {
-      var div = document.createElement("div");
-      div.className = "seg" + (i === state.seg_index ? " cur" : "");
-      div.innerHTML = '<span>' + esc(seg.label) + '</span>' + sidePill(seg.side);
-      div.onclick = function () { push({ seg_index: i }); };
-      box.appendChild(div);
-    });
-    var cur = box.querySelector(".seg.cur");
-    if (cur) cur.scrollIntoView({ block: "nearest" });
-  }
+        function applyState(s) {
+          if (!s) return;
+          state.match_id = s.match_id || state.match_id || "";
+          state.seg_index = s.seg_index || 0;
+          state.seg_total = s.seg_total || segments.length;
+          state.visible = !!s.visible;
+          state.debate_format = s.debate_format || state.debate_format;
+          renderSeq();
+          if (state.match_id && el("match").value !== state.match_id)
+            el("match").value = state.match_id;
+          var t = el("toggle");
+          t.textContent = state.visible ? "■ 隱藏大屏" : "▶ 顯示大屏";
+          t.className = "big " + (state.visible ? "toggle-on" : "toggle-off");
+          el("matchMeta").innerHTML = s.configured
+            ? "辯題：" +
+              esc(s.motion || "—") +
+              "<br>正方：" +
+              esc(s.pro_team || "—") +
+              "　反方：" +
+              esc(s.con_team || "—")
+            : "未設定場次";
+        }
 
-  function applyState(s) {
-    if (!s) return;
-    state.match_id = s.match_id || state.match_id || "";
-    state.seg_index = s.seg_index || 0;
-    state.seg_total = s.seg_total || segments.length;
-    state.visible = !!s.visible;
-    state.debate_format = s.debate_format || state.debate_format;
-    renderSeq();
-    if (state.match_id && el("match").value !== state.match_id) el("match").value = state.match_id;
-    var t = el("toggle");
-    t.textContent = state.visible ? "■ 隱藏大屏" : "▶ 顯示大屏";
-    t.className = "big " + (state.visible ? "toggle-on" : "toggle-off");
-    el("matchMeta").innerHTML = s.configured
-      ? ("辯題：" + esc(s.motion || "—") + "<br>正方：" + esc(s.pro_team || "—") +
-         "　反方：" + esc(s.con_team || "—"))
-      : "未設定場次";
-  }
+        function push(patch) {
+          api(
+            "POST",
+            "/api/projector/state",
+            Object.assign({ display: DISPLAY }, patch),
+          )
+            .then(function (s) {
+              applyState(s);
+              setStatus("已更新", "ok");
+            })
+            .catch(function (e) {
+              setStatus(e.message, "err");
+            });
+        }
 
-  function push(patch) {
-    api("POST", "/api/projector/state", Object.assign({ display: DISPLAY }, patch))
-      .then(function (s) { applyState(s); setStatus("已更新", "ok"); })
-      .catch(function (e) { setStatus(e.message, "err"); });
-  }
+        el("apply").onclick = function () {
+          var sel = el("match");
+          var mid = sel.value;
+          if (!mid) {
+            setStatus("請先揀場次", "err");
+            return;
+          }
+          var fmt = el("format").value;
+          loadSequence(fmt).then(function () {
+            push({
+              match_id: mid,
+              debate_format: fmt,
+              seg_index: 0,
+              visible: false,
+            });
+          });
+        };
 
-  el("apply").onclick = function () {
-    var sel = el("match");
-    var mid = sel.value;
-    if (!mid) { setStatus("請先揀場次", "err"); return; }
-    var fmt = el("format").value;
-    loadSequence(fmt).then(function () {
-      push({ match_id: mid, debate_format: fmt, seg_index: 0, visible: false });
-    });
-  };
+        el("format").onchange = function () {
+          loadSequence(this.value);
+        };
 
-  el("format").onchange = function () { loadSequence(this.value); };
+        el("toggle").onclick = function () {
+          push({ visible: !state.visible });
+        };
+        el("next").onclick = function () {
+          if (state.seg_index < segments.length - 1)
+            push({ seg_index: state.seg_index + 1 });
+        };
+        el("prev").onclick = function () {
+          if (state.seg_index > 0) push({ seg_index: state.seg_index - 1 });
+        };
 
-  el("toggle").onclick = function () { push({ visible: !state.visible }); };
-  el("next").onclick = function () {
-    if (state.seg_index < segments.length - 1) push({ seg_index: state.seg_index + 1 });
-  };
-  el("prev").onclick = function () {
-    if (state.seg_index > 0) push({ seg_index: state.seg_index - 1 });
-  };
-
-  // initial load: matches, then current state + its sequence
-  loadMatches();
-  api("GET", "/api/projector/state?display=" + encodeURIComponent(DISPLAY))
-    .then(function (s) {
-      var fmt = (s && s.debate_format) || "校園隨想";
-      el("format").value = fmt;
-      return loadSequence(fmt).then(function () { applyState(s); });
-    })
-    .catch(function (e) { setStatus(e.message, "err"); });
-})();
-</script>
-</body>
+        // initial load: matches, then current state + its sequence
+        loadMatches();
+        api(
+          "GET",
+          "/api/projector/state?display=" + encodeURIComponent(DISPLAY),
+        )
+          .then(function (s) {
+            var fmt = (s && s.debate_format) || "校園隨想";
+            el("format").value = fmt;
+            return loadSequence(fmt).then(function () {
+              applyState(s);
+            });
+          })
+          .catch(function (e) {
+            setStatus(e.message, "err");
+          });
+      })();
+    </script>
+  </body>
 </html>

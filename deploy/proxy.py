@@ -13,21 +13,26 @@ import time
 from pathlib import Path
 from urllib.parse import quote_plus
 from xml.sax.saxutils import escape as xml_escape
+from zoneinfo import ZoneInfo
 
 import tomllib
 
 import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, event, text
 from starlette.websockets import WebSocketDisconnect
 
 from schema import (
+    CREATE_AI_FUND_USAGE_LOGS,
+    CREATE_PRACTICE_DAILY_USAGE,
     CREATE_PUSH_SUBSCRIPTIONS,
     CREATE_VIDEO_PROGRESS,
     CREATE_VIDEO_VIEWS,
+    TABLE_AI_FUND_USAGE_LOGS,
+    TABLE_PRACTICE_DAILY_USAGE,
     TABLE_PUSH_SUBSCRIPTIONS,
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
@@ -74,6 +79,23 @@ CACHE_MANIFEST = "public, max-age=86400"
 CACHE_STATIC = "public, max-age=31536000, immutable"
 
 app = FastAPI()
+MAX_HTTP_BODY_BYTES = int(os.getenv("MAX_HTTP_BODY_BYTES", str(5 * 1024 * 1024)))
+
+
+@app.middleware("http")
+async def reject_oversized_http_bodies(request: Request, call_next):
+    """Reject oversized JSON before FastAPI/Pydantic allocates it in Starter RAM."""
+    try:
+        content_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        content_length = MAX_HTTP_BODY_BYTES + 1
+    if content_length > MAX_HTTP_BODY_BYTES:
+        return JSONResponse(
+            {"detail": "Request body exceeds the 5MB server limit"}, status_code=413
+        )
+    return await call_next(request)
+
+
 app.mount("/shared", StaticFiles(directory=BASE_DIR / "frontend" / "shared"), name="shared")
 # Register all explicit HTML/API routes before the final 404 handlers.
 app.include_router(vote_router)
@@ -175,7 +197,14 @@ def _get_db_engine():
         db_url = _get_db_url()
         if not db_url:
             return None
-        _db_engine = create_engine(db_url, pool_pre_ping=True)
+        _db_engine = create_engine(
+            db_url,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "3")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
+            pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "10")),
+            pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "300")),
+        )
 
         @event.listens_for(_db_engine, "connect")
         def _set_search_path(dbapi_connection, connection_record):
@@ -240,14 +269,21 @@ def _verify_committee_token(token: str):
 
     user_id, sig = token.rsplit(":", 1)
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
-        ).fetchone()
+        rows = conn.execute(
+            text("SELECT key,value FROM system_config WHERE key IN ('cookie_secret','login_disabled_accounts')")
+        ).fetchall()
 
-    if row is None:
+    configs = {str(row._mapping["key"]): row._mapping["value"] for row in rows}
+    if "cookie_secret" not in configs:
+        return None
+    try:
+        disabled_accounts = json.loads(str(configs.get("login_disabled_accounts") or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        disabled_accounts = []
+    if isinstance(disabled_accounts, list) and user_id in disabled_accounts:
         return None
 
-    secret = row._mapping["value"]
+    secret = configs["cookie_secret"]
     expected = hmac.new(str(secret).encode(), user_id.encode(), hashlib.sha256).hexdigest()
     if hmac.compare_digest(sig, expected):
         return user_id
@@ -391,6 +427,21 @@ def _ensure_push_subscriptions_table(conn):
     ))
 
 
+def _validated_push_subscription(payload):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid push subscription")
+    endpoint = str(payload.get("endpoint") or "").strip()
+    keys = payload.get("keys")
+    if (
+        not endpoint.startswith("https://")
+        or not isinstance(keys, dict)
+        or not str(keys.get("p256dh") or "").strip()
+        or not str(keys.get("auth") or "").strip()
+    ):
+        raise HTTPException(status_code=400, detail="Invalid push subscription")
+    return endpoint
+
+
 def _ensure_video_tracking_tables(conn):
     conn.execute(text(CREATE_VIDEO_VIEWS))
     conn.execute(text(CREATE_VIDEO_PROGRESS))
@@ -458,9 +509,7 @@ async def push_subscribe(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    endpoint = str(subscription.get("endpoint", "")).strip() if isinstance(subscription, dict) else ""
-    if not endpoint:
-        raise HTTPException(status_code=400, detail="Missing endpoint")
+    endpoint = _validated_push_subscription(subscription)
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
@@ -548,29 +597,27 @@ async def push_resubscribe(request: Request):
 
     old_endpoint = str(payload.get("old_endpoint", "")).strip() if isinstance(payload, dict) else ""
     subscription = payload.get("subscription") if isinstance(payload, dict) else None
-    new_endpoint = (
-        str(subscription.get("endpoint", "")).strip()
-        if isinstance(subscription, dict) else ""
-    )
-    if not new_endpoint:
-        raise HTTPException(status_code=400, detail="Missing new endpoint")
+    new_endpoint = _validated_push_subscription(subscription)
+    if not old_endpoint:
+        raise HTTPException(status_code=400, detail="Missing old endpoint")
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
         _ensure_push_subscriptions_table(conn)
 
-        # Recover the owning user from the old row (if the old endpoint is known).
-        user_id = None
-        if old_endpoint:
-            row = conn.execute(
-                text(
-                    f"SELECT user_id FROM {TABLE_PUSH_SUBSCRIPTIONS} "
-                    "WHERE endpoint = :old_endpoint"
-                ),
-                {"old_endpoint": old_endpoint},
-            ).fetchone()
-            if row is not None:
-                user_id = row[0]
+        # The old endpoint is the capability that identifies the owning member.
+        # Never create an active orphan subscription when it is missing/unknown;
+        # the authenticated page reconciliation will safely recover it later.
+        row = conn.execute(
+            text(
+                f"SELECT user_id FROM {TABLE_PUSH_SUBSCRIPTIONS} "
+                "WHERE endpoint = :old_endpoint"
+            ),
+            {"old_endpoint": old_endpoint},
+        ).fetchone()
+        user_id = row[0] if row is not None else None
+        if not user_id:
+            raise HTTPException(status_code=404, detail="Old subscription not found")
 
         conn.execute(
             text(
@@ -633,7 +680,12 @@ def tts_provider_configured() -> bool:
     live-room server-side TTS turns on (else the room stays on Gemini native audio)."""
     provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
     if provider == "custom":
-        return bool(_get_proxy_secret("CUSTOM_TTS_URL").strip())
+        model_id = _get_proxy_secret("CUSTOM_TTS_MODEL_VERSION").strip()
+        return bool(
+            _get_proxy_secret("CUSTOM_TTS_URL").strip()
+            and _get_proxy_secret("CUSTOM_TTS_API_KEY").strip()
+            and model_id and _model_is_deployable(model_id, "tts")
+        )
     return bool(
         _get_proxy_secret("AZURE_SPEECH_KEY").strip()
         and _get_proxy_secret("AZURE_SPEECH_REGION").strip()
@@ -642,6 +694,26 @@ def tts_provider_configured() -> bool:
 
 _LEXICON_TTL = 60.0  # seconds; dictionary edits in ai_training.py take effect within this
 _lexicon_cache = {"rows": None, "at": 0.0}
+_deployable_model_cache = {"values": {}, "at": 0.0}
+
+
+def _model_is_deployable(model_id: str, model_type: str) -> bool:
+    now = time.monotonic()
+    key = (model_id, model_type)
+    if now - _deployable_model_cache["at"] < 60 and key in _deployable_model_cache["values"]:
+        return bool(_deployable_model_cache["values"][key])
+    allowed = False
+    try:
+        engine = _get_db_engine()
+        with engine.connect() as conn:
+            allowed = conn.execute(text("""SELECT EXISTS(SELECT 1 FROM ai_model_versions
+                WHERE model_id=:model AND model_type=:type AND status='deployable')"""),
+                {"model": model_id, "type": model_type}).scalar()
+    except Exception as exc:
+        logger.info("model deployable gate unavailable: %s", exc)
+    _deployable_model_cache["values"][key] = bool(allowed)
+    _deployable_model_cache["at"] = now
+    return bool(allowed)
 
 
 def _load_lexicon_overrides():
@@ -737,12 +809,34 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
 
 
 async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
-    """自家粵語 TTS (tts_rd_plan.md 第三節). 待 v0 checkpoint 出咗先實作:
-    call CUSTOM_TTS_URL、回傳音 bytes + mime。而家先 stub。"""
+    """Call the authenticated custom TTS service using the stable wire contract."""
     custom_url = _get_proxy_secret("CUSTOM_TTS_URL").strip()
-    if not custom_url:
+    api_key = _get_proxy_secret("CUSTOM_TTS_API_KEY").strip()
+    model_version = _get_proxy_secret("CUSTOM_TTS_MODEL_VERSION").strip()
+    if not custom_url or not api_key or not model_version:
         raise TtsUnavailable("Custom TTS is not configured", status=503)
-    raise TtsUnavailable("Custom TTS is not implemented yet", status=503)
+    if not _model_is_deployable(model_version, "tts"):
+        raise TtsUnavailable("Custom TTS model has not passed the deployable gate", status=503)
+    request_id = secrets.token_urlsafe(12)
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=5)) as client:
+            response = await client.post(custom_url, headers={
+                "Authorization": f"Bearer {api_key}", "Accept": "audio/*",
+                "X-Request-ID": request_id,
+            }, json={"text": text_value, "model_version": model_version,
+                     "request_id": request_id})
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning("custom TTS failed request_id=%s: %s", request_id, exc)
+        raise TtsUnavailable("Custom TTS request failed", status=502) from exc
+    mime = (response.headers.get("content-type") or "audio/wav").split(";", 1)[0]
+    if not response.content or not mime.startswith("audio/"):
+        raise TtsUnavailable("Custom TTS returned invalid audio", status=502)
+    logger.info("custom TTS success request_id=%s model=%s elapsed_ms=%d bytes=%d",
+                request_id, response.headers.get("x-model-version") or model_version,
+                int((time.monotonic() - started) * 1000), len(response.content))
+    return response.content, mime
 
 
 async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
@@ -753,7 +847,11 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
         raise TtsUnavailable("Missing text", status=400)
     provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
     if provider == "custom":
-        return await _synthesize_custom(processed)
+        try:
+            return await _synthesize_custom(processed)
+        except TtsUnavailable as exc:
+            logger.warning("custom TTS unavailable; falling back to Azure: %s", exc)
+            return await _synthesize_azure(processed)
     return await _synthesize_azure(processed)
 
 
@@ -1353,6 +1451,18 @@ _PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
 _practice_live_hits: dict = {}
 _PRACTICE_LIVE_MAX_PER_HOUR = 30
 _PRACTICE_LIVE_MIN_GAP_SEC = 3
+SOLO_FREE_MONTHLY_LIMIT = int(os.getenv("SOLO_FREE_MONTHLY_LIMIT", "20"))
+SOLO_MOCK_MONTHLY_LIMIT = int(os.getenv("SOLO_MOCK_MONTHLY_LIMIT", "4"))
+
+SOLO_LIMIT_MESSAGE = (
+    "由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，"
+    "每位委員每日只可進行一次單人自由辯論，並且每星期只可進行一次單人完整模擬練習。"
+    "你已使用此類別的練習限額，請於下一個限額週期再試。"
+)
+GLOBAL_LIVE_LIMIT_MESSAGE = (
+    "由於本月全系統的網絡傳輸量預算有限，Gemini Live練習名額已用完。"
+    "為確保一般系統功能維持正常，請於下月再試或聯絡系統管理員。"
+)
 
 
 def _practice_live_rate_check(user_id: str):
@@ -1365,6 +1475,35 @@ def _practice_live_rate_check(user_id: str):
         return "練習次數已達每小時上限，請稍後再試。"
     hits.append(now)
     _practice_live_hits[user_id] = hits
+    return None
+
+
+def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
+    """Enforce persistent per-user and global quotas before minting Live tokens."""
+    engine = _get_db_engine()
+    if engine is None:
+        return "Database is not configured"
+    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    is_mock = mode == "mock"
+    feature = "full_mock_live" if is_mock else "free_debate_live"
+    user_start = (
+        (now - datetime.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        if is_mock else now.replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
+    with engine.begin() as conn:
+        conn.execute(text(CREATE_AI_FUND_USAGE_LOGS))
+        user_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE user_id=:user AND feature=:feature AND status='success' AND created_at>=:start"""),
+            {"user": user_id, "feature": feature, "start": user_start}).scalar() or 0)
+        global_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE feature=:feature AND status='success' AND created_at>=:start"""),
+            {"feature": feature, "start": month_start}).scalar() or 0)
+    if user_count >= 1:
+        return SOLO_LIMIT_MESSAGE
+    if global_count >= global_limit:
+        return GLOBAL_LIVE_LIMIT_MESSAGE
     return None
 
 
@@ -1505,6 +1644,11 @@ async def appliance_ai_debate_live(request: Request):
     side = (q.get("side") or "正方").strip()
     debate_format = (q.get("format") or _PRACTICE_LIVE_FORMATS[0]).strip()
     mode = (q.get("mode") or "free").strip()
+    if mode not in ("free", "mock"):
+        mode = "free"
+    quota_error = _solo_live_quota_error(user_id, mode)
+    if quota_error:
+        return _practice_error_page("練習限額已用完", quota_error)
     from api.ai_coach_api import consume_live_brief, record_live_usage
     research_brief=consume_live_brief(q.get("brief_id"),user_id)
     if not topic:
@@ -1520,7 +1664,7 @@ async def appliance_ai_debate_live(request: Request):
             live_minutes = float(q.get("minutes") or 5)
         except (TypeError, ValueError):
             live_minutes = 5.0
-        live_minutes = min(10.0, max(0.5, live_minutes))
+        live_minutes = min(5.0, max(0.5, live_minutes))
     else:
         live_minutes = 2.5
 
@@ -1565,6 +1709,8 @@ GEMINI_LIVE_WS_URL = (
     "wss://generativelanguage.googleapis.com/ws/"
     "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
 )
+GEMINI_WS_MAX_SIZE = int(os.getenv("GEMINI_WS_MAX_SIZE", str(4 * 1024 * 1024)))
+GEMINI_RELAY_MAX_BYTES = int(os.getenv("GEMINI_RELAY_MAX_BYTES", str(96 * 1024 * 1024)))
 
 
 @app.websocket("/gemini-live")
@@ -1587,15 +1733,25 @@ async def gemini_live_relay(websocket: WebSocket):
     backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
 
     try:
-        # max_size=None：AI 回覆嘅音訊 frame 可以大過 websockets 預設 1MB 上限。
+        # Gemini 音訊 frame 可以大過 websockets 預設 1MB；提升到受控的4MB，
+        # 避免用 max_size=None 令異常 frame 無上限佔用 Starter RAM。
         # ping_interval=None：避免 keepalive pong timeout 喺長時間等待時誤斷線。
-        backend = await websockets.connect(backend_url, max_size=None, ping_interval=None)
+        backend = await websockets.connect(
+            backend_url, max_size=GEMINI_WS_MAX_SIZE, ping_interval=None
+        )
     except Exception as e:
         logger.exception("Gemini Live relay backend connect failed: %s", e)
         await websocket.close(code=1011)
         return
 
     async with backend:
+        relayed_bytes = 0
+
+        def within_relay_budget(message) -> bool:
+            nonlocal relayed_bytes
+            relayed_bytes += len(message) if isinstance(message, bytes) else len(str(message).encode("utf-8"))
+            return relayed_bytes <= GEMINI_RELAY_MAX_BYTES
+
         async def client_to_backend():
             while True:
                 message = await websocket.receive()
@@ -1603,12 +1759,21 @@ async def gemini_live_relay(websocket: WebSocket):
                     await backend.close()
                     break
                 elif "text" in message and message["text"] is not None:
+                    if not within_relay_budget(message["text"]):
+                        await backend.close(code=1008, reason="monthly bandwidth protection")
+                        break
                     await backend.send(message["text"])
                 elif "bytes" in message and message["bytes"] is not None:
+                    if not within_relay_budget(message["bytes"]):
+                        await backend.close(code=1008, reason="monthly bandwidth protection")
+                        break
                     await backend.send(message["bytes"])
 
         async def backend_to_client():
             async for message in backend:
+                if not within_relay_budget(message):
+                    await websocket.close(code=1008, reason="練習已達網絡傳輸量上限")
+                    break
                 if isinstance(message, bytes):
                     await websocket.send_bytes(message)
                 else:
@@ -1671,12 +1836,83 @@ async def gemini_live_relay(websocket: WebSocket):
 
 ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no O/0/I/1
 ROOM_CODE_LEN = 5
-MAX_ROOMS = int(os.getenv("MAX_ROOMS", "8"))
+MAX_ROOMS = int(os.getenv("MAX_ROOMS", "2"))
 ROOM_EMPTY_GRACE_MS = 60 * 1000       # keep an empty room this long for reconnects
 ROOM_MAX_AGE_MS = 90 * 60 * 1000      # hard TTL
 ROOM_JUDGEMENT_MODELS = model_slugs_for_labels(ROOM_JUDGEMENT_MODEL_LABELS)
 
 ROOMS = {}  # code -> Room
+
+PRACTICE_DAILY_LIMIT_MESSAGE = (
+    "由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，"
+    "每位委員每日只可進行一次聯機自由辯論及一次聯機完整模擬練習。"
+    "你今日已使用此類別的練習限額，請於翌日再試。"
+)
+MULTIPLAYER_FREE_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_FREE_MONTHLY_ROOMS", "10"))
+MULTIPLAYER_MOCK_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_MOCK_MONTHLY_ROOMS", "3"))
+
+
+def _practice_kind(structure: str) -> str:
+    return "multiplayer_mock" if structure == "mock" else "multiplayer_free"
+
+
+def _reserve_practice_daily_slot(user_id: str, structure: str, room_code: str) -> bool:
+    """Atomically consume a Hong Kong calendar-day slot.
+
+    Reconnecting to the same room remains allowed; a different room in the same
+    category on the same day is rejected.
+    """
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+    usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    kind = _practice_kind(structure)
+    with engine.begin() as conn:
+        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
+        conn.execute(text(f"""INSERT INTO {TABLE_PRACTICE_DAILY_USAGE}
+            (user_id,practice_kind,usage_date,room_code,created_at)
+            VALUES(:user,:kind,:day,:room,:now)
+            ON CONFLICT(user_id,practice_kind,usage_date) DO NOTHING"""), {
+            "user": user_id, "kind": kind, "day": usage_date,
+            "room": room_code, "now": datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None),
+        })
+        existing = conn.execute(text(f"""SELECT room_code
+            FROM {TABLE_PRACTICE_DAILY_USAGE}
+            WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day"""), {
+            "user": user_id, "kind": kind, "day": usage_date,
+        }).scalar()
+    return str(existing or "") == str(room_code)
+
+
+def _practice_daily_slot_available(user_id: str, structure: str) -> bool:
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+    usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    with engine.begin() as conn:
+        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
+        used = conn.execute(text(f"""SELECT 1 FROM {TABLE_PRACTICE_DAILY_USAGE}
+            WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day"""), {
+            "user": user_id, "kind": _practice_kind(structure), "day": usage_date,
+        }).fetchone()
+    return used is None
+
+
+def _practice_monthly_room_available(structure: str) -> bool:
+    engine = _get_db_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database is not configured")
+    today = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    month_start = today.replace(day=1)
+    limit = MULTIPLAYER_MOCK_MONTHLY_ROOMS if structure == "mock" else MULTIPLAYER_FREE_MONTHLY_ROOMS
+    with engine.begin() as conn:
+        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
+        used = int(conn.execute(text(f"""SELECT COUNT(DISTINCT room_code)
+            FROM {TABLE_PRACTICE_DAILY_USAGE}
+            WHERE practice_kind=:kind AND usage_date>=:start"""), {
+            "kind": _practice_kind(structure), "start": month_start,
+        }).scalar() or 0)
+    return used < limit
 
 
 def _now_ms():
@@ -2036,7 +2272,9 @@ async def _room_start_gemini_if_needed(room):
 
     backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
     try:
-        gws = await websockets.connect(backend_url, max_size=None, ping_interval=None)
+        gws = await websockets.connect(
+            backend_url, max_size=GEMINI_WS_MAX_SIZE, ping_interval=None
+        )
     except Exception as e:
         logger.exception("room Gemini connect failed (%s): %s", room.code, e)
         await _room_broadcast(room, {"type": "error",
@@ -2096,7 +2334,7 @@ _TTS_SENTENCE_END = "。！？!?…\n"
 def _tts_new_turn_state():
     # pending: transcript not yet synthesized; native: raw serverContents with
     # audio held in reserve for fallback; fallback: Azure gave up this turn.
-    return {"pending": "", "native": [], "fallback": False}
+    return {"pending": "", "native": [], "native_bytes": 0, "fallback": False}
 
 
 def _tts_take_sentences(buf, force=False):
@@ -2143,6 +2381,7 @@ async def _room_tts_fallback(room, state):
     for sc in state["native"]:
         await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
     state["native"] = []
+    state["native_bytes"] = 0
 
 
 async def _room_tts_synth(room, chunk, state):
@@ -2174,6 +2413,10 @@ async def _room_pump_tts(room, sc, state, final=False):
         parts = ((sc.get("modelTurn") or {}).get("parts")) or []
         if any((p.get("inlineData") or {}).get("data") for p in parts):
             state["native"].append(sc)
+            state["native_bytes"] += len(json.dumps(sc, ensure_ascii=False))
+            if state["native_bytes"] > 8 * 1024 * 1024:
+                await _room_tts_fallback(room, state)
+                return
         await _room_broadcast(room, {"type": "serverContent", "serverContent": _strip_audio_parts(sc)})
         ot = sc.get("outputTranscription") or {}
         if ot.get("text"):
@@ -2699,6 +2942,10 @@ async def room_create(request: Request):
     structure = str(payload.get("structure") or ("mock" if mode == "B" else "free"))
     if structure not in ("free", "mock"):
         structure = "free"
+    if not _practice_daily_slot_available(user_id, structure):
+        raise HTTPException(status_code=429, detail=PRACTICE_DAILY_LIMIT_MESSAGE)
+    if not _practice_monthly_room_available(structure):
+        raise HTTPException(status_code=429, detail=GLOBAL_LIVE_LIMIT_MESSAGE)
     if structure == "free" and debate_format not in FREE_DEBATE_FORMATS:
         raise HTTPException(status_code=400, detail=f"{debate_format}不設自由辯論，請改用完整 Mock。")
     topic = str(payload.get("topic") or "").strip()
@@ -2783,6 +3030,8 @@ async def room_create(request: Request):
             room.gemini = {"tokens": tokens, "sigs": {}, "prompt": prompt,
                            "model": FREE_DEBATE_LIVE_MODEL,
                            "session_labels": session_labels}
+    if not _reserve_practice_daily_slot(user_id, structure, code):
+        raise HTTPException(status_code=429, detail=PRACTICE_DAILY_LIMIT_MESSAGE)
     ROOMS[code] = room
     return {"ok": True, "code": code, "mode": mode}
 
@@ -2864,6 +3113,16 @@ async def room_ws(websocket: WebSocket, code: str):
             except Exception:
                 pass
             await websocket.close(code=1013)
+            return
+        if not _reserve_practice_daily_slot(user_id, room.structure, room.code):
+            try:
+                await websocket.send_text(json.dumps(
+                    {"type": "error", "message": PRACTICE_DAILY_LIMIT_MESSAGE},
+                    ensure_ascii=False,
+                ))
+            except Exception:
+                pass
+            await websocket.close(code=1008)
             return
         member = RoomMember(user_id, websocket)
         if room.mode == "A":

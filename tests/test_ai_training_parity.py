@@ -28,22 +28,23 @@ def test_admin_has_five_sections_and_single_renderer():
     assert html.count("/ai-training/app.js") == 1
 
 
-def test_fallback_duplicate_guard_withdraw_and_export_parity():
+def test_r2_only_duplicate_guard_withdraw_and_export_parity():
     api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
     js = (ROOT / "frontend/ai_training/app.js").read_text(encoding="utf-8")
     assert "此資料已提交，請勿重複提交" in api
     assert '@router.delete("/llm/{submission_id}")' in api
     assert "manualAudioSubmit" in js and "manualLlmSubmit" in js
     assert "alert(" not in js and "prompt(" not in js and "confirm(" not in js
-    assert 'def export_recordings(request: Request, speaker: str = "")' in api
-    assert 'archive.writestr("metadata.csv"' in api
+    assert 'def export_recording_manifest(request: Request, speaker: str = "")' in api
+    assert '"download_url"' in api
+    assert "audio_data" not in api
 
 
 def test_recording_gate_and_public_training_guidance_match_legacy():
     api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
     html = (ROOT / "frontend/ai_training/index.html").read_text(encoding="utf-8")
     js = (ROOT / "frontend/ai_training/app.js").read_text(encoding="utf-8")
-    for marker in ("_audio_payload(body)", "matches_prompt", "duration_seconds", "tts_review", "llm_review"):
+    for marker in ("_verified_r2_audio_claim(body, user)", "matches_prompt", "duration_seconds", "tts_review", "llm_review"):
         assert marker in api
     for marker in ('id="lexicon-view"', 'id="rdPlan"', 'id="resetSkipped"', 'id="clearLlm"'):
         assert marker in html

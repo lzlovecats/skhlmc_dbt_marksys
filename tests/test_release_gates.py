@@ -1,5 +1,6 @@
 import ast
 import pathlib
+import re
 import unittest
 
 from api.pagination import PAGE_SIZE, bounds, payload
@@ -7,6 +8,11 @@ from debate_timing import DEBATE_FORMATS, get_debate_timer_config
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def compact(source):
+    """Ignore formatter-only whitespace in inline HTML/CSS/JS contracts."""
+    return re.sub(r"\s+", "", source)
 
 
 class PaginationContractTests(unittest.TestCase):
@@ -25,18 +31,18 @@ class PaginationContractTests(unittest.TestCase):
 
 class ChairpersonTimerTests(unittest.TestCase):
     def test_start_bells_only_fire_after_timer_starts(self):
-        html = (ROOT / "frontend" / "chairperson" / "index.html").read_text(encoding="utf-8")
+        html = compact((ROOT / "frontend" / "chairperson" / "index.html").read_text(encoding="utf-8"))
         self.assertIn("if(t.running)bells.forEach", html)
 
     def test_chairperson_uses_api_formats_and_legacy_timer_controls(self):
-        html = (ROOT / "frontend" / "chairperson" / "index.html").read_text(encoding="utf-8")
+        html = compact((ROOT / "frontend" / "chairperson" / "index.html").read_text(encoding="utf-8"))
         proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
         self.assertIn("Array.isArray(cfg.formats)", html)
         self.assertIn("id=\"freeTest\"", html)
         self.assertIn("g.gain.value=5", html)
         self.assertIn("Math.floor(s*100)", html)
         for marker in ("resetTimers", "freeButton(other", "formSnapshot", "SafeMarkdown.render"):
-            self.assertIn(marker, html)
+            self.assertIn(compact(marker), html)
         self.assertNotIn("user-scalable=no", html)
         self.assertIn("max(2.0, free_minutes)", proxy)
         self.assertIn("max(0.5, prep_minutes)", proxy)
@@ -59,12 +65,12 @@ class MigrationParityRegressionTests(unittest.TestCase):
         live = (ROOT / "templates" / "live_debate.html").read_text(encoding="utf-8")
         room = (ROOT / "templates" / "room_debate.html").read_text(encoding="utf-8")
         for marker in ("scroll-snap-type:x proximity", "height:max(42rem,calc(100dvh - 9rem))"):
-            self.assertIn(marker, coach)
+            self.assertIn(compact(marker), compact(coach))
         for marker in ("--bg:#0e1117", "font-size:16px", "border-radius:12px"):
-            self.assertIn(marker, appliance)
-            self.assertIn(marker, live)
-            self.assertIn(marker, room)
-        self.assertIn("position:sticky", live)
+            self.assertIn(compact(marker), compact(appliance))
+            self.assertIn(compact(marker), compact(live))
+            self.assertIn(compact(marker), compact(room))
+        self.assertIn("position:sticky", compact(live))
 
     def test_public_registration_uses_server_edition_and_mobile_form_contract(self):
         core = (ROOT / "core" / "registration_logic.py").read_text(encoding="utf-8")
@@ -118,7 +124,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('/shared/judging-ux.js?v=4.0.3-judging', html)
         self.assertNotIn("const speech=[[", html)
         for marker in ("zeroWarnings", "預計結果", "雙方同分", "switchMatch", "上次儲存：", "S.saved[side]=false"):
-            self.assertIn(marker, html)
+            self.assertIn(compact(marker), compact(html))
         for marker in ("submitBottom", "completionHint", "請輸入中文全名", "手機建議橫向使用"):
             self.assertIn(marker, html)
         for marker in ("確認登出", "確認切換場次", "每個名次（1–8）必須恰好使用一次", "updateMatchAvailability", "dirtySides", "略過未修改的"):
@@ -192,13 +198,13 @@ class MigrationParityRegressionTests(unittest.TestCase):
         for marker in ("preservePage=false", "target._voteServerSpec?.page", "loadRecordings(resetPage=false)", '"adminLlm"'):
             self.assertIn(marker, app)
         self.assertIn('loadRecordings(true)', app)
-        self.assertIn('4.0.15-ai-training-3', html)
+        self.assertIn('4.1.2-r2-only', html)
 
     def test_home_displays_release_version(self):
         home = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
         version = (ROOT / "version.py").read_text(encoding="utf-8")
-        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.0.15）", home)
-        self.assertIn('APP_VERSION = "4.0.15"', version)
+        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.1.2）", home)
+        self.assertIn('APP_VERSION = "4.1.2"', version)
 
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
@@ -251,7 +257,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('$("mockForm").addEventListener("submit"', browser)
         self.assertIn('brief_id: data.brief_id', browser)
         self.assertIn("duration < 1 || duration > 60", browser)
-        self.assertIn("blob.size > 15 * 1024 * 1024", browser)
+        self.assertIn("blob.size > 2 * 1024 * 1024", browser)
         self.assertIn("bytes.subarray(index, index + 32768)", browser)
         self.assertNotIn("String.fromCharCode(...new Uint8Array", browser)
         self.assertLess(html.index('data-pane="fact"'), html.index('data-pane="research"'))
@@ -287,13 +293,16 @@ class MigrationParityRegressionTests(unittest.TestCase):
 
     def test_recording_audio_checks_owner_before_streaming(self):
         source = (ROOT / "api" / "ai_training_api.py").read_text(encoding="utf-8")
-        self.assertIn("speaker_user_id,audio_data,mime_type", source)
+        self.assertIn("speaker_user_id,r2_key,mime_type,file_ext", source)
         self.assertIn("owner != str(user).strip() and not _is_admin", source)
+        self.assertNotIn("audio_data", source)
+        self.assertLess(source.index("owner != str(user).strip() and not _is_admin"),
+                        source.index("r2_storage.presign_get"))
 
     def test_ai_training_parity_endpoints_are_registered(self):
         source = (ROOT / "api" / "ai_training_api.py").read_text(encoding="utf-8")
         for route in ("/recordings/quality-check", "/manuscripts", "/coverage", "/coverage/ai", "/inventory", "/regenerate-suggestions",
-                      "/export/recordings.zip", "/export/llm.jsonl"):
+                      "/export/recordings.json", "/export/llm.jsonl"):
             self.assertIn(route, source)
         browser = (
             (ROOT / "frontend" / "ai_training" / "index.html").read_text(encoding="utf-8")

@@ -1,28 +1,39 @@
-"""Committee-authenticated JSON and image endpoints for match photos."""
+"""Committee-authenticated R2-only endpoints for match photos."""
 
-import base64
+import os
+import re
+import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 
 router = APIRouter(prefix="/api/match-photos", tags=["match-photos"])
+PHOTO_DAILY_USER_LIMIT = int(os.getenv("PHOTO_DAILY_USER_LIMIT", "20"))
+PHOTO_MONTHLY_GLOBAL_LIMIT = int(os.getenv("PHOTO_MONTHLY_GLOBAL_LIMIT", "500"))
 
 
-class PhotoFileBody(BaseModel):
+class PhotoUploadIntentBody(BaseModel):
     file_name: str
-    mime_type: str = "image/jpeg"
-    image_base64: str
+    mime_type: str = "image/webp"
+    byte_size: int
+    thumbnail_byte_size: int
+    sha256: str
+    thumbnail_sha256: str
+    width: int
+    height: int
 
 
-class UploadBody(BaseModel):
+class PhotoCompleteBody(BaseModel):
     album_label: str
     match_video_id: int | None = None
     photo_date: str = ""
     photo_title: str = ""
     caption: str = ""
-    files: list[PhotoFileBody]
+    upload_tokens: list[str]
 
 
 def _context(request: Request):
@@ -33,8 +44,13 @@ def _context(request: Request):
 @router.get("/data")
 def data(request: Request):
     from core import media_logic as logic
+    from core import r2_storage
     _user_id, db = _context(request)
-    return logic.photo_data(db=db)
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 尚未完成設定，相片功能已暫停。")
+    result = logic.photo_data(db=db)
+    result["storage"] = "r2"
+    return result
 
 @router.get("/photos")
 def photos(request: Request, page: int = 1, album: str = "全部", search: str = "", sort: str = "date_desc"):
@@ -55,29 +71,131 @@ def photos(request: Request, page: int = 1, album: str = "全部", search: str =
     return payload(items,page,total)
 
 
-@router.post("/upload")
-def upload(body: UploadBody, request: Request):
+@router.post("/upload-intent")
+def upload_intent(body: PhotoUploadIntentBody, request: Request):
+    """Issue two short-lived direct R2 PUTs: original and gallery thumbnail."""
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+
+    user_id, _db = _context(request)
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 尚未完成設定。")
+    if body.mime_type not in {"image/webp", "image/jpeg", "image/png"}:
+        raise HTTPException(400, "圖片格式只支援 JPEG、PNG 或 WebP。")
+    if not 1_000 <= body.byte_size <= 2 * 1024 * 1024:
+        raise HTTPException(400, "每張圖片壓縮後不可超過 2MB。")
+    if not 500 <= body.thumbnail_byte_size <= 300 * 1024:
+        raise HTTPException(400, "圖片縮圖不可超過 300KB。")
+    if not 1 <= body.width <= 2000 or not 1 <= body.height <= 2000:
+        raise HTTPException(400, "圖片最長邊不可超過 2000px。")
+    if not re.fullmatch(r"[0-9a-f]{64}", body.sha256.lower()) or not re.fullmatch(
+        r"[0-9a-f]{64}", body.thumbnail_sha256.lower()
+    ):
+        raise HTTPException(400, "圖片雜湊格式不正確。")
+    safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", str(user_id))[:48] or "member"
+    object_id = uuid.uuid4().hex
+    ext = "webp" if body.mime_type == "image/webp" else "jpg" if body.mime_type == "image/jpeg" else "png"
+    original_key = f"photos/original/{safe_user}/{object_id}.{ext}"
+    thumbnail_key = f"photos/thumb/{safe_user}/{object_id}.{ext}"
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        raise HTTPException(503, "系統簽署設定不可用。")
+    claim = {
+        "kind": "photo", "user": str(user_id), "file_name": body.file_name[:240],
+        "mime_type": body.mime_type, "byte_size": body.byte_size,
+        "thumbnail_byte_size": body.thumbnail_byte_size, "sha256": body.sha256.lower(),
+        "thumbnail_sha256": body.thumbnail_sha256.lower(), "width": body.width,
+        "height": body.height, "r2_key": original_key,
+        "thumbnail_r2_key": thumbnail_key,
+    }
+    token = r2_storage.sign_upload_claim(claim, secret, expires=600)
+    return {
+        "upload_token": token,
+        "original": {
+            "url": r2_storage.presign_put(original_key, body.mime_type, body.sha256),
+            "key": original_key,
+            "headers": {"x-amz-meta-sha256": body.sha256.lower()},
+        },
+        "thumbnail": {
+            "url": r2_storage.presign_put(thumbnail_key, body.mime_type, body.thumbnail_sha256),
+            "key": thumbnail_key,
+            "headers": {"x-amz-meta-sha256": body.thumbnail_sha256.lower()},
+        },
+        "required_headers": {
+            "Content-Type": body.mime_type,
+            "Cache-Control": "private, max-age=86400",
+        },
+    }
+
+
+@router.post("/upload-complete")
+def upload_complete(body: PhotoCompleteBody, request: Request):
     from core import media_logic as logic
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+
     user_id, db = _context(request)
+    if not body.upload_tokens or len(body.upload_tokens) > 5:
+        raise HTTPException(400, "每次必須上載一至五張圖片。")
+    logic.ensure_match_photos_table(db)
+    now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = day_start.replace(day=1)
+    usage = db.query("""SELECT
+        COUNT(*) FILTER (WHERE uploaded_by=:user AND created_at>=:day_start) AS user_today,
+        COUNT(*) FILTER (WHERE created_at>=:month_start) AS global_month
+        FROM match_photos""", {
+        "user": user_id, "day_start": day_start, "month_start": month_start,
+    })
+    user_today = int(usage.iloc[0]["user_today"] or 0) if not usage.empty else 0
+    global_month = int(usage.iloc[0]["global_month"] or 0) if not usage.empty else 0
+    if user_today + len(body.upload_tokens) > PHOTO_DAILY_USER_LIMIT:
+        raise HTTPException(429, f"為控制儲存及網絡傳輸量，每位委員每日最多可上載{PHOTO_DAILY_USER_LIMIT}張相片。")
+    if global_month + len(body.upload_tokens) > PHOTO_MONTHLY_GLOBAL_LIMIT:
+        raise HTTPException(429, "本月全系統相片上載限額已用完，請於下月再試。")
+    secret = _get_relay_cookie_secret()
     files = []
-    for file in body.files:
+    for token in body.upload_tokens:
+        claim = r2_storage.verify_upload_claim(token, secret or "")
+        if not claim or claim.get("kind") != "photo" or claim.get("user") != str(user_id):
+            raise HTTPException(400, "圖片上載憑證無效或已過期。")
         try:
-            image_data = base64.b64decode(file.image_base64, validate=True)
-        except ValueError as exc:
-            raise HTTPException(400, "圖片資料格式無效。") from exc
-        files.append({"file_name": file.file_name, "mime_type": file.mime_type, "image_data": image_data})
-    return logic.upload_photos(
+            original = r2_storage.head(claim["r2_key"])
+            thumbnail = r2_storage.head(claim["thumbnail_r2_key"])
+        except Exception as exc:
+            raise HTTPException(400, "R2 未能確認圖片已完成上載。") from exc
+        original_sha = str((original.get("Metadata") or {}).get("sha256") or "")
+        thumb_sha = str((thumbnail.get("Metadata") or {}).get("sha256") or "")
+        if (
+            int(original.get("ContentLength") or 0) != int(claim["byte_size"])
+            or int(thumbnail.get("ContentLength") or 0) != int(claim["thumbnail_byte_size"])
+            or str(original.get("ContentType") or "").split(";", 1)[0] != claim["mime_type"]
+            or str(thumbnail.get("ContentType") or "").split(";", 1)[0] != claim["mime_type"]
+            or original_sha != claim["sha256"]
+            or thumb_sha != claim["thumbnail_sha256"]
+        ):
+            raise HTTPException(400, "R2 圖片大小或雜湊驗證失敗。")
+        files.append(claim)
+    return logic.register_r2_photos(
         user_id, body.album_label, body.match_video_id, body.photo_date,
         body.photo_title, body.caption, files, db=db,
     )
 
 
 @router.get("/image/{photo_id}")
-def image(photo_id: int, request: Request, download: bool = False):
+def image(photo_id: int, request: Request, download: bool = False, thumbnail: bool = False):
     from core import media_logic as logic
+    from core import r2_storage
     _user_id, db = _context(request)
-    photo = logic.photo_bytes(photo_id, db=db)
-    if not photo:
+    media = logic.photo_media(photo_id, db=db)
+    if not media:
         raise HTTPException(404, "找不到圖片")
-    headers = {"Content-Disposition": f'attachment; filename="{photo["file_name"]}"'} if download else {}
-    return Response(content=photo["image_data"], media_type=photo["mime_type"], headers=headers)
+    r2_key = media.get("thumbnail_r2_key") if thumbnail and not download else media.get("r2_key")
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 暫時不可用。")
+    if not r2_key:
+        raise HTTPException(409, "相片尚未完成R2遷移。")
+    return RedirectResponse(r2_storage.presign_get(
+        r2_key, mime_type=media["mime_type"], file_name=media["file_name"],
+        download=download, expires=1800,
+    ), status_code=307, headers={"Cache-Control": "private, no-store"})

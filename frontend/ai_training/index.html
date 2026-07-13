@@ -1,14 +1,410 @@
-<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e1117"><title>聖呂中辯 AI 訓練</title><link rel="stylesheet" href="/shared/app-shell.css"><link rel="stylesheet" href="/shared/vote-ui.css"><style>.pane,.admin-pane{display:none}.pane.active,.admin-pane.active{display:block}.split>*{min-width:0}.script{padding:1rem;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);margin:.65rem 0}.script p{font-size:1.1rem}.actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}.actions button,.actions .button{width:auto}.review-item{margin:.7rem 0}.review-note{min-height:4rem}.json{white-space:pre-wrap;font-size:.82rem}.progress{height:.55rem;background:var(--surface);border-radius:999px;overflow:hidden}.progress>i{display:block;height:100%;background:var(--accent)}@media(max-width:760px){.split{grid-template-columns:minmax(0,1fr)}}</style></head><body><main><a class="back" href="/">← 返回主頁</a><h1>🎙️ 聖呂中辯 AI 訓練</h1><p class="caption">收集自家 TTS 聲線資料及辯論 LLM 文字資料</p>
-<section id="login" class="card hidden"><h2>內部委員會成員登入</h2><form id="loginForm" class="login"><label>用戶名稱<input id="user" required></label><label>密碼<input id="password" type="password" required></label><button class="primary">登入</button></form></section>
-<section id="app" class="hidden"><details class="guide"><summary>ℹ️ 首次使用指南</summary><div class="sub">• 提交前請只提供已取得授權、已匿名化的內容。錄音只用於內部 TTS、讀音檢查及相關 AI 研究測試，管理員審核後才納入資料集。</div></details>
-<details class="guide"><summary>📖 聖呂中辯自家讀音模型研發計劃書</summary><div id="rdPlan" class="sub">載入中…</div></details>
-<nav class="tabs"><button class="active" data-pane="tts">🎙️ TTS 錄音提交</button><button data-pane="lexicon-view">📖 讀音字典</button><button data-pane="llm">📝 LLM 文字資料提交</button><button id="adminTab" data-pane="admin" class="hidden">🛠️ 管理員</button></nav>
-<section id="tts" class="pane active"><div id="ttsBlocked" class="notice warn hidden"></div><section id="consent" class="card hidden"><h2>錄音用途及授權</h2><p id="consentText"></p><label class="check"><input id="agree" type="checkbox">我已閱讀並同意以上錄音用途及授權安排</label><button id="consentBtn" class="primary">確認同意</button></section><section id="recorder" class="hidden"><div class="split"><section class="card"><h2>錄音提交</h2><label>錄音模式<select id="scriptType"><option value="short">短句練習</option><option value="full">完整稿</option></select></label><p id="modeHelp" class="caption"></p><div id="recordProgress"></div><div id="script"></div><div class="actions"><button id="recordBtn">開始錄音</button><button id="skipBtn">跳過此句</button><button id="resetSkipped" class="hidden">重新錄製跳過的句子</button><button id="submitRecord" class="primary" disabled>AI 檢查音質並提交</button></div><p id="recordState" class="caption">選擇句子後開始錄音。</p><audio id="preview" controls class="hidden"></audio><div id="manualAudio" class="notice warn hidden"><label class="check"><input id="manualAudioConfirm" type="checkbox">我確認此段錄音清晰、讀音正確、內容與稿件一致</label><button id="manualAudioSubmit">略過 AI 檢查並提交待人工審核</button></div></section><section class="card"><h2>我的提交紀錄</h2><div id="myRecordings"></div><button id="withdraw" class="danger">撤回錄音使用同意</button></section></div></section></section>
-<section id="lexicon-view" class="pane"><section class="card"><h2>讀音字典</h2><p class="caption">記錄粵語辯論常見詞語、專名、多音字、英文縮寫及數字讀法，供 TTS 生成及錄音審核參考。</p><div id="publicLexicon"></div><p class="caption">如發現 AI 讀錯字詞，可通知管理員補充至字典。</p></section></section>
-<section id="llm" class="pane"><div class="split"><form id="llmForm" class="card"><h2>LLM 文字資料提交</h2><p class="caption">用作建立辯論 LLM 知識庫。可由不同委員提交，但請只提交有權使用、已匿名化、質素足夠，並以粵語口語撰寫的文字資料。</p><details><summary>可以提交哪些資料？</summary><div class="sub"><p>適合提交：優秀發言稿、Free De／Mock 逐字稿、具體評語、攻防問答、主線／策略及辯題資料。</p><p>請盡量用粵語口語，並先移除真名、班別、電話及私人對話。不建議提交未經同意的同學資料、未整理低質原文或主要以書面中文撰寫的內容。</p></div></details><div class="split"><label>資料類型<select id="dataType"><option>發言稿</option><option>自由辯論逐字稿</option><option>完整 Mock 逐字稿</option><option>評語樣本</option><option>攻防問答</option><option>主線/策略</option><option>辯題資料</option><option>其他</option></select></label><label>立場 / 角色<select id="llmSide"><option>不適用</option><option>正方</option><option>反方</option><option>中立/評判</option></select></label></div><label>標題<input id="llmTitle" placeholder="例如：基本法盃初賽反方二副反駁稿"></label><label>辯題 / 情境（如適用）<textarea id="llmTopic" rows="2"></textarea></label><label>文字內容（請用粵語口語撰寫）<textarea id="llmContent" rows="10" required placeholder="例如：我方認為對方呢個講法最大問題係冇證明因果關係……"></textarea></label><label>來源 / 備註<textarea id="llmSource" rows="3"></textarea></label><label class="check"><input id="anonymized" type="checkbox">我已移除真名、班別、電話、私人對話等敏感或可識別個人資料</label><label class="check"><input id="permission" type="checkbox">我確認有權提交此內容作聖呂中辯內部 AI 訓練 / RAG 測試用途</label><div class="actions"><button class="primary">提交 LLM 訓練資料</button><button id="clearLlm" type="button">清除</button></div><div id="manualLlm" class="notice warn hidden"><label class="check"><input id="manualLlmConfirm" type="checkbox">我確認以上資料適合提交</label><button id="manualLlmSubmit" type="button">略過 AI 檢查並提交待人工審核</button></div></form><section class="card"><h2>我的 LLM 提交紀錄</h2><div id="myLlm"></div></section></div></section>
-<section id="admin" class="pane"><h2>管理員</h2><p class="caption">集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。</p><nav class="tabs" id="adminTabs"><button class="active" data-admin="recordings">🎧 錄音審核 / Export</button><button data-admin="scripts">🗂️ 句庫管理</button><button data-admin="manuscripts">📄 完整稿管理</button><button data-admin="lexicon">📖 讀音字典管理</button><button data-admin="llm-review">📝 LLM 資料審核 / Export</button></nav>
-<section id="recordings" class="admin-pane active"><section class="card"><h2>錄音狀態統計</h2><div id="recordStats"></div><div class="split"><label>狀態<select id="recordFilter"><option value="all">全部</option><option value="pending">待審核</option><option value="accepted">已接受</option><option value="rejected">已拒絕</option><option value="withdrawn">已撤回</option></select></label><label>錄音者<input id="speakerFilter"></label></div><div id="adminRecordings"></div><details><summary>錄音審核準則（管理員必讀）</summary><p>逐條試聽；內容須與稿句一致、背景安靜、沒有爆咪、音量適中、口條自然，長度約 1–60 秒。AI 只作預檢，最終由管理員把關。</p></details><a id="recordExport" class="button" href="/api/ai-training/export/recordings.zip">按錄音者篩選匯出 accepted 錄音 ZIP（metadata.csv）</a></section></section>
-<section id="scripts" class="admin-pane"><form id="scriptForm" class="card"><h2>句庫管理</h2><label>句子 ID（留空自動建立）<input id="scriptId"></label><label>類別<input id="scriptCategory" required></label><label>文字<textarea id="scriptText" required></textarea></label><label>排序<input id="sortOrder" type="number" value="0"></label><button class="primary">儲存 / 修改句子</button></form><section class="card"><p class="caption">AI 分析只會產生建議；你勾選並套用前不會改動句庫。已有待審核或已接受錄音的句子會鎖定，不會被停用。</p><div class="actions"><button id="coverageBtn">AI 句庫缺口分析</button><button id="regenerateBtn">AI 重出句庫</button><button id="applySuggestions" class="primary hidden">套用所選變更</button><button id="deactivateComplete" class="danger">停用已全員錄製內容</button></div><div id="coverageResult"></div><div id="scriptInventory"></div></section></section>
-<section id="manuscripts" class="admin-pane"><form id="manuscriptForm" class="card"><h2>新增完整稿</h2><label>標題<input id="manuscriptTitle" required></label><label>完整稿內容<textarea id="manuscriptText" rows="10" required></textarea></label><div id="segmentPreview" class="caption"></div><button class="primary">按 35 字及細標點分段加入句庫</button></form><section class="card"><h2>完整稿管理</h2><div id="manuscriptInventory"></div></section></section>
-<section id="lexicon" class="admin-pane"><form id="lexiconForm" class="card"><h2>讀音字典管理</h2><input id="lexiconId" type="hidden"><div class="split"><label>詞語<input id="term" required></label><label>讀法<input id="reading" required></label><label>粵拼<input id="jyutping"></label><label>類別<input id="lexCategory"></label></div><label>例句<input id="example"></label><label>備註<textarea id="lexNote"></textarea></label><button class="primary">儲存讀音規則</button></form><section class="card"><div id="lexiconTable"></div></section></section>
-<section id="llm-review" class="admin-pane"><section class="card"><h2>LLM 資料審核 / Export</h2><div id="llmStats"></div><div id="adminLlm"></div><details><summary>LLM 審核準則（管理員必讀）</summary><p>只接受具辯論訓練價值、已匿名化、來源合理、質素足夠並主要以粵語口語撰寫的資料。請核對 AI 預檢 JSON 及原文。</p></details><a class="button" href="/api/ai-training/export/llm.jsonl">匯出 accepted LLM JSONL</a></section></section></section></section></main><div id="toast" class="toast"></div><div id="busy" class="busy"><div class="busy-pill"><i class="spinner"></i>處理中…</div></div><dialog id="confirmDialog"><form method="dialog" class="card"><h2 id="confirmTitle">確認操作</h2><p id="confirmText"></p><div class="actions"><button value="cancel">取消</button><button value="ok" class="primary">確認</button></div></form></dialog><script src="/shared/vote-ui.js"></script><script src="/shared/markdown.js"></script><script src="/ai-training/app.js?v=4.0.15-ai-training-3"></script></body></html>
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>聖呂中辯 AI 訓練</title>
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <link rel="stylesheet" href="/shared/vote-ui.css" />
+    <style>
+      .pane,
+      .admin-pane {
+        display: none;
+      }
+      .pane.active,
+      .admin-pane.active {
+        display: block;
+      }
+      .split > * {
+        min-width: 0;
+      }
+      .script {
+        padding: 1rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        margin: 0.65rem 0;
+      }
+      .script p {
+        font-size: 1.1rem;
+      }
+      .actions {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .actions button,
+      .actions .button {
+        width: auto;
+      }
+      .review-item {
+        margin: 0.7rem 0;
+      }
+      .review-note {
+        min-height: 4rem;
+      }
+      .json {
+        white-space: pre-wrap;
+        font-size: 0.82rem;
+      }
+      .progress {
+        height: 0.55rem;
+        background: var(--surface);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .progress > i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+      }
+      @media (max-width: 760px) {
+        .split {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back" href="/">← 返回主頁</a>
+      <h1>🎙️ 聖呂中辯 AI 訓練</h1>
+      <p class="caption">收集自家 TTS 聲線資料及辯論 LLM 文字資料</p>
+      <section id="login" class="card hidden">
+        <h2>內部委員會成員登入</h2>
+        <form id="loginForm" class="login">
+          <label>用戶名稱<input id="user" required /></label
+          ><label>密碼<input id="password" type="password" required /></label
+          ><button class="primary">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <details class="guide">
+          <summary>ℹ️ 首次使用指南</summary>
+          <div class="sub">
+            • 提交前請只提供已取得授權、已匿名化的內容。錄音只用於內部
+            TTS、讀音檢查及相關 AI 研究測試，管理員審核後才納入資料集。
+          </div>
+        </details>
+        <details class="guide">
+          <summary>📖 聖呂中辯自家讀音模型研發計劃書</summary>
+          <div id="rdPlan" class="sub">載入中…</div>
+        </details>
+        <nav class="tabs">
+          <button class="active" data-pane="tts">🎙️ TTS 錄音提交</button
+          ><button data-pane="lexicon-view">📖 讀音字典</button
+          ><button data-pane="llm">📝 LLM 文字資料提交</button
+          ><button id="adminTab" data-pane="admin" class="hidden">
+            🛠️ 管理員
+          </button>
+        </nav>
+        <section id="tts" class="pane active">
+          <div id="ttsBlocked" class="notice warn hidden"></div>
+          <section id="consent" class="card hidden">
+            <h2>錄音用途及授權</h2>
+            <p id="consentText"></p>
+            <label class="check"
+              ><input
+                id="agree"
+                type="checkbox"
+              />我已閱讀並同意以上錄音用途及授權安排</label
+            ><button id="consentBtn" class="primary">確認同意</button>
+          </section>
+          <section id="recorder" class="hidden">
+            <div class="split">
+              <section class="card">
+                <h2>錄音提交</h2>
+                <label
+                  >錄音模式<select id="scriptType">
+                    <option value="short">短句練習</option>
+                    <option value="full">完整稿</option>
+                  </select></label
+                >
+                <p id="modeHelp" class="caption"></p>
+                <div id="recordProgress"></div>
+                <div id="script"></div>
+                <div class="actions">
+                  <button id="recordBtn">開始錄音</button
+                  ><button id="skipBtn">跳過此句</button
+                  ><button id="resetSkipped" class="hidden">
+                    重新錄製跳過的句子</button
+                  ><button id="submitRecord" class="primary" disabled>
+                    AI 檢查音質並提交
+                  </button>
+                </div>
+                <p id="recordState" class="caption">選擇句子後開始錄音。</p>
+                <audio id="preview" controls class="hidden"></audio>
+                <div id="manualAudio" class="notice warn hidden">
+                  <label class="check"
+                    ><input
+                      id="manualAudioConfirm"
+                      type="checkbox"
+                    />我確認此段錄音清晰、讀音正確、內容與稿件一致</label
+                  ><button id="manualAudioSubmit">
+                    略過 AI 檢查並提交待人工審核
+                  </button>
+                </div>
+              </section>
+              <section class="card">
+                <h2>我的提交紀錄</h2>
+                <div id="myRecordings"></div>
+                <button id="withdraw" class="danger">撤回錄音使用同意</button>
+              </section>
+            </div>
+          </section>
+        </section>
+        <section id="lexicon-view" class="pane">
+          <section class="card">
+            <h2>讀音字典</h2>
+            <p class="caption">
+              記錄粵語辯論常見詞語、專名、多音字、英文縮寫及數字讀法，供 TTS
+              生成及錄音審核參考。
+            </p>
+            <div id="publicLexicon"></div>
+            <p class="caption">如發現 AI 讀錯字詞，可通知管理員補充至字典。</p>
+          </section>
+        </section>
+        <section id="llm" class="pane">
+          <div class="split">
+            <form id="llmForm" class="card">
+              <h2>LLM 文字資料提交</h2>
+              <p class="caption">
+                用作建立辯論 LLM
+                知識庫。可由不同委員提交，但請只提交有權使用、已匿名化、質素足夠，並以粵語口語撰寫的文字資料。
+              </p>
+              <details>
+                <summary>可以提交哪些資料？</summary>
+                <div class="sub">
+                  <p>
+                    適合提交：優秀發言稿、Free De／Mock
+                    逐字稿、具體評語、攻防問答、主線／策略及辯題資料。
+                  </p>
+                  <p>
+                    請盡量用粵語口語，並先移除真名、班別、電話及私人對話。不建議提交未經同意的同學資料、未整理低質原文或主要以書面中文撰寫的內容。
+                  </p>
+                </div>
+              </details>
+              <div class="split">
+                <label
+                  >資料類型<select id="dataType">
+                    <option>發言稿</option>
+                    <option>自由辯論逐字稿</option>
+                    <option>完整 Mock 逐字稿</option>
+                    <option>評語樣本</option>
+                    <option>攻防問答</option>
+                    <option>主線/策略</option>
+                    <option>辯題資料</option>
+                    <option>其他</option>
+                  </select></label
+                ><label
+                  >立場 / 角色<select id="llmSide">
+                    <option>不適用</option>
+                    <option>正方</option>
+                    <option>反方</option>
+                    <option>中立/評判</option>
+                  </select></label
+                >
+              </div>
+              <label
+                >標題<input
+                  id="llmTitle"
+                  placeholder="例如：基本法盃初賽反方二副反駁稿" /></label
+              ><label
+                >辯題 / 情境（如適用）<textarea
+                  id="llmTopic"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >文字內容（請用粵語口語撰寫）<textarea
+                  id="llmContent"
+                  rows="10"
+                  required
+                  placeholder="例如：我方認為對方呢個講法最大問題係冇證明因果關係……"
+                ></textarea></label
+              ><label
+                >來源 / 備註<textarea id="llmSource" rows="3"></textarea></label
+              ><label class="check"
+                ><input
+                  id="anonymized"
+                  type="checkbox"
+                />我已移除真名、班別、電話、私人對話等敏感或可識別個人資料</label
+              ><label class="check"
+                ><input
+                  id="permission"
+                  type="checkbox"
+                />我確認有權提交此內容作聖呂中辯內部 AI 訓練 / RAG
+                測試用途</label
+              >
+              <div class="actions">
+                <button class="primary">提交 LLM 訓練資料</button
+                ><button id="clearLlm" type="button">清除</button>
+              </div>
+              <div id="manualLlm" class="notice warn hidden">
+                <label class="check"
+                  ><input
+                    id="manualLlmConfirm"
+                    type="checkbox"
+                  />我確認以上資料適合提交</label
+                ><button id="manualLlmSubmit" type="button">
+                  略過 AI 檢查並提交待人工審核
+                </button>
+              </div>
+            </form>
+            <section class="card">
+              <h2>我的 LLM 提交紀錄</h2>
+              <div id="myLlm"></div>
+            </section>
+          </div>
+        </section>
+        <section id="admin" class="pane">
+          <h2>管理員</h2>
+          <p class="caption">
+            集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。
+          </p>
+          <section class="card">
+            <h2>AI訓練 Readiness</h2>
+            <div id="readinessSummary" class="caption">載入中…</div>
+          </section>
+          <nav class="tabs" id="adminTabs">
+            <button class="active" data-admin="recordings">
+              🎧 錄音審核 / Export</button
+            ><button data-admin="scripts">🗂️ 句庫管理</button
+            ><button data-admin="manuscripts">📄 完整稿管理</button
+            ><button data-admin="lexicon">📖 讀音字典管理</button
+            ><button data-admin="llm-review">📝 LLM 資料審核 / Export</button>
+          </nav>
+          <section id="recordings" class="admin-pane active">
+            <section class="card">
+              <h2>錄音狀態統計</h2>
+              <div id="recordStats"></div>
+              <div class="split">
+                <label
+                  >狀態<select id="recordFilter">
+                    <option value="all">全部</option>
+                    <option value="pending">待審核</option>
+                    <option value="accepted">已接受</option>
+                    <option value="rejected">已拒絕</option>
+                    <option value="withdrawn">已撤回</option>
+                  </select></label
+                ><label>錄音者<input id="speakerFilter" /></label>
+              </div>
+              <div id="adminRecordings"></div>
+              <details>
+                <summary>錄音審核準則（管理員必讀）</summary>
+                <p>
+                  逐條試聽；內容須與稿句一致、背景安靜、沒有爆咪、音量適中、口條自然，長度約
+                  1–60 秒。AI 只作預檢，最終由管理員把關。
+                </p>
+              </details>
+              <a
+                id="recordExport"
+                class="button"
+                href="/api/ai-training/export/recordings.json"
+                >按錄音者取得 accepted 錄音R2下載清單</a
+              >
+            </section>
+          </section>
+          <section id="scripts" class="admin-pane">
+            <form id="scriptForm" class="card">
+              <h2>句庫管理</h2>
+              <label>句子 ID（留空自動建立）<input id="scriptId" /></label
+              ><label>類別<input id="scriptCategory" required /></label
+              ><label>文字<textarea id="scriptText" required></textarea></label
+              ><label
+                >排序<input id="sortOrder" type="number" value="0" /></label
+              ><button class="primary">儲存 / 修改句子</button>
+            </form>
+            <section class="card">
+              <p class="caption">
+                AI
+                分析只會產生建議；你勾選並套用前不會改動句庫。已有待審核或已接受錄音的句子會鎖定，不會被停用。
+              </p>
+              <div class="actions">
+                <button id="coverageBtn">AI 句庫缺口分析</button
+                ><button id="regenerateBtn">AI 重出句庫</button
+                ><button id="applySuggestions" class="primary hidden">
+                  套用所選變更</button
+                ><button id="deactivateComplete" class="danger">
+                  停用已全員錄製內容
+                </button>
+              </div>
+              <div id="coverageResult"></div>
+              <div id="scriptInventory"></div>
+            </section>
+          </section>
+          <section id="manuscripts" class="admin-pane">
+            <form id="manuscriptForm" class="card">
+              <h2>新增完整稿</h2>
+              <label>標題<input id="manuscriptTitle" required /></label
+              ><label
+                >完整稿內容<textarea
+                  id="manuscriptText"
+                  rows="10"
+                  required
+                ></textarea>
+              </label>
+              <div id="segmentPreview" class="caption"></div>
+              <button class="primary">按 35 字及細標點分段加入句庫</button>
+            </form>
+            <section class="card">
+              <h2>完整稿管理</h2>
+              <div id="manuscriptInventory"></div>
+            </section>
+          </section>
+          <section id="lexicon" class="admin-pane">
+            <form id="lexiconForm" class="card">
+              <h2>讀音字典管理</h2>
+              <input id="lexiconId" type="hidden" />
+              <div class="split">
+                <label>詞語<input id="term" required /></label
+                ><label>讀法<input id="reading" required /></label
+                ><label>粵拼<input id="jyutping" /></label
+                ><label>類別<input id="lexCategory" /></label>
+              </div>
+              <label>例句<input id="example" /></label
+              ><label>備註<textarea id="lexNote"></textarea></label
+              ><button class="primary">儲存讀音規則</button>
+            </form>
+            <section class="card"><div id="lexiconTable"></div></section>
+          </section>
+          <section id="llm-review" class="admin-pane">
+            <section class="card">
+              <h2>LLM 資料審核 / Export</h2>
+              <div id="llmStats"></div>
+              <div id="adminLlm"></div>
+              <details>
+                <summary>LLM 審核準則（管理員必讀）</summary>
+                <p>
+                  只接受具辯論訓練價值、已匿名化、來源合理、質素足夠並主要以粵語口語撰寫的資料。請核對
+                  AI 預檢 JSON 及原文。
+                </p>
+              </details>
+              <a class="button" href="/api/ai-training/export/llm.jsonl"
+                >匯出 accepted LLM JSONL</a
+              >
+            </section>
+          </section>
+        </section>
+      </section>
+    </main>
+    <div id="toast" class="toast"></div>
+    <div id="busy" class="busy">
+      <div class="busy-pill"><i class="spinner"></i>處理中…</div>
+    </div>
+    <dialog id="confirmDialog">
+      <form method="dialog" class="card">
+        <h2 id="confirmTitle">確認操作</h2>
+        <p id="confirmText"></p>
+        <div class="actions">
+          <button value="cancel">取消</button
+          ><button value="ok" class="primary">確認</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/markdown.js"></script>
+    <script src="/ai-training/app.js?v=4.1.2-r2-only"></script>
+  </body>
+</html>

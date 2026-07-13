@@ -1,47 +1,465 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-    <meta charset="utf-8">
+  <head>
+    <meta charset="utf-8" />
     <title>比賽報名管理</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0e1117"><link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/app-icon-180.png"><link rel="stylesheet" href="/shared/vote-ui.css">
-    <link rel="stylesheet" href="/shared/app-shell.css"><style>
-        main{max-width:84rem;margin:auto}h1{margin:.1rem 0 .4rem}details,.card{border-radius:12px}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.grid4,.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem}.metric{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:.75rem}.metric-label{color:var(--muted);font-size:.85rem}.metric-value{font-size:1.5rem;font-weight:700;margin-top:.2rem}.divider{border:0;border-top:1px solid var(--border);margin:2rem 0 1.35rem}.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:8px}table{width:100%;min-width:1050px;border-collapse:collapse;font-size:.92rem}th,td{border:1px solid var(--border);padding:.55rem .65rem;text-align:left;vertical-align:top}th{background:var(--surface);color:var(--muted);white-space:nowrap}.form-actions,#settingsForm>button,#statusForm>button{margin-top:1rem}.search-form{margin:1rem 0}.search-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.75rem;align-items:center}.search-row button{margin:0}.login{max-width:36rem}@media(max-width:760px){h1{font-size:1.65rem}.grid2,.grid4,.metrics,.search-row{grid-template-columns:1fr;gap:.65rem}.metric{margin:.35rem 0}.search-row button{width:100%}}
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/app-icon-180.png" />
+    <link rel="stylesheet" href="/shared/vote-ui.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      main {
+        max-width: 84rem;
+        margin: auto;
+      }
+      h1 {
+        margin: 0.1rem 0 0.4rem;
+      }
+      details,
+      .card {
+        border-radius: 12px;
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .grid4,
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .metric {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        padding: 0.75rem;
+      }
+      .metric-label {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .metric-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-top: 0.2rem;
+      }
+      .divider {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 2rem 0 1.35rem;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      table {
+        width: 100%;
+        min-width: 1050px;
+        border-collapse: collapse;
+        font-size: 0.92rem;
+      }
+      th,
+      td {
+        border: 1px solid var(--border);
+        padding: 0.55rem 0.65rem;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--surface);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .form-actions,
+      #settingsForm > button,
+      #statusForm > button {
+        margin-top: 1rem;
+      }
+      .search-form {
+        margin: 1rem 0;
+      }
+      .search-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 0.75rem;
+        align-items: center;
+      }
+      .search-row button {
+        margin: 0;
+      }
+      .login {
+        max-width: 36rem;
+      }
+      @media (max-width: 760px) {
+        h1 {
+          font-size: 1.65rem;
+        }
+        .grid2,
+        .grid4,
+        .metrics,
+        .search-row {
+          grid-template-columns: 1fr;
+          gap: 0.65rem;
+        }
+        .metric {
+          margin: 0.35rem 0;
+        }
+        .search-row button {
+          width: 100%;
+        }
+      }
     </style>
-</head>
-<body>
-<main>
-    <a class="back-link" href="/">← 返回主頁</a><h1>比賽報名管理</h1>
-    <details class="guide"><summary>ℹ️ 首次使用指南</summary><ul><li>先設定第幾屆比賽及報名開始、截止時間，公開報名入口只會在開放時間顯示。</li><li>可按屆數及狀態查看報名資料，並將報名狀態標記為已聯絡、已確認或已退出。</li><li>如需保存名單，可使用 CSV 匯出；此頁不會直接修改隊伍及聯絡人資料。</li></ul></details>
-    <section id="loading" class="notice">載入中…</section>
-    <section id="login" class="card login hidden"><h2>賽會人員登入</h2><div class="caption">請輸入賽會人員密碼以進入管理頁面。</div><form id="loginForm"><label for="password">請輸入賽會人員密碼</label><input id="password" type="password" autocomplete="current-password" required><div id="loginMessage"></div><button class="primary" type="submit">登入</button></form></section>
-    <section id="app" class="hidden">
-        <section class="card"><h2>報名時間設定</h2><form id="settingsForm"><label for="edition">比賽屆數</label><input id="edition" type="number" min="1" step="1" required><div class="grid4"><div><label for="startDate">報名開始日期</label><input id="startDate" type="date" required></div><div><label for="startTime">報名開始時間</label><input id="startTime" type="time" required></div><div><label for="endDate">報名截止日期</label><input id="endDate" type="date" required></div><div><label for="endTime">報名截止時間</label><input id="endTime" type="time" required></div></div><div id="settingsMessage"></div><button id="saveSettings" class="primary" type="submit">儲存報名設定</button></form></section>
-        <div id="currentSettings"></div><hr class="divider"><h2>報名資料</h2>
-        <div class="grid2"><div><label for="filterEdition">屆數</label><select id="filterEdition"></select></div><div><label for="filterStatus">狀態</label><select id="filterStatus"></select></div></div>
-        <form id="searchForm" class="search-form"><label for="recordSearch">搜尋報名紀錄</label><div class="search-row"><input id="recordSearch" type="search" maxlength="100" placeholder="輸入編號、隊名、辯員或聯絡資料"><button class="primary" type="submit">搜尋</button><button id="clearSearch" type="button">清除</button></div><div class="caption">可搜尋編號、隊名、辯員姓名、聯絡人、班別或電話。</div></form>
-        <div id="metrics" class="metrics"></div><div id="recordsEmpty" class="notice hidden">目前未有符合條件的報名紀錄。</div><section id="recordsApp" class="hidden"><div id="recordsPanel"></div><div class="form-actions"><a id="exportCsv" class="button" href="#">匯出 CSV</a><div class="caption">會匯出目前屆數及狀態的完整篩選結果，不限於目前頁面。</div></div><hr class="divider"><h2>更新報名狀態</h2><form id="statusForm"><label for="registrationId">選擇報名紀錄</label><div class="caption">每次可選擇目前頁面的紀錄；如需其他紀錄，請先翻頁。</div><select id="registrationId"></select><label for="newStatus">新狀態</label><select id="newStatus"></select><div id="statusMessage"></div><button id="updateStatus" class="primary" type="submit">更新狀態</button></form></section>
-    </section>
-</main>
-<script src="/shared/vote-ui.js"></script><script>
-(() => { "use strict";
-    const $ = id => document.getElementById(id); let state = null;
-    const esc = value => String(value == null ? "" : value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;","\"":"&quot;","'":"&#39;"}[c]));
-    const datePart = value => String(value || "").slice(0,10), timePart = value => String(value || "").slice(11,16), localDate = value => String(value || "").replace("T"," ").slice(0,16);
-    const notice = (target, kind, text) => { target.innerHTML = text ? `<div class="notice ${kind}">${esc(text)}</div>` : ""; };
-    const option = (value, label, selected) => `<option value="${esc(value)}"${selected ? " selected" : ""}>${esc(label)}</option>`;
-    function populateSettings(data) { const settings = data.settings, now = String(data.now || ""); const start = settings ? settings.registration_start : now; const end = settings ? settings.registration_end : data.default_end; $("edition").value = settings ? settings.competition_edition : 1; $("startDate").value = datePart(start); $("startTime").value = timePart(start) || "00:00"; $("endDate").value = datePart(end); $("endTime").value = timePart(end) || "00:00"; $("currentSettings").innerHTML = settings ? `<div class="notice">目前設定：第 <strong>${esc(settings.competition_edition)}</strong> 屆，${esc(settings.registration_start_display)} 至 ${esc(settings.registration_end_display)}（香港時間／HKT）</div>` : '<div class="notice warn">尚未設定報名時間。公開報名入口暫不會顯示。</div>'; }
-    function recordsTable(rows) { state.registrations = rows; $("recordsEmpty").textContent = "目前未有符合條件的報名紀錄。"; $("recordsEmpty").classList.toggle("hidden", rows.length > 0); $("recordsApp").classList.toggle("hidden", rows.length === 0); if (!rows.length) return ""; $("registrationId").innerHTML = rows.map(row => option(row.id, `${row.id} - ${row.team_name}`, false)).join(""); const selected = rows[0]; $("newStatus").innerHTML = Object.entries(state.status_labels).map(([key,label]) => option(key,label,key === selected.status)).join(""); return `<div class="table-wrap"><table><thead><tr><th>編號</th><th>屆數</th><th>隊名</th><th>主辯</th><th>一副</th><th>二副</th><th>結辯</th><th>聯絡人</th><th>班別</th><th>聯絡電話</th><th>狀態</th><th>提交時間</th><th>更新時間</th></tr></thead><tbody>${rows.map(row => `<tr>${[row.id,row.competition_edition,row.team_name,row.main_debater_name,row.first_deputy_name,row.second_deputy_name,row.closing_debater_name,row.contact_name,row.contact_class,row.contact_phone,row.status_label,row.submitted_at,row.updated_at].map(value => `<td>${esc(value)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`; }
-    async function loadRecords() { const edition=$("filterEdition").value,status=$("filterStatus").value,search=$("recordSearch").value.trim(),query=`edition=${encodeURIComponent(edition)}&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,url=`/api/registration-admin/records?${query}`; $("exportCsv").href=`/api/registration-admin/export?${query}`; try { await VoteUI.serverPaged($("recordsPanel"),url,recordsTable); } catch(error) { $("recordsApp").classList.add("hidden"); $("recordsEmpty").classList.remove("hidden"); $("recordsEmpty").textContent=`載入報名紀錄失敗：${error.message}`; } }
-    function render(data) { state = data; $("loading").classList.add("hidden"); $("login").classList.add("hidden"); $("app").classList.remove("hidden"); populateSettings(data); $("filterEdition").innerHTML = data.editions.map(item => option(item, item, item === data.selected_edition)).join(""); $("filterStatus").innerHTML = option("全部", "全部", data.selected_status === "全部") + Object.entries(data.status_labels).map(([key,label]) => option(key,label,key === data.selected_status)).join(""); $("metrics").innerHTML = Object.entries(data.status_labels).map(([key,label]) => `<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value">${Number(data.status_counts[key] || 0)}</div></div>`).join(""); loadRecords(); }
-    async function load() { const params = new URLSearchParams(); if (state) { params.set("edition", $("filterEdition").value); params.set("status", $("filterStatus").value); } try { const response = await fetch(`/api/registration-admin/data?${params}` , {credentials:"same-origin"}); if (response.status === 401) { $("loading").classList.add("hidden"); $("login").classList.remove("hidden"); return; } const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); render(data); } catch (error) { $("loading").textContent = `連線錯誤: ${error.message}`; } }
-    $("loginForm").addEventListener("submit", async event => { event.preventDefault(); const button = event.currentTarget.querySelector("button"); button.disabled = true; notice($("loginMessage"),"",""); try { const response = await fetch("/api/registration-admin/login", {method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:$("password").value})}); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "密碼錯誤"); await load(); } catch (error) { notice($("loginMessage"),"error",error.message); } finally { button.disabled = false; } });
-    $("settingsForm").addEventListener("submit", async event => { event.preventDefault(); const button = $("saveSettings"); button.disabled = true; notice($("settingsMessage"),"",""); try { const body = {competition_edition:Number($("edition").value),registration_start:`${$("startDate").value}T${$("startTime").value}`,registration_end:`${$("endDate").value}T${$("endTime").value}`}; const response = await fetch("/api/registration-admin/settings",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); if (!data.ok) { notice($("settingsMessage"),"error",data.message); return; } notice($("settingsMessage"),"success",data.message); await load(); } catch(error) { notice($("settingsMessage"),"error",error.message); } finally { button.disabled=false; } });
-    ["filterEdition","filterStatus"].forEach(id => $(id).addEventListener("change", load)); $("registrationId").addEventListener("change", () => { const row = state.registrations.find(item => String(item.id) === $("registrationId").value); if (row) $("newStatus").value = row.status; });
-    $("searchForm").addEventListener("submit", event => { event.preventDefault(); VoteUI.resetPage($("recordsPanel")); loadRecords(); }); $("clearSearch").addEventListener("click", () => { if (!$("recordSearch").value) return; $("recordSearch").value=""; VoteUI.resetPage($("recordsPanel")); loadRecords(); });
-    $("statusForm").addEventListener("submit", async event => { event.preventDefault(); const button=$("updateStatus");button.disabled=true;notice($("statusMessage"),"","");try { const response=await fetch("/api/registration-admin/status",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({registration_id:Number($("registrationId").value),status:$("newStatus").value})});const data=await response.json();if(!response.ok)throw new Error(data.detail||`HTTP ${response.status}`);if(!data.ok){notice($("statusMessage"),"error",data.message);return;}notice($("statusMessage"),"success",data.message);await load();}catch(error){notice($("statusMessage"),"error",error.message);}finally{button.disabled=false;}});
-    load();
-})();
-</script>
-</body>
+  </head>
+  <body>
+    <main>
+      <a class="back-link" href="/">← 返回主頁</a>
+      <h1>比賽報名管理</h1>
+      <details class="guide">
+        <summary>ℹ️ 首次使用指南</summary>
+        <ul>
+          <li>
+            先設定第幾屆比賽及報名開始、截止時間，公開報名入口只會在開放時間顯示。
+          </li>
+          <li>
+            可按屆數及狀態查看報名資料，並將報名狀態標記為已聯絡、已確認或已退出。
+          </li>
+          <li>
+            如需保存名單，可使用 CSV 匯出；此頁不會直接修改隊伍及聯絡人資料。
+          </li>
+        </ul>
+      </details>
+      <section id="loading" class="notice">載入中…</section>
+      <section id="login" class="card login hidden">
+        <h2>賽會人員登入</h2>
+        <div class="caption">請輸入賽會人員密碼以進入管理頁面。</div>
+        <form id="loginForm">
+          <label for="password">請輸入賽會人員密碼</label
+          ><input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+          <div id="loginMessage"></div>
+          <button class="primary" type="submit">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <section class="card">
+          <h2>報名時間設定</h2>
+          <form id="settingsForm">
+            <label for="edition">比賽屆數</label
+            ><input id="edition" type="number" min="1" step="1" required />
+            <div class="grid4">
+              <div>
+                <label for="startDate">報名開始日期</label
+                ><input id="startDate" type="date" required />
+              </div>
+              <div>
+                <label for="startTime">報名開始時間</label
+                ><input id="startTime" type="time" required />
+              </div>
+              <div>
+                <label for="endDate">報名截止日期</label
+                ><input id="endDate" type="date" required />
+              </div>
+              <div>
+                <label for="endTime">報名截止時間</label
+                ><input id="endTime" type="time" required />
+              </div>
+            </div>
+            <div id="settingsMessage"></div>
+            <button id="saveSettings" class="primary" type="submit">
+              儲存報名設定
+            </button>
+          </form>
+        </section>
+        <div id="currentSettings"></div>
+        <hr class="divider" />
+        <h2>報名資料</h2>
+        <div class="grid2">
+          <div>
+            <label for="filterEdition">屆數</label
+            ><select id="filterEdition"></select>
+          </div>
+          <div>
+            <label for="filterStatus">狀態</label
+            ><select id="filterStatus"></select>
+          </div>
+        </div>
+        <form id="searchForm" class="search-form">
+          <label for="recordSearch">搜尋報名紀錄</label>
+          <div class="search-row">
+            <input
+              id="recordSearch"
+              type="search"
+              maxlength="100"
+              placeholder="輸入編號、隊名、辯員或聯絡資料"
+            /><button class="primary" type="submit">搜尋</button
+            ><button id="clearSearch" type="button">清除</button>
+          </div>
+          <div class="caption">
+            可搜尋編號、隊名、辯員姓名、聯絡人、班別或電話。
+          </div>
+        </form>
+        <div id="metrics" class="metrics"></div>
+        <div id="recordsEmpty" class="notice hidden">
+          目前未有符合條件的報名紀錄。
+        </div>
+        <section id="recordsApp" class="hidden">
+          <div id="recordsPanel"></div>
+          <div class="form-actions">
+            <a id="exportCsv" class="button" href="#">匯出 CSV</a>
+            <div class="caption">
+              會匯出目前屆數及狀態的完整篩選結果，不限於目前頁面。
+            </div>
+          </div>
+          <hr class="divider" />
+          <h2>更新報名狀態</h2>
+          <form id="statusForm">
+            <label for="registrationId">選擇報名紀錄</label>
+            <div class="caption">
+              每次可選擇目前頁面的紀錄；如需其他紀錄，請先翻頁。
+            </div>
+            <select id="registrationId"></select
+            ><label for="newStatus">新狀態</label
+            ><select id="newStatus"></select>
+            <div id="statusMessage"></div>
+            <button id="updateStatus" class="primary" type="submit">
+              更新狀態
+            </button>
+          </form>
+        </section>
+      </section>
+    </main>
+    <script src="/shared/vote-ui.js"></script>
+    <script>
+      (() => {
+        "use strict";
+        const $ = (id) => document.getElementById(id);
+        let state = null;
+        const esc = (value) =>
+          String(value == null ? "" : value).replace(
+            /[&<>"']/g,
+            (c) =>
+              ({ "&": "&amp;", "<": "&lt;", '"': "&quot;", "'": "&#39;" })[c],
+          );
+        const datePart = (value) => String(value || "").slice(0, 10),
+          timePart = (value) => String(value || "").slice(11, 16),
+          localDate = (value) =>
+            String(value || "")
+              .replace("T", " ")
+              .slice(0, 16);
+        const notice = (target, kind, text) => {
+          target.innerHTML = text
+            ? `<div class="notice ${kind}">${esc(text)}</div>`
+            : "";
+        };
+        const option = (value, label, selected) =>
+          `<option value="${esc(value)}"${selected ? " selected" : ""}>${esc(label)}</option>`;
+        function populateSettings(data) {
+          const settings = data.settings,
+            now = String(data.now || "");
+          const start = settings ? settings.registration_start : now;
+          const end = settings ? settings.registration_end : data.default_end;
+          $("edition").value = settings ? settings.competition_edition : 1;
+          $("startDate").value = datePart(start);
+          $("startTime").value = timePart(start) || "00:00";
+          $("endDate").value = datePart(end);
+          $("endTime").value = timePart(end) || "00:00";
+          $("currentSettings").innerHTML = settings
+            ? `<div class="notice">目前設定：第 <strong>${esc(settings.competition_edition)}</strong> 屆，${esc(settings.registration_start_display)} 至 ${esc(settings.registration_end_display)}（香港時間／HKT）</div>`
+            : '<div class="notice warn">尚未設定報名時間。公開報名入口暫不會顯示。</div>';
+        }
+        function recordsTable(rows) {
+          state.registrations = rows;
+          $("recordsEmpty").textContent = "目前未有符合條件的報名紀錄。";
+          $("recordsEmpty").classList.toggle("hidden", rows.length > 0);
+          $("recordsApp").classList.toggle("hidden", rows.length === 0);
+          if (!rows.length) return "";
+          $("registrationId").innerHTML = rows
+            .map((row) => option(row.id, `${row.id} - ${row.team_name}`, false))
+            .join("");
+          const selected = rows[0];
+          $("newStatus").innerHTML = Object.entries(state.status_labels)
+            .map(([key, label]) => option(key, label, key === selected.status))
+            .join("");
+          return `<div class="table-wrap"><table><thead><tr><th>編號</th><th>屆數</th><th>隊名</th><th>主辯</th><th>一副</th><th>二副</th><th>結辯</th><th>聯絡人</th><th>班別</th><th>聯絡電話</th><th>狀態</th><th>提交時間</th><th>更新時間</th></tr></thead><tbody>${rows.map((row) => `<tr>${[row.id, row.competition_edition, row.team_name, row.main_debater_name, row.first_deputy_name, row.second_deputy_name, row.closing_debater_name, row.contact_name, row.contact_class, row.contact_phone, row.status_label, row.submitted_at, row.updated_at].map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+        }
+        async function loadRecords() {
+          const edition = $("filterEdition").value,
+            status = $("filterStatus").value,
+            search = $("recordSearch").value.trim(),
+            query = `edition=${encodeURIComponent(edition)}&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
+            url = `/api/registration-admin/records?${query}`;
+          $("exportCsv").href = `/api/registration-admin/export?${query}`;
+          try {
+            await VoteUI.serverPaged($("recordsPanel"), url, recordsTable);
+          } catch (error) {
+            $("recordsApp").classList.add("hidden");
+            $("recordsEmpty").classList.remove("hidden");
+            $("recordsEmpty").textContent =
+              `載入報名紀錄失敗：${error.message}`;
+          }
+        }
+        function render(data) {
+          state = data;
+          $("loading").classList.add("hidden");
+          $("login").classList.add("hidden");
+          $("app").classList.remove("hidden");
+          populateSettings(data);
+          $("filterEdition").innerHTML = data.editions
+            .map((item) => option(item, item, item === data.selected_edition))
+            .join("");
+          $("filterStatus").innerHTML =
+            option("全部", "全部", data.selected_status === "全部") +
+            Object.entries(data.status_labels)
+              .map(([key, label]) =>
+                option(key, label, key === data.selected_status),
+              )
+              .join("");
+          $("metrics").innerHTML = Object.entries(data.status_labels)
+            .map(
+              ([key, label]) =>
+                `<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value">${Number(data.status_counts[key] || 0)}</div></div>`,
+            )
+            .join("");
+          loadRecords();
+        }
+        async function load() {
+          const params = new URLSearchParams();
+          if (state) {
+            params.set("edition", $("filterEdition").value);
+            params.set("status", $("filterStatus").value);
+          }
+          try {
+            const response = await fetch(
+              `/api/registration-admin/data?${params}`,
+              { credentials: "same-origin" },
+            );
+            if (response.status === 401) {
+              $("loading").classList.add("hidden");
+              $("login").classList.remove("hidden");
+              return;
+            }
+            const data = await response.json();
+            if (!response.ok)
+              throw new Error(data.detail || `HTTP ${response.status}`);
+            render(data);
+          } catch (error) {
+            $("loading").textContent = `連線錯誤: ${error.message}`;
+          }
+        }
+        $("loginForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const button = event.currentTarget.querySelector("button");
+          button.disabled = true;
+          notice($("loginMessage"), "", "");
+          try {
+            const response = await fetch("/api/registration-admin/login", {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ password: $("password").value }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || "密碼錯誤");
+            await load();
+          } catch (error) {
+            notice($("loginMessage"), "error", error.message);
+          } finally {
+            button.disabled = false;
+          }
+        });
+        $("settingsForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const button = $("saveSettings");
+          button.disabled = true;
+          notice($("settingsMessage"), "", "");
+          try {
+            const body = {
+              competition_edition: Number($("edition").value),
+              registration_start: `${$("startDate").value}T${$("startTime").value}`,
+              registration_end: `${$("endDate").value}T${$("endTime").value}`,
+            };
+            const response = await fetch("/api/registration-admin/settings", {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const data = await response.json();
+            if (!response.ok)
+              throw new Error(data.detail || `HTTP ${response.status}`);
+            if (!data.ok) {
+              notice($("settingsMessage"), "error", data.message);
+              return;
+            }
+            notice($("settingsMessage"), "success", data.message);
+            await load();
+          } catch (error) {
+            notice($("settingsMessage"), "error", error.message);
+          } finally {
+            button.disabled = false;
+          }
+        });
+        ["filterEdition", "filterStatus"].forEach((id) =>
+          $(id).addEventListener("change", load),
+        );
+        $("registrationId").addEventListener("change", () => {
+          const row = state.registrations.find(
+            (item) => String(item.id) === $("registrationId").value,
+          );
+          if (row) $("newStatus").value = row.status;
+        });
+        $("searchForm").addEventListener("submit", (event) => {
+          event.preventDefault();
+          VoteUI.resetPage($("recordsPanel"));
+          loadRecords();
+        });
+        $("clearSearch").addEventListener("click", () => {
+          if (!$("recordSearch").value) return;
+          $("recordSearch").value = "";
+          VoteUI.resetPage($("recordsPanel"));
+          loadRecords();
+        });
+        $("statusForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const button = $("updateStatus");
+          button.disabled = true;
+          notice($("statusMessage"), "", "");
+          try {
+            const response = await fetch("/api/registration-admin/status", {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                registration_id: Number($("registrationId").value),
+                status: $("newStatus").value,
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok)
+              throw new Error(data.detail || `HTTP ${response.status}`);
+            if (!data.ok) {
+              notice($("statusMessage"), "error", data.message);
+              return;
+            }
+            notice($("statusMessage"), "success", data.message);
+            await load();
+          } catch (error) {
+            notice($("statusMessage"), "error", error.message);
+          } finally {
+            button.disabled = false;
+          }
+        });
+        load();
+      })();
+    </script>
+  </body>
 </html>

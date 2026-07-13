@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/ai-coach", tags=["ai-coach"])
 _LIVE_BRIEF_TABLE = "ai_coach_live_briefs"
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
+MAX_COACH_AUDIO_BYTES = 2 * 1024 * 1024
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 
 
@@ -75,7 +76,8 @@ def record_live_usage(user_id, feature, duration_minutes):
     from deploy.proxy import get_vote_db
     config={"provider":"gemini","input_price_per_million":0,"output_price_per_million":0}
     try:
-        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":datetime.now().isoformat(sep=" ",timespec="seconds")})
+        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":now_hk})
     except Exception: pass
 
 
@@ -84,7 +86,23 @@ def _context(request):
     return _require_committee_user(request)
 
 
-def _config(label):
+def _config(label, db=None):
+    if label == "自家辯論 LLM":
+        from deploy.proxy import _get_proxy_secret
+        base_url = _get_proxy_secret("CUSTOM_LLM_BASE_URL").strip().rstrip("/")
+        model = _get_proxy_secret("CUSTOM_LLM_MODEL").strip()
+        api_key = _get_proxy_secret("CUSTOM_LLM_API_KEY").strip()
+        if not base_url or not model or not api_key:
+            raise HTTPException(503, "自家LLM尚未完成設定")
+        if db is not None:
+            registered = db.query("SELECT 1 FROM ai_model_versions WHERE model_id=:model AND model_type='llm' AND status='deployable'", {"model": model})
+            if registered.empty:
+                raise HTTPException(503, "自家LLM未通過deployable評估gate")
+        return {"provider":"custom","model":model,"base_url":base_url,
+                "api_key":"CUSTOM_LLM_API_KEY","supports_audio":False,"supports_web_search":False,
+                "input_price_per_million":0,"output_price_per_million":0,"web_search_price_per_call":0,
+                "pricing_note":"自家OpenAI-compatible endpoint。","paid_rate_note":"成本由本地／GPU服務承擔。",
+                "selection_label":"自家模型","pricing_label":"自家","is_premium":False}
     if label not in AI_MODEL_OPTIONS:
         raise HTTPException(400, "不支援的 AI 模型")
     return AI_MODEL_OPTIONS[label]
@@ -213,7 +231,7 @@ def _message(body: CoachRequest, db=None):
 
 async def _generate(config, system, user, body):
     from deploy.proxy import _get_proxy_secret
-    key_name = "OPENROUTER_API_KEY" if config["provider"] == "openrouter" else "GEMINI_API_KEY"
+    key_name = config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"] == "openrouter" else "GEMINI_API_KEY")
     key = _get_proxy_secret(key_name).strip()
     if not key:
         raise HTTPException(503, f"未設定 {key_name}")
@@ -224,8 +242,8 @@ async def _generate(config, system, user, body):
             audio_bytes = base64.b64decode(body.audio_base64, validate=True)
         except Exception as exc:
             raise HTTPException(400, "錄音資料無法讀取") from exc
-        if len(audio_bytes) > 15 * 1024 * 1024:
-            raise HTTPException(413, "錄音不可超過 15MB")
+        if len(audio_bytes) > MAX_COACH_AUDIO_BYTES:
+            raise HTTPException(413, "錄音不可超過2MB")
     from core.ai_provider import generate_text
     try:
         return await generate_text(config, system, user, api_key=key,
@@ -256,6 +274,14 @@ def data(request: Request):
         estimates={f:_estimate(f,item) for f in ("strategy","speech_review","web_research","fact_check")}
         estimates["speech_review_audio"]=_estimate("speech_review",item,has_audio=True)
         models.append({"label":label,"selection_label":item.get("selection_label",""),"supports_audio":item["supports_audio"],"supports_web_search":item["supports_web_search"],"note":f"{item['pricing_note']} {item.get('paid_rate_note','')}".strip(),"pricing_label":item.get("pricing_label",""),"is_premium":bool(item.get("is_premium")),"api_key_name":key_name,"available":bool(_get_proxy_secret(key_name)),"estimates":estimates})
+    try:
+        custom = _config("自家辯論 LLM", db)
+        models.append({"label":"自家辯論 LLM","selection_label":"自家模型","supports_audio":False,
+            "supports_web_search":False,"note":custom["pricing_note"],"pricing_label":"自家",
+            "is_premium":False,"api_key_name":"CUSTOM_LLM_API_KEY","available":True,
+            "estimates":{feature:{"usd":0,"hkd":0} for feature in ("strategy","speech_review","web_research","fact_check","speech_review_audio")}})
+    except HTTPException:
+        pass
     mock_formats = {}
     for name in DEBATE_FORMATS:
         segments = get_full_mock_sequence(name, free_debate_minutes=5 if name == "聯中" else None)
@@ -290,30 +316,52 @@ def mock_plan(request: Request):
 @router.post("/run")
 async def run(body: CoachRequest, request: Request):
     user_id = _context(request)
-    config = _config(body.model_label)
-    key_name="OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY"
-    from deploy.proxy import _get_proxy_secret
-    if not _get_proxy_secret(key_name): raise HTTPException(503,f"未設定 {key_name}")
-    from deploy.proxy import get_vote_db
+    from deploy.proxy import get_vote_db, _get_proxy_secret
     db = get_vote_db()
+    config = _config(body.model_label, db)
+    key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")
+    if not _get_proxy_secret(key_name): raise HTTPException(503,f"未設定 {key_name}")
     system, user = _message(body, db)
+    if body.feature in ("speech_review", "strategy"):
+        try:
+            from core.rag import retrieve_rag_context
+            rag = await retrieve_rag_context(db, _get_proxy_secret("GEMINI_API_KEY").strip(),
+                "\n".join(x for x in (body.topic, body.text, body.side, body.research_need) if x))
+            if rag: user += "\n\n" + rag
+        except Exception:
+            pass
     try:
         result, actual = await _generate(config, system, user, body)
     except HTTPException as exc:
-        _usage(db, user_id, body.feature, body.model_label, config, False, exc.detail)
-        raise
+        if config.get("provider") == "custom":
+            fallback = AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
+            result, actual = await _generate(fallback, system, user, body)
+            config = fallback
+        else:
+            _usage(db, user_id, body.feature, body.model_label, config, False, exc.detail)
+            raise
     _usage(db, user_id, body.feature, body.model_label, config, True,
            actual=actual, has_audio=bool(body.audio_base64))
     return {"ok": True, "markdown": result}
 
 @router.post("/prepare-live")
 async def prepare_live(body:LivePrepareRequest,request:Request):
-    user_id=_context(request);config=_config(body.model_label)
+    user_id=_context(request);proxy=__import__('deploy.proxy',fromlist=['get_vote_db','_solo_live_quota_error']);db=proxy.get_vote_db();config=_config(body.model_label,db)
+    quota_error=proxy._solo_live_quota_error(user_id,body.mode)
+    if quota_error: raise HTTPException(429,quota_error)
+    if not config.get("supports_web_search"):
+        config=AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"
     system,user=_message(CoachRequest(feature="web_research",model_label=body.model_label,topic=body.topic,research_need=need))
+    try:
+        from core.rag import retrieve_rag_context
+        from deploy.proxy import _get_proxy_secret
+        rag=await retrieve_rag_context(db,_get_proxy_secret("GEMINI_API_KEY").strip(),body.topic+"\n"+need)
+        if rag:user += "\n\n"+rag
+    except Exception:pass
     actual = None
     try:brief,actual=await _generate(config,system,user,CoachRequest(feature="web_research",model_label=body.model_label,topic=body.topic,research_need=need))
     except Exception:brief=""
     _usage(__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db(),user_id,"web_research",body.model_label,config,bool(brief),actual=actual)
-    db=__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db();_ensure_live_briefs(db)
+    _ensure_live_briefs(db)
     key=secrets.token_urlsafe(18);now=datetime.now();db.execute(f"INSERT INTO {_LIVE_BRIEF_TABLE}(brief_id,user_id,brief,expires_at,created_at) VALUES(:key,:user,:brief,:expires,:created)",{"key":key,"user":user_id,"brief":brief[:4500],"expires":(now+timedelta(minutes=15)).isoformat(sep=" ",timespec="seconds"),"created":now.isoformat(sep=" ",timespec="seconds")});return {"ok":True,"brief_id":key,"research_ready":bool(brief)}

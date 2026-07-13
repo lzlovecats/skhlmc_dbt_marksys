@@ -8,6 +8,7 @@ password and records the login.
 """
 
 import datetime
+import json
 from zoneinfo import ZoneInfo
 
 import bcrypt
@@ -31,9 +32,28 @@ def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
+def is_login_disabled(user_id: str, db=None) -> bool:
+    """Persistent developer-controlled login block, separate from the
+    180-day ``account_disabled`` lifecycle flag which clears on login."""
+    db = _resolve_db(db)
+    rows = db.query(
+        "SELECT value FROM system_config WHERE key = :key",
+        {"key": "login_disabled_accounts"},
+    )
+    if rows.empty:
+        return False
+    try:
+        values = json.loads(str(rows.iloc[0]["value"] or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return str(user_id or "").strip() in values if isinstance(values, list) else False
+
+
 def check_login(user_id: str, password: str, db=None) -> bool:
     """True if user_id exists and the password matches its stored hash."""
     db = _resolve_db(db)
+    if is_login_disabled(user_id, db=db):
+        return False
     df = db.query(
         f"SELECT password_hash FROM {TABLE_ACCOUNTS} WHERE user_id = :uid",
         {"uid": user_id},

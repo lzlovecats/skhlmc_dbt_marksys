@@ -1,12 +1,603 @@
-<!doctype html><html lang="zh-HK"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e1117"><title>AI 辯論易</title><link rel="stylesheet" href="/shared/app-shell.css"><style>
-.pane{display:none}.pane.active{display:block}.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(20rem,.78fr);gap:1rem;align-items:start}.result{line-height:1.7;overflow-wrap:anywhere}.result a{color:var(--accent)}.result h1,.result h2,.result h3,.result h4,.result h5,.result h6{margin:1.1rem 0 .45rem}.result h1{font-size:1.5rem}.result h2{font-size:1.3rem}.result h3{font-size:1.15rem}.result h4,.result h5,.result h6{font-size:1rem}.result p{margin:.35rem 0 .8rem}.result ul,.result ol{margin:.35rem 0 .9rem;padding-left:1.5rem}.result blockquote{margin:.8rem 0;padding:.5rem .8rem;border-left:3px solid var(--accent);background:var(--surface);color:var(--muted)}.result pre{overflow:auto;padding:.8rem;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}.result code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.markdown-table{overflow:auto;margin:.8rem 0}.rec,.actions,.choice-row{display:flex;gap:.65rem;align-items:center;flex-wrap:wrap}.rec span{color:var(--muted);font-variant-numeric:tabular-nums}.actions button,.choice-row button{width:auto}.choice-row button.active{background:var(--accent);border-color:var(--accent);font-weight:700}.room-code{font-size:1.45rem;letter-spacing:.12em;font-weight:800}.room-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.field-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.field-grid label{margin-top:.4rem}.estimate{margin:.65rem 0}.result-actions{display:flex;gap:.6rem;margin-top:.8rem}.room-frame{width:100%;height:900px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);margin-top:1rem}@media(max-width:800px){.layout,.room-grid,.field-grid{grid-template-columns:1fr}.tabs{display:flex;gap:.4rem;overflow-x:auto;scroll-snap-type:x proximity;padding-bottom:.2rem}.tabs>button{flex:0 0 auto;min-width:max-content;scroll-snap-align:start}.pane>.card,.pane>form.card{margin:.75rem 0}.pane form.card>button.primary{width:100%}.choice-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.choice-row button{width:100%}.rec{align-items:stretch}.rec button{flex:1 1 10rem}.rec span{display:flex;align-items:center;min-height:2.7rem}.result-actions button{width:100%}.room-frame{height:max(42rem,calc(100dvh - 9rem));border-radius:12px}.room-code{font-size:1.25rem;overflow-wrap:anywhere}}@media(max-width:420px){.choice-row{grid-template-columns:1fr}.card{padding:.85rem}.field-grid{gap:.5rem}}
-</style></head><body><main><a class="back" href="/">← 返回主頁</a><h1>✨ AI 辯論易</h1><p class="caption">主線策劃、演辭檢討、搵料、Fact Check、即時練習及連線練習。</p>
-<section id="login" class="card hidden"><h2>內部委員會成員登入</h2><form id="loginForm" class="login"><label>用戶名稱<input id="user" required autocomplete="username"></label><label>密碼<input id="password" type="password" required autocomplete="current-password"></label><button class="primary">登入</button></form></section>
-<section id="app" class="hidden"><details class="guide"><summary>ℹ️ 首次使用指南</summary><div class="sub">• 使用「練習發言」輸入文字稿或錄音，AI 會按照正式評分標準提供反饋。<br>• 使用「主線策劃」模式，AI 可根據辯題及你的立場生成論點及應對策略。<br>• 使用「搵料易」模式，AI 會即時搜尋網上資料並附上來源。<br>• 使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。</div></details><section class="card"><h2>🤖 AI 模型</h2><label>AI 模型<select id="globalModel"></select></label><p id="modelNote" class="caption"></p><details open><summary>模型限額及成本估算</summary><p id="modelEstimate" class="caption"></p></details><div class="notice">ℹ️ 日常練習請用 Gemini 2.5 Flash，深入分析用 Gemini 3.1 Pro。重要稿件先用 GPT-5.4 Mini。</div><div id="modelWarnings"></div><a href="/ai-fund">💲 前往 AI基金 管理入數 / 查閱用量</a></section><nav class="tabs" id="tabs"><button class="active" data-pane="strategy">💡 主線策劃</button><button data-pane="review">📝 練習發言</button><button data-pane="fact">✅ Fact Check易</button><button data-pane="research">🌐 搵料易</button><button data-pane="live">🎙️ 打Free De</button><button data-pane="mock">🏟️ 打Mock</button><button data-pane="room">🎧 連線練習</button></nav>
-<section id="strategy" class="pane active"><div class="layout"><form id="strategyForm" class="card"><h2>主線策劃</h2><div data-topic-source="topics" data-topic-target="strategyTopic"></div><label>輸入辯題<input id="strategyTopic" required></label><div class="field-grid"><label>你的立場<select id="strategySide"><option>正方</option><option>反方</option></select></label><label>賽制<select id="strategyFormat"><option>校園隨想</option><option>聯中</option><option>星島</option><option>基本法盃</option></select></label></div><p id="strategyEstimate" class="caption estimate"></p><button class="primary">生成主線</button></form><section class="card"><h2>策略建議</h2><div id="strategyResult" class="result caption">請輸入或選擇辯題後生成主線。</div><div class="result-actions"><button id="downloadStrategy" class="hidden" type="button">下載策略建議</button></div></section></div></section>
-<section id="review" class="pane"><div class="layout"><form id="reviewForm" class="card"><h2>練習發言</h2><div data-topic-source="matches" data-topic-target="reviewTopic"></div><label>辯題<input id="reviewTopic" required></label><p id="reviewMatchNote" class="caption"></p><div class="field-grid"><label>你的立場<select id="reviewSide"><option>正方</option><option>反方</option></select></label><label>辯位<select id="reviewPosition"><option value="1">主辯</option><option value="2">一副</option><option value="3">二副</option><option value="4">結辯</option><option value="5">三副</option></select></label><label>賽制<select id="reviewFormat"><option>校園隨想</option><option>聯中</option><option>星島</option><option>基本法盃</option></select></label><label>練習類型<select id="reviewMode"><option>台上發言</option><option>台下發問</option><option>交互答問</option></select></label></div><div id="qaFields"></div><label id="reviewTextLabel">輸入文字稿<textarea id="reviewText" rows="7" placeholder="輸入內容…"></textarea></label><label>錄音計時環節<select id="reviewStage"></select></label><div class="rec"><button id="speechTimer" type="button">開始計時</button><span id="speechClock">00:00.000</span></div><div class="rec"><button type="button" id="record">開始錄音</button><span id="recordState">未錄音</span></div><audio id="audioPreview" controls class="hidden"></audio><p id="reviewEstimate" class="caption estimate"></p><button class="primary">分析發言</button></form><section class="card"><h2>分析結果</h2><div id="reviewResult" class="result caption">輸入文字稿或錄音後開始分析。</div><div class="result-actions"><button id="downloadReview" class="hidden" type="button">下載分析結果</button></div></section></div></section>
-<section id="research" class="pane"><div class="layout"><form id="researchForm" class="card"><h2>搵料易</h2><label>辯題<input id="researchTopic" required></label><label>輸入要尋找的資料<textarea id="researchNeed" required rows="6" placeholder="例如：香港青年精神健康近年數據、其他地區政策例子、有利正方的研究證據…"></textarea></label><p id="researchEstimate" class="caption estimate"></p><div id="researchWarning"></div><button class="primary">搵料易</button></form><section class="card"><h2>搵料結果</h2><div id="researchResult" class="result caption">結果會保留可核查來源。</div><div class="result-actions"><button id="downloadResearch" class="hidden" type="button">下載搵料結果</button></div></section></div></section>
-<section id="fact" class="pane"><div class="layout"><form id="factForm" class="card"><h2>Fact Check易</h2><label>輸入要核查的陳述<textarea id="factText" required rows="7" placeholder="例如：香港中學生每日平均睡眠時間少於 7 小時。"></textarea></label><p id="factEstimate" class="caption estimate"></p><div id="factWarning"></div><button class="primary">Fact Check</button></form><section class="card"><h2>Fact Check 結果</h2><div id="factResult" class="result caption">輸入一項可核查的陳述。</div><div class="result-actions"><button id="downloadFact" class="hidden" type="button">下載 Fact Check 結果</button></div></section></div></section>
-<section id="live" class="pane"><form id="liveForm" class="card"><h2>Gemini Live自由辯論練習</h2><div id="liveWarnings"></div><div data-topic-source="topics" data-topic-target="liveTopic"></div><label>辯題<input id="liveTopic" required></label><div class="field-grid"><label>你的立場<select id="liveSide"><option>正方</option><option>反方</option></select></label><label>賽制<select id="liveFormat"><option>校園隨想</option><option>聯中</option></select></label></div><label id="liveMinutesWrap" class="hidden">每邊發言時間（分鐘）<input id="liveMinutes" type="number" min=".5" max="10" step=".5" value="5"></label><p id="liveFixed" class="caption">校園隨想自由辯論時間固定為 2:30。</p><p id="liveEstimate" class="caption estimate"></p><button class="primary">開始Free De</button></form></section>
-<section id="mock" class="pane"><form id="mockForm" class="card"><h2>Gemini Live Mock練習</h2><div id="mockWarnings"></div><div data-topic-source="topics" data-topic-target="mockTopic"></div><label>辯題<input id="mockTopic" required></label><div class="field-grid"><label>你的立場<select id="mockSide"><option>正方</option><option>反方</option></select></label><label>賽制<select id="mockFormat"><option>校園隨想</option><option>聯中</option><option>星島</option><option>基本法盃</option></select></label></div><label id="mockMinutesWrap" class="hidden">自由辯論每邊（分鐘）<input id="mockMinutes" type="number" min="2" max="10" step=".5" value="5"></label><p id="mockInfo" class="caption"></p><details><summary>查看完整流程次序</summary><ol id="mockSequence"></ol></details><p id="mockEstimate" class="caption estimate"></p><button class="primary">開始打Mock</button></form></section>
-<section id="room" class="pane"><section class="card"><h2>🎧 連線練習</h2><p class="caption">與其他委員即時連線練習。模式 A：真人對真人（1 對 1），AI 擔任評判；模式 B：多人一起對 AI 練習（完整 Mock 按賽制要求 3 或 4 位隊員）。使用房間代碼加入同一場練習。</p></section><div id="activeRoom" class="card hidden"><h2>連線練習房間</h2><p>房間代碼：<span id="roomCode" class="room-code"></span></p><p id="activeRoomNote" class="caption"></p><div class="actions"><button id="leaveRoom" class="danger">離開房間</button></div><iframe id="roomFrame" class="room-frame" title="連線練習房間"></iframe></div><div id="roomSetup"><div class="choice-row"><button id="showCreate" class="active" type="button">建立房間</button><button id="showJoin" type="button">加入房間</button></div><form id="createRoom" class="card"><h2>建立房間</h2><div class="field-grid"><label>模式<select id="roomMode"><option value="A">真人對真人（1 對 1）</option><option value="B">多人對 AI</option></select></label><label>形式<select id="roomStructure"><option value="free">自由辯論</option><option value="mock">完整 Mock</option></select></label><label>賽制<select id="roomFormat"><option>校園隨想</option><option>聯中</option><option>星島</option><option>基本法盃</option></select></label><label id="roomCapacityWrap" class="hidden">隊員人數上限<input id="roomCapacity" type="number" min="1" max="4" value="4"></label></div><p id="roomModeInfo" class="caption"></p><div data-topic-source="topics" data-topic-target="roomTopic"></div><label>辯題<input id="roomTopic" required></label><label id="roomSideLabel">你的立場<select id="roomSide"><option>正方</option><option>反方</option></select></label><label id="roomMinutesWrap" class="hidden">自由辯論每邊時間（分鐘）<input id="roomMinutes" type="number" min=".5" max="10" step=".5" value="5"></label><p id="roomTimeNote" class="caption"></p><button class="primary">建立房間</button></form><form id="joinRoom" class="card hidden"><h2>加入房間</h2><label>房間代碼<input id="joinCode" maxlength="8" required></label><button class="primary">加入房間</button></form></div></section></section></main><div id="toast" class="toast"></div><div id="busy" class="busy"><div class="busy-pill"><i class="spinner"></i>處理中…</div></div><script src="/shared/vote-ui.js"></script><script src="/shared/markdown.js?v=4.0.0"></script><script src="/shared/ai-parity.js?v=4.0.0"></script></body></html>
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>AI 辯論易</title>
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      .pane {
+        display: none;
+      }
+      .pane.active {
+        display: block;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.78fr);
+        gap: 1rem;
+        align-items: start;
+      }
+      .result {
+        line-height: 1.7;
+        overflow-wrap: anywhere;
+      }
+      .result a {
+        color: var(--accent);
+      }
+      .result h1,
+      .result h2,
+      .result h3,
+      .result h4,
+      .result h5,
+      .result h6 {
+        margin: 1.1rem 0 0.45rem;
+      }
+      .result h1 {
+        font-size: 1.5rem;
+      }
+      .result h2 {
+        font-size: 1.3rem;
+      }
+      .result h3 {
+        font-size: 1.15rem;
+      }
+      .result h4,
+      .result h5,
+      .result h6 {
+        font-size: 1rem;
+      }
+      .result p {
+        margin: 0.35rem 0 0.8rem;
+      }
+      .result ul,
+      .result ol {
+        margin: 0.35rem 0 0.9rem;
+        padding-left: 1.5rem;
+      }
+      .result blockquote {
+        margin: 0.8rem 0;
+        padding: 0.5rem 0.8rem;
+        border-left: 3px solid var(--accent);
+        background: var(--surface);
+        color: var(--muted);
+      }
+      .result pre {
+        overflow: auto;
+        padding: 0.8rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+      .result code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .markdown-table {
+        overflow: auto;
+        margin: 0.8rem 0;
+      }
+      .rec,
+      .actions,
+      .choice-row {
+        display: flex;
+        gap: 0.65rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .rec span {
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .actions button,
+      .choice-row button {
+        width: auto;
+      }
+      .choice-row button.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        font-weight: 700;
+      }
+      .room-code {
+        font-size: 1.45rem;
+        letter-spacing: 0.12em;
+        font-weight: 800;
+      }
+      .room-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+      .field-grid label {
+        margin-top: 0.4rem;
+      }
+      .estimate {
+        margin: 0.65rem 0;
+      }
+      .result-actions {
+        display: flex;
+        gap: 0.6rem;
+        margin-top: 0.8rem;
+      }
+      .room-frame {
+        width: 100%;
+        height: 900px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        margin-top: 1rem;
+      }
+      @media (max-width: 800px) {
+        .layout,
+        .room-grid,
+        .field-grid {
+          grid-template-columns: 1fr;
+        }
+        .tabs {
+          display: flex;
+          gap: 0.4rem;
+          overflow-x: auto;
+          scroll-snap-type: x proximity;
+          padding-bottom: 0.2rem;
+        }
+        .tabs > button {
+          flex: 0 0 auto;
+          min-width: max-content;
+          scroll-snap-align: start;
+        }
+        .pane > .card,
+        .pane > form.card {
+          margin: 0.75rem 0;
+        }
+        .pane form.card > button.primary {
+          width: 100%;
+        }
+        .choice-row {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0.5rem;
+        }
+        .choice-row button {
+          width: 100%;
+        }
+        .rec {
+          align-items: stretch;
+        }
+        .rec button {
+          flex: 1 1 10rem;
+        }
+        .rec span {
+          display: flex;
+          align-items: center;
+          min-height: 2.7rem;
+        }
+        .result-actions button {
+          width: 100%;
+        }
+        .room-frame {
+          height: max(42rem, calc(100dvh - 9rem));
+          border-radius: 12px;
+        }
+        .room-code {
+          font-size: 1.25rem;
+          overflow-wrap: anywhere;
+        }
+      }
+      @media (max-width: 420px) {
+        .choice-row {
+          grid-template-columns: 1fr;
+        }
+        .card {
+          padding: 0.85rem;
+        }
+        .field-grid {
+          gap: 0.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back" href="/">← 返回主頁</a>
+      <h1>✨ AI 辯論易</h1>
+      <p class="caption">
+        主線策劃、演辭檢討、搵料、Fact Check、即時練習及連線練習。
+      </p>
+      <section id="login" class="card hidden">
+        <h2>內部委員會成員登入</h2>
+        <form id="loginForm" class="login">
+          <label
+            >用戶名稱<input id="user" required autocomplete="username" /></label
+          ><label
+            >密碼<input
+              id="password"
+              type="password"
+              required
+              autocomplete="current-password" /></label
+          ><button class="primary">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <details class="guide">
+          <summary>ℹ️ 首次使用指南</summary>
+          <div class="sub">
+            • 使用「練習發言」輸入文字稿或錄音，AI
+            會按照正式評分標準提供反饋。<br />• 使用「主線策劃」模式，AI
+            可根據辯題及你的立場生成論點及應對策略。<br />•
+            使用「搵料易」模式，AI 會即時搜尋網上資料並附上來源。<br />•
+            使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。
+          </div>
+        </details>
+        <section class="card">
+          <h2>🤖 AI 模型</h2>
+          <label>AI 模型<select id="globalModel"></select></label>
+          <p id="modelNote" class="caption"></p>
+          <details open>
+            <summary>模型限額及成本估算</summary>
+            <p id="modelEstimate" class="caption"></p>
+          </details>
+          <div class="notice">
+            ℹ️ 日常練習請用 Gemini 2.5 Flash，深入分析用 Gemini 3.1
+            Pro。重要稿件先用 GPT-5.4 Mini。
+          </div>
+          <div id="modelWarnings"></div>
+          <a href="/ai-fund">💲 前往 AI基金 管理入數 / 查閱用量</a>
+        </section>
+        <nav class="tabs" id="tabs">
+          <button class="active" data-pane="strategy">💡 主線策劃</button
+          ><button data-pane="review">📝 練習發言</button
+          ><button data-pane="fact">✅ Fact Check易</button
+          ><button data-pane="research">🌐 搵料易</button
+          ><button data-pane="live">🎙️ 打Free De</button
+          ><button data-pane="mock">🏟️ 打Mock</button
+          ><button data-pane="room">🎧 連線練習</button>
+        </nav>
+        <section id="strategy" class="pane active">
+          <div class="layout">
+            <form id="strategyForm" class="card">
+              <h2>主線策劃</h2>
+              <div
+                data-topic-source="topics"
+                data-topic-target="strategyTopic"
+              ></div>
+              <label>輸入辯題<input id="strategyTopic" required /></label>
+              <div class="field-grid">
+                <label
+                  >你的立場<select id="strategySide">
+                    <option>正方</option>
+                    <option>反方</option>
+                  </select></label
+                ><label
+                  >賽制<select id="strategyFormat">
+                    <option>校園隨想</option>
+                    <option>聯中</option>
+                    <option>星島</option>
+                    <option>基本法盃</option>
+                  </select></label
+                >
+              </div>
+              <p id="strategyEstimate" class="caption estimate"></p>
+              <button class="primary">生成主線</button>
+            </form>
+            <section class="card">
+              <h2>策略建議</h2>
+              <div id="strategyResult" class="result caption">
+                請輸入或選擇辯題後生成主線。
+              </div>
+              <div class="result-actions">
+                <button id="downloadStrategy" class="hidden" type="button">
+                  下載策略建議
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="review" class="pane">
+          <div class="layout">
+            <form id="reviewForm" class="card">
+              <h2>練習發言</h2>
+              <div
+                data-topic-source="matches"
+                data-topic-target="reviewTopic"
+              ></div>
+              <label>辯題<input id="reviewTopic" required /></label>
+              <p id="reviewMatchNote" class="caption"></p>
+              <div class="field-grid">
+                <label
+                  >你的立場<select id="reviewSide">
+                    <option>正方</option>
+                    <option>反方</option>
+                  </select></label
+                ><label
+                  >辯位<select id="reviewPosition">
+                    <option value="1">主辯</option>
+                    <option value="2">一副</option>
+                    <option value="3">二副</option>
+                    <option value="4">結辯</option>
+                    <option value="5">三副</option>
+                  </select></label
+                ><label
+                  >賽制<select id="reviewFormat">
+                    <option>校園隨想</option>
+                    <option>聯中</option>
+                    <option>星島</option>
+                    <option>基本法盃</option>
+                  </select></label
+                ><label
+                  >練習類型<select id="reviewMode">
+                    <option>台上發言</option>
+                    <option>台下發問</option>
+                    <option>交互答問</option>
+                  </select></label
+                >
+              </div>
+              <div id="qaFields"></div>
+              <label id="reviewTextLabel"
+                >輸入文字稿<textarea
+                  id="reviewText"
+                  rows="7"
+                  placeholder="輸入內容…"
+                ></textarea></label
+              ><label>錄音計時環節<select id="reviewStage"></select></label>
+              <div class="rec">
+                <button id="speechTimer" type="button">開始計時</button
+                ><span id="speechClock">00:00.000</span>
+              </div>
+              <div class="rec">
+                <button type="button" id="record">開始錄音</button
+                ><span id="recordState">未錄音</span>
+              </div>
+              <audio id="audioPreview" controls class="hidden"></audio>
+              <p id="reviewEstimate" class="caption estimate"></p>
+              <button class="primary">分析發言</button>
+            </form>
+            <section class="card">
+              <h2>分析結果</h2>
+              <div id="reviewResult" class="result caption">
+                輸入文字稿或錄音後開始分析。
+              </div>
+              <div class="result-actions">
+                <button id="downloadReview" class="hidden" type="button">
+                  下載分析結果
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="research" class="pane">
+          <div class="layout">
+            <form id="researchForm" class="card">
+              <h2>搵料易</h2>
+              <label>辯題<input id="researchTopic" required /></label
+              ><label
+                >輸入要尋找的資料<textarea
+                  id="researchNeed"
+                  required
+                  rows="6"
+                  placeholder="例如：香港青年精神健康近年數據、其他地區政策例子、有利正方的研究證據…"
+                ></textarea>
+              </label>
+              <p id="researchEstimate" class="caption estimate"></p>
+              <div id="researchWarning"></div>
+              <button class="primary">搵料易</button>
+            </form>
+            <section class="card">
+              <h2>搵料結果</h2>
+              <div id="researchResult" class="result caption">
+                結果會保留可核查來源。
+              </div>
+              <div class="result-actions">
+                <button id="downloadResearch" class="hidden" type="button">
+                  下載搵料結果
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="fact" class="pane">
+          <div class="layout">
+            <form id="factForm" class="card">
+              <h2>Fact Check易</h2>
+              <label
+                >輸入要核查的陳述<textarea
+                  id="factText"
+                  required
+                  rows="7"
+                  placeholder="例如：香港中學生每日平均睡眠時間少於 7 小時。"
+                ></textarea>
+              </label>
+              <p id="factEstimate" class="caption estimate"></p>
+              <div id="factWarning"></div>
+              <button class="primary">Fact Check</button>
+            </form>
+            <section class="card">
+              <h2>Fact Check 結果</h2>
+              <div id="factResult" class="result caption">
+                輸入一項可核查的陳述。
+              </div>
+              <div class="result-actions">
+                <button id="downloadFact" class="hidden" type="button">
+                  下載 Fact Check 結果
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="live" class="pane">
+          <form id="liveForm" class="card">
+            <h2>Gemini Live自由辯論練習</h2>
+            <div id="liveWarnings"></div>
+            <div data-topic-source="topics" data-topic-target="liveTopic"></div>
+            <label>辯題<input id="liveTopic" required /></label>
+            <div class="field-grid">
+              <label
+                >你的立場<select id="liveSide">
+                  <option>正方</option>
+                  <option>反方</option>
+                </select></label
+              ><label
+                >賽制<select id="liveFormat">
+                  <option>校園隨想</option>
+                  <option>聯中</option>
+                </select></label
+              >
+            </div>
+            <label id="liveMinutesWrap" class="hidden"
+              >每邊發言時間（分鐘）<input
+                id="liveMinutes"
+                type="number"
+                min=".5"
+                max="10"
+                step=".5"
+                value="5"
+            /></label>
+            <p id="liveFixed" class="caption">
+              校園隨想自由辯論時間固定為 2:30。
+            </p>
+            <p id="liveEstimate" class="caption estimate"></p>
+            <button class="primary">開始Free De</button>
+          </form>
+        </section>
+        <section id="mock" class="pane">
+          <form id="mockForm" class="card">
+            <h2>Gemini Live Mock練習</h2>
+            <div id="mockWarnings"></div>
+            <div data-topic-source="topics" data-topic-target="mockTopic"></div>
+            <label>辯題<input id="mockTopic" required /></label>
+            <div class="field-grid">
+              <label
+                >你的立場<select id="mockSide">
+                  <option>正方</option>
+                  <option>反方</option>
+                </select></label
+              ><label
+                >賽制<select id="mockFormat">
+                  <option>校園隨想</option>
+                  <option>聯中</option>
+                  <option>星島</option>
+                  <option>基本法盃</option>
+                </select></label
+              >
+            </div>
+            <label id="mockMinutesWrap" class="hidden"
+              >自由辯論每邊（分鐘）<input
+                id="mockMinutes"
+                type="number"
+                min="2"
+                max="10"
+                step=".5"
+                value="5"
+            /></label>
+            <p id="mockInfo" class="caption"></p>
+            <details>
+              <summary>查看完整流程次序</summary>
+              <ol id="mockSequence"></ol>
+            </details>
+            <p id="mockEstimate" class="caption estimate"></p>
+            <button class="primary">開始打Mock</button>
+          </form>
+        </section>
+        <section id="room" class="pane">
+          <section class="card">
+            <h2>🎧 連線練習</h2>
+            <p class="caption">
+              與其他委員即時連線練習。模式 A：真人對真人（1 對 1），AI
+              擔任評判；模式 B：多人一起對 AI 練習（完整 Mock 按賽制要求 3 或 4
+              位隊員）。使用房間代碼加入同一場練習。
+            </p>
+          </section>
+          <div id="activeRoom" class="card hidden">
+            <h2>連線練習房間</h2>
+            <p>房間代碼：<span id="roomCode" class="room-code"></span></p>
+            <p id="activeRoomNote" class="caption"></p>
+            <div class="actions">
+              <button id="leaveRoom" class="danger">離開房間</button>
+            </div>
+            <iframe
+              id="roomFrame"
+              class="room-frame"
+              title="連線練習房間"
+            ></iframe>
+          </div>
+          <div id="roomSetup">
+            <div class="choice-row">
+              <button id="showCreate" class="active" type="button">
+                建立房間</button
+              ><button id="showJoin" type="button">加入房間</button>
+            </div>
+            <form id="createRoom" class="card">
+              <h2>建立房間</h2>
+              <div class="field-grid">
+                <label
+                  >模式<select id="roomMode">
+                    <option value="A">真人對真人（1 對 1）</option>
+                    <option value="B">多人對 AI</option>
+                  </select></label
+                ><label
+                  >形式<select id="roomStructure">
+                    <option value="free">自由辯論</option>
+                    <option value="mock">完整 Mock</option>
+                  </select></label
+                ><label
+                  >賽制<select id="roomFormat">
+                    <option>校園隨想</option>
+                    <option>聯中</option>
+                    <option>星島</option>
+                    <option>基本法盃</option>
+                  </select></label
+                ><label id="roomCapacityWrap" class="hidden"
+                  >隊員人數上限<input
+                    id="roomCapacity"
+                    type="number"
+                    min="1"
+                    max="4"
+                    value="4"
+                /></label>
+              </div>
+              <p id="roomModeInfo" class="caption"></p>
+              <div
+                data-topic-source="topics"
+                data-topic-target="roomTopic"
+              ></div>
+              <label>辯題<input id="roomTopic" required /></label
+              ><label id="roomSideLabel"
+                >你的立場<select id="roomSide">
+                  <option>正方</option>
+                  <option>反方</option>
+                </select></label
+              ><label id="roomMinutesWrap" class="hidden"
+                >自由辯論每邊時間（分鐘）<input
+                  id="roomMinutes"
+                  type="number"
+                  min=".5"
+                  max="10"
+                  step=".5"
+                  value="5"
+              /></label>
+              <p id="roomTimeNote" class="caption"></p>
+              <button class="primary">建立房間</button>
+            </form>
+            <form id="joinRoom" class="card hidden">
+              <h2>加入房間</h2>
+              <label
+                >房間代碼<input id="joinCode" maxlength="8" required /></label
+              ><button class="primary">加入房間</button>
+            </form>
+          </div>
+        </section>
+      </section>
+    </main>
+    <div id="toast" class="toast"></div>
+    <div id="busy" class="busy">
+      <div class="busy-pill"><i class="spinner"></i>處理中…</div>
+    </div>
+    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/markdown.js?v=4.0.0"></script>
+    <script src="/shared/ai-parity.js?v=4.0.0"></script>
+  </body>
+</html>

@@ -156,6 +156,12 @@ def ensure_match_photos_table(db=None):
     ensure_match_videos_table(db)
     db.execute(CREATE_MATCH_PHOTOS)
     db.execute(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS photo_date DATE")
+    for column, data_type in (
+        ("r2_key", "TEXT"), ("thumbnail_r2_key", "TEXT"),
+        ("byte_size", "INTEGER"), ("sha256", "TEXT"),
+        ("width", "INTEGER"), ("height", "INTEGER"),
+    ):
+        db.execute(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS {column} {data_type}")
     db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)")
     db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_photos_date_created ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC)")
 
@@ -501,9 +507,11 @@ def photo_data(db=None):
     return {"albums": options, "photos": [], "other_album": OTHER_ALBUM}
 
 
-def upload_photos(user_id, album_label, match_video_id, photo_date, photo_title, caption, files, db=None):
-    if not files:
-        return {"ok": False, "message": "請先選擇圖片。"}
+def register_r2_photos(user_id, album_label, match_video_id, photo_date,
+                       photo_title, caption, files, db=None):
+    """Persist metadata after direct-to-R2 uploads have been verified."""
+    if not files or len(files) > 5:
+        return {"ok": False, "message": "每次必須上載一至五張圖片。"}
     db = _resolve_db(db)
     ensure_match_photos_table(db)
     parsed_date = None
@@ -514,18 +522,45 @@ def upload_photos(user_id, album_label, match_video_id, photo_date, photo_title,
             return {"ok": False, "message": "相片日期格式無效。"}
     for item in files:
         db.execute(
-            f"""INSERT INTO {TABLE_MATCH_PHOTOS} (match_video_id, album_label, photo_date, photo_title, caption, file_name, mime_type, image_data, uploaded_by, created_at)
-            VALUES (:match_video_id, :album_label, :photo_date, :photo_title, :caption, :file_name, :mime_type, :image_data, :uploaded_by, :created_at)""",
-            {"match_video_id": int(match_video_id) if match_video_id not in (None, "") else None, "album_label": clean_text(album_label), "photo_date": parsed_date, "photo_title": clean_text(photo_title) or None, "caption": clean_text(caption) or None, "file_name": clean_text(item["file_name"]), "mime_type": clean_text(item.get("mime_type")) or "image/jpeg", "image_data": item["image_data"], "uploaded_by": user_id, "created_at": now_hkt()},
+            f"""INSERT INTO {TABLE_MATCH_PHOTOS}
+                (match_video_id,album_label,photo_date,photo_title,caption,file_name,
+                 mime_type,r2_key,thumbnail_r2_key,byte_size,sha256,
+                 width,height,uploaded_by,created_at)
+                VALUES(:match_video_id,:album_label,:photo_date,:photo_title,:caption,
+                 :file_name,:mime_type,:r2_key,:thumbnail_r2_key,:byte_size,
+                 :sha256,:width,:height,:uploaded_by,:created_at)""",
+            {
+                "match_video_id": int(match_video_id) if match_video_id not in (None, "") else None,
+                "album_label": clean_text(album_label), "photo_date": parsed_date,
+                "photo_title": clean_text(photo_title) or None,
+                "caption": clean_text(caption) or None,
+                "file_name": clean_text(item["file_name"]),
+                "mime_type": clean_text(item.get("mime_type")) or "image/webp",
+                "r2_key": item["r2_key"], "thumbnail_r2_key": item["thumbnail_r2_key"],
+                "byte_size": int(item.get("byte_size") or 0),
+                "sha256": clean_text(item.get("sha256")),
+                "width": int(item.get("width") or 0) or None,
+                "height": int(item.get("height") or 0) or None,
+                "uploaded_by": user_id, "created_at": now_hkt(),
+            },
         )
     return {"ok": True, "message": "圖片已成功上載。"}
 
 
-def photo_bytes(photo_id, db=None):
+def photo_media(photo_id, db=None):
+    """Return lightweight R2 metadata without fetching object bytes."""
     db = _resolve_db(db)
-    rows = db.query(f"SELECT file_name, mime_type, image_data FROM {TABLE_MATCH_PHOTOS} WHERE id = :id", {"id": int(photo_id)})
+    ensure_match_photos_table(db)
+    rows = db.query(
+        f"SELECT file_name,mime_type,r2_key,thumbnail_r2_key FROM {TABLE_MATCH_PHOTOS} WHERE id=:id",
+        {"id": int(photo_id)},
+    )
     if rows.empty:
         return None
     row = rows.iloc[0]
-    data = row["image_data"]
-    return {"file_name": clean_text(row["file_name"]) or f"match-photo-{int(photo_id)}.jpg", "mime_type": clean_text(row["mime_type"]) or "image/jpeg", "image_data": bytes(data) if data is not None else b""}
+    return {
+        "file_name": clean_text(row.get("file_name")) or f"match-photo-{int(photo_id)}.jpg",
+        "mime_type": clean_text(row.get("mime_type")) or "image/webp",
+        "r2_key": clean_text(row.get("r2_key")),
+        "thumbnail_r2_key": clean_text(row.get("thumbnail_r2_key")),
+    }

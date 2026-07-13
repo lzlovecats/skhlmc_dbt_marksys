@@ -1,260 +1,565 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-    <meta charset="utf-8">
+  <head>
+    <meta charset="utf-8" />
     <title>比賽場次管理</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#111827">
-    <link rel="stylesheet" href="/shared/vote-ui.css">
-    <link rel="stylesheet" href="/shared/app-shell.css"><style>
-        main { width: min(100%, 84rem); margin: 0 auto; }
-        h1 { margin: 0 0 .45rem; font-size: 2rem; line-height: 1.25; }
-        h2 { margin: 0 0 .7rem; font-size: 1.25rem; }
-        h3 { margin: 0 0 .55rem; font-size: 1.05rem; }
-        .intro { margin: 0 0 1rem; color: var(--muted); }
-        .card { margin-bottom: 1rem; }
-        .login { width: min(100%, 48rem); margin: 3rem auto; }
-        .login form { display: grid; gap: .85rem; }
-        .login label { margin: 0; }
-        .login button { width: 100%; margin-top: .3rem; font-size: 1.05rem; }
-        .notice { margin: .8rem 0; }
-        .notice.ok { border-color: #357a52; color: var(--ok); }
-        .notice.warn { border-color: #927126; color: var(--warn); }
-        .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
-        .field { min-width: 0; }
-        .field label { margin-bottom: .3rem; }
-        .toolbar { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
-        .toolbar .field { flex: 1 1 18rem; }
-        .toolbar button { flex: 0 1 14rem; }
-        .link-grid, .draw-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.5rem; }
-        .link-card + .link-card, .draw-card + .draw-card { border-left: 1px solid var(--border); padding-left: 1.5rem; }
-        .link-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .65rem; }
-        .link-actions button { flex: 1 1 10rem; }
-        .draw-card { display: grid; gap: .65rem; align-content: start; }
-        .draw-card button { justify-self: start; }
-        .match-data > h2 { margin-bottom: 1rem; }
-        .section-heading { margin: 1.35rem 0 .75rem; padding-top: 1.1rem; border-top: 1px solid var(--border); }
-        .team-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; }
-        .team-column + .team-column { border-left: 1px solid var(--border); padding-left: 1.5rem; }
-        .team-title { display: flex; align-items: baseline; gap: .5rem; margin: 0 0 .8rem; }
-        .team-title span { color: var(--muted); font-size: .85rem; }
-        .role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem 1rem; }
-        .password-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.5rem; }
-        .password-state { min-height: 1.4rem; margin: .3rem 0 .55rem; color: var(--muted); font-size: .9rem; }
-        .check-row { display: inline-flex; align-items: center; gap: .55rem; color: var(--text); font-weight: 500; cursor: pointer; }
-        .check-row input[type="checkbox"] { width: 1.1rem; min-height: 1.1rem; margin: 0; accent-color: var(--accent); flex: 0 0 auto; }
-        .save-actions { display: flex; justify-content: flex-end; margin-top: 1.35rem; padding-top: 1rem; border-top: 1px solid var(--border); }
-        .save-actions button { min-width: 14rem; }
-        .danger-area { border-top: 1px solid var(--border); padding-top: 1rem; }
-        .danger-area summary { color: var(--muted); cursor: pointer; font-weight: 600; }
-        .danger-actions { display: flex; gap: .65rem; margin-top: .8rem; }
-        .danger-actions button { flex: 1 1 12rem; }
-        button.danger { border-color: var(--against); color: var(--against); }
-        .hidden { display: none !important; }
-        @media (max-width: 760px) {
-            h1 { font-size: 1.65rem; }
-            .link-grid, .draw-grid, .team-grid, .password-grid, .form-grid { grid-template-columns: 1fr; }
-            .link-card + .link-card, .draw-card + .draw-card, .team-column + .team-column { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: 1rem; }
-            .toolbar button, .save-actions button { width: 100%; flex-basis: 100%; }
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111827" />
+    <link rel="stylesheet" href="/shared/vote-ui.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      main {
+        width: min(100%, 84rem);
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 0.45rem;
+        font-size: 2rem;
+        line-height: 1.25;
+      }
+      h2 {
+        margin: 0 0 0.7rem;
+        font-size: 1.25rem;
+      }
+      h3 {
+        margin: 0 0 0.55rem;
+        font-size: 1.05rem;
+      }
+      .intro {
+        margin: 0 0 1rem;
+        color: var(--muted);
+      }
+      .card {
+        margin-bottom: 1rem;
+      }
+      .login {
+        width: min(100%, 48rem);
+        margin: 3rem auto;
+      }
+      .login form {
+        display: grid;
+        gap: 0.85rem;
+      }
+      .login label {
+        margin: 0;
+      }
+      .login button {
+        width: 100%;
+        margin-top: 0.3rem;
+        font-size: 1.05rem;
+      }
+      .notice {
+        margin: 0.8rem 0;
+      }
+      .notice.ok {
+        border-color: #357a52;
+        color: var(--ok);
+      }
+      .notice.warn {
+        border-color: #927126;
+        color: var(--warn);
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .field {
+        min-width: 0;
+      }
+      .field label {
+        margin-bottom: 0.3rem;
+      }
+      .toolbar {
+        display: flex;
+        align-items: end;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+      .toolbar .field {
+        flex: 1 1 18rem;
+      }
+      .toolbar button {
+        flex: 0 1 14rem;
+      }
+      .link-grid,
+      .draw-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem 1.5rem;
+      }
+      .link-card + .link-card,
+      .draw-card + .draw-card {
+        border-left: 1px solid var(--border);
+        padding-left: 1.5rem;
+      }
+      .link-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        margin-top: 0.65rem;
+      }
+      .link-actions button {
+        flex: 1 1 10rem;
+      }
+      .draw-card {
+        display: grid;
+        gap: 0.65rem;
+        align-content: start;
+      }
+      .draw-card button {
+        justify-self: start;
+      }
+      .match-data > h2 {
+        margin-bottom: 1rem;
+      }
+      .section-heading {
+        margin: 1.35rem 0 0.75rem;
+        padding-top: 1.1rem;
+        border-top: 1px solid var(--border);
+      }
+      .team-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1.5rem;
+      }
+      .team-column + .team-column {
+        border-left: 1px solid var(--border);
+        padding-left: 1.5rem;
+      }
+      .team-title {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+        margin: 0 0 0.8rem;
+      }
+      .team-title span {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .role-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.8rem 1rem;
+      }
+      .password-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem 1.5rem;
+      }
+      .password-state {
+        min-height: 1.4rem;
+        margin: 0.3rem 0 0.55rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .check-row {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        color: var(--text);
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .check-row input[type="checkbox"] {
+        width: 1.1rem;
+        min-height: 1.1rem;
+        margin: 0;
+        accent-color: var(--accent);
+        flex: 0 0 auto;
+      }
+      .save-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 1.35rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border);
+      }
+      .save-actions button {
+        min-width: 14rem;
+      }
+      .danger-area {
+        border-top: 1px solid var(--border);
+        padding-top: 1rem;
+      }
+      .danger-area summary {
+        color: var(--muted);
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .danger-actions {
+        display: flex;
+        gap: 0.65rem;
+        margin-top: 0.8rem;
+      }
+      .danger-actions button {
+        flex: 1 1 12rem;
+      }
+      button.danger {
+        border-color: var(--against);
+        color: var(--against);
+      }
+      .hidden {
+        display: none !important;
+      }
+      @media (max-width: 760px) {
+        h1 {
+          font-size: 1.65rem;
         }
-        @media (max-width: 500px) { .role-grid { grid-template-columns: 1fr; } }
+        .link-grid,
+        .draw-grid,
+        .team-grid,
+        .password-grid,
+        .form-grid {
+          grid-template-columns: 1fr;
+        }
+        .link-card + .link-card,
+        .draw-card + .draw-card,
+        .team-column + .team-column {
+          border-left: 0;
+          border-top: 1px solid var(--border);
+          padding-left: 0;
+          padding-top: 1rem;
+        }
+        .toolbar button,
+        .save-actions button {
+          width: 100%;
+          flex-basis: 100%;
+        }
+      }
+      @media (max-width: 500px) {
+        .role-grid {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
-</head>
-<body>
-<main>
-    <a class="back-link" href="/">← 返回主頁</a>
-    <h1>比賽場次管理</h1>
-    <p class="intro">建立及更新比賽場次、抽籤，並管理正反方的隊名和辯員資料。</p>
+  </head>
+  <body>
+    <main>
+      <a class="back-link" href="/">← 返回主頁</a>
+      <h1>比賽場次管理</h1>
+      <p class="intro">
+        建立及更新比賽場次、抽籤，並管理正反方的隊名和辯員資料。
+      </p>
 
-    <details class="guide">
+      <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>
         <ul>
-            <li>使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。</li>
-            <li>編輯場次時，請確認正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。</li>
-            <li>刪除場次會一併刪除該場次的正式評分與暫存資料，請再次確認相關紀錄不再需要。</li>
+          <li>
+            使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。
+          </li>
+          <li>
+            編輯場次時，請確認正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。
+          </li>
+          <li>
+            刪除場次會一併刪除該場次的正式評分與暫存資料，請再次確認相關紀錄不再需要。
+          </li>
         </ul>
-    </details>
+      </details>
 
-    <div id="loading" class="notice">載入中…</div>
+      <div id="loading" class="notice">載入中…</div>
 
-    <section id="login" class="card login hidden">
+      <section id="login" class="card login hidden">
         <h2>賽會人員登入</h2>
         <p class="intro">請輸入賽會人員密碼以進入場次管理。</p>
         <form id="loginForm">
-            <label for="password">請輸入賽會人員密碼</label>
-            <input id="password" type="password" autocomplete="current-password">
-            <div id="loginMsg"></div>
-            <button class="primary" type="submit">登入</button>
+          <label for="password">請輸入賽會人員密碼</label>
+          <input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+          />
+          <div id="loginMsg"></div>
+          <button class="primary" type="submit">登入</button>
         </form>
-    </section>
+      </section>
 
-    <section id="app" class="hidden">
+      <section id="app" class="hidden">
         <div id="notice"></div>
 
         <section class="card">
-            <h2>建立新場次</h2>
-            <p class="intro">請先建立場次，再進行抽辯題、抽站方或編輯資料。</p>
-            <div class="toolbar">
-                <div class="field"><label for="newId">輸入比賽場次</label><input id="newId" placeholder="例：初賽 A 組 1"></div>
-                <button id="create" class="primary" type="button">新增比賽場次</button>
+          <h2>建立新場次</h2>
+          <p class="intro">請先建立場次，再進行抽辯題、抽站方或編輯資料。</p>
+          <div class="toolbar">
+            <div class="field">
+              <label for="newId">輸入比賽場次</label
+              ><input id="newId" placeholder="例：初賽 A 組 1" />
             </div>
+            <button id="create" class="primary" type="button">
+              新增比賽場次
+            </button>
+          </div>
         </section>
 
-        <div id="empty" class="notice hidden">目前未有比賽場次。請先建立場次。</div>
+        <div id="empty" class="notice hidden">
+          目前未有比賽場次。請先建立場次。
+        </div>
 
         <section id="manage" class="hidden">
-            <section class="card">
-                <div class="field"><label for="match">選擇比賽場次</label><select id="match"></select></div>
-            </section>
+          <section class="card">
+            <div class="field">
+              <label for="match">選擇比賽場次</label
+              ><select id="match"></select>
+            </div>
+          </section>
 
-            <section class="card">
-                <h2>隊伍自助填名連結</h2>
-                <p class="intro">將以下專屬連結分別發給正反方。每個連結只可提交一次；如需要修改，可重開填寫或重新生成連結。</p>
-                <div id="links" class="link-grid"></div>
-            </section>
+          <section class="card">
+            <h2>隊伍自助填名連結</h2>
+            <p class="intro">
+              將以下專屬連結分別發給正反方。每個連結只可提交一次；如需要修改，可重開填寫或重新生成連結。
+            </p>
+            <div id="links" class="link-grid"></div>
+          </section>
 
-            <section class="card">
-                <h2>抽籤工具</h2>
-                <div class="draw-grid">
-                    <div class="draw-card">
-                        <h3>抽辯題</h3>
-                        <label for="difficulty">難度篩選</label>
-                        <select id="difficulty"></select>
-                        <div class="caption">從辯題庫抽取一條辯題，結果會自動填入下方場次資料。</div>
-                        <button id="drawTopic" type="button">抽辯題</button>
-                    </div>
-                    <div class="draw-card">
-                        <h3>抽站方</h3>
-                        <div class="caption">輸入兩隊名稱後抽出正反方，結果會自動填入下方場次資料。</div>
-                        <label for="team1">隊伍名稱1</label><input id="team1">
-                        <label for="team2">隊伍名稱2</label><input id="team2">
-                        <button id="drawSides" type="button">確定抽籤</button>
-                    </div>
+          <section class="card">
+            <h2>抽籤工具</h2>
+            <div class="draw-grid">
+              <div class="draw-card">
+                <h3>抽辯題</h3>
+                <label for="difficulty">難度篩選</label>
+                <select id="difficulty"></select>
+                <div class="caption">
+                  從辯題庫抽取一條辯題，結果會自動填入下方場次資料。
                 </div>
-            </section>
-
-            <form id="saveForm" class="card match-data">
-                <h2>場次資料</h2>
-                <div class="form-grid">
-                    <div class="field"><label for="date">比賽日期</label><input id="date" type="date"></div>
-                    <div class="field"><label for="time">比賽時間</label><select id="time"></select></div>
+                <button id="drawTopic" type="button">抽辯題</button>
+              </div>
+              <div class="draw-card">
+                <h3>抽站方</h3>
+                <div class="caption">
+                  輸入兩隊名稱後抽出正反方，結果會自動填入下方場次資料。
                 </div>
-                <div class="field section-heading"><label for="topic">辯題</label><input id="topic"></div>
+                <label for="team1">隊伍名稱1</label><input id="team1" />
+                <label for="team2">隊伍名稱2</label><input id="team2" />
+                <button id="drawSides" type="button">確定抽籤</button>
+              </div>
+            </div>
+          </section>
 
-                <h3 class="section-heading">正反方資料</h3>
-                <div class="team-grid">
-                    <section class="team-column">
-                        <div class="team-title"><h3>正方</h3><span>Proposition</span></div>
-                        <div class="field"><label for="pro_team">正方隊名</label><input id="pro_team"></div>
-                        <div class="role-grid">
-                            <div class="field"><label for="pro_1">正方主辯</label><input id="pro_1"></div>
-                            <div class="field"><label for="pro_2">正方一副</label><input id="pro_2"></div>
-                            <div class="field"><label for="pro_3">正方二副</label><input id="pro_3"></div>
-                            <div class="field"><label for="pro_4">正方結辯</label><input id="pro_4"></div>
-                        </div>
-                    </section>
-                    <section class="team-column">
-                        <div class="team-title"><h3>反方</h3><span>Opposition</span></div>
-                        <div class="field"><label for="con_team">反方隊名</label><input id="con_team"></div>
-                        <div class="role-grid">
-                            <div class="field"><label for="con_1">反方主辯</label><input id="con_1"></div>
-                            <div class="field"><label for="con_2">反方一副</label><input id="con_2"></div>
-                            <div class="field"><label for="con_3">反方二副</label><input id="con_3"></div>
-                            <div class="field"><label for="con_4">反方結辯</label><input id="con_4"></div>
-                        </div>
-                    </section>
-                </div>
+          <form id="saveForm" class="card match-data">
+            <h2>場次資料</h2>
+            <div class="form-grid">
+              <div class="field">
+                <label for="date">比賽日期</label
+                ><input id="date" type="date" />
+              </div>
+              <div class="field">
+                <label for="time">比賽時間</label
+                ><select id="time"></select>
+              </div>
+            </div>
+            <div class="field section-heading">
+              <label for="topic">辯題</label><input id="topic" />
+            </div>
 
-                <h3 class="section-heading">場次密碼</h3>
-                <div class="caption">留空代表保留現有密碼；輸入新密碼代表更新；如需移除，請勾選清除。</div>
-                <div class="password-grid">
-                    <div>
-                        <label for="access">評判入場密碼</label>
-                        <input id="access" type="password" placeholder="留空保留現有密碼">
-                        <div id="accessState" class="password-state"></div>
-                        <label class="check-row" for="clearAccess"><input id="clearAccess" type="checkbox"><span>清除評判入場密碼</span></label>
-                    </div>
-                    <div>
-                        <label for="review">查閱分紙密碼</label>
-                        <input id="review" type="password" placeholder="留空保留現有密碼">
-                        <div id="reviewState" class="password-state"></div>
-                        <label class="check-row" for="clearReview"><input id="clearReview" type="checkbox"><span>清除查閱分紙密碼</span></label>
-                    </div>
+            <h3 class="section-heading">正反方資料</h3>
+            <div class="team-grid">
+              <section class="team-column">
+                <div class="team-title">
+                  <h3>正方</h3>
+                  <span>Proposition</span>
                 </div>
-                <div id="saveMsg"></div>
-                <div class="save-actions"><button class="primary" type="submit">儲存場次資料</button></div>
-            </form>
+                <div class="field">
+                  <label for="pro_team">正方隊名</label><input id="pro_team" />
+                </div>
+                <div class="role-grid">
+                  <div class="field">
+                    <label for="pro_1">正方主辯</label><input id="pro_1" />
+                  </div>
+                  <div class="field">
+                    <label for="pro_2">正方一副</label><input id="pro_2" />
+                  </div>
+                  <div class="field">
+                    <label for="pro_3">正方二副</label><input id="pro_3" />
+                  </div>
+                  <div class="field">
+                    <label for="pro_4">正方結辯</label><input id="pro_4" />
+                  </div>
+                </div>
+              </section>
+              <section class="team-column">
+                <div class="team-title">
+                  <h3>反方</h3>
+                  <span>Opposition</span>
+                </div>
+                <div class="field">
+                  <label for="con_team">反方隊名</label><input id="con_team" />
+                </div>
+                <div class="role-grid">
+                  <div class="field">
+                    <label for="con_1">反方主辯</label><input id="con_1" />
+                  </div>
+                  <div class="field">
+                    <label for="con_2">反方一副</label><input id="con_2" />
+                  </div>
+                  <div class="field">
+                    <label for="con_3">反方二副</label><input id="con_3" />
+                  </div>
+                  <div class="field">
+                    <label for="con_4">反方結辯</label><input id="con_4" />
+                  </div>
+                </div>
+              </section>
+            </div>
 
-            <details class="card danger-area">
-                <summary>危險操作</summary>
-                <p class="notice warn">刪除場次會一併移除正式評分與暫存資料，且無法復原。</p>
-                <button id="delete" class="danger" type="button">刪除場次</button>
-                <div id="confirm" class="danger-actions hidden">
-                    <button id="confirmDelete" class="primary" type="button">確定刪除</button>
-                    <button id="cancelDelete" type="button">取消</button>
-                </div>
-            </details>
+            <h3 class="section-heading">場次密碼</h3>
+            <div class="caption">
+              留空代表保留現有密碼；輸入新密碼代表更新；如需移除，請勾選清除。
+            </div>
+            <div class="password-grid">
+              <div>
+                <label for="access">評判入場密碼</label>
+                <input
+                  id="access"
+                  type="password"
+                  placeholder="留空保留現有密碼"
+                />
+                <div id="accessState" class="password-state"></div>
+                <label class="check-row" for="clearAccess"
+                  ><input id="clearAccess" type="checkbox" /><span
+                    >清除評判入場密碼</span
+                  ></label
+                >
+              </div>
+              <div>
+                <label for="review">查閱分紙密碼</label>
+                <input
+                  id="review"
+                  type="password"
+                  placeholder="留空保留現有密碼"
+                />
+                <div id="reviewState" class="password-state"></div>
+                <label class="check-row" for="clearReview"
+                  ><input id="clearReview" type="checkbox" /><span
+                    >清除查閱分紙密碼</span
+                  ></label
+                >
+              </div>
+            </div>
+            <div id="saveMsg"></div>
+            <div class="save-actions">
+              <button class="primary" type="submit">儲存場次資料</button>
+            </div>
+          </form>
+
+          <details class="card danger-area">
+            <summary>危險操作</summary>
+            <p class="notice warn">
+              刪除場次會一併移除正式評分與暫存資料，且無法復原。
+            </p>
+            <button id="delete" class="danger" type="button">刪除場次</button>
+            <div id="confirm" class="danger-actions hidden">
+              <button id="confirmDelete" class="primary" type="button">
+                確定刪除
+              </button>
+              <button id="cancelDelete" type="button">取消</button>
+            </div>
+          </details>
         </section>
-    </section>
-</main>
+      </section>
+    </main>
 
-<div id="toast" class="toast"></div>
-<div id="busy" class="busy-overlay"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
-<script src="/shared/vote-ui.js"></script>
-<script>
-(() => {
-    const $ = id => document.getElementById(id);
-    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-    }[char]));
-    let state = null, savedFormSnapshot = null, selectedMatchId = "";
-    const formKeys = ["match_date", "match_time", "topic_text", "pro_team", "con_team", "pro_1", "pro_2", "pro_3", "pro_4", "con_1", "con_2", "con_3", "con_4"];
+    <div id="toast" class="toast"></div>
+    <div id="busy" class="busy-overlay">
+      <div class="busy-pill"><span class="spinner"></span>處理中…</div>
+    </div>
+    <script src="/shared/vote-ui.js"></script>
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const esc = (value) =>
+          String(value ?? "").replace(
+            /[&<>"']/g,
+            (char) =>
+              ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+              })[char],
+          );
+        let state = null,
+          savedFormSnapshot = null,
+          selectedMatchId = "";
+        const formKeys = [
+          "match_date",
+          "match_time",
+          "topic_text",
+          "pro_team",
+          "con_team",
+          "pro_1",
+          "pro_2",
+          "pro_3",
+          "pro_4",
+          "con_1",
+          "con_2",
+          "con_3",
+          "con_4",
+        ];
 
-    const setBusy = active => VoteUI.setBusy($("busy"), active);
-    const toast = text => VoteUI.toast($("toast"), text);
-    const showMessage = (id, text, kind = "warn") => {
-        $(id).innerHTML = text ? `<div class="notice ${kind}">${esc(text)}</div>` : "";
-    };
+        const setBusy = (active) => VoteUI.setBusy($("busy"), active);
+        const toast = (text) => VoteUI.toast($("toast"), text);
+        const showMessage = (id, text, kind = "warn") => {
+          $(id).innerHTML = text
+            ? `<div class="notice ${kind}">${esc(text)}</div>`
+            : "";
+        };
 
-    async function request(url, body, method = "POST") {
-        const response = await fetch(url, {
+        async function request(url, body, method = "POST") {
+          const response = await fetch(url, {
             method,
             credentials: "same-origin",
             headers: body ? { "Content-Type": "application/json" } : {},
             body: body ? JSON.stringify(body) : undefined,
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || data.message || "操作失敗。");
-        return data;
-    }
+          });
+          const data = await response.json();
+          if (!response.ok)
+            throw new Error(data.detail || data.message || "操作失敗。");
+          return data;
+        }
 
-    function current() {
-        return state.matches.find(match => match.match_id === $("match").value);
-    }
+        function current() {
+          return state.matches.find(
+            (match) => match.match_id === $("match").value,
+          );
+        }
 
-    function fieldId(key) {
-        return ({ match_date: "date", match_time: "time", topic_text: "topic" }[key] || key);
-    }
+        function fieldId(key) {
+          return (
+            { match_date: "date", match_time: "time", topic_text: "topic" }[
+              key
+            ] || key
+          );
+        }
 
-    function formSnapshot() {
-        return JSON.stringify({
-            fields: Object.fromEntries(formKeys.map(key => [key, $(fieldId(key)).value])),
-            access: $("access").value, review: $("review").value,
-            clearAccess: $("clearAccess").checked, clearReview: $("clearReview").checked,
-        });
-    }
+        function formSnapshot() {
+          return JSON.stringify({
+            fields: Object.fromEntries(
+              formKeys.map((key) => [key, $(fieldId(key)).value]),
+            ),
+            access: $("access").value,
+            review: $("review").value,
+            clearAccess: $("clearAccess").checked,
+            clearReview: $("clearReview").checked,
+          });
+        }
 
-    function hasUnsavedChanges() {
-        return savedFormSnapshot !== null && !$("manage").classList.contains("hidden") && formSnapshot() !== savedFormSnapshot;
-    }
+        function hasUnsavedChanges() {
+          return (
+            savedFormSnapshot !== null &&
+            !$("manage").classList.contains("hidden") &&
+            formSnapshot() !== savedFormSnapshot
+          );
+        }
 
-    function renderLinks() {
-        const links = state.roster_links || {};
-        $("links").innerHTML = ["pro", "con"].map(side => {
-            const link = links[side];
-            const label = side === "pro" ? "正方" : "反方";
-            const url = `${location.origin}/team-roster?token=${encodeURIComponent(link.roster_token)}`;
-            return `<section class="link-card">
+        function renderLinks() {
+          const links = state.roster_links || {};
+          $("links").innerHTML = ["pro", "con"]
+            .map((side) => {
+              const link = links[side];
+              const label = side === "pro" ? "正方" : "反方";
+              const url = `${location.origin}/team-roster?token=${encodeURIComponent(link.roster_token)}`;
+              return `<section class="link-card">
                 <h3>${label}填名連結</h3>
                 <div class="${link.submitted ? "ok" : "caption"}">狀態：${link.submitted ? "已提交" : "未提交"}</div>
                 <label for="${side}Link">${label}提交連結</label>
@@ -264,116 +569,160 @@
                     <button type="button" data-regen="${side}">重新生成連結</button>
                 </div>
             </section>`;
-        }).join("");
-    }
+            })
+            .join("");
+        }
 
-    function fillMatch() {
-        const match = current();
-        formKeys.forEach(key => {
-            const fallback = key === "match_date" ? state.default_date : key === "match_time" ? state.default_time : "";
+        function fillMatch() {
+          const match = current();
+          formKeys.forEach((key) => {
+            const fallback =
+              key === "match_date"
+                ? state.default_date
+                : key === "match_time"
+                  ? state.default_time
+                  : "";
             $(fieldId(key)).value = match[key] || fallback;
-        });
-        $("access").value = "";
-        $("review").value = "";
-        $("clearAccess").checked = false;
-        $("clearReview").checked = false;
-        $("accessState").textContent = `目前狀態：${match.has_access_code ? "已設定" : "未設定"}`;
-        $("reviewState").textContent = `目前狀態：${match.has_review_password ? "已設定" : "未設定"}`;
-        renderLinks();
-        selectedMatchId = match.match_id;
-        savedFormSnapshot = formSnapshot();
-    }
+          });
+          $("access").value = "";
+          $("review").value = "";
+          $("clearAccess").checked = false;
+          $("clearReview").checked = false;
+          $("accessState").textContent =
+            `目前狀態：${match.has_access_code ? "已設定" : "未設定"}`;
+          $("reviewState").textContent =
+            `目前狀態：${match.has_review_password ? "已設定" : "未設定"}`;
+          renderLinks();
+          selectedMatchId = match.match_id;
+          savedFormSnapshot = formSnapshot();
+        }
 
-    function render() {
-        const matches = state.matches || [];
-        $("loading").classList.add("hidden");
-        $("login").classList.add("hidden");
-        $("app").classList.remove("hidden");
-        $("empty").classList.toggle("hidden", matches.length > 0);
-        $("manage").classList.toggle("hidden", matches.length === 0);
-        if (!matches.length) { selectedMatchId = ""; savedFormSnapshot = null; return; }
-        $("match").innerHTML = matches.map(match => `<option value="${esc(match.match_id)}" ${match.match_id === state.selected_match_id ? "selected" : ""}>${esc(match.match_id)}</option>`).join("");
-        $("time").innerHTML = state.time_slots.map(time => `<option value="${esc(time)}">${esc(time)}</option>`).join("");
-        $("difficulty").innerHTML = `<option value="">全部難度</option>${state.difficulties.map(item => `<option value="${item.value}">${esc(item.label)}</option>`).join("")}`;
-        fillMatch();
-    }
+        function render() {
+          const matches = state.matches || [];
+          $("loading").classList.add("hidden");
+          $("login").classList.add("hidden");
+          $("app").classList.remove("hidden");
+          $("empty").classList.toggle("hidden", matches.length > 0);
+          $("manage").classList.toggle("hidden", matches.length === 0);
+          if (!matches.length) {
+            selectedMatchId = "";
+            savedFormSnapshot = null;
+            return;
+          }
+          $("match").innerHTML = matches
+            .map(
+              (match) =>
+                `<option value="${esc(match.match_id)}" ${match.match_id === state.selected_match_id ? "selected" : ""}>${esc(match.match_id)}</option>`,
+            )
+            .join("");
+          $("time").innerHTML = state.time_slots
+            .map((time) => `<option value="${esc(time)}">${esc(time)}</option>`)
+            .join("");
+          $("difficulty").innerHTML =
+            `<option value="">全部難度</option>${state.difficulties.map((item) => `<option value="${item.value}">${esc(item.label)}</option>`).join("")}`;
+          fillMatch();
+        }
 
-    async function load(matchId = "") {
-        const suffix = matchId ? `?match_id=${encodeURIComponent(matchId)}` : "";
-        const response = await fetch(`/api/match-info/data${suffix}`, { credentials: "same-origin" });
-        if (response.status === 401) {
+        async function load(matchId = "") {
+          const suffix = matchId
+            ? `?match_id=${encodeURIComponent(matchId)}`
+            : "";
+          const response = await fetch(`/api/match-info/data${suffix}`, {
+            credentials: "same-origin",
+          });
+          if (response.status === 401) {
             $("loading").classList.add("hidden");
             $("login").classList.remove("hidden");
             return false;
+          }
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || "載入失敗。");
+          state = data;
+          render();
+          return true;
         }
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "載入失敗。");
-        state = data;
-        render();
-        return true;
-    }
 
-    async function run(action, errorTarget = "notice") {
-        setBusy(true);
-        try {
+        async function run(action, errorTarget = "notice") {
+          setBusy(true);
+          try {
             await action();
-        } catch (error) {
+          } catch (error) {
             showMessage(errorTarget, error.message);
-        } finally {
+          } finally {
             setBusy(false);
+          }
         }
-    }
 
-    $("loginForm").addEventListener("submit", event => {
-        event.preventDefault();
-        run(async () => {
-            await request("/api/registration-admin/login", { password: $("password").value });
+        $("loginForm").addEventListener("submit", (event) => {
+          event.preventDefault();
+          run(async () => {
+            await request("/api/registration-admin/login", {
+              password: $("password").value,
+            });
             await load();
-        }, "loginMsg");
-    });
+          }, "loginMsg");
+        });
 
-    $("create").addEventListener("click", () => run(async () => {
-        const result = await request("/api/match-info/create", { match_id: $("newId").value });
-        if (!result.ok) throw new Error(result.message);
-        $("newId").value = "";
-        await load(result.match_id);
-        toast(`✅ ${result.message}`);
-    }));
+        $("create").addEventListener("click", () =>
+          run(async () => {
+            const result = await request("/api/match-info/create", {
+              match_id: $("newId").value,
+            });
+            if (!result.ok) throw new Error(result.message);
+            $("newId").value = "";
+            await load(result.match_id);
+            toast(`✅ ${result.message}`);
+          }),
+        );
 
-    $("match").addEventListener("change", () => {
-        const nextMatchId = $("match").value;
-        if (hasUnsavedChanges()) {
+        $("match").addEventListener("change", () => {
+          const nextMatchId = $("match").value;
+          if (hasUnsavedChanges()) {
             $("match").value = selectedMatchId;
             window.setTimeout(() => {
-                if (window.confirm("目前場次有尚未儲存的修改。確定要切換場次並放棄這些修改嗎？")) run(() => load(nextMatchId));
+              if (
+                window.confirm(
+                  "目前場次有尚未儲存的修改。確定要切換場次並放棄這些修改嗎？",
+                )
+              )
+                run(() => load(nextMatchId));
             }, 0);
             return;
-        }
-        run(() => load(nextMatchId));
-    });
+          }
+          run(() => load(nextMatchId));
+        });
 
-    $("drawTopic").addEventListener("click", () => run(async () => {
-        const result = await request("/api/match-info/draw-topic", { difficulty: $("difficulty").value || null });
-        if (!result.ok) throw new Error(result.message);
-        $("topic").value = result.topic;
-        toast("✅ 已抽取辯題");
-    }));
+        $("drawTopic").addEventListener("click", () =>
+          run(async () => {
+            const result = await request("/api/match-info/draw-topic", {
+              difficulty: $("difficulty").value || null,
+            });
+            if (!result.ok) throw new Error(result.message);
+            $("topic").value = result.topic;
+            toast("✅ 已抽取辯題");
+          }),
+        );
 
-    $("drawSides").addEventListener("click", () => run(async () => {
-        const result = await request("/api/match-info/draw-sides", { team1: $("team1").value, team2: $("team2").value });
-        if (!result.ok) throw new Error(result.message);
-        $("pro_team").value = result.pro_team;
-        $("con_team").value = result.con_team;
-        toast(`✅ 正方：${result.pro_team} ｜ 反方：${result.con_team}`);
-    }));
+        $("drawSides").addEventListener("click", () =>
+          run(async () => {
+            const result = await request("/api/match-info/draw-sides", {
+              team1: $("team1").value,
+              team2: $("team2").value,
+            });
+            if (!result.ok) throw new Error(result.message);
+            $("pro_team").value = result.pro_team;
+            $("con_team").value = result.con_team;
+            toast(`✅ 正方：${result.pro_team} ｜ 反方：${result.con_team}`);
+          }),
+        );
 
-    $("saveForm").addEventListener("submit", event => {
-        event.preventDefault();
-        run(async () => {
+        $("saveForm").addEventListener("submit", (event) => {
+          event.preventDefault();
+          run(async () => {
             const match = current();
             const body = { match_id: match.match_id };
-            formKeys.forEach(key => {
-                body[key] = $(fieldId(key)).value;
+            formKeys.forEach((key) => {
+              body[key] = $(fieldId(key)).value;
             });
             body.access_code = $("access").value;
             body.review_password = $("review").value;
@@ -384,40 +733,55 @@
             await load(match.match_id);
             showMessage("saveMsg", result.message, "ok");
             toast("✅ 場次資料已儲存");
-        }, "saveMsg");
-    });
+          }, "saveMsg");
+        });
 
-    $("links").addEventListener("click", event => {
-        const button = event.target.closest("button");
-        if (!button) return;
-        const side = button.dataset.reopen || button.dataset.regen;
-        const action = button.dataset.reopen ? "reopen" : "regenerate";
-        run(async () => {
-            const result = await request(`/api/match-info/${encodeURIComponent(current().match_id)}/${action}`, { side });
+        $("links").addEventListener("click", (event) => {
+          const button = event.target.closest("button");
+          if (!button) return;
+          const side = button.dataset.reopen || button.dataset.regen;
+          const action = button.dataset.reopen ? "reopen" : "regenerate";
+          run(async () => {
+            const result = await request(
+              `/api/match-info/${encodeURIComponent(current().match_id)}/${action}`,
+              { side },
+            );
             if (!result.ok) throw new Error(result.message);
             await load(current().match_id);
             toast(`✅ ${result.message}`);
+          });
         });
-    });
 
-    $("delete").addEventListener("click", () => $("confirm").classList.remove("hidden"));
-    $("cancelDelete").addEventListener("click", () => $("confirm").classList.add("hidden"));
-    $("confirmDelete").addEventListener("click", () => run(async () => {
-        const result = await request(`/api/match-info/${encodeURIComponent(current().match_id)}`, null, "DELETE");
-        if (!result.ok) throw new Error(result.message);
-        $("confirm").classList.add("hidden");
-        await load();
-        toast(`✅ ${result.message}`);
-    }));
+        $("delete").addEventListener("click", () =>
+          $("confirm").classList.remove("hidden"),
+        );
+        $("cancelDelete").addEventListener("click", () =>
+          $("confirm").classList.add("hidden"),
+        );
+        $("confirmDelete").addEventListener("click", () =>
+          run(async () => {
+            const result = await request(
+              `/api/match-info/${encodeURIComponent(current().match_id)}`,
+              null,
+              "DELETE",
+            );
+            if (!result.ok) throw new Error(result.message);
+            $("confirm").classList.add("hidden");
+            await load();
+            toast(`✅ ${result.message}`);
+          }),
+        );
 
-    window.addEventListener("beforeunload", event => {
-        if (!hasUnsavedChanges()) return;
-        event.preventDefault();
-        event.returnValue = "";
-    });
+        window.addEventListener("beforeunload", (event) => {
+          if (!hasUnsavedChanges()) return;
+          event.preventDefault();
+          event.returnValue = "";
+        });
 
-    load().catch(error => { $("loading").textContent = error.message; });
-})();
-</script>
-</body>
+        load().catch((error) => {
+          $("loading").textContent = error.message;
+        });
+      })();
+    </script>
+  </body>
 </html>

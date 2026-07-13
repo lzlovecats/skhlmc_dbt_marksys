@@ -40,7 +40,7 @@ def main():
                  "/api/match-photos/photos?page=1"):
         assert_page(check(committee_client.get(path), path))
     for path in ("/api/ai-training/inventory", "/api/ai-training/coverage",
-                 "/api/ai-training/export/recordings.zip", "/api/ai-training/export/llm.jsonl"):
+                 "/api/ai-training/export/recordings.json", "/api/ai-training/export/llm.jsonl"):
         check(committee_client.get(path), path, (200, 403))
 
     admin = TestClient(app)
