@@ -147,14 +147,22 @@ FROM tts_voice_recordings;
 只有完成驗收後才執行：
 
 ```bash
-./venv/bin/python tools/finalize_r2_media.py
+./venv/bin/python tools/finalize_r2_media.py --json
 RELEASE_VERSION="$(./venv/bin/python -c 'from version import APP_VERSION; print(APP_VERSION)')"
-./venv/bin/python tools/finalize_r2_media.py --apply --confirm "${RELEASE_VERSION}-R2-VERIFIED"
+./venv/bin/python tools/finalize_r2_media.py --apply \
+  --confirm "${RELEASE_VERSION}-R2-VERIFIED" --json
 ```
 
-第一條命令只驗證全部R2 object；第二條會再次驗證，全部成功後才drop
-`match_photos.image_data`及`tts_voice_recordings.audio_data`。目前schema及程式均
-不再建立或引用這兩個columns。
+第一條命令只對全部R2 object做HEAD，不下載媒體：original／audio會把size及SHA-256
+metadata與database逐項比對，thumbnail亦必須有有效SHA-256 metadata；全部object同時核對
+durable prefix、MIME及private cache-control。工具用keyset分批讀metadata，每批關閉
+Supabase connection後才查R2，避免長時間佔用database connection或把媒體bytes經Render。
+`--json`只輸出aggregate row／object／byte數及legacy columns狀態，不輸出object key、user id
+或secret，可保存作dry-run摘要。
+
+第二條會重新執行相同驗證，全部成功後才在同一transaction、5秒table-lock timeout內drop
+`match_photos.image_data`及`tts_voice_recordings.audio_data`。confirmation不符時，工具會在連接
+R2或database前停止。目前schema及程式均不再建立或引用這兩個columns。
 
 PostgreSQL 已刪除的 TOAST 空間未必即時反映於 database size。日常 autovacuum
 會重用空間；如要立即縮小實體檔案，需要另行評估 `VACUUM FULL` 的鎖表影響。

@@ -38,6 +38,8 @@
 
 Production audit基線：`tts_voice_recordings` 148/148及`match_photos` 45/45已有R2 key，但舊BYTEA仍分別約110.9 MB及10.9 MB。
 
+- [x] Finalizer已具備bounded keyset讀取、逐object size／SHA／MIME／cache metadata驗證、aggregate JSON報告、fail-fast及transaction lock timeout；本地tests不接觸production。
+
 1. 在真實browser抽樣播放／下載不同格式錄音、原圖及thumbnail。
 2. 確認R2 lifecycle、CORS、presigned expiry及backup符合 `docs/R2_MEDIA_MIGRATION_RUNBOOK.md`。
 3. 執行 `tools/finalize_r2_media.py` 的預設dry-run；工具要對每個object做HEAD、size/hash/metadata核對，任何一項失敗即停。
