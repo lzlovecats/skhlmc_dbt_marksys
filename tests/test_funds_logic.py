@@ -122,7 +122,7 @@ class AiFundLogicTests(unittest.TestCase):
         self.assertEqual(db.params, {"user": "member"})
 
     def test_admin_settings_reject_negative_values_and_reset_reports_count(self):
-        with patch("core.funds_logic.ai_data", return_value={"is_treasurer": True}):
+        with patch("core.funds_logic.is_ai_treasurer", return_value=True):
             with self.assertRaisesRegex(ValueError, "不能為負數"):
                 save_ai_admin("staff", {"kind":"settings","target_hkd":-1,"low_balance_hkd":0}, db=FundDb())
             result = save_ai_admin("staff", {"kind":"reset_usage"}, db=FundDb())
@@ -131,7 +131,7 @@ class AiFundLogicTests(unittest.TestCase):
     def test_already_processed_deposit_returns_conflict(self):
         from api.funds_api import StatusBody, ai_status
         with patch("api.funds_api._context", return_value=("staff", FundDb())), \
-             patch("core.funds_logic.ai_data", return_value={"is_treasurer": True}), \
+             patch("core.funds_logic.is_ai_treasurer", return_value=True), \
              patch("core.funds_logic.set_ai_transaction_status", return_value=0):
             with self.assertRaises(HTTPException) as caught:
                 ai_status(1, StatusBody(status="confirmed"), object())

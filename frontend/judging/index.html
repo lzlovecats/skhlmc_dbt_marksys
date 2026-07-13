@@ -443,8 +443,15 @@
             total = totalsData(d);
           const rows = d.raw_df_a
             .map(
-              (row, i) =>
-                `<tr><td>${roles[i]}</td><td>${esc(row["姓名"])}</td>${speech.map(([n, max]) => `<td><input id="${key}-s-${i}-${n}" type="number" min="0" max="${max}" value="${row[n] ?? 0}"></td>`).join("")}</tr>`,
+              (row, i) => {
+                const inputs = speech
+                  .map(
+                    ([n, max]) =>
+                      `<td><input id="${key}-s-${i}-${n}" type="number" min="0" max="${max}" value="${row[n] ?? 0}"></td>`,
+                  )
+                  .join("");
+                return `<tr><td>${roles[i]}</td><td>${esc(row["姓名"])}</td>${inputs}</tr>`;
+              },
             )
             .join("");
           const fields = free
@@ -453,8 +460,47 @@
                 `<div><label>${n}</label><input id="${key}-f-${n}" type="number" min="0" max="${max}" value="${d.raw_df_b[0][n] ?? 0}"></div>`,
             )
             .join("");
-          $(`panel${side === "正方" ? "Pro" : "Con"}`).innerHTML =
-            `<section class="card"><h2>（甲）台上發言 - ${side}</h2><div class="table-wrap"><table class="score-table"><thead><tr><th>辯位</th><th>姓名</th>${speech.map(([n]) => `<th>${n}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div><p class="caption">總分：<span id="${key}-speech">${total.a}</span> / ${S.config.speech_total_max}</p><h3>（乙）自由辯論</h3><div class="free-grid">${fields}</div><p class="caption">總分：<span id="${key}-free">${total.b}</span> / ${S.config.free_debate_max}</p><h3>（丙）扣分及內容連貫</h3><div class="free-grid"><div><label>扣分總和</label><input id="${key}-deduct" type="number" min="0" value="${d.deduction ?? 0}"></div><div><label>內容連貫 (${S.config.coherence_max})</label><input id="${key}-cohere" type="number" min="0" max="${S.config.coherence_max}" value="${d.coherence ?? 0}"></div></div><div class="actions"><div class="metric"><div class="label">目前總分</div><div class="value" id="${key}-total">${total.f} / ${S.config.grand_total}</div></div><button data-save="${side}" class="primary" type="button">暫存${side}評分</button></div><p class="caption" id="${key}-saved">上次儲存：${esc(hhmmss(d.last_saved) || "尚未儲存")}</p></section>`;
+          const headings = speech.map(([name]) => `<th>${name}</th>`).join("");
+          $(`panel${side === "正方" ? "Pro" : "Con"}`).innerHTML = `
+            <section class="card">
+              <h2>（甲）台上發言 - ${side}</h2>
+              <div class="table-wrap">
+                <table class="score-table">
+                  <thead><tr><th>辯位</th><th>姓名</th>${headings}</tr></thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>
+              <p class="caption">
+                總分：<span id="${key}-speech">${total.a}</span> / ${S.config.speech_total_max}
+              </p>
+              <h3>（乙）自由辯論</h3>
+              <div class="free-grid">${fields}</div>
+              <p class="caption">
+                總分：<span id="${key}-free">${total.b}</span> / ${S.config.free_debate_max}
+              </p>
+              <h3>（丙）扣分及內容連貫</h3>
+              <div class="free-grid">
+                <div>
+                  <label>扣分總和</label>
+                  <input id="${key}-deduct" type="number" min="0" value="${d.deduction ?? 0}">
+                </div>
+                <div>
+                  <label>內容連貫 (${S.config.coherence_max})</label>
+                  <input id="${key}-cohere" type="number" min="0" max="${S.config.coherence_max}" value="${d.coherence ?? 0}">
+                </div>
+              </div>
+              <div class="actions">
+                <div class="metric">
+                  <div class="label">目前總分</div>
+                  <div class="value" id="${key}-total">${total.f} / ${S.config.grand_total}</div>
+                </div>
+                <button data-save="${side}" class="primary" type="button">暫存${side}評分</button>
+              </div>
+              <p class="caption" id="${key}-saved">
+                上次儲存：${esc(hhmmss(d.last_saved) || "尚未儲存")}
+              </p>
+            </section>
+          `;
           document
             .querySelectorAll(`#panel${side === "正方" ? "Pro" : "Con"} input`)
             .forEach((i) => (i.oninput = () => refresh(side)));
@@ -614,9 +660,8 @@
               match_id: $("match").value,
               password: $("password").value,
             });
-            S.match = S.matches.find((m) => m.match_id === $("match").value);
             $("choose").classList.add("hidden");
-            render();
+            await state();
             toast("✅ 已驗證入場");
           } catch (x) {
             msg("loginMsg", x.message);
@@ -739,6 +784,6 @@
         init();
       })();
     </script>
-    <script src="/shared/judging-ux.js?v=4.0.3-judging"></script>
+    <script src="/shared/judging-ux.js"></script>
   </body>
 </html>

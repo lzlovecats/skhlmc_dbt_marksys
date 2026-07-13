@@ -1,4 +1,4 @@
-"""Streamlit-free media replay, administration, and match-photo logic."""
+"""Media replay, administration and match-photo logic."""
 
 import csv
 import datetime as dt
@@ -6,6 +6,7 @@ import io
 import itertools
 import os
 import re
+import threading
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,22 @@ from system_limits import (
 HKT = ZoneInfo("Asia/Hong_Kong")
 SOURCE_EXISTING = "連結現有場次"
 SOURCE_STANDALONE = "手動輸入舊比賽"
+_MEDIA_SCHEMA_LOCK = threading.Lock()
+_MEDIA_SCHEMA_READY = set()
+
+
+def _run_media_ddl_once(db, schema_key, statements):
+    engine = getattr(db, "_engine", None)
+    cache_key = (engine, schema_key) if engine is not None else None
+    if cache_key is not None and cache_key in _MEDIA_SCHEMA_READY:
+        return
+    with _MEDIA_SCHEMA_LOCK:
+        if cache_key is not None and cache_key in _MEDIA_SCHEMA_READY:
+            return
+        for statement in statements:
+            db.execute(statement)
+        if cache_key is not None:
+            _MEDIA_SCHEMA_READY.add(cache_key)
 OTHER_ALBUM = "其他相片"
 CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "攻辯", "台下", "交互", "自由辯論", "反結", "正結"]
 CHAPTER_ORDER = {label: index for index, label in enumerate(CHAPTER_LABELS)}
@@ -142,39 +159,59 @@ def is_youtube_url(url):
 
 def ensure_match_videos_table(db=None):
     db = _resolve_db(db)
-    db.execute(CREATE_MATCH_VIDEOS)
-    db.execute(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ALTER COLUMN match_id DROP NOT NULL")
-    for column in ("match_label", "standalone_topic_text", "standalone_pro_team", "standalone_con_team"):
-        db.execute(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS {column} TEXT")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_videos_match_id ON {TABLE_MATCH_VIDEOS}(match_id)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order ON {TABLE_MATCH_VIDEOS}(is_visible, display_order)")
+    statements = [
+        CREATE_MATCH_VIDEOS,
+        f"ALTER TABLE {TABLE_MATCH_VIDEOS} ALTER COLUMN match_id DROP NOT NULL",
+    ]
+    statements.extend(
+        f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS {column} TEXT"
+        for column in (
+            "match_label", "standalone_topic_text", "standalone_pro_team",
+            "standalone_con_team",
+        )
+    )
+    statements.extend((
+        f"CREATE INDEX IF NOT EXISTS idx_match_videos_match_id ON {TABLE_MATCH_VIDEOS}(match_id)",
+        f"CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order ON {TABLE_MATCH_VIDEOS}(is_visible, display_order)",
+    ))
+    _run_media_ddl_once(db, "match-videos", statements)
 
 
 def ensure_video_interaction_tables(db=None):
     db = _resolve_db(db)
     ensure_match_videos_table(db)
-    for sql in (CREATE_VIDEO_VIEWS, CREATE_VIDEO_COMMENTS, CREATE_VIDEO_VOTES, CREATE_VIDEO_CHAPTERS, CREATE_VIDEO_PROGRESS):
-        db.execute(sql)
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_views_video_id ON {TABLE_VIDEO_VIEWS}(video_id)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_comments_video_created ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice ON {TABLE_VIDEO_VOTES}(video_id, vote_choice)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)")
+    _run_media_ddl_once(db, "video-interactions", (
+        CREATE_VIDEO_VIEWS, CREATE_VIDEO_COMMENTS, CREATE_VIDEO_VOTES,
+        CREATE_VIDEO_CHAPTERS, CREATE_VIDEO_PROGRESS,
+        f"CREATE INDEX IF NOT EXISTS idx_video_views_video_id ON {TABLE_VIDEO_VIEWS}(video_id)",
+        f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)",
+        f"CREATE INDEX IF NOT EXISTS idx_video_comments_video_created ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC)",
+        f"CREATE INDEX IF NOT EXISTS idx_video_comments_user_created ON {TABLE_VIDEO_COMMENTS}(user_id, created_at DESC)",
+        f"CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice ON {TABLE_VIDEO_VOTES}(video_id, vote_choice)",
+        f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)",
+    ))
 
 
 def ensure_match_photos_table(db=None):
     db = _resolve_db(db)
     ensure_match_videos_table(db)
-    db.execute(CREATE_MATCH_PHOTOS)
-    db.execute(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS photo_date DATE")
-    for column, data_type in (
-        ("r2_key", "TEXT"), ("thumbnail_r2_key", "TEXT"),
-        ("byte_size", "INTEGER"), ("sha256", "TEXT"),
-        ("width", "INTEGER"), ("height", "INTEGER"),
-    ):
-        db.execute(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS {column} {data_type}")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_photos_date_created ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC)")
+    statements = [
+        CREATE_MATCH_PHOTOS,
+        f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS photo_date DATE",
+    ]
+    statements.extend(
+        f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS {column} {data_type}"
+        for column, data_type in (
+            ("r2_key", "TEXT"), ("thumbnail_r2_key", "TEXT"),
+            ("byte_size", "INTEGER"), ("sha256", "TEXT"),
+            ("width", "INTEGER"), ("height", "INTEGER"),
+        )
+    )
+    statements.extend((
+        f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)",
+        f"CREATE INDEX IF NOT EXISTS idx_match_photos_date_created ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC)",
+    ))
+    _run_media_ddl_once(db, "match-photos", statements)
 
 
 def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT):
@@ -264,21 +301,32 @@ def add_comment(video_id, user_id, comment_text, db=None):
     if not comment_text:
         return {"ok": False, "message": "請輸入留言內容。"}
     db = _resolve_db(db)
-    counts = db.query(f"""SELECT
-        COUNT(*) AS video_count,
-        COUNT(*) FILTER (WHERE user_id=:user_id AND created_at>=:user_cutoff) AS user_day_count
-        FROM {TABLE_VIDEO_COMMENTS} WHERE video_id=:video_id""",
-        {"video_id": int(video_id), "user_id": user_id,
-         "user_cutoff": now_hkt() - dt.timedelta(hours=VIDEO_COMMENT_RATE_WINDOW_HOURS)})
-    if not counts.empty:
-        if int(counts.iloc[0]["video_count"] or 0) >= VIDEO_COMMENT_MAX_PER_VIDEO:
+    now = now_hkt()
+    params = {
+        "video_id": int(video_id), "user_id": user_id,
+        "comment_text": comment_text, "created_at": now,
+        "user_cutoff": now - dt.timedelta(hours=VIDEO_COMMENT_RATE_WINDOW_HOURS),
+    }
+    # One short transaction makes both quotas authoritative under concurrent
+    # requests. The per-user limit is intentionally global across all videos;
+    # scoping it to one video allowed the nominal daily cap to multiply by the
+    # full video inventory.
+    with db.transaction() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('video_comment_quota'))"))
+        counts = conn.execute(text(f"""SELECT
+            (SELECT COUNT(*) FROM {TABLE_VIDEO_COMMENTS}
+              WHERE video_id=:video_id) AS video_count,
+            (SELECT COUNT(*) FROM {TABLE_VIDEO_COMMENTS}
+              WHERE user_id=:user_id AND created_at>=:user_cutoff) AS user_day_count
+        """), params).mappings().first()
+        if counts and int(counts["video_count"] or 0) >= VIDEO_COMMENT_MAX_PER_VIDEO:
             return {"ok": False, "message": "此片段留言已達保護上限。"}
-        if int(counts.iloc[0]["user_day_count"] or 0) >= VIDEO_COMMENT_MAX_PER_USER_DAY:
+        if counts and int(counts["user_day_count"] or 0) >= VIDEO_COMMENT_MAX_PER_USER_DAY:
             return {"ok": False, "message": "你今日的片段留言次數已達上限。"}
-    db.execute(
-        f"INSERT INTO {TABLE_VIDEO_COMMENTS} (video_id, user_id, comment_text, created_at) VALUES (:video_id, :user_id, :comment_text, :created_at)",
-        {"video_id": int(video_id), "user_id": user_id, "comment_text": comment_text, "created_at": now_hkt()},
-    )
+        conn.execute(text(
+            f"INSERT INTO {TABLE_VIDEO_COMMENTS} (video_id, user_id, comment_text, created_at) "
+            "VALUES (:video_id, :user_id, :comment_text, :created_at)"
+        ), params)
     return {"ok": True, "message": "已成功留言"}
 
 
@@ -297,12 +345,19 @@ def save_chapters(video_id, chapters, db=None):
     if invalid:
         return {"ok": False, "message": "以下章節時間格式無效：" + "、".join(invalid)}
     db = _resolve_db(db)
-    db.execute(f"DELETE FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id = :video_id", {"video_id": int(video_id)})
-    for label, index, seconds in values:
-        db.execute(
-            f"INSERT INTO {TABLE_VIDEO_CHAPTERS} (video_id, chapter_label, start_seconds, display_order, updated_at) VALUES (:video_id, :chapter_label, :start_seconds, :display_order, :updated_at)",
-            {"video_id": int(video_id), "chapter_label": label, "start_seconds": seconds, "display_order": index, "updated_at": now_hkt()},
-        )
+    params = [
+        {"video_id": int(video_id), "chapter_label": label,
+         "start_seconds": seconds, "display_order": index, "updated_at": now_hkt()}
+        for label, index, seconds in values
+    ]
+    with db.transaction() as conn:
+        conn.execute(text(f"DELETE FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id=:video_id"),
+                     {"video_id": int(video_id)})
+        if params:
+            conn.execute(text(f"""INSERT INTO {TABLE_VIDEO_CHAPTERS}
+                (video_id,chapter_label,start_seconds,display_order,updated_at)
+                VALUES(:video_id,:chapter_label,:start_seconds,:display_order,:updated_at)"""),
+                params)
     return {"ok": True, "message": "章節時間表已更新。"}
 
 
@@ -612,6 +667,9 @@ def photo_media(photo_id, db=None):
     return {
         "file_name": clean_text(row.get("file_name")) or f"match-photo-{int(photo_id)}.jpg",
         "mime_type": clean_text(row.get("mime_type")) or "image/webp",
+        # Both the browser upload path and the legacy migration tool encode
+        # thumbnails as WebP even when an old original was JPEG or PNG.
+        "thumbnail_mime_type": "image/webp",
         "r2_key": clean_text(row.get("r2_key")),
         "thumbnail_r2_key": clean_text(row.get("thumbnail_r2_key")),
     }

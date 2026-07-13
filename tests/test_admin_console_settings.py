@@ -66,7 +66,15 @@ class AccessDb:
     def query(self, sql, params=None):
         if "SELECT 1 FROM accounts" in sql:
             return pd.DataFrame({"exists": [1]})
+        if "FROM app_config" in sql:
+            return pd.DataFrame(columns=["key", "value"])
         if "FROM system_config" in sql:
+            if " IN (" in sql:
+                keys = set((params or {}).values())
+                return pd.DataFrame([
+                    {"key": key, "value": value}
+                    for key, value in self.configs.items() if key in keys
+                ])
             key = (params or {}).get("key")
             return pd.DataFrame({"value": [self.configs[key]]}) if key in self.configs else pd.DataFrame()
         return pd.DataFrame()
@@ -81,16 +89,21 @@ class TokenRow:
 
 
 class TokenResult:
+    def __init__(self, rows):
+        self.rows = rows
+
     def fetchall(self):
-        return [
-            TokenRow("cookie_secret", "secret"),
-            TokenRow("login_disabled_accounts", '["alice"]'),
-        ]
+        return self.rows
 
 
 class TokenConnection:
-    def execute(self, _statement):
-        return TokenResult()
+    def execute(self, statement, _params=None):
+        if "FROM app_config" in str(statement):
+            return TokenResult([])
+        return TokenResult([
+            TokenRow("cookie_secret", "secret"),
+            TokenRow("login_disabled_accounts", '["alice"]'),
+        ])
 
 
 class TokenEngine:
@@ -118,7 +131,7 @@ class DeveloperSettingsTests(unittest.TestCase):
         self.assertNotIn('textarea id="ttsAllowed"', html)
         self.assertIn('selected("ttsReviewers")', adapter)
 
-    def test_page_restores_streamlit_admin_controls_without_browser_prompts(self):
+    def test_page_exposes_admin_controls_without_browser_prompts(self):
         html = (ROOT / "frontend" / "dev_settings" / "index.html").read_text(encoding="utf-8")
         for marker in (
             'id="pushForm"',
@@ -156,8 +169,8 @@ class DeveloperSettingsTests(unittest.TestCase):
         })
         with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
             self.assertEqual(developer_settings(body, object()), {"ok": True})
-        stored = {row["key"]: row["value"] for row in db.executed}
-        self.assertEqual(stored["maintenance_mode"], "true")
+        stored = {row["key"]: json.loads(row["value"]) for row in db.executed}
+        self.assertIs(stored["maintenance_mode"], True)
         self.assertEqual(stored["maintenance_deadline"], deadline)
 
     def test_maintenance_mode_requires_a_deadline(self):

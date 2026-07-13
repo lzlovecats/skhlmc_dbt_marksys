@@ -685,8 +685,35 @@
               : "");
           $("suggestion").textContent =
             `目標金額：${money(s.target_hkd)}｜建議補充：${money(s.suggested_total_hkd)}｜按 ${s.member_count} 人計每人約 ${money(s.suggested_per_member_hkd)}`;
-          $("providers").innerHTML =
-            `<div class="provider-stat"><b>OpenRouter 剩餘 credits</b><p class="value">${or.ok ? usd(or.remaining_credits_usd) : "未能讀取"}</p><p class="caption">${or.ok ? `Purchased：${usd(or.total_credits_usd)}｜Used：${usd(or.total_usage_usd)}｜約 ${money(or.remaining_credits_usd * 7.8)}` : esc(or.message || "OpenRouter credits 讀取失敗。")}<br>${or.ok ? "由 OpenRouter credits API 即時讀取。" : ""}</p></div><div class="provider-stat"><b>Google AI Studio 手動餘額</b><p class="value">${data.google_balance.balance_usd === null ? "未設定" : usd(data.google_balance.balance_usd)}</p><p class="caption">${data.google_balance.balance_usd === null ? "由 AI基金管理員從 AI Studio Billing 手動更新。" : `約 ${money(data.google_balance.balance_usd * 7.8)}｜更新：${esc(data.google_balance.updated_at || "—")}｜${esc(data.google_balance.updated_by || "—")}`}</p></div>`;
+          $("providers").innerHTML = `<div class="provider-stat">
+              <b>OpenRouter 剩餘 credits</b>
+              <p class="value">${or.ok ? usd(or.remaining_credits_usd) : "未能讀取"}</p>
+              <p class="caption">
+                ${
+                  or.ok
+                    ? `Purchased：${usd(or.total_credits_usd)}｜Used：${usd(or.total_usage_usd)}｜約 ${money(or.remaining_credits_usd * 7.8)}`
+                    : esc(or.message || "OpenRouter credits 讀取失敗。")
+                }
+                <br />${or.ok ? "由 OpenRouter credits API 即時讀取。" : ""}
+              </p>
+            </div>
+            <div class="provider-stat">
+              <b>Google AI Studio 手動餘額</b>
+              <p class="value">
+                ${
+                  data.google_balance.balance_usd === null
+                    ? "未設定"
+                    : usd(data.google_balance.balance_usd)
+                }
+              </p>
+              <p class="caption">
+                ${
+                  data.google_balance.balance_usd === null
+                    ? "由 AI基金管理員從 AI Studio Billing 手動更新。"
+                    : `約 ${money(data.google_balance.balance_usd * 7.8)}｜更新：${esc(data.google_balance.updated_at || "—")}｜${esc(data.google_balance.updated_by || "—")}`
+                }
+              </p>
+            </div>`;
           $("instruction").textContent = st.payment_instruction;
           $("transactionTitle").textContent = data.is_treasurer
             ? "交易紀錄"

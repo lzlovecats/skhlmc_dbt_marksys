@@ -138,7 +138,13 @@ def _format_time(value):
 
 
 def _as_df(value):
-    return value if isinstance(value, pd.DataFrame) else pd.DataFrame()
+    if isinstance(value, pd.DataFrame):
+        return value
+    if isinstance(value, dict):
+        return pd.DataFrame([value])
+    if isinstance(value, (list, tuple)):
+        return pd.DataFrame(value)
+    return pd.DataFrame()
 
 
 def _row_value(df, row_index, column, default=""):

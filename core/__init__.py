@@ -1,2 +1,1 @@
-"""Pure backend domain logic, shared by the Streamlit pages and the JSON API.
-No streamlit / st.* here."""
+"""UI-independent backend domain logic used by the FastAPI application."""

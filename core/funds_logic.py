@@ -1,11 +1,12 @@
-"""Streamlit-free ledger logic shared by the lateness and AI fund pages."""
+"""Ledger logic shared by the lateness and AI fund APIs."""
 
-import json
-import os
+import math
 import threading
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from core.config_store import get_config, get_configs, set_configs
 from core.vote_logic import _resolve_db
 from schema import (
     CREATE_AI_FUND_TRANSACTIONS, CREATE_AI_FUND_USAGE_LOGS,
@@ -14,7 +15,11 @@ from schema import (
     TABLE_AI_FUND_USAGE_LOGS, TABLE_LATENESS_FUND_EXPENSES,
     TABLE_LATENESS_FUND_PERIODS, TABLE_LATENESS_FUND_RECORDS,
 )
-from system_limits import ACCOUNT_LIST_LIMIT, AI_USAGE_RETENTION_DAYS
+from system_limits import (
+    ACCOUNT_LIST_LIMIT,
+    AI_USAGE_RETENTION_DAYS,
+    MAINTENANCE_PRUNE_INTERVAL_SECONDS,
+)
 
 HKD_PER_USD = 7.8
 AI_FUND_TARGET_DEFAULT = 500.0
@@ -47,8 +52,12 @@ AI_USAGE_FEATURES = (
     "tts_script_analysis", "llm_review",
 )
 LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
+_LATENESS_SCHEMA_LOCK = threading.Lock()
+_LATENESS_SCHEMA_READY = False
 _AI_SCHEMA_LOCK = threading.Lock()
 _AI_SCHEMA_READY = False
+_AI_PRUNE_LOCK = threading.Lock()
+_AI_LAST_PRUNE = 0.0
 
 
 def _now():
@@ -61,9 +70,10 @@ def _today_hk():
 
 def _float(value, default=0.0):
     try:
-        return float(value if value is not None else default)
+        number = float(value if value is not None else default)
     except (TypeError, ValueError):
         return default
+    return number if math.isfinite(number) else default
 
 
 def _rows(frame):
@@ -82,11 +92,25 @@ def _json_value(value):
 
 
 def _ensure_lateness(db):
-    db.execute(CREATE_LATENESS_FUND_RECORDS)
-    db.execute(CREATE_LATENESS_FUND_EXPENSES)
-    db.execute(CREATE_LATENESS_FUND_PERIODS)
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date ON {TABLE_LATENESS_FUND_EXPENSES}(expense_date)")
+    """Create the lazily-supported ledger schema once per worker."""
+    global _LATENESS_SCHEMA_READY
+    if _LATENESS_SCHEMA_READY:
+        return
+    with _LATENESS_SCHEMA_LOCK:
+        if _LATENESS_SCHEMA_READY:
+            return
+        db.execute(CREATE_LATENESS_FUND_RECORDS)
+        db.execute(CREATE_LATENESS_FUND_EXPENSES)
+        db.execute(CREATE_LATENESS_FUND_PERIODS)
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date "
+            f"ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date)"
+        )
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date "
+            f"ON {TABLE_LATENESS_FUND_EXPENSES}(expense_date)"
+        )
+        _LATENESS_SCHEMA_READY = True
 
 
 def fiscal_start(value):
@@ -99,7 +123,10 @@ def fiscal_label(year):
 
 
 def fiscal_range(year):
-    return date(int(year), 9, 1), date(int(year) + 1, 8, 31)
+    year = int(year)
+    if year < 1 or year > 9998:
+        raise ValueError("財政年度無效。")
+    return date(year, 9, 1), date(year + 1, 8, 31)
 
 
 def _valid_date(value, label):
@@ -111,13 +138,9 @@ def _valid_date(value, label):
 
 def lateness_managers(db=None):
     db = _resolve_db(db)
-    raw = _config(db, "lateness_fund_managers", "")
-    if not raw:
+    values = _config(db, "lateness_fund_managers", [])
+    if not isinstance(values, list) or not values:
         return list(LATENESS_FUND_MANAGERS_DEFAULT)
-    try:
-        values = json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
-        values = []
     managers = [str(value).strip() for value in values if str(value).strip()]
     return managers or list(LATENESS_FUND_MANAGERS_DEFAULT)
 
@@ -126,27 +149,110 @@ def is_lateness_manager(user_id, db=None):
     return str(user_id or "").strip() in lateness_managers(db)
 
 
+def _lateness_totals(year, db):
+    """Return all fiscal-period totals without four separate aggregate queries."""
+    start, end = fiscal_range(year)
+    params = {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "year_label": fiscal_label(year),
+    }
+    rows = db.query(
+        f"""
+        WITH ranked AS (
+            SELECT
+                late_minutes,
+                COALESCE(paid_amount, 0) AS paid_amount,
+                ROW_NUMBER() OVER (
+                    PARTITION BY member_user_id ORDER BY late_date, id
+                ) AS late_no
+            FROM {TABLE_LATENESS_FUND_RECORDS}
+            WHERE late_date BETWEEN :start AND :end
+        )
+        SELECT
+            COUNT(*) AS count,
+            COALESCE(SUM(paid_amount), 0) AS received,
+            COALESCE(SUM(late_no * late_minutes), 0) AS penalties,
+            COALESCE((
+                SELECT SUM(amount_hkd)
+                FROM {TABLE_LATENESS_FUND_EXPENSES}
+                WHERE expense_date BETWEEN :start AND :end
+            ), 0) AS expenses,
+            COALESCE((
+                SELECT opening_balance
+                FROM {TABLE_LATENESS_FUND_PERIODS}
+                WHERE year_label = :year_label
+            ), 0) AS opening
+        FROM ranked
+        """,
+        params,
+    )
+    if rows.empty:
+        return {"count": 0, "received": 0.0, "penalties": 0.0, "expenses": 0.0, "opening": 0.0}
+    row = rows.iloc[0]
+    return {
+        "count": int(row.get("count", 0) or 0),
+        "received": _float(row.get("received")),
+        "penalties": _float(row.get("penalties")),
+        "expenses": _float(row.get("expenses")),
+        "opening": _float(row.get("opening")),
+    }
+
+
 def lateness_data(selected_year=None, user_id=None, db=None):
-    db = _resolve_db(db); _ensure_lateness(db)
+    db = _resolve_db(db)
+    _ensure_lateness(db)
     years = {fiscal_start(_today_hk())}
-    year_rows=db.query(f"SELECT DISTINCT (CASE WHEN EXTRACT(MONTH FROM late_date)>=9 THEN EXTRACT(YEAR FROM late_date) ELSE EXTRACT(YEAR FROM late_date)-1 END)::int fiscal_year FROM {TABLE_LATENESS_FUND_RECORDS} UNION SELECT DISTINCT (CASE WHEN EXTRACT(MONTH FROM expense_date)>=9 THEN EXTRACT(YEAR FROM expense_date) ELSE EXTRACT(YEAR FROM expense_date)-1 END)::int FROM {TABLE_LATENESS_FUND_EXPENSES}")
-    years.update(int(value) for value in year_rows.get("fiscal_year",[]) if value is not None)
+    year_rows = db.query(
+        f"""
+        SELECT DISTINCT (
+            CASE WHEN EXTRACT(MONTH FROM late_date) >= 9
+                 THEN EXTRACT(YEAR FROM late_date)
+                 ELSE EXTRACT(YEAR FROM late_date) - 1 END
+        )::int AS fiscal_year
+        FROM {TABLE_LATENESS_FUND_RECORDS}
+        UNION
+        SELECT DISTINCT (
+            CASE WHEN EXTRACT(MONTH FROM expense_date) >= 9
+                 THEN EXTRACT(YEAR FROM expense_date)
+                 ELSE EXTRACT(YEAR FROM expense_date) - 1 END
+        )::int AS fiscal_year
+        FROM {TABLE_LATENESS_FUND_EXPENSES}
+        """
+    )
+    years.update(int(value) for value in year_rows.get("fiscal_year", []) if value is not None)
     year = int(selected_year) if selected_year is not None else max(years)
     start, end = fiscal_range(year)
-    params={"start":start.isoformat(),"end":end.isoformat()}
-    totals=db.query(f"""WITH ranked AS (SELECT late_minutes,COALESCE(paid_amount,0) paid_amount,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end) SELECT COUNT(*) count,COALESCE(SUM(paid_amount),0) received,COALESCE(SUM(late_no*late_minutes),0) penalties FROM ranked""",params).iloc[0]
-    expense_row=db.query(f"SELECT COALESCE(SUM(amount_hkd),0) expenses FROM {TABLE_LATENESS_FUND_EXPENSES} WHERE expense_date BETWEEN :start AND :end",params).iloc[0]
-    opening_df = db.query(f"SELECT opening_balance FROM {TABLE_LATENESS_FUND_PERIODS} WHERE year_label=:year", {"year": fiscal_label(year)})
-    opening = _float(opening_df.iloc[0]["opening_balance"]) if not opening_df.empty else 0.0
-    penalties=_float(totals["penalties"]);received=_float(totals["received"]);expense_total=_float(expense_row["expenses"])
-    accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_LIST_LIMIT})
+    totals = _lateness_totals(year, db)
+    accounts = db.query(
+        f"SELECT user_id FROM {TABLE_ACCOUNTS} "
+        "WHERE user_id NOT IN ('admin','developer','') "
+        "AND COALESCE(account_disabled,FALSE)=FALSE "
+        "ORDER BY user_id LIMIT :account_limit",
+        {"account_limit": ACCOUNT_LIST_LIMIT},
+    )
     outstanding = lateness_outstanding(year, db=db)
-    return {"year": year, "years": sorted(years, reverse=True), "label": fiscal_label(year), "range": [start.isoformat(), end.isoformat()],
-            "metrics": {"opening": opening, "received": received, "expenses": expense_total, "closing": opening + received - expense_total, "penalties": penalties, "outstanding": penalties - received, "count": int(totals["count"] or 0)},
-            "summary": [], "records": [], "expenses": [],
-            "members": [str(value).strip() for value in accounts.get("user_id", []) if str(value).strip()],
-            "is_manager": is_lateness_manager(user_id, db=db) if user_id else False,
-            "outstanding_members": outstanding}
+    return {
+        "year": year,
+        "years": sorted(years, reverse=True),
+        "label": fiscal_label(year),
+        "range": [start.isoformat(), end.isoformat()],
+        "metrics": {
+            "opening": totals["opening"],
+            "received": totals["received"],
+            "expenses": totals["expenses"],
+            "closing": totals["opening"] + totals["received"] - totals["expenses"],
+            "penalties": totals["penalties"],
+            "outstanding": totals["penalties"] - totals["received"],
+            "count": totals["count"],
+        },
+        "summary": [],
+        "records": [],
+        "expenses": [],
+        "members": [str(value).strip() for value in accounts.get("user_id", []) if str(value).strip()],
+        "is_manager": is_lateness_manager(user_id, db=db) if user_id else False,
+        "outstanding_members": outstanding,
+    }
 
 
 def lateness_outstanding(year, db=None):
@@ -169,8 +275,10 @@ def set_lateness_opening(year, amount, db=None):
 
 
 def carry_lateness_opening(year, db=None):
-    previous = lateness_data(int(year) - 1, db=db)
-    amount = previous["metrics"]["closing"]
+    db = _resolve_db(db)
+    _ensure_lateness(db)
+    previous = _lateness_totals(int(year) - 1, db)
+    amount = previous["opening"] + previous["received"] - previous["expenses"]
     set_lateness_opening(year, amount, db=db)
     return amount
 
@@ -199,27 +307,27 @@ def update_lateness_paid(record_id, amount, db=None):
 
 
 def delete_lateness(kind, row_id, db=None):
-    table = TABLE_LATENESS_FUND_RECORDS if kind == "record" else TABLE_LATENESS_FUND_EXPENSES
+    tables = {
+        "record": TABLE_LATENESS_FUND_RECORDS,
+        "expense": TABLE_LATENESS_FUND_EXPENSES,
+    }
+    if kind not in tables:
+        raise ValueError("不支援的基金紀錄類型。")
+    table = tables[kind]
     return _resolve_db(db).execute_count(f"DELETE FROM {table} WHERE id=:id", {"id":int(row_id)})
 
 
 def _ensure_ai(db):
     global _AI_SCHEMA_READY
-    if _AI_SCHEMA_READY: return
-    with _AI_SCHEMA_LOCK:
-        if _AI_SCHEMA_READY: return
-        db.execute(CREATE_AI_FUND_TRANSACTIONS); db.execute(CREATE_AI_FUND_USAGE_LOGS)
-        db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
-        db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
-        db.execute(f"CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at ON {TABLE_AI_FUND_USAGE_LOGS}(created_at)")
-        # Detailed provider telemetry is only used for current quota/cost views;
-        # fund transactions remain permanent. Prune once on worker startup so
-        # token metadata cannot grow without bound in the 500MB database.
-        db.execute(f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS} WHERE created_at<:cutoff", {
-            "cutoff": datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-                      - timedelta(days=AI_USAGE_RETENTION_DAYS),
-        })
-        db.execute(f"""DO $$
+    if not _AI_SCHEMA_READY:
+        with _AI_SCHEMA_LOCK:
+            if not _AI_SCHEMA_READY:
+                db.execute(CREATE_AI_FUND_TRANSACTIONS)
+                db.execute(CREATE_AI_FUND_USAGE_LOGS)
+                db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
+                db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
+                db.execute(f"CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at ON {TABLE_AI_FUND_USAGE_LOGS}(created_at)")
+                db.execute(f"""DO $$
         DECLARE item RECORD;
         BEGIN
           PERFORM pg_advisory_xact_lock(hashtext('ai_fund_transaction_type_v2'));
@@ -240,11 +348,31 @@ def _ensure_ai(db):
               CHECK (transaction_type IN ('member_deposit','provider_topup','provider_refund','member_refund','adjustment'));
           END IF;
         END $$""")
-        _AI_SCHEMA_READY = True
+                _AI_SCHEMA_READY = True
+    _prune_ai_usage(db)
+
+
+def _prune_ai_usage(db):
+    """Retain detailed token telemetry without relying on worker restarts."""
+    global _AI_LAST_PRUNE
+    monotonic_now = time.monotonic()
+    if monotonic_now - _AI_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+        return
+    with _AI_PRUNE_LOCK:
+        if monotonic_now - _AI_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+            return
+        db.execute(
+            f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS} WHERE created_at<:cutoff",
+            {
+                "cutoff": datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+                - timedelta(days=AI_USAGE_RETENTION_DAYS),
+            },
+        )
+        _AI_LAST_PRUNE = monotonic_now
 
 
 def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
-    """Record one non-Streamlit AI call using actual provider token metadata."""
+    """Record one AI call using actual provider token metadata."""
     if feature not in AI_USAGE_FEATURES:
         raise ValueError("不支援的 AI 功能類型。")
     db = _resolve_db(db)
@@ -282,30 +410,106 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
 
 
 def _config(db, key, default=""):
-    rows = db.query("SELECT value FROM system_config WHERE key=:key", {"key":key})
-    return str(rows.iloc[0]["value"]) if not rows.empty and rows.iloc[0]["value"] is not None else default
+    return get_config(db, key, default)
 
 
-def _save_config(db, key, value):
-    db.execute("INSERT INTO system_config(key,value,updated_at) VALUES(:key,:value,:now) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at", {"key":key,"value":str(value),"now":_now()})
+def _configs(db, keys):
+    return get_configs(db, keys)
+
+
+def is_ai_treasurer(user_id, db=None):
+    """Check the role without loading balances, usage aggregates, and accounts."""
+    db = _resolve_db(db)
+    values = _config(db, "ai_fund_treasurers", [])
+    if not isinstance(values, list):
+        return False
+    user_id = str(user_id or "").strip()
+    return user_id in {str(value).strip() for value in values if str(value).strip()}
 
 
 def ai_data(user_id, db=None):
-    db = _resolve_db(db); _ensure_ai(db)
-    try: treasurers = [str(x).strip() for x in json.loads(_config(db, "ai_fund_treasurers", "[]")) if str(x).strip()]
-    except (TypeError, json.JSONDecodeError): treasurers = []
-    treasurer = user_id in treasurers
-    settings = {"treasurers":treasurers,"target_hkd":_float(_config(db,"ai_fund_target_hkd",AI_FUND_TARGET_DEFAULT)),"low_balance_hkd":_float(_config(db,"ai_fund_low_balance_hkd",AI_FUND_LOW_BALANCE_DEFAULT)),"payment_instruction":_config(db,"ai_fund_payment_instruction",AI_FUND_PAYMENT_DEFAULT)}
-    balance = db.query(f"SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) amount FROM {TABLE_AI_FUND_TRANSACTIONS} WHERE status='confirmed'")
-    pending = db.query(f"SELECT COALESCE(SUM(amount_hkd),0) amount FROM {TABLE_AI_FUND_TRANSACTIONS} WHERE status='pending' AND transaction_type='member_deposit'")
+    db = _resolve_db(db)
+    _ensure_ai(db)
+    config = _configs(db, (
+        "ai_fund_treasurers",
+        "ai_fund_target_hkd",
+        "ai_fund_low_balance_hkd",
+        "ai_fund_payment_instruction",
+        "google_ai_studio_balance_usd",
+        "google_ai_studio_balance_updated_at",
+        "google_ai_studio_balance_updated_by",
+    ))
+    treasurer_values = config.get("ai_fund_treasurers") or []
+    treasurers = (
+        [str(value).strip() for value in treasurer_values if str(value).strip()]
+        if isinstance(treasurer_values, list) else []
+    )
+    treasurer = str(user_id or "").strip() in treasurers
+    settings = {
+        "treasurers": treasurers,
+        "target_hkd": _float(config.get("ai_fund_target_hkd"), AI_FUND_TARGET_DEFAULT),
+        "low_balance_hkd": _float(config.get("ai_fund_low_balance_hkd"), AI_FUND_LOW_BALANCE_DEFAULT),
+        "payment_instruction": config.get("ai_fund_payment_instruction") or AI_FUND_PAYMENT_DEFAULT,
+    }
     since = (datetime.now(ZoneInfo("Asia/Hong_Kong"))-timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-    recent = db.query(f"SELECT COALESCE(SUM(estimated_cost_hkd),0) amount FROM {TABLE_AI_FUND_USAGE_LOGS} WHERE status='success' AND created_at>=:since", {"since":since})
+    totals = db.query(
+        f"""
+        SELECT
+            COALESCE((
+                SELECT SUM(CASE
+                    WHEN transaction_type='member_deposit' THEN amount_hkd
+                    WHEN transaction_type='provider_topup' THEN -amount_hkd
+                    WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd
+                    WHEN transaction_type='member_refund' THEN -amount_hkd
+                    WHEN transaction_type='adjustment' THEN amount_hkd
+                    ELSE 0 END)
+                FROM {TABLE_AI_FUND_TRANSACTIONS}
+                WHERE status='confirmed'
+            ), 0) AS balance,
+            COALESCE((
+                SELECT SUM(amount_hkd)
+                FROM {TABLE_AI_FUND_TRANSACTIONS}
+                WHERE status='pending' AND transaction_type='member_deposit'
+            ), 0) AS pending,
+            COALESCE((
+                SELECT SUM(estimated_cost_hkd)
+                FROM {TABLE_AI_FUND_USAGE_LOGS}
+                WHERE status='success' AND created_at>=:since
+            ), 0) AS recent_usage
+        """,
+        {"since": since},
+    )
     transactions = []
     usage = []
     accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_LIST_LIMIT})
-    amount = _float(balance.iloc[0]["amount"]); account_count = len(accounts)
-    google = _config(db,"google_ai_studio_balance_usd","")
-    return {"user_id":user_id,"is_treasurer":treasurer,"settings":settings,"summary":{"balance_hkd":amount,"pending_deposits_hkd":_float(pending.iloc[0]["amount"]),"recent_usage_hkd":_float(recent.iloc[0]["amount"]),"target_hkd":settings["target_hkd"],"low_balance_hkd":settings["low_balance_hkd"],"member_count":account_count,"suggested_total_hkd":max(0,settings["target_hkd"]-amount),"suggested_per_member_hkd":max(0,settings["target_hkd"]-amount)/account_count if account_count else 0},"transactions":transactions,"usage":usage,"accounts":[str(v) for v in accounts.get("user_id",[])],"google_balance":{"balance_usd":None if google=="" else _float(google),"updated_at":_config(db,"google_ai_studio_balance_updated_at"),"updated_by":_config(db,"google_ai_studio_balance_updated_by")}}
+    total_row = totals.iloc[0] if not totals.empty else {}
+    amount = _float(total_row.get("balance")); account_count = len(accounts)
+    google = config.get("google_ai_studio_balance_usd")
+    return {
+        "user_id": user_id,
+        "is_treasurer": treasurer,
+        "settings": settings,
+        "summary": {
+            "balance_hkd": amount,
+            "pending_deposits_hkd": _float(total_row.get("pending")),
+            "recent_usage_hkd": _float(total_row.get("recent_usage")),
+            "target_hkd": settings["target_hkd"],
+            "low_balance_hkd": settings["low_balance_hkd"],
+            "member_count": account_count,
+            "suggested_total_hkd": max(0, settings["target_hkd"] - amount),
+            "suggested_per_member_hkd": (
+                max(0, settings["target_hkd"] - amount) / account_count if account_count else 0
+            ),
+        },
+        "transactions": transactions,
+        "usage": usage,
+        "accounts": [str(value) for value in accounts.get("user_id", [])],
+        "google_balance": {
+            "balance_usd": None if google is None else _float(google),
+            "updated_at": config.get("google_ai_studio_balance_updated_at") or "",
+            "updated_by": config.get("google_ai_studio_balance_updated_by") or "",
+        },
+    }
 
 
 def add_ai_transaction(user_id, transaction_type, amount, provider="general", payment_method="", reference_no="", note="", confirmed=False, db=None):
@@ -320,9 +524,24 @@ def add_ai_transaction(user_id, transaction_type, amount, provider="general", pa
 
 
 def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None):
-    if status not in {"confirmed","rejected"}: raise ValueError("不支援的狀態。")
-    field = "confirmed" if status == "confirmed" else "rejected"; now = _now()
-    return _resolve_db(db).execute_count(f"UPDATE {TABLE_AI_FUND_TRANSACTIONS} SET status=:status,{field}_by=:user,{field}_at=:now,status_note=:note WHERE id=:id AND status='pending'", {"id":int(transaction_id),"status":status,"user":user_id,"now":now,"note":str(note or "").strip()[:2000]})
+    if status not in {"confirmed", "rejected"}:
+        raise ValueError("不支援的狀態。")
+    db = _resolve_db(db)
+    _ensure_ai(db)
+    field = "confirmed" if status == "confirmed" else "rejected"
+    now = _now()
+    return db.execute_count(
+        f"UPDATE {TABLE_AI_FUND_TRANSACTIONS} "
+        f"SET status=:status,{field}_by=:user,{field}_at=:now,status_note=:note "
+        "WHERE id=:id AND status='pending'",
+        {
+            "id": int(transaction_id),
+            "status": status,
+            "user": user_id,
+            "now": now,
+            "note": str(note or "").strip()[:2000],
+        },
+    )
 
 
 def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
@@ -353,18 +572,29 @@ def ai_usage_summary_count(user_id, treasurer=False, db=None):
 
 def save_ai_admin(user_id, payload, db=None):
     db = _resolve_db(db)
-    data = ai_data(user_id, db=db)
-    if not data["is_treasurer"]: raise PermissionError("只有 AI基金管理員可更改設定。")
+    if not is_ai_treasurer(user_id, db=db):
+        raise PermissionError("只有 AI基金管理員可更改設定。")
+    _ensure_ai(db)
     kind = payload.get("kind")
     if kind == "settings":
         target = _float(payload.get("target_hkd")); low = _float(payload.get("low_balance_hkd"))
         if target < 0 or low < 0: raise ValueError("目標金額及低餘額警戒線不能為負數。")
-        _save_config(db,"ai_fund_target_hkd",f"{target:.2f}"); _save_config(db,"ai_fund_low_balance_hkd",f"{low:.2f}"); _save_config(db,"ai_fund_payment_instruction",str(payload.get("payment_instruction") or AI_FUND_PAYMENT_DEFAULT).strip())
+        set_configs(db, {
+            "ai_fund_target_hkd": target,
+            "ai_fund_low_balance_hkd": low,
+            "ai_fund_payment_instruction": str(
+                payload.get("payment_instruction") or AI_FUND_PAYMENT_DEFAULT
+            ).strip(),
+        })
         return {"updated": True}
     elif kind == "google_balance":
         value = _float(payload.get("balance_usd"));
         if value < 0: raise ValueError("Google AI Studio 餘額不能為負數。")
-        _save_config(db,"google_ai_studio_balance_usd",f"{value:.4f}"); _save_config(db,"google_ai_studio_balance_updated_at",_now()); _save_config(db,"google_ai_studio_balance_updated_by",user_id)
+        set_configs(db, {
+            "google_ai_studio_balance_usd": value,
+            "google_ai_studio_balance_updated_at": _now(),
+            "google_ai_studio_balance_updated_by": user_id,
+        })
         return {"updated": True}
     elif kind == "reset_usage":
         deleted = db.execute_count(f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS}")

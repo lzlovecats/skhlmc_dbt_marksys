@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_BYTES, EXPORT_MAX_ROWS, jsonl_response, require_row_limit
+from core.ai_provider import post_json_bounded
 
 from schema import (
     CREATE_AI_DATASET_SNAPSHOTS, CREATE_AI_DATASET_SNAPSHOT_ITEMS,
@@ -277,11 +279,10 @@ def _initialize_training_schema(db):
 
 
 def _users(db, key):
-    rows = db.query("SELECT value FROM system_config WHERE key=:key", {"key": key})
-    if rows.empty or not rows.iloc[0]["value"]:
-        return []
-    try: return [str(x) for x in json.loads(rows.iloc[0]["value"])]
-    except Exception: return [x.strip() for x in str(rows.iloc[0]["value"]).split(",") if x.strip()]
+    from core.config_store import get_config
+
+    values = get_config(db, key, [])
+    return [str(value).strip() for value in values if str(value).strip()]
 
 
 def _is_admin(db, user): return user in _users(db, REVIEWERS_KEY)
@@ -427,6 +428,21 @@ def _audio_ext(mime):
     return {"audio/webm": "webm", "audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg"}.get(mime, "webm")
 
 
+@lru_cache(maxsize=1)
+def _load_ai_roadmap() -> str:
+    """Return only the TTS/LLM sections from the repo's single roadmap."""
+    roadmap_path = Path(__file__).resolve().parents[1] / "docs" / "ROADMAP.md"
+    try:
+        roadmap = roadmap_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "統一研發路線圖暫時未能讀取。"
+    start = roadmap.find("## P3.")
+    end = roadmap.find("\n## P6.", start + 1) if start >= 0 else -1
+    if start >= 0:
+        return roadmap[start:end if end >= 0 else None].strip()
+    return roadmap
+
+
 def _gemini_usage(response_data, model_label="Gemini 2.5 Flash"):
     meta = response_data.get("usageMetadata") or {}
     prompt_tokens = int(meta.get("promptTokenCount") or 0)
@@ -465,9 +481,7 @@ def data(request: Request):
     # Recorder selection only needs one status per script; full history is paged below.
     mine = _rows(db.query(f"SELECT DISTINCT ON (script_id) id,script_id,status,created_at FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user ORDER BY script_id,created_at DESC LIMIT :inventory_limit", {"user":user,"inventory_limit":AI_TRAINING_INVENTORY_LIMIT}))
     llm = []
-    plan_path = Path(__file__).resolve().parents[1] / "assets" / "tts_rd_plan.md"
-    try: rd_plan = plan_path.read_text(encoding="utf-8").strip()
-    except OSError: rd_plan = "研發計劃書暫時未能讀取。"
+    rd_plan = _load_ai_roadmap()
     from core import r2_storage
     from deploy.proxy import bandwidth_budget_status
     result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
@@ -698,7 +712,7 @@ def recording(body: RecordingBody, request: Request):
     pending_r2_key = claim.get("pending_r2_key") or r2_key
     # Always derive technical metadata from the verified object. Never trust a
     # browser-supplied probe, duration, transcript or provider verdict.
-    audio = r2_storage.download_bytes(pending_r2_key)
+    audio = r2_storage.download_bytes(pending_r2_key, MAX_AUDIO_BYTES)
     probe = _probe_audio(audio, mime, body.duration_seconds)
     size_bytes = int(claim["byte_size"])
     audio_sha = claim["sha256"]
@@ -797,6 +811,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         try:
             audio = await asyncio.to_thread(
                 r2_storage.download_bytes, claim.get("pending_r2_key") or claim["r2_key"],
+                MAX_AUDIO_BYTES,
             )
         except Exception as exc:
             raise HTTPException(502, "未能從R2讀取錄音作音質檢查") from exc
@@ -810,8 +825,9 @@ async def recording_quality_check(body: RecordingBody, request: Request):
                 + len(prompt.encode("utf-8")) + 512,
                 str(user), aggregate_key=f"user={str(user)[:120]}",
             )
-            async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client: response = await client.post(url, json=payload)
-            response.raise_for_status(); response_data = response.json(); raw = response_data["candidates"][0]["content"]["parts"][0]["text"]
+            async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
+                response_data = await post_json_bounded(client, url, json=payload)
+            raw = response_data["candidates"][0]["content"]["parts"][0]["text"]
             review = json.loads(raw)
         except Exception as exc:
             _log_ai(user, db, "tts_review", False, error=str(exc))
@@ -870,8 +886,9 @@ async def llm(body: LlmBody, request: Request):
         try:
             url=f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
             async with LLM_REVIEW_SEMAPHORE:
-                async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client: response=await client.post(url,json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0,"maxOutputTokens":2048}})
-            response.raise_for_status(); response_data=response.json(); review=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
+                async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
+                    response_data = await post_json_bounded(client, url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0,"maxOutputTokens":2048}})
+            review=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
             _log_ai(user, db, "llm_review", True, response_data=response_data)
         except Exception as exc:
             _log_ai(user, db, "llm_review", False, error=str(exc))
@@ -1034,8 +1051,8 @@ async def coverage_ai(request: Request):
     coverage_prompt = build_tts_coverage_prompt(summary)[:AI_TRAINING_PROMPT_MAX_CHARS]
     body = {"systemInstruction":{"parts":[{"text":TTS_COVERAGE_SYSTEM_PROMPT}]}, "contents":[{"parts":[{"text":coverage_prompt}]}], "generationConfig":{"responseMimeType":"application/json","temperature":.4,"maxOutputTokens":2048}}
     try:
-        async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client: response = await client.post(url, json=body)
-        response.raise_for_status(); response_data=response.json()
+        async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
+            response_data = await post_json_bounded(client, url, json=body)
         analysis=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"])
         if not isinstance(analysis, dict): raise ValueError("AI 回覆格式不正確")
         _log_ai(user, db, "tts_script_analysis", True, response_data=response_data)
@@ -1121,8 +1138,9 @@ async def regenerate_suggestions(request: Request):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
     payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5, "maxOutputTokens": 2048}}
     try:
-        async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client: response = await client.post(url, json=payload)
-        response.raise_for_status(); response_data=response.json(); raw=response_data["candidates"][0]["content"]["parts"][0]["text"]
+        async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
+            response_data = await post_json_bounded(client, url, json=payload)
+        raw=response_data["candidates"][0]["content"]["parts"][0]["text"]
         plan=json.loads(raw)
         if not isinstance(plan, dict): raise ValueError("AI 回覆格式不正確")
         plan["deactivate_candidates"] = [x for x in (plan.get("deactivate_candidates") or []) if str(x.get("script_id")) not in locked_ids]
@@ -1140,7 +1158,7 @@ def export_recording_manifest(request: Request, speaker: str = ""):
     where, params = "status='accepted'", {}
     if speaker.strip(): where += " AND speaker_user_id=:speaker"; params["speaker"] = speaker.strip()
     rows = _rows(db.query(f"""SELECT r.id,r.speaker_user_id,r.script_id,r.prompt_text,r.r2_key,
-        r.mime_type,r.file_ext,r.audio_sha256,
+        r.mime_type,r.file_ext,r.size_bytes,r.audio_sha256,
         COALESCE(r.measured_duration_seconds,r.duration_seconds) AS duration_seconds,
         r.sample_rate_hz,r.channel_count,r.detected_format,r.ai_transcript,
         s.manuscript_id,s.manuscript_title,s.category
@@ -1479,10 +1497,10 @@ async def rag_reindex(body: RagReindexBody, request: Request):
 
             async def embed_chunk(chunk):
                 async with RAG_EMBED_SEMAPHORE:
-                    response = await client.post(endpoint, params={"key":api_key}, json={
+                    response_data = await post_json_bounded(client, endpoint,
+                        params={"key":api_key}, json={
                         "content":{"parts":[{"text":chunk}]}, "outputDimensionality":768})
-                    response.raise_for_status()
-                    values = ((response.json().get("embedding") or {}).get("values") or [])
+                    values = ((response_data.get("embedding") or {}).get("values") or [])
                     if len(values) != 768:
                         raise HTTPException(502, "Embedding API回傳維度不正確")
                     return values

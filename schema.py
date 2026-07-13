@@ -54,13 +54,14 @@ TABLE_BUG_REPORTS = "bug_reports"
 TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
 TABLE_BANDWIDTH_USAGE_LOGS = "bandwidth_usage_logs"
 TABLE_R2_UPLOAD_INTENTS = "r2_upload_intents"
+TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
 # Table: ACCOUNTS
 # Committee member accounts.
 # account_status: 'admin' | 'active' | 'inactive'
-# password_hash stores bcrypt hashes. Use hash_password() from functions.py when creating/updating accounts.
+# password_hash stores bcrypt hashes. Use core.auth_logic.hash_password when creating/updating accounts.
 # Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
 CREATE_ACCOUNTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
@@ -126,7 +127,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_SCORES} (
     judge_name               TEXT,
     pro_total_score          INTEGER,
     con_total_score          INTEGER,
-    submitted_time           TEXT,
+    submitted_time           TIME,
     pro_free_debate_score    INTEGER,
     con_free_debate_score    INTEGER,
     pro_deduction_points     INTEGER,
@@ -178,14 +179,13 @@ CREATE TABLE IF NOT EXISTS {TABLE_BEST_DEBATER_RANKINGS} (
 
 # Table: SCORE_DRAFTS
 # Cloud auto-save drafts for judges (overwritten on each save).
-# `score_payload` is a JSON blob containing the full scoring state including
-# raw DataFrames serialised to JSON strings.
+# `score_payload` stores the validated scoring state as structured JSON.
 CREATE_SCORE_DRAFTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_SCORE_DRAFTS} (
     match_id        TEXT,
     judge_name      TEXT,
     side            TEXT,
-    score_payload   TEXT,
+    score_payload   JSONB,
     is_final        BOOLEAN DEFAULT FALSE,
     updated_at      TIMESTAMP,
     CONSTRAINT score_drafts_match_judge_side_key
@@ -248,9 +248,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTES} (
     created_at          TIMESTAMP,
     deadline_date       DATE,
     approval_threshold  INTEGER,
-    CONSTRAINT fk_topic_removal_votes_topic
-        FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPICS}(topic_text)
-        ON DELETE CASCADE,
+    -- Deliberately no FK to topics: a passed removal deletes the bank row but
+    -- the resolved motion and its ballots remain as governance history.
     CONSTRAINT fk_topic_removal_votes_proposer_user
         FOREIGN KEY (proposer_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
@@ -965,7 +964,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_BUG_REPORTS} (
 """
 
 # View: COMMITTEE_VOTE_ACTIVITY
-# Canonical source for committee participation metrics used by Streamlit.
+# Canonical source for committee participation metrics used by the API.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
 DROP VIEW IF EXISTS {VIEW_COMMITTEE_VOTE_ACTIVITY};
 CREATE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
@@ -1098,9 +1097,7 @@ FROM base_stats;
 CREATE_INDICES = f"""
 CREATE INDEX IF NOT EXISTS idx_tv_status ON {TABLE_TOPIC_VOTES}(status);
 CREATE INDEX IF NOT EXISTS idx_tvb_user_id ON {TABLE_TOPIC_VOTE_BALLOTS}(user_id);
-CREATE INDEX IF NOT EXISTS idx_tvb_topic_text ON {TABLE_TOPIC_VOTE_BALLOTS}(topic_text);
 CREATE INDEX IF NOT EXISTS idx_trvb_user_id ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(user_id);
-CREATE INDEX IF NOT EXISTS idx_trvb_topic_text ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(topic_text);
 CREATE INDEX IF NOT EXISTS idx_competition_registrations_edition_status
     ON {TABLE_COMPETITION_REGISTRATIONS}(competition_edition, status);
 CREATE INDEX IF NOT EXISTS idx_match_videos_match_id
@@ -1113,6 +1110,8 @@ CREATE INDEX IF NOT EXISTS idx_video_views_user_updated
     ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_video_comments_video_created
     ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_comments_user_created
+    ON {TABLE_VIDEO_COMMENTS}(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice
     ON {TABLE_VIDEO_VOTES}(video_id, vote_choice);
 CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
@@ -1137,8 +1136,6 @@ CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
     ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active
     ON {TABLE_TTS_LEXICON}(is_active, category);
-CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
-    ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
     ON {TABLE_MOTION_COMMENTS}(motion_type, motion_key);
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active
@@ -1169,7 +1166,27 @@ CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created
     ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC);
 """
 
-# System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
+# Typed, namespaced application configuration.  ``value`` retains its native
+# JSON type and ``is_secret`` lets future RLS/column policies distinguish
+# credentials from ordinary settings.  The old system_config table remains for
+# one rollback window only; active code writes app_config.
+CREATE_APP_CONFIG = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_APP_CONFIG} (
+    key         TEXT        PRIMARY KEY,
+    namespace   TEXT        NOT NULL
+        CHECK (namespace IN ('auth', 'runtime', 'access', 'ai', 'finance',
+                             'analysis', 'resource', 'migration', 'legacy')),
+    value       JSONB       NOT NULL,
+    value_type  TEXT        NOT NULL
+        CHECK (value_type IN ('string', 'boolean', 'number', 'array', 'object')),
+    is_secret   BOOLEAN     NOT NULL DEFAULT FALSE,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT app_config_json_type_matches
+        CHECK (jsonb_typeof(value) = value_type)
+);
+"""
+
+# Legacy rollback bridge.  New code must not write this table.
 CREATE_SYSTEM_CONFIG = """
 CREATE TABLE IF NOT EXISTS system_config (
     key        TEXT PRIMARY KEY,
@@ -1229,6 +1246,7 @@ ALL_SCHEMAS = [
     CREATE_PRACTICE_DAILY_USAGE,       # → accounts
     CREATE_BANDWIDTH_USAGE_LOGS,        # → accounts
     CREATE_R2_UPLOAD_INTENTS,           # → accounts
+    CREATE_APP_CONFIG,                  # typed runtime configuration
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
@@ -1243,10 +1261,8 @@ ALL_SCHEMAS = [
 # first created with. These migrations bring existing databases up to date.
 # Each statement must be safe to run repeatedly.
 #
-# The FK-upgrade blocks look up the *actual* constraint by the columns it links
-# (regardless of its name — old DBs use the auto-generated `*_fkey` name, newer
-# ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
-# that deleting/removing a topic also clears its removal-vote row and ballots.
+# Historical compatibility statements remain here until P1 replaces this list
+# with versioned migrations. New changes must not be appended to this list.
 MEDIA_R2_STARTUP_MIGRATIONS = [
     f"""DO $$ BEGIN
         IF EXISTS (SELECT 1 FROM information_schema.columns
@@ -1295,23 +1311,6 @@ MIGRATIONS = [
     f"CREATE INDEX IF NOT EXISTS idx_rag_chunks_document ON {TABLE_RAG_CHUNKS}(document_id, chunk_index)",
     "CREATE EXTENSION IF NOT EXISTS vector",
     f"ALTER TABLE {TABLE_RAG_CHUNKS} ADD COLUMN IF NOT EXISTS embedding vector(768)",
-    f"""
-    DO $$
-    DECLARE cname text;
-    BEGIN
-        SELECT conname INTO cname
-        FROM pg_constraint
-        WHERE conrelid = '{TABLE_TOPIC_REMOVAL_VOTES}'::regclass
-          AND contype = 'f'
-          AND confrelid = '{TABLE_TOPICS}'::regclass;
-        IF cname IS NOT NULL THEN
-            EXECUTE format('ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTES} DROP CONSTRAINT %I', cname);
-        END IF;
-        ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTES}
-            ADD CONSTRAINT fk_topic_removal_votes_topic
-            FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPICS}(topic_text) ON DELETE CASCADE;
-    END $$;
-    """,
     f"""
     DO $$
     DECLARE cname text;
@@ -1367,24 +1366,17 @@ def init_db(conn) -> None:
 
     Parameters
     ----------
-    conn : SQLAlchemy connection / session, or a Streamlit SQLConnection object.
-           Accepts both raw SQLAlchemy sessions and Streamlit's st.connection wrapper.
+    conn : SQLAlchemy connection/session or a small wrapper exposing ``session``.
 
     Example
     -------
-    # With Streamlit connection:
-    from schema import init_db
-    import .streamlit as st
-    conn = st.connection("postgresql", type="sql")
-    init_db(conn)
-
-    # With a raw SQLAlchemy engine:
+    # With a SQLAlchemy engine:
     from sqlalchemy import create_engine
     engine = create_engine("postgresql://...")
     with engine.connect() as raw_conn:
         init_db(raw_conn)
     """
-    # Support both Streamlit SQLConnection and raw SQLAlchemy session/connection
+    # Support a session wrapper or a raw SQLAlchemy connection.
     if hasattr(conn, "session"):
         with conn.session as s:
             for ddl in ALL_SCHEMAS:

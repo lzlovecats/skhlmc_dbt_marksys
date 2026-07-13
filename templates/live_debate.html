@@ -1282,21 +1282,6 @@
         return btoa(binary);
       }
 
-      function authToken() {
-        try {
-          const parentToken =
-            window.parent && window.parent.localStorage
-              ? window.parent.localStorage.getItem("committee_user")
-              : "";
-          if (parentToken) return parentToken;
-        } catch (e) {}
-        try {
-          return window.localStorage.getItem("committee_user") || "";
-        } catch (e) {
-          return "";
-        }
-      }
-
       function resetAiAudioForTurn(stopCurrent) {
         ttsGeneration += 1;
         ttsTextBuffer = "";
@@ -1436,9 +1421,7 @@
         ttsPlaying = true;
         ttsPending += 1;
         try {
-          const token = authToken();
           const headers = { "Content-Type": "application/json" };
-          if (token) headers.Authorization = "Bearer " + token;
           const resp = await fetch("/api/tts/azure", {
             method: "POST",
             headers,

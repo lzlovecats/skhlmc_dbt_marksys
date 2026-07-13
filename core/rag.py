@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import math
-import os
 
 import httpx
-from system_limits import RAG_FALLBACK_CANDIDATE_LIMIT, RAG_PROVIDER_TIMEOUT_SECONDS
+from core.ai_provider import post_json_bounded
+from system_limits import (
+    RAG_CONTEXT_MAX_CHARS, RAG_FALLBACK_CANDIDATE_LIMIT,
+    RAG_PROVIDER_TIMEOUT_SECONDS,
+)
 
 
 EMBEDDING_MODEL = "gemini-embedding-2"
@@ -25,9 +28,8 @@ async def _embed(text_value: str, api_key: str) -> list[float]:
     payload = {"content": {"parts": [{"text": text_value[:8000]}]},
                "outputDimensionality": EMBEDDING_DIMENSION}
     async with httpx.AsyncClient(timeout=RAG_PROVIDER_TIMEOUT_SECONDS) as client:
-        response = await client.post(url, params={"key": api_key}, json=payload)
-        response.raise_for_status()
-    values = ((response.json().get("embedding") or {}).get("values") or [])
+        data = await post_json_bounded(client, url, params={"key": api_key}, json=payload)
+    values = ((data.get("embedding") or {}).get("values") or [])
     if len(values) != EMBEDDING_DIMENSION:
         raise ValueError("Embedding dimension mismatch")
     return [float(value) for value in values]
@@ -45,6 +47,7 @@ async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
                                min_similarity: float = 0.35) -> str:
     if not api_key or not str(query or "").strip():
         return ""
+    top_k = max(1, min(int(top_k), 20))
     vector = await _embed(str(query), api_key)
     vector_text = "[" + ",".join(f"{value:.9g}" for value in vector) + "]"
     try:
@@ -60,7 +63,10 @@ async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
            "version": EMBEDDING_VERSION, "limit": int(top_k)})
         candidates = [dict(row) for row in rows.to_dict("records")]
     except Exception:
-        rows = db.query("""SELECT c.chunk_id,c.content_text,c.embedding_json,d.document_id,d.title,
+        # Do not pull every candidate's content_text across Supabase merely to
+        # discard almost all of it after the local cosine calculation. Fetch
+        # vectors first, then retrieve content for the few winning chunk IDs.
+        rows = db.query("""SELECT c.chunk_id,c.embedding_json,d.document_id,d.title,
             d.data_type,d.topic_text FROM rag_chunks c
           JOIN rag_documents d ON d.document_id=c.document_id
           JOIN llm_training_submissions s ON s.id=d.submission_id
@@ -72,19 +78,53 @@ async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
            "candidate_limit": RAG_FALLBACK_CANDIDATE_LIMIT})
         candidates = []
         for row in rows.to_dict("records"):
-            raw = row.get("embedding_json")
-            values = json.loads(raw) if isinstance(raw, str) else raw
-            item = dict(row); item["similarity"] = _cosine(vector, values or [])
+            try:
+                raw = row.get("embedding_json")
+                values = json.loads(raw) if isinstance(raw, str) else raw
+                values = [float(value) for value in (values or [])]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            item = dict(row)
+            item["similarity"] = _cosine(vector, values)
             candidates.append(item)
         candidates.sort(key=lambda item: float(item.get("similarity") or -1), reverse=True)
         candidates = candidates[:top_k]
+        if candidates:
+            params = {}
+            placeholders = []
+            for index, item in enumerate(candidates):
+                name = f"chunk_{index}"
+                placeholders.append(f":{name}")
+                params[name] = item["chunk_id"]
+            content_rows = db.query(f"""SELECT chunk_id,content_text FROM rag_chunks
+                WHERE chunk_id IN ({','.join(placeholders)})""", params)
+            content_by_id = {
+                str(row.get("chunk_id")): row.get("content_text")
+                for row in content_rows.to_dict("records")
+            }
+            candidates = [
+                {**item, "content_text": content_by_id.get(str(item["chunk_id"]), "")}
+                for item in candidates
+                if content_by_id.get(str(item["chunk_id"]), "")
+            ]
     accepted = [item for item in candidates if float(item.get("similarity") or -1) >= min_similarity]
     if not accepted:
         return ""
-    lines = ["## 聖呂中辯內部知識庫（只作校隊資料參考，唔代表最新網上事實）"]
+    header = "## 聖呂中辯內部知識庫（只作校隊資料參考，唔代表最新網上事實）"
+    footer = "\n回答如使用以上內容，請引用相應[RAG:…]標記；資料不足時要明確講明。"
+    lines = [header]
     for item in accepted:
         title = item.get("title") or item.get("document_id")
         meta = "｜".join(x for x in (item.get("data_type"), item.get("topic_text")) if x)
-        lines.append(f"\n[RAG:{item['chunk_id']}] {title}{'｜' + meta if meta else ''}\n{item['content_text']}")
-    lines.append("\n回答如使用以上內容，請引用相應[RAG:…]標記；資料不足時要明確講明。")
+        block = f"\n[RAG:{item['chunk_id']}] {title}{'｜' + meta if meta else ''}\n{item['content_text']}"
+        # Reserve both separators that ``join`` adds around this block and the
+        # footer so the configured cap remains exact.
+        used = len("\n".join(lines)) + len(footer) + 2
+        remaining = RAG_CONTEXT_MAX_CHARS - used
+        if remaining <= 0:
+            break
+        lines.append(block[:remaining])
+        if len(block) > remaining:
+            break
+    lines.append(footer)
     return "\n".join(lines)

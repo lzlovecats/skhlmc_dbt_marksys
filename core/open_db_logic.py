@@ -1,11 +1,4 @@
-"""Pure query, filtering, and statistics logic for the public topic bank.
-
-Shared by the current Streamlit ``open_db.py`` page and the HTML API. This
-module intentionally has no Streamlit dependency; callers supply a DB executor
-that implements the same ``query`` contract used by the other core modules.
-"""
-
-import os
+"""Pure query, filtering and statistics logic for the public topic bank."""
 
 import pandas as pd
 
@@ -21,7 +14,7 @@ DIFFICULTY_OPTIONS = {
 
 
 def fetch_open_db_data(db=None):
-    """Fetch exactly the two source datasets used by the Streamlit page."""
+    """Fetch the topic rows and resolved-motion aggregates used by the API."""
     db = _resolve_db(db)
     topics = db.query(
         f"SELECT topic_text, author, category, difficulty FROM {TABLE_TOPICS} "
@@ -43,7 +36,7 @@ def with_difficulty_label(topics_df):
 
 
 def filter_topics(topics_df, search_term="", author="全部", category="全部", difficulty="全部"):
-    """Apply the same four filters and literal case-insensitive search as open_db.py."""
+    """Apply author/category/difficulty filters and literal case-insensitive search."""
     filtered = topics_df.copy()
     if search_term:
         filtered = filtered[
@@ -59,7 +52,7 @@ def filter_topics(topics_df, search_term="", author="全部", category="全部",
 
 
 def display_topics(topics_df):
-    """Return the table shape, field order, and Chinese headers used by Streamlit."""
+    """Return the public table shape with stable Chinese field labels."""
     display = topics_df.copy()
     if "difficulty_label" in display.columns:
         display = display.drop(columns=["difficulty"]).rename(columns={"difficulty_label": "difficulty"})
@@ -102,7 +95,7 @@ def difficulty_distribution(topics_df):
 
 
 def category_vote_pass_rate(topic_vote_stats_df):
-    """Completed topic-motion pass rates, including Streamlit's sort order."""
+    """Return completed topic-motion pass rates in product display order."""
     required = {"category", "status"}
     if topic_vote_stats_df.empty or not required.issubset(topic_vote_stats_df.columns):
         return pd.DataFrame(columns=["類別", "動議數量", "通過數", "投票通過率"])

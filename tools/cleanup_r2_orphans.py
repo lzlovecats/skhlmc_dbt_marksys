@@ -53,6 +53,9 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args()
+    if args.apply and args.confirm != CONFIRMATION:
+        print("confirmation phrase does not match; no R2 objects deleted", file=sys.stderr)
+        return 2
     if not r2_storage.configured():
         print("R2 is not configured.", file=sys.stderr)
         return 2
@@ -62,7 +65,9 @@ def main() -> int:
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
         hours=max(R2_ORPHAN_MIN_AGE_HOURS, args.older_than_hours)
     )
-    orphans = []
+    orphan_count = 0
+    total_bytes = 0
+    dry_run_sample: list[tuple[str, int]] = []
     s3 = r2_storage.client()
     bucket = r2_storage.settings()["bucket"]
     paginator = s3.get_paginator("list_objects_v2")
@@ -72,22 +77,20 @@ def main() -> int:
                 key = str(item.get("Key") or "")
                 modified = item.get("LastModified")
                 if key and key not in referenced and modified and modified <= cutoff:
-                    orphans.append((key, int(item.get("Size") or 0)))
-    total = sum(size for _, size in orphans)
-    print(f"orphans={len(orphans)} bytes={total} cutoff={cutoff.isoformat()}")
-    if not args.apply:
-        for key, size in orphans[:R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT]:
-            print(f"dry-run {size:>10} {key}")
-        return 0
-    if args.confirm != CONFIRMATION:
-        print("confirmation phrase does not match; no R2 objects deleted", file=sys.stderr)
-        return 2
-    for key, _size in orphans:
-        r2_storage.delete(key)
-        intent_id = pending_intents.get(key)
-        if intent_id:
-            r2_storage.mark_upload_intent_deleted(db, intent_id)
-        print(f"deleted {key}")
+                    size = int(item.get("Size") or 0)
+                    orphan_count += 1
+                    total_bytes += size
+                    if args.apply:
+                        r2_storage.delete(key)
+                        intent_id = pending_intents.get(key)
+                        if intent_id:
+                            r2_storage.mark_upload_intent_deleted(db, intent_id)
+                        print(f"deleted {key}")
+                    elif len(dry_run_sample) < R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT:
+                        dry_run_sample.append((key, size))
+    print(f"orphans={orphan_count} bytes={total_bytes} cutoff={cutoff.isoformat()}")
+    for key, size in dry_run_sample:
+        print(f"dry-run {size:>10} {key}")
     return 0
 
 

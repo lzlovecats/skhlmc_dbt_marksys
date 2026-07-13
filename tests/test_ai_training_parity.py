@@ -63,7 +63,7 @@ def test_admin_ai_planning_is_selective_and_protects_recorded_scripts():
     assert "deactivate_ids" in api and "data-suggestion" in js
 
 
-def test_recording_review_uses_streamlit_page_size():
+def test_recording_review_uses_shared_page_size():
     api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
     assert "ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE" in api
     assert '"page_size": ADMIN_RECORDING_PAGE_SIZE' in api

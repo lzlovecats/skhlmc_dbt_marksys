@@ -1,16 +1,13 @@
-"""Committee membership / activity queries (streamlit-free).
+"""Committee membership and activity queries.
 
-Mirrors the active-member count that ``functions.get_active_user_count`` derives
-from the ``committee_vote_activity_view`` DB view, but through the injected DB
-executor so the proxy can compute dynamic vote thresholds without importing
-Streamlit. The heavy lifting (participation rate, last-10 rule) lives in the SQL
-view defined in schema.py — this only reads its ``is_active`` flag.
+The participation rate and last-ten rule live in the database view defined in
+``schema.py``; this module supplies bounded read models and bypass handling.
 """
 
 import datetime
-import json
 from zoneinfo import ZoneInfo
 
+from core.config_store import get_config
 from schema import VIEW_COMMITTEE_VOTE_ACTIVITY
 from core.vote_logic import _resolve_db
 from system_limits import ACCOUNT_LIST_LIMIT
@@ -54,47 +51,57 @@ def _all_user_stats(db=None):
 
 
 def count_active_members(db=None) -> int:
-    """Number of currently-active committee members (same definition as the
-    Streamlit ``get_active_user_count``)."""
-    df = _all_user_stats(db=db)
-    if df.empty:
-        return 0
-    return int(df["is_active"].apply(_coerce_bool).sum())
+    """Number of committee members currently meeting the activity rule."""
+    db = _resolve_db(db)
+    frame = db.query(
+        f"SELECT COUNT(*) AS active_count FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} "
+        "WHERE COALESCE(is_active, FALSE) = TRUE"
+    )
+    return 0 if frame.empty else _to_int(frame.iloc[0].get("active_count"))
 
 
 def active_member_ids(db=None) -> list:
     """user_ids of currently-active committee members."""
-    df = _all_user_stats(db=db)
-    if df.empty:
-        return []
-    return [str(r["user_id"]).strip() for _, r in df.iterrows() if _coerce_bool(r["is_active"])]
+    db = _resolve_db(db)
+    frame = db.query(
+        f"SELECT user_id FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} "
+        "WHERE COALESCE(is_active, FALSE) = TRUE ORDER BY user_id LIMIT :limit",
+        {"limit": ACCOUNT_LIST_LIMIT},
+    )
+    return [str(value).strip() for value in frame.get("user_id", []) if str(value).strip()]
 
 
 def get_bypass_active_until(user_id: str, db=None):
-    """Return an unexpired proposal-limit bypass, matching functions.py."""
+    """Return an unexpired proposal-limit bypass for one member."""
     db = _resolve_db(db)
-    df = db.query(
-        "SELECT value FROM system_config WHERE key = :key",
-        {"key": "bypass_active_check_until"},
-    )
-    if df.empty or not df.iloc[0].get("value"):
+    raw = get_config(db, "bypass_active_check_until", {})
+    if not isinstance(raw, dict):
         return None
     try:
-        raw = json.loads(str(df.iloc[0]["value"]))
-        value = raw.get(user_id) if isinstance(raw, dict) else None
+        value = raw.get(user_id)
         if not value:
             return None
         deadline = datetime.datetime.strptime(str(value).strip(), "%Y-%m-%d %H:%M").replace(
             tzinfo=ZoneInfo("Asia/Hong_Kong")
         )
         return deadline if datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")) < deadline else None
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
 
 
 def member_activity(user_id, db=None) -> dict:
-    """Activity/bypass state used by both vote UIs."""
-    naturally_active = user_id == "admin" or user_id in active_member_ids(db=db)
+    """Activity and bypass state used by the voting API."""
+    user_id = str(user_id or "").strip()
+    if user_id == "admin":
+        naturally_active = True
+    else:
+        db = _resolve_db(db)
+        frame = db.query(
+            f"SELECT is_active FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} "
+            "WHERE user_id = :user_id LIMIT 1",
+            {"user_id": user_id},
+        )
+        naturally_active = not frame.empty and _coerce_bool(frame.iloc[0].get("is_active"))
     bypass_until = None if naturally_active else get_bypass_active_until(user_id, db=db)
     return {
         "naturally_active": naturally_active,
@@ -114,8 +121,7 @@ def is_active_member(user_id, db=None) -> bool:
 def get_member_participation_stats(db=None):
     """Per-member participation stats matching functions.get_member_participation_stats.
 
-    Returns (stats_list, total_votes). The Chinese keys intentionally mirror the
-    Streamlit dataframe so both UIs can show the same table without reshaping.
+    Returns ``(stats_list, total_votes)`` with stable Chinese display labels.
     """
     df = _all_user_stats(db=db)
     if df.empty:

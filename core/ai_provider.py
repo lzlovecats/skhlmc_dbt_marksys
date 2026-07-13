@@ -1,14 +1,16 @@
-"""Streamlit-free provider transport for direct-HTML AI features.
+"""Bounded provider transport for AI features.
 
 The return value is ``(markdown, usage)``.  ``usage`` mirrors the small subset
 of provider billing metadata needed by the AI fund ledger.
 """
 
+import json
+
 import httpx
 from system_limits import (
     AI_PROVIDER_GEMINI_TIMEOUT_SECONDS, AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS,
     AI_PROVIDER_MAX_OUTPUT_TOKENS, AI_PROVIDER_PROMPT_MAX_CHARS,
-    AI_PROVIDER_SOURCE_LIMIT,
+    AI_PROVIDER_RESPONSE_MAX_BYTES, AI_PROVIDER_SOURCE_LIMIT,
 )
 
 
@@ -103,9 +105,39 @@ def _usage(data, provider, web_search=False):
             "cost_source": "openrouter_response_usage"}
 
 
+async def post_json_bounded(client, url, *, max_bytes=AI_PROVIDER_RESPONSE_MAX_BYTES,
+                            **kwargs) -> dict:
+    """POST JSON and reject an oversized decoded response before buffering it.
+
+    Provider output-token settings are not a byte guarantee, especially for a
+    custom OpenAI-compatible endpoint. Streaming the response keeps a broken or
+    compromised upstream from consuming the Render worker's remaining RAM.
+    """
+    limit = max(1, int(max_bytes))
+    data = bytearray()
+    async with client.stream("POST", url, **kwargs) as response:
+        response.raise_for_status()
+        async for chunk in response.aiter_bytes():
+            if len(data) + len(chunk) > limit:
+                raise ValueError("AI provider response exceeds server limit")
+            data.extend(chunk)
+    if not data:
+        raise ValueError("AI provider returned an empty response")
+    parsed = json.loads(data)
+    if not isinstance(parsed, dict):
+        raise ValueError("AI provider returned an invalid JSON object")
+    return parsed
+
+
+def _bounded_prompt_pair(system, user) -> tuple[str, str]:
+    """Apply one combined prompt budget instead of allowing twice the limit."""
+    system_text = str(system or "")[:AI_PROVIDER_PROMPT_MAX_CHARS]
+    remaining = max(0, AI_PROVIDER_PROMPT_MAX_CHARS - len(system_text))
+    return system_text, str(user or "")[:remaining]
+
+
 async def generate_text(config, system, user, *, api_key, audio_base64="", audio_mime="audio/webm", web_search=False):
-    system = str(system or "")[:AI_PROVIDER_PROMPT_MAX_CHARS]
-    user = str(user or "")[:AI_PROVIDER_PROMPT_MAX_CHARS]
+    system, user = _bounded_prompt_pair(system, user)
     if config["provider"] in ("openrouter", "custom"):
         payload = {"model": config["model"], "messages": [
             {"role": "system", "content": system}, {"role": "user", "content": user},
@@ -116,10 +148,8 @@ async def generate_text(config, system, user, *, api_key, audio_base64="", audio
                                  "parameters": {"search_context_size": "medium"}}]
         endpoint = (config.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/") + "/chat/completions"
         async with httpx.AsyncClient(timeout=AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS) as client:
-            response = await client.post(endpoint,
+            data = await post_json_bounded(client, endpoint,
                 headers={"Authorization": f"Bearer {api_key}"}, json=payload)
-            response.raise_for_status()
-        data = response.json()
         return _openrouter_text(data, web_search), _usage(data, "openrouter", web_search)
 
     parts = [{"text": user}]
@@ -133,7 +163,5 @@ async def generate_text(config, system, user, *, api_key, audio_base64="", audio
         payload["tools"] = [{"google_search": {}}]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{config['model']}:generateContent?key={api_key}"
     async with httpx.AsyncClient(timeout=AI_PROVIDER_GEMINI_TIMEOUT_SECONDS) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-    data = response.json()
+        data = await post_json_bounded(client, url, json=payload)
     return _gemini_text(data, web_search), _usage(data, "gemini", web_search)

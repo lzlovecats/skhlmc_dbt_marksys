@@ -1,7 +1,6 @@
-"""Direct-HTML API for AI coach.
+"""API for AI coach practice, speech review and strategy planning.
 
-The old page kept all provider calls in a Streamlit session.  This module keeps
-the same model choices and prompts, but keeps credentials and accounting on the
+This module keeps model choices and prompts server-side with credentials and accounting on the
 server so the browser never receives either.
 """
 import asyncio
@@ -9,6 +8,7 @@ import base64
 import math
 import os
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -37,6 +37,8 @@ FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 250
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
 MAX_COACH_AUDIO_BYTES = AI_COACH_MAX_AUDIO_BYTES
 AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
+_LIVE_BRIEF_SCHEMA_LOCK = threading.Lock()
+_LIVE_BRIEF_READY_ENGINES = set()
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 
 
@@ -61,15 +63,23 @@ class LivePrepareRequest(BaseModel):
     model_label: str = Field(default=DEFAULT_AI_MODEL, max_length=120)
 
 def _ensure_live_briefs(db):
-    db.execute(f"""CREATE TABLE IF NOT EXISTS {_LIVE_BRIEF_TABLE} (
-        brief_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, brief TEXT NOT NULL,
-        expires_at TEXT NOT NULL, created_at TEXT NOT NULL
-    )""")
-    db.execute("""CREATE TABLE IF NOT EXISTS ai_coach_prepare_usage (
-        id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, created_at TIMESTAMP NOT NULL
-    )""")
-    db.execute("""CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
-        ON ai_coach_prepare_usage(user_id, created_at DESC)""")
+    engine = getattr(db, "_engine", None)
+    if engine is not None and engine in _LIVE_BRIEF_READY_ENGINES:
+        return
+    with _LIVE_BRIEF_SCHEMA_LOCK:
+        if engine is not None and engine in _LIVE_BRIEF_READY_ENGINES:
+            return
+        db.execute(f"""CREATE TABLE IF NOT EXISTS {_LIVE_BRIEF_TABLE} (
+            brief_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, brief TEXT NOT NULL,
+            expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS ai_coach_prepare_usage (
+            id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, created_at TIMESTAMP NOT NULL
+        )""")
+        db.execute("""CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
+            ON ai_coach_prepare_usage(user_id, created_at DESC)""")
+        if engine is not None:
+            _LIVE_BRIEF_READY_ENGINES.add(engine)
 
 
 def _reserve_prepare_live(db, user_id: str) -> str | None:
@@ -155,7 +165,7 @@ def _estimate(feature, config, has_audio=False):
 
 
 def _usage(db, user_id, feature, label, config, success, error="", actual=None, has_audio=False):
-    # Same ledger table as Streamlit.  Use a conservative, transparent estimate;
+    # Use a conservative, transparent ledger estimate;
     # provider billing remains the source of truth in AI基金.
     estimate_inp, estimate_out = FEATURE_TOKEN_ESTIMATES.get(feature, (0, 0))
     actual = actual or {}
@@ -314,7 +324,8 @@ def data(request: Request):
     topics=db.query(f"SELECT topic_text,category,difficulty FROM {TABLE_TOPICS} ORDER BY category,topic_text LIMIT :topic_limit", {"topic_limit": AI_COACH_TOPIC_LIMIT})
     matches=db.query(f"SELECT match_id,topic_text,pro_team,con_team FROM {TABLE_MATCHES} ORDER BY match_id DESC LIMIT :match_limit", {"match_limit": AI_COACH_MATCH_LIMIT})
     balance=db.query("SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) balance FROM ai_fund_transactions WHERE status='confirmed'")
-    low=db.query("SELECT value FROM system_config WHERE key='ai_fund_low_balance_hkd'")
+    from core.config_store import get_config
+    low_balance_hkd = float(get_config(db, "ai_fund_low_balance_hkd", 100) or 100)
     models=[]
     for label,item in AI_MODEL_OPTIONS.items():
         key_name="OPENROUTER_API_KEY" if item["provider"]=="openrouter" else "GEMINI_API_KEY"
@@ -346,7 +357,7 @@ def data(request: Request):
         "mock_formats": mock_formats,
         "fund": {
             "balance_hkd": float(balance.iloc[0]["balance"] or 0),
-            "low_balance_hkd": float(low.iloc[0]["value"] or 100) if not low.empty else 100,
+            "low_balance_hkd": low_balance_hkd,
         },
         "azure_tts": bool(
             _get_proxy_secret("AZURE_SPEECH_KEY")

@@ -294,7 +294,8 @@ def image(photo_id: int, request: Request, download: bool = False, thumbnail: bo
         raise HTTPException(503, "Cloudflare R2 暫時不可用。")
     if not r2_key:
         raise HTTPException(409, "相片尚未完成R2遷移。")
+    response_mime = media.get("thumbnail_mime_type") if thumbnail and not download else media["mime_type"]
     return RedirectResponse(r2_storage.presign_get(
-        r2_key, mime_type=media["mime_type"], file_name=media["file_name"],
+        r2_key, mime_type=response_mime or "image/webp", file_name=media["file_name"],
         download=download, expires=R2_MEDIA_LINK_TTL_SECONDS,
     ), status_code=307, headers={"Cache-Control": "private, no-store"})

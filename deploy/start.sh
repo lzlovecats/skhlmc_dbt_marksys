@@ -5,11 +5,6 @@ PROXY_PORT="${PORT:-8000}"
 read -r LIMIT_CONCURRENCY WS_MAX_SIZE MALLOC_ARENA_LIMIT MALLOC_TRIM_LIMIT \
     <<<"$(python system_limits.py --startup)"
 
-if [ -f /etc/secrets/secrets.toml ]; then
-    mkdir -p .streamlit
-    cp /etc/secrets/secrets.toml .streamlit/secrets.toml
-fi
-
 # Memory tuning for the 512 MB instance.
 # Python's threaded runtime makes glibc malloc spawn one arena per thread
 # (default 8 × CPU cores), which fragments the heap and holds a high steady

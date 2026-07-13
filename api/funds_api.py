@@ -2,7 +2,7 @@
 
 import httpx
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_ROWS, csv_response, require_row_limit
@@ -82,7 +82,31 @@ def lateness_records(request: Request, year: int, page: int = 1, member: str | N
     if member_clause: params["member"] = str(member).strip()
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end{member_clause}", params)
     params.update(limit=PAGE_SIZE, offset=offset)
-    rows = db.query(f"""WITH ranked AS (SELECT id,late_date,member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,note,created_by,created_at,updated_at,ROW_NUMBER() OVER (PARTITION BY member_user_id,(CASE WHEN EXTRACT(MONTH FROM late_date)>=9 THEN EXTRACT(YEAR FROM late_date) ELSE EXTRACT(YEAR FROM late_date)-1 END) ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS}) SELECT *,late_no*late_minutes penalty_amount,paid_amount-(late_no*late_minutes) record_balance FROM ranked WHERE late_date BETWEEN :start AND :end{member_clause} ORDER BY late_date DESC,id DESC LIMIT :limit OFFSET :offset""", params)
+    rows = db.query(
+        f"""
+        WITH ranked AS (
+            SELECT
+                id, late_date, member_user_id, late_minutes,
+                COALESCE(paid_amount, 0) AS paid_amount,
+                note, created_by, created_at, updated_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY member_user_id ORDER BY late_date, id
+                ) AS late_no
+            FROM {TABLE_LATENESS_FUND_RECORDS}
+            WHERE late_date BETWEEN :start AND :end
+        )
+        SELECT
+            id, late_date, member_user_id, late_minutes, paid_amount, note,
+            created_by, created_at, updated_at, late_no,
+            late_no * late_minutes AS penalty_amount,
+            paid_amount - (late_no * late_minutes) AS record_balance
+        FROM ranked
+        WHERE TRUE{member_clause}
+        ORDER BY late_date DESC, id DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        params,
+    )
     return payload(logic._rows(rows), page, total)
 
 
@@ -103,7 +127,7 @@ def lateness_summary(request: Request, year: int, page: int = 1):
     from schema import TABLE_LATENESS_FUND_RECORDS
     _,db=_context(request);logic._ensure_lateness(db);start,end=logic.fiscal_range(year);page,_,offset=bounds(page);params={"start":start.isoformat(),"end":end.isoformat()}
     total=scalar_count(db,f"SELECT COUNT(DISTINCT member_user_id) total FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end",params);params.update(limit=PAGE_SIZE,offset=offset)
-    rows=db.query(f"""WITH ranked AS (SELECT member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end), grouped AS (SELECT member_user_id,COUNT(*) late_count,SUM(late_minutes) total_late_minutes,SUM(late_no*late_minutes) penalty_amount,SUM(paid_amount) paid_amount FROM ranked GROUP BY member_user_id) SELECT DENSE_RANK() OVER(ORDER BY total_late_minutes DESC) late_rank,*,paid_amount-penalty_amount balance FROM grouped ORDER BY total_late_minutes DESC,member_user_id LIMIT :limit OFFSET :offset""",params)
+    rows=db.query(f"""WITH ranked AS (SELECT member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end), grouped AS (SELECT member_user_id,COUNT(*) late_count,SUM(late_minutes) total_late_minutes,SUM(late_no*late_minutes) penalty_amount,SUM(paid_amount) paid_amount FROM ranked GROUP BY member_user_id) SELECT DENSE_RANK() OVER(ORDER BY total_late_minutes DESC) late_rank,member_user_id,late_count,total_late_minutes,penalty_amount,paid_amount,paid_amount-penalty_amount balance FROM grouped ORDER BY total_late_minutes DESC,member_user_id LIMIT :limit OFFSET :offset""",params)
     return payload(logic._rows(rows),page,total)
 
 @router.get("/lateness-fund/member-count")
@@ -123,7 +147,7 @@ def lateness_member_summary(request:Request,year:int,member:str):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_RECORDS
     _,db=_lateness_context(request);start,end=logic.fiscal_range(year)
-    rows=db.query(f"""WITH ranked AS (SELECT member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end), grouped AS (SELECT member_user_id,COUNT(*) late_count,SUM(late_minutes) total_late_minutes,SUM(late_no*late_minutes) penalty_amount,SUM(paid_amount) paid_amount FROM ranked GROUP BY member_user_id), ranked_members AS (SELECT DENSE_RANK() OVER(ORDER BY total_late_minutes DESC) late_rank,*,paid_amount-penalty_amount balance FROM grouped) SELECT * FROM ranked_members WHERE member_user_id=:member""",{"start":start.isoformat(),"end":end.isoformat(),"member":member})
+    rows=db.query(f"""WITH ranked AS (SELECT member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end), grouped AS (SELECT member_user_id,COUNT(*) late_count,SUM(late_minutes) total_late_minutes,SUM(late_no*late_minutes) penalty_amount,SUM(paid_amount) paid_amount FROM ranked GROUP BY member_user_id), ranked_members AS (SELECT DENSE_RANK() OVER(ORDER BY total_late_minutes DESC) late_rank,member_user_id,late_count,total_late_minutes,penalty_amount,paid_amount,paid_amount-penalty_amount balance FROM grouped) SELECT late_rank,member_user_id,late_count,total_late_minutes,penalty_amount,paid_amount,balance FROM ranked_members WHERE member_user_id=:member""",{"start":start.isoformat(),"end":end.isoformat(),"member":member})
     return {"member":None if rows.empty else logic._rows(rows)[0]}
 
 
@@ -204,7 +228,7 @@ def lateness_records_csv(request:Request,year:int):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_RECORDS
     _,db=_lateness_context(request);start,end=logic.fiscal_range(year)
-    rows=db.query(f"""WITH ranked AS (SELECT id,late_date,member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,LEFT(COALESCE(note,''),2000) note,created_by,created_at,updated_at,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end) SELECT *,late_no*late_minutes penalty_amount,paid_amount-(late_no*late_minutes) record_balance FROM ranked ORDER BY late_date DESC,id DESC LIMIT :export_limit""",{"start":start.isoformat(),"end":end.isoformat(),"export_limit":EXPORT_MAX_ROWS+1})
+    rows=db.query(f"""WITH ranked AS (SELECT id,late_date,member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,LEFT(COALESCE(note,''),2000) note,created_by,created_at,updated_at,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end) SELECT id,late_date,member_user_id,late_minutes,paid_amount,note,created_by,created_at,updated_at,late_no,late_no*late_minutes penalty_amount,paid_amount-(late_no*late_minutes) record_balance FROM ranked ORDER BY late_date DESC,id DESC LIMIT :export_limit""",{"start":start.isoformat(),"end":end.isoformat(),"export_limit":EXPORT_MAX_ROWS+1})
     require_row_limit(rows, label="遲到紀錄匯出")
     export_rows=[[row["id"],_display_date(row["late_date"]),row["member_user_id"],row["late_minutes"],row["late_no"],_hkd(row["penalty_amount"]),_hkd(row["paid_amount"]),_hkd(row["record_balance"]),row.get("note") or "",row.get("created_by") or "",row.get("created_at") or "",row.get("updated_at") or ""] for _,row in rows.iterrows()]
     filename=f"遲到罰款基金_遲到紀錄_{logic.fiscal_label(year)}.csv"
@@ -273,7 +297,9 @@ def ai_data(request: Request):
 def ai_transactions(request: Request, page: int = 1, status: str | None = None, transaction_type: str | None = None):
     from core import funds_logic as logic
     from schema import TABLE_AI_FUND_TRANSACTIONS
-    user, db = _context(request); treasurer = logic.ai_data(user, db=db)["is_treasurer"]
+    user, db = _context(request)
+    logic._ensure_ai(db)
+    treasurer = logic.is_ai_treasurer(user, db=db)
     clauses, params = ([] if treasurer else ["created_by=:user"]), ({} if treasurer else {"user": user})
     if status: clauses.append("status=:status"); params["status"] = status
     if transaction_type: clauses.append("transaction_type=:transaction_type"); params["transaction_type"] = transaction_type
@@ -288,7 +314,9 @@ def ai_transactions(request: Request, page: int = 1, status: str | None = None, 
 def ai_usage(request: Request, page: int = 1):
     from core import funds_logic as logic
     from schema import TABLE_AI_FUND_USAGE_LOGS
-    user, db = _context(request); treasurer = logic.ai_data(user, db=db)["is_treasurer"]
+    user, db = _context(request)
+    logic._ensure_ai(db)
+    treasurer = logic.is_ai_treasurer(user, db=db)
     where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
     page, _, offset = bounds(page); params["limit"] = PAGE_SIZE; params["offset"] = offset
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_AI_FUND_USAGE_LOGS} {where}", params)
@@ -299,7 +327,8 @@ def ai_usage(request: Request, page: int = 1):
 @router.get("/ai-fund/usage-summary")
 def ai_usage_summary(request: Request, page: int = 1):
     from core import funds_logic as logic
-    user, db = _context(request); treasurer = logic.ai_data(user, db=db)["is_treasurer"]
+    user, db = _context(request)
+    treasurer = logic.is_ai_treasurer(user, db=db)
     page, _, offset = bounds(page)
     total = logic.ai_usage_summary_count(user, treasurer, db=db)
     rows = logic.ai_usage_summary(user, treasurer, db=db, limit=PAGE_SIZE, offset=offset)
@@ -309,7 +338,8 @@ def ai_usage_summary(request: Request, page: int = 1):
 def _ai_export_context(request):
     from core import funds_logic as logic
     user, db = _context(request)
-    return user, db, logic.ai_data(user, db=db)["is_treasurer"], logic
+    logic._ensure_ai(db)
+    return user, db, logic.is_ai_treasurer(user, db=db), logic
 
 
 @router.get("/ai-fund/export/transactions.csv")
@@ -352,7 +382,7 @@ def ai_usage_summary_csv(request: Request):
 
 @router.get("/ai-fund/openrouter-credit")
 async def openrouter_credit(request: Request):
-    """Same live OpenRouter credit lookup used by the Streamlit fund overview."""
+    """Fetch the live OpenRouter credit used by the fund overview."""
     _context(request)
     from deploy.proxy import _get_proxy_secret
     key = _get_proxy_secret("OPENROUTER_MANAGEMENT_KEY")
@@ -382,7 +412,8 @@ def ai_deposit(body: AiTransaction, request: Request):
 def ai_admin_transaction(body: AiTransaction, request: Request):
     from core import funds_logic as logic
     user, db = _context(request)
-    if not logic.ai_data(user, db=db)["is_treasurer"]: raise HTTPException(403, "只有 AI基金管理員可新增已確認交易。")
+    if not logic.is_ai_treasurer(user, db=db):
+        raise HTTPException(403, "只有 AI基金管理員可新增已確認交易。")
     if not body.note.strip(): raise HTTPException(400, "請填寫原因 / 備註。")
     try: logic.add_ai_transaction(user, body.transaction_type, body.amount, body.provider, body.payment_method, body.reference_no, body.note, True, db=db)
     except ValueError as exc: raise HTTPException(400, str(exc))
@@ -393,7 +424,8 @@ def ai_admin_transaction(body: AiTransaction, request: Request):
 def ai_status(transaction_id: int, body: StatusBody, request: Request):
     from core import funds_logic as logic
     user, db = _context(request)
-    if not logic.ai_data(user, db=db)["is_treasurer"]: raise HTTPException(403, "只有 AI基金管理員可處理入數。")
+    if not logic.is_ai_treasurer(user, db=db):
+        raise HTTPException(403, "只有 AI基金管理員可處理入數。")
     try: updated = logic.set_ai_transaction_status(transaction_id, body.status, user, body.note, db=db)
     except ValueError as exc: raise HTTPException(400, str(exc))
     if not updated: raise HTTPException(409, "此入數已被處理。")

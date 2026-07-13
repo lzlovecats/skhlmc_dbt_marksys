@@ -1,30 +1,22 @@
-"""Pure business logic for the topic voting / deposition feature.
+"""Pure business logic for topic proposals, ballots and removals.
 
-Phase 1 of the HTML migration: this module holds the non-UI vote logic that was
-previously embedded in ``vote.py`` — reason parsing, ballot writes, vote-data
-queries, threshold maths and auto-resolution DB effects. It is the single source
-of truth shared by the current Streamlit page and the HTML/JSON API.
-
-Rules for this module:
-  * NO ``import streamlit`` and NO ``st.*`` UI calls (toasts, dialogs, reruns).
-  * NO ``@st.cache_data`` — caching is a UI-runtime concern and stays in vote.py.
-  * NO top-level import of ``functions``/``db`` — those pull in Streamlit and
-    would bloat the streamlit-free proxy (uvicorn) process. DB access is done
-    through an injected ``db`` executor (see the contract below); callers that
-    omit it fall back to the Streamlit-backed default via a lazy import.
+Reason parsing, threshold maths, vote-data queries and state transitions live
+here so HTTP handlers do not duplicate governance rules. Every database caller
+injects an executor explicitly.
 
 DB executor contract (duck-typed) — the ``db`` object must provide:
     query(sql: str, params: dict | None = None)         -> pandas.DataFrame
     execute(sql: str, params: dict | None = None)       -> None
     execute_count(sql: str, params: dict | None = None) -> int   # rows affected
-Two implementations exist: ``db.StreamlitDb`` (Streamlit runtime) and a wrapper
-around the proxy's own SQLAlchemy engine for the streamlit-free API process.
+It may also provide ``transaction()`` yielding a SQLAlchemy connection/session.
+``motion_transaction`` adapts that session back to this contract and otherwise
+falls back to the supplied executor for lightweight test doubles.
 """
 
+from contextlib import contextmanager
 import json
 import hashlib
 import math
-import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -38,22 +30,71 @@ from schema import (
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
 )
 from system_limits import (
-    COMMENT_HISTORY_LIMIT, COMMENT_MAX_PER_MOTION, TOPIC_BANK_MAX,
-    VOTE_ANALYSIS_MOTION_LIMIT,
+    ACCOUNT_LIST_LIMIT, COMMENT_HISTORY_LIMIT, COMMENT_MAX_PER_MOTION,
+    TOPIC_BANK_MAX, VOTE_ANALYSIS_MOTION_LIMIT, VOTE_PENDING_MOTION_LIMIT,
 )
+from core.config_store import get_configs, set_configs
 
 
 
 def _resolve_db(db):
-    """Return the injected executor, or lazily build the Streamlit-backed default.
+    """Require an explicit executor; production has one database runtime."""
+    if db is None:
+        raise RuntimeError("A database executor must be supplied explicitly")
+    return db
 
-    The import is deferred so a streamlit-free process (the proxy) that always
-    passes its own executor never imports ``db``/streamlit.
+
+class _TransactionExecutor:
+    """Expose a SQLAlchemy transaction as the domain DB executor contract."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def query(self, sql_str, params=None):
+        import pandas as pd
+        from sqlalchemy import text
+
+        result = self._session.execute(text(sql_str), params or {})
+        return pd.DataFrame(result.fetchall(), columns=list(result.keys()))
+
+    def execute(self, sql_str, params=None):
+        from sqlalchemy import text
+
+        self._session.execute(text(sql_str), params or {})
+
+    def execute_count(self, sql_str, params=None):
+        from sqlalchemy import text
+
+        return self._session.execute(text(sql_str), params or {}).rowcount
+
+
+@contextmanager
+def motion_transaction(db, table, topic):
+    """Serialize and atomically execute one motion mutation when supported.
+
+    Production executors provide ``transaction``. Older injected fakes do not;
+    they retain the previous direct-executor behaviour so pure unit tests and
+    legacy callers remain usable.
     """
-    if db is not None:
-        return db
-    from db import default_db
-    return default_db()
+    db = _resolve_db(db)
+    transaction = getattr(db, "transaction", None)
+    if not callable(transaction):
+        yield db
+        return
+
+    with transaction() as session:
+        if all(
+            callable(getattr(session, method, None))
+            for method in ("query", "execute", "execute_count")
+        ):
+            executor = session
+        else:
+            executor = _TransactionExecutor(session)
+        executor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(:lock_key))",
+            {"lock_key": f"vote_motion:{table}:{topic}"},
+        )
+        yield executor
 
 
 # ─────────────────────────────────────────────────────────────
@@ -291,6 +332,10 @@ def fetch_vote_data(db=None, resolved_limit=None):
         # Direct HTML renders resolved history through fetch_vote_history(); it
         # does not need every old motion name on each refresh.
         where = "WHERE status='pending'"
+        params["pending_limit"] = VOTE_PENDING_MOTION_LIMIT
+        limit = "LIMIT :pending_limit"
+    else:
+        limit = ""
     df = db.query(
         f"""
         SELECT
@@ -305,6 +350,7 @@ def fetch_vote_data(db=None, resolved_limit=None):
         FROM {TABLE_TOPIC_VOTES}
         {where}
         ORDER BY created_at DESC
+        {limit}
         """, params
     )
     df = df.fillna("")
@@ -315,6 +361,8 @@ def fetch_vote_data(db=None, resolved_limit=None):
         f" FROM {TABLE_TOPIC_VOTE_BALLOTS} b"
         f" JOIN {TABLE_TOPIC_VOTES} tv ON b.topic_text = tv.topic_text"
         " WHERE tv.status = 'pending'"
+        " ORDER BY b.topic_text, b.user_id LIMIT :ballot_limit",
+        {"ballot_limit": VOTE_PENDING_MOTION_LIMIT * ACCOUNT_LIST_LIMIT},
     )
     agree_map, against_map, reasons_map = {}, {}, {}
     if not ballots.empty:
@@ -324,8 +372,7 @@ def fetch_vote_data(db=None, resolved_limit=None):
                 agree_map.setdefault(t, []).append(uid)
             else:
                 against_map.setdefault(t, []).append(uid)
-                raw = b.get("against_reasons")
-                r = raw if isinstance(raw, list) else (json.loads(raw) if raw else [])
+                r = parse_reason_list(b.get("against_reasons"))
                 if r:
                     reasons_map.setdefault(t, {})[uid] = r
 
@@ -373,7 +420,14 @@ def count_pending_deposes(db=None):
 # resolved motion is not pending, so it never re-fires.
 # ─────────────────────────────────────────────────────────────
 def _expire_pending(table, db):
-    df = db.query(f"SELECT topic_text, deadline_date FROM {table} WHERE status = 'pending'")
+    df = db.query(
+        f"""SELECT topic_text, deadline_date FROM {table}
+            WHERE status = 'pending' AND deadline_date IS NOT NULL
+              AND deadline_date < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Hong_Kong')::date
+            ORDER BY deadline_date, topic_text
+            LIMIT :limit""",
+        {"limit": VOTE_PENDING_MOTION_LIMIT},
+    )
     expired = []
     for _, row in df.iterrows():
         passed, deadline_str = parse_deadline_row(row.to_dict())
@@ -555,24 +609,31 @@ def fetch_depose_data(db=None):
     """
     db = _resolve_db(db)
     df = db.query(
-        f"SELECT topic_text, proposer_user_id, status, removal_reasons, created_at, deadline_date, approval_threshold"
-        f" FROM {TABLE_TOPIC_REMOVAL_VOTES} WHERE status = 'pending' ORDER BY created_at DESC"
+        f"""SELECT r.topic_text, r.proposer_user_id, r.status, r.removal_reasons,
+                   r.created_at, r.deadline_date, r.approval_threshold,
+                   t.category, t.difficulty
+            FROM {TABLE_TOPIC_REMOVAL_VOTES} r
+            LEFT JOIN {TABLE_TOPICS} t ON t.topic_text=r.topic_text
+            WHERE r.status = 'pending'
+            ORDER BY r.created_at DESC
+            LIMIT :pending_limit""",
+        {"pending_limit": VOTE_PENDING_MOTION_LIMIT},
     )
     df = df.fillna("")
     ballots = db.query(
-        f"SELECT topic_text, user_id, vote_choice FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}"
+        f"""SELECT b.topic_text, b.user_id, b.vote_choice
+            FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
+            JOIN {TABLE_TOPIC_REMOVAL_VOTES} r ON r.topic_text=b.topic_text
+            WHERE r.status='pending'
+            ORDER BY b.topic_text, b.user_id
+            LIMIT :ballot_limit""",
+        {"ballot_limit": VOTE_PENDING_MOTION_LIMIT * ACCOUNT_LIST_LIMIT},
     )
     agree_map, against_map = {}, {}
     if not ballots.empty:
         for _, b in ballots.iterrows():
             t = b["topic_text"]
             (agree_map if b["vote_choice"] == "agree" else against_map).setdefault(t, []).append(b["user_id"])
-
-    meta_df = db.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}")
-    meta = {}
-    if not meta_df.empty:
-        for _, r in meta_df.iterrows():
-            meta[r["topic_text"]] = (r.get("category"), r.get("difficulty"))
 
     out = []
     for _, row in df.iterrows():
@@ -581,25 +642,31 @@ def fetch_depose_data(db=None):
         rd["agree_users"] = agree_map.get(t, [])
         rd["against_users"] = against_map.get(t, [])
         rd["removal_reasons"] = parse_reason_list(rd.get("removal_reasons", ""))
-        cat, diff = meta.get(t, ("", ""))
-        rd["category"] = cat or ""
-        rd["difficulty"] = diff or ""
+        rd["category"] = rd.get("category") or ""
+        rd["difficulty"] = rd.get("difficulty") or ""
         out.append(rd)
     return out
 
 
 def fetch_vote_history(limit=20, db=None):
-    """Recently resolved topic-vote motions, matching the Streamlit expander."""
+    """Recently resolved topic-vote motions for the history panel."""
     db = _resolve_db(db)
     df = db.query(
         f"""
-        SELECT tv.topic_text, tv.status, tv.created_at, tv.approval_threshold, tv.category,
-               (SELECT COUNT(*) FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text AND b.vote_choice = 'agree') AS agree,
-               (SELECT COUNT(*) FROM {TABLE_TOPIC_VOTE_BALLOTS} b WHERE b.topic_text = tv.topic_text AND b.vote_choice != 'agree') AS against
-        FROM {TABLE_TOPIC_VOTES} tv
-        WHERE tv.status != 'pending'
-        ORDER BY tv.created_at DESC
-        LIMIT :limit
+        WITH recent AS (
+            SELECT topic_text, status, created_at, approval_threshold, category
+            FROM {TABLE_TOPIC_VOTES}
+            WHERE status != 'pending'
+            ORDER BY created_at DESC
+            LIMIT :limit
+        )
+        SELECT r.topic_text, r.status, r.created_at, r.approval_threshold, r.category,
+               COUNT(b.user_id) FILTER (WHERE b.vote_choice = 'agree') AS agree,
+               COUNT(b.user_id) FILTER (WHERE b.vote_choice != 'agree') AS against
+        FROM recent r
+        LEFT JOIN {TABLE_TOPIC_VOTE_BALLOTS} b ON b.topic_text=r.topic_text
+        GROUP BY r.topic_text, r.status, r.created_at, r.approval_threshold, r.category
+        ORDER BY r.created_at DESC
         """,
         {"limit": int(limit)},
     )
@@ -693,31 +760,16 @@ def vote_history_chart_data(vote_df):
     }
 
 
-def system_config_get(key, db=None):
-    db = _resolve_db(db)
-    df = db.query("SELECT value FROM system_config WHERE key = :key", {"key": key})
-    return None if df.empty else df.iloc[0]["value"]
-
-
-def system_config_set_many(values, db=None):
-    db = _resolve_db(db)
-    hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
-    for key, val in values.items():
-        db.execute(
-            "INSERT INTO system_config (key, value, updated_at) VALUES (:k, :v, :u) "
-            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
-            {"k": key, "v": val, "u": hk_now},
-        )
-    return hk_now
-
-
 def load_saved_analysis(kind, db=None):
     prefix = "vote_bank_analysis" if kind == "bank" else "vote_history_analysis"
+    db = _resolve_db(db)
+    keys = [prefix, f"{prefix}_at", f"{prefix}_by", f"{prefix}_source_signature"]
+    values = get_configs(db, keys)
     return {
-        "analysis": system_config_get(prefix, db=db) or "",
-        "analysed_at": system_config_get(f"{prefix}_at", db=db) or "",
-        "analysed_by": system_config_get(f"{prefix}_by", db=db) or "",
-        "source_signature": system_config_get(f"{prefix}_source_signature", db=db) or "",
+        "analysis": values.get(keys[0]) or "",
+        "analysed_at": values.get(keys[1]) or "",
+        "analysed_by": values.get(keys[2]) or "",
+        "source_signature": values.get(keys[3]) or "",
     }
 
 
@@ -726,7 +778,9 @@ def analysis_source_signature(kind, db=None, vote_df=None):
     db = _resolve_db(db)
     if kind == "bank":
         frame = db.query(
-            f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS} ORDER BY topic_text"
+            f"""SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}
+                ORDER BY topic_text LIMIT :limit""",
+            {"limit": TOPIC_BANK_MAX},
         )
     elif kind == "history":
         frame = vote_df if vote_df is not None else fetch_vote_history_analysis_data(db=db)
@@ -743,12 +797,15 @@ def analysis_source_signature(kind, db=None, vote_df=None):
 
 def save_analysis(kind, analysis_text, user_id, source_signature="", db=None):
     prefix = "vote_bank_analysis" if kind == "bank" else "vote_history_analysis"
-    return system_config_set_many({
+    db = _resolve_db(db)
+    analysed_at = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
+    set_configs(db, {
         prefix: analysis_text,
-        f"{prefix}_at": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
+        f"{prefix}_at": analysed_at,
         f"{prefix}_by": user_id or "",
         f"{prefix}_source_signature": source_signature or analysis_source_signature(kind, db=db),
-    }, db=db)
+    })
+    return analysed_at
 
 
 def find_stale_removed_topics(db=None):
@@ -771,7 +828,9 @@ def find_stale_removed_topics(db=None):
 def apply_topic_pass(topic, author=None, category=None, difficulty=None, db=None):
     db = _resolve_db(db)
     db.execute(
-        f"INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty) VALUES (:topic_text, :author, :category, :difficulty)",
+        f"""INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty)
+            VALUES (:topic_text, :author, :category, :difficulty)
+            ON CONFLICT (topic_text) DO NOTHING""",
         {"topic_text": topic, "author": author, "category": category, "difficulty": difficulty},
     )
     return db.execute_count(

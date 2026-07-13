@@ -1,7 +1,7 @@
-"""Streamlit-free validation and persistence for committee bug reports."""
+"""Validation and persistence for committee bug reports."""
 
 import re
-import os
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -36,10 +36,29 @@ VAGUE_PATTERNS = [
     r"唔\s*得", r"有\s*問題", r"唔\s*work", r"唔\s*正常",
 ]
 MIN_STEPS_LEN = 15
+_schema_lock = threading.Lock()
+_schema_ready = False
 
 
 def ensure_bug_reports_table(db=None):
-    _resolve_db(db).execute(CREATE_BUG_REPORTS)
+    """Create the legacy-compatible table/indexes once per worker."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        db = _resolve_db(db)
+        db.execute(CREATE_BUG_REPORTS)
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created "
+            f"ON {TABLE_BUG_REPORTS}(status, created_at DESC)"
+        )
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created "
+            f"ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC)"
+        )
+        _schema_ready = True
 
 
 def plain_len(text):

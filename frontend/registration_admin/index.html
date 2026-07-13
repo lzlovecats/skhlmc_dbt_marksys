@@ -289,7 +289,49 @@
           $("newStatus").innerHTML = Object.entries(state.status_labels)
             .map(([key, label]) => option(key, label, key === selected.status))
             .join("");
-          return `<div class="table-wrap"><table><thead><tr><th>編號</th><th>屆數</th><th>隊名</th><th>主辯</th><th>一副</th><th>二副</th><th>結辯</th><th>聯絡人</th><th>班別</th><th>聯絡電話</th><th>狀態</th><th>提交時間</th><th>更新時間</th></tr></thead><tbody>${rows.map((row) => `<tr>${[row.id, row.competition_edition, row.team_name, row.main_debater_name, row.first_deputy_name, row.second_deputy_name, row.closing_debater_name, row.contact_name, row.contact_class, row.contact_phone, row.status_label, row.submitted_at, row.updated_at].map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+          const headers = [
+            "編號",
+            "屆數",
+            "隊名",
+            "主辯",
+            "一副",
+            "二副",
+            "結辯",
+            "聯絡人",
+            "班別",
+            "聯絡電話",
+            "狀態",
+            "提交時間",
+            "更新時間",
+          ];
+          const body = rows
+            .map((row) => {
+              const cells = [
+                row.id,
+                row.competition_edition,
+                row.team_name,
+                row.main_debater_name,
+                row.first_deputy_name,
+                row.second_deputy_name,
+                row.closing_debater_name,
+                row.contact_name,
+                row.contact_class,
+                row.contact_phone,
+                row.status_label,
+                row.submitted_at,
+                row.updated_at,
+              ];
+              return `<tr>${cells.map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`;
+            })
+            .join("");
+          return `
+            <div class="table-wrap">
+              <table>
+                <thead><tr>${headers.map((value) => `<th>${value}</th>`).join("")}</tr></thead>
+                <tbody>${body}</tbody>
+              </table>
+            </div>
+          `;
         }
         async function loadRecords() {
           const edition = $("filterEdition").value,

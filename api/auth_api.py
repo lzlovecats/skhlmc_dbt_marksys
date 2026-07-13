@@ -1,22 +1,23 @@
-"""Committee login endpoints for the HTML page (Phase 3).
-
-Lets the HTML vote page authenticate without Streamlit. Verifies credentials via
-core.auth_logic and sets the same signed ``committee_user`` cookie that the rest
-of the system (proxy _verify_committee_token, Streamlit auth) already trusts, so
-a session started here works everywhere.
-"""
+"""Committee authentication, account and one-time notification endpoints."""
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from pathlib import Path
+import threading
+import time
 from system_limits import (
-    COMMITTEE_COOKIE_MAX_AGE_DAYS, NOTIFICATION_READ_RETENTION_DAYS,
+    COMMITTEE_COOKIE_MAX_AGE_DAYS, MAINTENANCE_PRUNE_INTERVAL_SECONDS,
+    NOTIFICATION_READ_RETENTION_DAYS,
 )
 
 router = APIRouter(prefix="/api/committee", tags=["committee"])
 
 COOKIE_NAME = "committee_user"
 COOKIE_MAX_AGE = COMMITTEE_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60
+_notification_schema_lock = threading.Lock()
+_notification_schema_ready = False
+_notification_prune_lock = threading.Lock()
+_notification_last_prune = 0.0
 
 
 class LoginBody(BaseModel):
@@ -53,6 +54,43 @@ def _current_notification():
     if noti_id is None or not title:
         return None
     return {"id": noti_id, "title": title, "content": "\n".join(lines[content_start:]).strip()}
+
+
+def _ensure_notification_reads(db):
+    """Keep lazy-deployment compatibility without running DDL per request."""
+    global _notification_schema_ready
+    if _notification_schema_ready:
+        return
+    with _notification_schema_lock:
+        if _notification_schema_ready:
+            return
+        from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
+
+        db.execute(CREATE_NOTIFICATION_READS)
+        db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at "
+            f"ON {TABLE_NOTIFICATION_READS}(read_at)"
+        )
+        _notification_schema_ready = True
+
+
+def _prune_notification_reads(db, now):
+    """Bound acknowledgement storage, with at most one DELETE per interval."""
+    global _notification_last_prune
+    monotonic_now = time.monotonic()
+    if monotonic_now - _notification_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+        return
+    with _notification_prune_lock:
+        if monotonic_now - _notification_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+            return
+        from datetime import timedelta
+        from schema import TABLE_NOTIFICATION_READS
+
+        db.execute(
+            f"DELETE FROM {TABLE_NOTIFICATION_READS} WHERE read_at<:cutoff",
+            {"cutoff": now - timedelta(days=NOTIFICATION_READ_RETENTION_DAYS)},
+        )
+        _notification_last_prune = monotonic_now
 
 
 @router.post("/login")
@@ -101,15 +139,14 @@ def me(request: Request):
 def notification(request: Request):
     """Return the current one-time notice when this member has not read it."""
     from deploy.proxy import _require_committee_user, get_vote_db
-    from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
+    from schema import TABLE_NOTIFICATION_READS
 
     user_id = _require_committee_user(request)
     notice = _current_notification()
     if not notice:
         return {"notification": None}
     db = get_vote_db()
-    db.execute(CREATE_NOTIFICATION_READS)
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at ON {TABLE_NOTIFICATION_READS}(read_at)")
+    _ensure_notification_reads(db)
     seen = db.query(
         f"SELECT 1 FROM {TABLE_NOTIFICATION_READS} WHERE notification_id = :nid AND user_id = :uid",
         {"nid": notice["id"], "uid": user_id},
@@ -124,17 +161,18 @@ class NotificationReadBody(BaseModel):
 
 @router.post("/notification/read")
 def notification_read(body: NotificationReadBody, request: Request):
-    from datetime import datetime, timedelta
+    from datetime import datetime
     from zoneinfo import ZoneInfo
     from deploy.proxy import _require_committee_user, get_vote_db
-    from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
+    from schema import TABLE_NOTIFICATION_READS
 
     user_id = _require_committee_user(request)
     current = _current_notification()
     if not current or body.notification_id != current["id"]:
         raise HTTPException(400, "通知已更新，請重新載入")
     db = get_vote_db()
-    db.execute(CREATE_NOTIFICATION_READS)
+    _ensure_notification_reads(db)
+    now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
     db.execute(
         f"INSERT INTO {TABLE_NOTIFICATION_READS} "
         "(notification_id, notification_title, user_id, read_at) "
@@ -142,13 +180,10 @@ def notification_read(body: NotificationReadBody, request: Request):
         "ON CONFLICT (notification_id, user_id) DO NOTHING",
         {
             "nid": current["id"], "title": current["title"], "uid": user_id,
-            "seen_at": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
+            "seen_at": now,
         },
     )
-    db.execute(f"DELETE FROM {TABLE_NOTIFICATION_READS} WHERE read_at<:cutoff", {
-        "cutoff": datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-                  - timedelta(days=NOTIFICATION_READ_RETENTION_DAYS),
-    })
+    _prune_notification_reads(db, now)
     return {"status": "ok"}
 
 

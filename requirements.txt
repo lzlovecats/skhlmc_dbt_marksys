@@ -1,7 +1,4 @@
-gspread
-google-auth
 pandas
-numpy
 SQLAlchemy
 psycopg2-binary
 bcrypt

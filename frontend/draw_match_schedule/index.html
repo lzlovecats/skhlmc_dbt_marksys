@@ -321,8 +321,45 @@
                 `<tr>${["階段", "輪次", "場次", "正方／甲方", "反方／乙方", "備註"].map((key) => `<td>${esc(row[key])}</td>`).join("")}</tr>`,
             )
             .join("");
-          $("resultContent").innerHTML =
-            `<section class="card"><h2>本次抽籤隊伍快照</h2><div class="metrics"><div class="metric"><div class="caption">參賽隊伍總數</div><div class="value">${data.teams.length}</div></div><div class="team-list">${data.teams.map((team) => `<div class="team">${esc(team)}</div>`).join("")}</div></div></section><section class="card"><h2>正賽</h2>${data.direct_final ? '<p class="caption">本次只有 2 隊隊伍，毋須進行正賽及負方賽，直接進入決賽。</p>' : rounds(data.main_rounds, byes)}</section><section class="card"><h2>負方賽</h2>${data.direct_final ? '<p class="caption">本次只有 2 隊隊伍，毋須進行負方賽。</p>' : rounds(data.loser_rounds, {})}</section><section class="card"><h2>決賽</h2>${match(data.final_match)}</section><section class="card"><h2>賽程總表</h2><p class="caption">以下為預覽結果，方便人工抄錄到「比賽場次管理」頁面。</p><div class="table-wrap"><table><thead><tr><th>階段</th><th>輪次</th><th>場次</th><th>正方／甲方</th><th>反方／乙方</th><th>備註</th></tr></thead><tbody>${rows}</tbody></table></div><div class="controls"><button id="download" class="primary" type="button">匯出賽程總表 CSV</button></div></section>`;
+          const teamList = data.teams
+            .map((team) => `<div class="team">${esc(team)}</div>`)
+            .join("");
+          const mainRounds = data.direct_final
+            ? '<p class="caption">本次只有 2 隊隊伍，毋須進行正賽及負方賽，直接進入決賽。</p>'
+            : rounds(data.main_rounds, byes);
+          const loserRounds = data.direct_final
+            ? '<p class="caption">本次只有 2 隊隊伍，毋須進行負方賽。</p>'
+            : rounds(data.loser_rounds, {});
+          $("resultContent").innerHTML = `
+            <section class="card">
+              <h2>本次抽籤隊伍快照</h2>
+              <div class="metrics">
+                <div class="metric">
+                  <div class="caption">參賽隊伍總數</div>
+                  <div class="value">${data.teams.length}</div>
+                </div>
+                <div class="team-list">${teamList}</div>
+              </div>
+            </section>
+            <section class="card"><h2>正賽</h2>${mainRounds}</section>
+            <section class="card"><h2>負方賽</h2>${loserRounds}</section>
+            <section class="card"><h2>決賽</h2>${match(data.final_match)}</section>
+            <section class="card">
+              <h2>賽程總表</h2>
+              <p class="caption">以下為預覽結果，方便人工抄錄到「比賽場次管理」頁面。</p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>階段</th><th>輪次</th><th>場次</th><th>正方／甲方</th><th>反方／乙方</th><th>備註</th></tr>
+                  </thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>
+              <div class="controls">
+                <button id="download" class="primary" type="button">匯出賽程總表 CSV</button>
+              </div>
+            </section>
+          `;
           $("download").onclick = download;
         }
         function download() {

@@ -1,20 +1,17 @@
-"""Streamlit-free Web Push sender.
+"""Bounded Web Push sender.
 
-Faithful port of ``functions.notify_committee_vote_event`` /
-``send_push_notification`` that takes the DB executor and VAPID config as
-arguments instead of reading ``st.secrets`` / ``st.session_state``. Lets the
-proxy (uvicorn) send committee push notifications — e.g. after an API-triggered
-vote resolution — without importing Streamlit.
+The caller supplies the DB executor and VAPID config; the sender can therefore
+be used by any domain event without global request state.
 
 ``vapid`` is a dict: {"public_key", "private_key", "subject"}.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import json
-import os
 import re
 
 from schema import TABLE_PUSH_SUBSCRIPTIONS
-from system_limits import PUSH_RECIPIENT_LIMIT
+from system_limits import PUSH_RECIPIENT_LIMIT, PUSH_SEND_CONCURRENCY
 
 
 
@@ -103,7 +100,7 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
     if rows.empty:
         return 0
 
-    sent = 0
+    deliveries = []
     for _, row in rows.iterrows():
         endpoint = row["endpoint"]
         try:
@@ -114,8 +111,26 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
                 {"endpoint": endpoint, "error": f"Invalid subscription JSON: {e}"},
             )
             continue
+        deliveries.append((endpoint, subscription))
 
-        ok, error = send(subscription, title, body, vapid, url=url, tag=tag)
+    def deliver(item):
+        endpoint, subscription = item
+        try:
+            ok, error = send(subscription, title, body, vapid, url=url, tag=tag)
+            return endpoint, bool(ok), str(error or "")
+        except Exception as exc:
+            return endpoint, False, str(exc)
+
+    sent = 0
+    workers = min(PUSH_SEND_CONCURRENCY, len(deliveries))
+    results = []
+    if workers:
+        # Web Push is blocking network I/O.  A small bounded pool prevents one
+        # notification from occupying a Render request worker for up to
+        # ``recipient_count × timeout`` while avoiding an unbounded thread fanout.
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="web-push") as pool:
+            results = pool.map(deliver, deliveries)
+    for endpoint, ok, error in results:
         if ok:
             sent += 1
             db.execute(

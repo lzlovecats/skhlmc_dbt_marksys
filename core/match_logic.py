@@ -1,9 +1,9 @@
-"""Streamlit-free match management and team roster logic."""
+"""Match management and team roster logic."""
 
 import datetime as dt
-import os
 import random
 import secrets
+import threading
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -19,6 +19,8 @@ from system_limits import MATCH_INVENTORY_LIMIT
 HKT = ZoneInfo("Asia/Hong_Kong")
 TIME_SLOTS = [f"{hour:02d}:{minute:02d}" for hour in range(15, 19) for minute in range(0, 60, 10) if hour < 18 or minute == 0]
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
+_ENSURE_LOCK = threading.Lock()
+_READY_ENGINES = set()
 
 
 def _now(): return dt.datetime.now(HKT).replace(tzinfo=None)
@@ -30,41 +32,72 @@ def _time(value): return value.strftime("%H:%M") if hasattr(value, "strftime") e
 
 def ensure_roster_links(db=None):
     db = _resolve_db(db)
-    db.execute(CREATE_MATCH_ROSTER_LINKS)
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_roster_links_token ON {TABLE_MATCH_ROSTER_LINKS}(roster_token)")
+    engine = getattr(db, "_engine", None)
+    cache_key = engine
+    if cache_key is not None and cache_key in _READY_ENGINES:
+        return
+    with _ENSURE_LOCK:
+        if cache_key is not None and cache_key in _READY_ENGINES:
+            return
+        db.execute(CREATE_MATCH_ROSTER_LINKS)
+        if cache_key is not None:
+            _READY_ENGINES.add(cache_key)
 
 
-def _match_records(db):
+def _match_records(db, detail_match_id=None, compact=False):
     matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
-    debaters = db.query(f"""SELECT match_id,side,position,debater_name FROM {TABLE_DEBATERS}
-        WHERE match_id IN (SELECT match_id FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit)""",
-        {"limit": MATCH_INVENTORY_LIMIT})
+    match_ids = matches["match_id"].astype(str).tolist() if "match_id" in matches.columns else []
+    requested = _clean(detail_match_id)
+    detail_id = requested if requested in match_ids else (match_ids[0] if match_ids else "")
+    if compact:
+        debaters = db.query(
+            f"""SELECT match_id,side,position,debater_name FROM {TABLE_DEBATERS}
+                WHERE match_id=:detail_match_id ORDER BY side,position""",
+            {"detail_match_id": detail_id},
+        )
+    else:
+        debaters = db.query(f"""SELECT match_id,side,position,debater_name FROM {TABLE_DEBATERS}
+            WHERE match_id IN (SELECT match_id FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit)""",
+            {"limit": MATCH_INVENTORY_LIMIT})
+    debater_lookup = {
+        (_clean(row["match_id"]), _clean(row["side"]), int(row["position"])): _clean(row["debater_name"])
+        for _, row in debaters.iterrows()
+    }
     out = []
     for _, row in matches.iterrows():
         record = {"match_id": _clean(row["match_id"]), "match_date": _date(row.get("match_date")), "match_time": _time(row.get("match_time")), "topic_text": _clean(row.get("topic_text")), "pro_team": _clean(row.get("pro_team")), "con_team": _clean(row.get("con_team")), "has_access_code": _has(row.get("access_code_hash")), "has_review_password": _has(row.get("review_password_hash"))}
         for side in ("pro", "con"):
-            for pos in range(1, 5): record[f"{side}_{pos}"] = ""
-        subset = debaters[debaters["match_id"].astype(str) == record["match_id"]]
-        for _, debater in subset.iterrows():
-            record[f"{_clean(debater['side'])}_{int(debater['position'])}"] = _clean(debater["debater_name"])
-        out.append(record)
+            for pos in range(1, 5):
+                record[f"{side}_{pos}"] = debater_lookup.get((record["match_id"], side, pos), "")
+        out.append(
+            {"match_id": record["match_id"]}
+            if compact and record["match_id"] != detail_id
+            else record
+        )
     return out
 
 
 def ensure_match_links(match_id, db=None):
     db = _resolve_db(db); ensure_roster_links(db)
-    rows = db.query(f"SELECT side, roster_token, submitted_at, created_at FROM {TABLE_MATCH_ROSTER_LINKS} WHERE match_id = :id", {"id": match_id})
-    existing = {_clean(row["side"]): row for _, row in rows.iterrows()}
-    for side in ("pro", "con"):
-        if side not in existing:
-            db.execute(f"INSERT INTO {TABLE_MATCH_ROSTER_LINKS} (match_id, side, roster_token, created_at) VALUES (:id, :side, :token, :now)", {"id": match_id, "side": side, "token": secrets.token_urlsafe(32), "now": _now()})
+    now = _now()
+    db.execute(
+        f"""INSERT INTO {TABLE_MATCH_ROSTER_LINKS} (match_id, side, roster_token, created_at)
+            VALUES (:id, 'pro', :pro_token, :now), (:id, 'con', :con_token, :now)
+            ON CONFLICT (match_id, side) DO NOTHING""",
+        {
+            "id": match_id,
+            "pro_token": secrets.token_urlsafe(32),
+            "con_token": secrets.token_urlsafe(32),
+            "now": now,
+        },
+    )
     rows = db.query(f"SELECT side, roster_token, submitted_at FROM {TABLE_MATCH_ROSTER_LINKS} WHERE match_id = :id", {"id": match_id})
     return { _clean(row["side"]): {"roster_token": _clean(row["roster_token"]), "submitted": _has(row.get("submitted_at"))} for _, row in rows.iterrows() }
 
 
-def match_admin_data(selected_match_id=None, db=None):
+def match_admin_data(selected_match_id=None, db=None, compact=False):
     db = _resolve_db(db); ensure_roster_links(db)
-    matches = _match_records(db)
+    matches = _match_records(db, detail_match_id=selected_match_id, compact=compact)
     selected = _clean(selected_match_id) or (matches[0]["match_id"] if matches else "")
     if selected and selected not in {m["match_id"] for m in matches}: selected = matches[0]["match_id"] if matches else ""
     links = ensure_match_links(selected, db) if selected else {}
@@ -80,9 +113,15 @@ def create_match(match_id, db=None):
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCHES}")
     if not count.empty and int(count.iloc[0]["n"] or 0) >= MATCH_INVENTORY_LIMIT:
         return {"ok": False, "message": "場次已達保護上限，請先刪除不再需要的舊場次。"}
-    found = db.query(f"SELECT 1 FROM {TABLE_MATCHES} WHERE match_id = :id", {"id": match_id})
-    if not found.empty: return {"ok": False, "message": "此場次已存在。"}
-    db.execute(f"INSERT INTO {TABLE_MATCHES} (match_id, match_date, match_time, topic_text, pro_team, con_team) VALUES (:id, NULL, NULL, '', '', '')", {"id": match_id})
+    created = db.execute_count(
+        f"""INSERT INTO {TABLE_MATCHES}
+            (match_id, match_date, match_time, topic_text, pro_team, con_team)
+            VALUES (:id, NULL, NULL, '', '', '')
+            ON CONFLICT (match_id) DO NOTHING""",
+        {"id": match_id},
+    )
+    if not created:
+        return {"ok": False, "message": "此場次已存在。"}
     return {"ok": True, "message": f"已建立場次：{match_id}", "match_id": match_id}
 
 
@@ -98,17 +137,30 @@ def save_match(data, db=None):
         return {"ok": False, "message": "請輸入有效的比賽日期。"}
     if match_time and match_time not in TIME_SLOTS:
         return {"ok": False, "message": "請選擇有效的比賽時間。"}
+    raw_access = _clean(data.get("access_code"))
+    raw_review = _clean(data.get("review_password"))
+    new_access_hash = hash_password(raw_access) if raw_access else None
+    new_review_hash = hash_password(raw_review) if raw_review else None
     with db.transaction() as session:
         exists = session.execute(text(f"SELECT access_code_hash, review_password_hash FROM {TABLE_MATCHES} WHERE match_id = :id"), {"id": match_id}).fetchone()
         if not exists: return {"ok": False, "message": "場次不存在。"}
         access, review = exists._mapping["access_code_hash"], exists._mapping["review_password_hash"]
-        access = None if data.get("clear_access_code") else hash_password(_clean(data.get("access_code"))) if _clean(data.get("access_code")) else access
-        review = None if data.get("clear_review_password") else hash_password(_clean(data.get("review_password"))) if _clean(data.get("review_password")) else review
+        access = None if data.get("clear_access_code") else new_access_hash or access
+        review = None if data.get("clear_review_password") else new_review_hash or review
         params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "access": access, "review": review}
         session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
-        for side in ("pro", "con"):
-            for pos in range(1, 5):
-                session.execute(text(f"INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name) VALUES (:id, :side, :pos, :name) ON CONFLICT (match_id, side, position) DO UPDATE SET debater_name=EXCLUDED.debater_name"), {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))})
+        debater_params = [
+            {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))}
+            for side in ("pro", "con")
+            for pos in range(1, 5)
+        ]
+        session.execute(
+            text(f"""INSERT INTO {TABLE_DEBATERS} (match_id, side, position, debater_name)
+                VALUES (:id, :side, :pos, :name)
+                ON CONFLICT (match_id, side, position)
+                DO UPDATE SET debater_name=EXCLUDED.debater_name"""),
+            debater_params,
+        )
     return {"ok": True, "message": f"場次「{match_id}」資料已儲存至資料庫！"}
 
 
@@ -123,8 +175,12 @@ def draw_topic(difficulty=None, db=None):
 
 
 def draw_sides(team1, team2):
-    if not _clean(team1) or not _clean(team2): return {"ok": False, "message": "請輸入兩隊隊伍名稱。"}
-    pro, con = random.sample([_clean(team1), _clean(team2)], 2)
+    team1, team2 = _clean(team1), _clean(team2)
+    if not team1 or not team2:
+        return {"ok": False, "message": "請輸入兩隊隊伍名稱。"}
+    if team1 == team2:
+        return {"ok": False, "message": "兩隊隊伍名稱不能相同。"}
+    pro, con = random.sample([team1, team2], 2)
     return {"ok": True, "pro_team": pro, "con_team": con}
 
 
@@ -137,7 +193,14 @@ def regenerate_link(match_id, side, db=None):
 
 def reopen_link(match_id, side, db=None):
     if side not in ("pro", "con"): return {"ok": False}
-    db = _resolve_db(db); db.execute(f"UPDATE {TABLE_MATCH_ROSTER_LINKS} SET submitted_at=NULL WHERE match_id=:id AND side=:side", {"id": match_id, "side": side})
+    db = _resolve_db(db)
+    changed = db.execute_count(
+        f"""UPDATE {TABLE_MATCH_ROSTER_LINKS} SET submitted_at=NULL
+            WHERE match_id=:id AND side=:side""",
+        {"id": match_id, "side": side},
+    )
+    if not changed:
+        return {"ok": False, "message": "找不到指定的填名連結。"}
     return {"ok": True, "message": f"已重開{'正方' if side == 'pro' else '反方'}填寫連結。"}
 
 
@@ -172,6 +235,14 @@ def save_roster(token, data, db=None):
         claimed=session.execute(text(f"UPDATE {TABLE_MATCH_ROSTER_LINKS} SET submitted_at=:now WHERE roster_token=:token AND submitted_at IS NULL"), {"now":_now(),"token":token}).rowcount
         if not claimed: return {"ok":False,"reason":"submitted"}
         session.execute(text(f"UPDATE {TABLE_MATCHES} SET {col}=:name WHERE match_id=:id"), {"name":clean["team_name"],"id":roster["match_id"]})
-        for pos in range(1,5):
-            session.execute(text(f"INSERT INTO {TABLE_DEBATERS} (match_id,side,position,debater_name) VALUES (:id,:side,:pos,:name) ON CONFLICT (match_id,side,position) DO UPDATE SET debater_name=EXCLUDED.debater_name"), {"id":roster["match_id"],"side":roster["side"],"pos":pos,"name":clean[f"debater_{pos}"]})
+        session.execute(
+            text(f"""INSERT INTO {TABLE_DEBATERS} (match_id,side,position,debater_name)
+                VALUES (:id,:side,:pos,:name)
+                ON CONFLICT (match_id,side,position)
+                DO UPDATE SET debater_name=EXCLUDED.debater_name"""),
+            [
+                {"id":roster["match_id"],"side":roster["side"],"pos":pos,"name":clean[f"debater_{pos}"]}
+                for pos in range(1,5)
+            ],
+        )
     return {"ok":True,"match_id":roster["match_id"],"side":roster["side"]}

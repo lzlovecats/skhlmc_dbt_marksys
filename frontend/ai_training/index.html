@@ -116,7 +116,10 @@
             <div class="split">
               <section class="card">
                 <h2>錄音提交</h2>
-                <p class="caption">每段錄音會按伺服器集中設定的時間及大小上限檢查；檔案會直接上載至 Cloudflare R2，不會經 Render 傳送。</p>
+                <p class="caption">
+                  每段錄音會按伺服器集中設定的時間及大小上限檢查；檔案會直接上載至
+                  Cloudflare R2，不會經 Render 傳送。
+                </p>
                 <label
                   >錄音模式<select id="scriptType">
                     <option value="short">短句練習</option>
@@ -266,11 +269,23 @@
           </p>
           <details open>
             <summary>📊 AI 訓練容量及匯出限制</summary>
-            <p id="trainingBandwidthUsage" class="caption">正在讀取本月系統用量…</p>
+            <p id="trainingBandwidthUsage" class="caption">
+              正在讀取本月系統用量…
+            </p>
             <ul>
-              <li>錄音長度、大小、每人每日及全系統每月上載限額均由伺服器集中設定；技術資料會由伺服器重新檢測，並須通過已簽署的 AI 預檢或人工覆核。</li>
-              <li>錄音檔案及管理員下載均使用 R2 直連。系統不再建立經 Render 傳送的 ZIP，以免再次消耗 Render RAM 及 outbound bandwidth；管理員可取得一小時有效的 R2 下載清單。</li>
-              <li>實際 bandwidth 及 R2 門檻顯示於上方；達相應保護階段會停止新 Live 或暫停非必要 AI 處理，但 R2 錄音、JSON 清單及管理功能維持運作。</li>
+              <li>
+                錄音長度、大小、每人每日及全系統每月上載限額均由伺服器集中設定；技術資料會由伺服器重新檢測，並須通過已簽署的
+                AI 預檢或人工覆核。
+              </li>
+              <li>
+                錄音檔案及管理員下載均使用 R2 直連。系統不再建立經 Render 傳送的
+                ZIP，以免再次消耗 Render RAM 及 outbound
+                bandwidth；管理員可取得一小時有效的 R2 下載清單。
+              </li>
+              <li>
+                實際 bandwidth 及 R2 門檻顯示於上方；達相應保護階段會停止新 Live
+                或暫停非必要 AI 處理，但 R2 錄音、JSON 清單及管理功能維持運作。
+              </li>
             </ul>
           </details>
           <section class="card">

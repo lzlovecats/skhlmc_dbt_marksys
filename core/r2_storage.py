@@ -12,17 +12,20 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import threading
 import time
 import datetime as dt
 from functools import lru_cache
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
-import tomllib
+from core.config_store import (
+    get_config,
+    get_configs_from_connection,
+    set_config,
+)
+from core.runtime_secrets import get_secret
 from system_limits import (
     R2_CLAIM_MAX_TTL_SECONDS, R2_CLIENT_MAX_ATTEMPTS,
     R2_DOWNLOAD_URL_MAX_TTL_SECONDS, R2_DOWNLOAD_URL_TTL_SECONDS,
@@ -34,7 +37,6 @@ from system_limits import (
 )
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
 _usage_refresh_lock = threading.Lock()
 
 
@@ -45,23 +47,8 @@ def _nonnegative_int(value) -> int:
         return 0
 
 
-@lru_cache(maxsize=1)
-def _file_secrets() -> dict:
-    path = BASE_DIR / ".streamlit" / "secrets.toml"
-    if not path.exists():
-        return {}
-    try:
-        with path.open("rb") as handle:
-            return tomllib.load(handle)
-    except Exception:
-        return {}
-
-
 def _secret(name: str, default: str = "") -> str:
-    value = os.getenv(name)
-    if value is None:
-        value = _file_secrets().get(name, default)
-    return str(value or default).strip()
+    return get_secret(name, default)
 
 
 def settings() -> dict:
@@ -162,9 +149,32 @@ def upload_bytes(key: str, data: bytes, mime_type: str, sha256: str = "") -> Non
     )
 
 
-def download_bytes(key: str) -> bytes:
+def download_bytes(key: str, max_bytes: int | None = None) -> bytes:
+    """Read one object, optionally enforcing a hard decoded byte ceiling.
+
+    Callers that already verified ``head_object`` still pass a limit to close
+    the small time-of-check/time-of-use window while a presigned PUT remains
+    valid. The extra byte detects a lying or missing Content-Length safely.
+    """
     response = client().get_object(**_params(key))
-    return response["Body"].read()
+    body = response["Body"]
+    try:
+        if max_bytes is None:
+            return body.read()
+        limit = int(max_bytes)
+        if limit <= 0:
+            raise ValueError("max_bytes must be positive")
+        declared = response.get("ContentLength")
+        if declared is not None and int(declared) > limit:
+            raise ValueError("R2 object exceeds download limit")
+        data = body.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("R2 object exceeds download limit")
+        return data
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
 
 
 def delete(key: str) -> None:
@@ -209,7 +219,7 @@ def bucket_usage_bytes() -> int:
 
 
 def _intent_declared_bytes(db) -> int:
-    from schema import CREATE_R2_UPLOAD_INTENTS, CREATE_SYSTEM_CONFIG, TABLE_R2_UPLOAD_INTENTS
+    from schema import CREATE_R2_UPLOAD_INTENTS, TABLE_R2_UPLOAD_INTENTS
     db.execute(CREATE_R2_UPLOAD_INTENTS)
     rows = db.query(f"""SELECT COALESCE(SUM(declared_bytes),0) AS total
         FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")
@@ -218,17 +228,10 @@ def _intent_declared_bytes(db) -> int:
 
 def storage_budget_status(db, *, refresh: bool = False) -> dict:
     """Return an exact-R2 snapshot plus conservative post-snapshot intents."""
-    from schema import CREATE_SYSTEM_CONFIG
-
-    db.execute(CREATE_SYSTEM_CONFIG)
     intent_bytes = _intent_declared_bytes(db)
-    rows = db.query("SELECT value FROM system_config WHERE key='r2_storage_usage_snapshot'")
-    snapshot = {}
-    if not rows.empty:
-        try:
-            snapshot = json.loads(str(rows.iloc[0]["value"] or "{}"))
-        except Exception:
-            snapshot = {}
+    snapshot = get_config(db, "r2_storage_usage_snapshot", {})
+    if not isinstance(snapshot, dict):
+        snapshot = {}
     now = dt.datetime.now(dt.timezone.utc)
     try:
         as_of = dt.datetime.fromisoformat(str(snapshot.get("as_of") or ""))
@@ -240,9 +243,9 @@ def storage_budget_status(db, *, refresh: bool = False) -> dict:
     if refresh and stale:
         with _usage_refresh_lock:
             # Another request may have refreshed while this thread waited.
-            latest_rows = db.query("SELECT value FROM system_config WHERE key='r2_storage_usage_snapshot'")
+            latest = get_config(db, "r2_storage_usage_snapshot", {})
             try:
-                latest = json.loads(str(latest_rows.iloc[0]["value"] or "{}")) if not latest_rows.empty else {}
+                latest = latest if isinstance(latest, dict) else {}
                 latest_as_of = dt.datetime.fromisoformat(str(latest.get("as_of") or ""))
                 if latest_as_of.tzinfo is None:
                     latest_as_of = latest_as_of.replace(tzinfo=dt.timezone.utc)
@@ -256,12 +259,7 @@ def storage_budget_status(db, *, refresh: bool = False) -> dict:
                     "bytes": exact, "as_of": now.isoformat(),
                     "intent_bytes_snapshot": intent_bytes,
                 }
-                db.execute("""INSERT INTO system_config(key,value,updated_at)
-                    VALUES('r2_storage_usage_snapshot',:value,:now)
-                    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""", {
-                    "value": json.dumps(snapshot, separators=(",", ":")),
-                    "now": now.replace(tzinfo=None),
-                })
+                set_config(db, "r2_storage_usage_snapshot", snapshot, updated_at=now)
             stale = False
     base = _nonnegative_int(snapshot.get("bytes"))
     intent_snapshot = _nonnegative_int(snapshot.get("intent_bytes_snapshot"))
@@ -293,17 +291,14 @@ def reserve_upload_intent(
     month_utc = month_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
     with db.transaction() as session:
         session.execute(text(CREATE_R2_UPLOAD_INTENTS))
-        session.execute(text(CREATE_SYSTEM_CONFIG))
         session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_quota'))"))
         session.execute(text(f"""DELETE FROM {TABLE_R2_UPLOAD_INTENTS}
             WHERE status IN ('completed','orphan_deleted') AND completed_at<:cutoff"""),
             {"cutoff": now_utc - dt.timedelta(days=R2_INTENT_RETENTION_DAYS)})
-        snapshot_row = session.execute(text(
-            "SELECT value FROM system_config WHERE key='r2_storage_usage_snapshot'"
-        )).fetchone()
-        try:
-            storage_snapshot = json.loads(str(snapshot_row[0] or "{}")) if snapshot_row else {}
-        except Exception:
+        storage_snapshot = get_configs_from_connection(
+            session, ("r2_storage_usage_snapshot",)
+        ).get("r2_storage_usage_snapshot", {})
+        if not isinstance(storage_snapshot, dict):
             storage_snapshot = {}
         current_declared = int(session.execute(text(f"""SELECT COALESCE(SUM(declared_bytes),0)
             FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")).scalar() or 0)

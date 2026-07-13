@@ -1,7 +1,9 @@
-"""Streamlit-free data and content logic for the HTML home page."""
+"""Data and content logic for the HTML home page."""
 
 import datetime as dt
 import re
+import threading
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,6 +18,7 @@ from schema import (
     TABLE_TOPIC_VOTES,
 )
 from system_limits import HOME_ACTIVE_MEMBER_WINDOW_HOURS
+from core.config_store import get_config, get_configs
 from core.vote_logic import _resolve_db
 from version import APP_VERSION
 
@@ -35,11 +38,29 @@ RULES_ROLE_SECTIONS = {
     "賽會人員": "二、賽會人員",
     "參賽隊伍": "三、參賽隊伍",
 }
+_registration_schema_lock = threading.Lock()
+_registration_schema_ready = False
+
+
+def _get_configs(db, keys):
+    return get_configs(db, keys)
 
 
 def _get_config(db, key):
-    result = db.query("SELECT value FROM system_config WHERE key = :key", {"key": key})
-    return None if result.empty else result.iloc[0]["value"]
+    return get_config(db, key)
+
+
+def _ensure_registration_schema(db):
+    """Avoid issuing idempotent registration DDL on every public home request."""
+    global _registration_schema_ready
+    if _registration_schema_ready:
+        return
+    with _registration_schema_lock:
+        if _registration_schema_ready:
+            return
+        db.execute(CREATE_COMPETITION_REGISTRATION_SETTINGS)
+        db.execute(CREATE_COMPETITION_REGISTRATIONS)
+        _registration_schema_ready = True
 
 
 def is_maintenance_mode(db=None):
@@ -68,9 +89,9 @@ def get_registration_status(db=None):
     db = _resolve_db(db)
     now = dt.datetime.now(HKT).replace(tzinfo=None)
     try:
-        # The Streamlit path creates these two tables lazily before reading them.
-        db.execute(CREATE_COMPETITION_REGISTRATION_SETTINGS)
-        db.execute(CREATE_COMPETITION_REGISTRATIONS)
+        # Keep lazy compatibility for older deployments, but perform the DDL once
+        # per worker rather than on every visit to the public home page.
+        _ensure_registration_schema(db)
         result = db.query(
             """
             SELECT competition_edition, registration_start, registration_end, updated_at
@@ -104,12 +125,13 @@ def get_registration_status(db=None):
 
 def home_data(db=None):
     db = _resolve_db(db)
+    configs = _get_configs(db, ("maintenance_mode", "maintenance_deadline"))
+    maintenance = configs.get("maintenance_mode")
     return {
         "version": APP_VERSION,
-        "maintenance_mode": is_maintenance_mode(db),
-        "maintenance_deadline": format_maintenance_deadline(
-            _get_config(db, "maintenance_deadline")
-        ),
+        "maintenance_mode": maintenance is not None
+        and str(maintenance).strip().lower() in ("true", "1", "yes", "on"),
+        "maintenance_deadline": format_maintenance_deadline(configs.get("maintenance_deadline")),
         "registration": get_registration_status(db),
     }
 
@@ -135,19 +157,28 @@ def run_status_checks(db=None):
         return results
 
     try:
-        counts = {}
-        for table in (TABLE_ACCOUNTS, TABLE_MATCHES, TABLE_SCORES, TABLE_TOPICS):
-            data = db.query(f"SELECT COUNT(*) AS cnt FROM {table}")
-            counts[table] = int(data.iloc[0]["cnt"]) if not data.empty else 0
-        results["table_counts"] = counts
+        data = db.query(
+            f"""
+            SELECT
+                (SELECT COUNT(*) FROM {TABLE_ACCOUNTS}) AS accounts_count,
+                (SELECT COUNT(*) FROM {TABLE_MATCHES}) AS matches_count,
+                (SELECT COUNT(*) FROM {TABLE_SCORES}) AS scores_count,
+                (SELECT COUNT(*) FROM {TABLE_TOPICS}) AS topics_count
+            """
+        )
+        row = data.iloc[0] if not data.empty else {}
+        results["table_counts"] = {
+            TABLE_ACCOUNTS: int(row.get("accounts_count", 0) or 0),
+            TABLE_MATCHES: int(row.get("matches_count", 0) or 0),
+            TABLE_SCORES: int(row.get("scores_count", 0) or 0),
+            TABLE_TOPICS: int(row.get("topics_count", 0) or 0),
+        }
     except Exception as exc:
         results["errors"].append(f"表格計數失敗: {exc}")
 
     try:
-        data = db.query(
-            "SELECT key FROM system_config WHERE key IN ('admin_password', 'developer_password')"
-        )
-        found = set(data["key"].tolist()) if not data.empty else set()
+        configs = get_configs(db, ("admin_password", "developer_password"))
+        found = {key for key, value in configs.items() if value not in (None, "")}
         results["config_admin_ok"] = "admin_password" in found
         results["config_developer_ok"] = "developer_password" in found
     except Exception as exc:
@@ -173,6 +204,7 @@ def run_status_checks(db=None):
     return results
 
 
+@lru_cache(maxsize=2)
 def _read_asset(name):
     try:
         return (ASSETS_DIR / name).read_text(encoding="utf-8")

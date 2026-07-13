@@ -1,6 +1,4 @@
-"""Streamlit-free AI helpers for the vote HTML/API migration."""
-
-import os
+"""AI helpers for topic review and vote analysis."""
 
 from ai_model_config import AI_MODEL_OPTIONS, NON_MANUAL_DEFAULT_AI_MODEL, NON_MANUAL_MODEL_OPTIONS
 from prompts import (

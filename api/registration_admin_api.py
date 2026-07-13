@@ -68,7 +68,7 @@ def login(body: LoginBody, response: Response):
     token = _sign_registration_admin_token()
     if not token:
         raise HTTPException(503, "登入服務暫時未能使用")
-    # Streamlit's admin gate is session-scoped, so this deliberately has no max_age.
+    # The organiser gate is browser-session scoped, so it deliberately has no max_age.
     response.set_cookie(COOKIE_NAME, token, path="/", samesite="lax", httponly=True)
     return {"ok": True}
 

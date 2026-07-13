@@ -1,20 +1,20 @@
-"""Streamlit-free competition registration rules and persistence."""
+"""Competition registration rules and persistence."""
 
 import datetime as dt
-import os
 import re
+import threading
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from core.auth_logic import append_login_record, verify_password
+from core.auth_logic import append_login_record, hash_password, verify_password
+from core.config_store import get_config, set_config
 from core.vote_logic import _resolve_db
 from schema import (
     CREATE_COMPETITION_REGISTRATIONS,
     CREATE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_COMPETITION_REGISTRATIONS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
-    TABLE_LOGIN_RECORDS,
 )
 from system_limits import REGISTRATION_EDITION_HISTORY_LIMIT, REGISTRATION_MAX_PER_EDITION
 
@@ -36,6 +36,8 @@ REQUIRED_FIELDS = {
     "聯絡人班別": "contact_class",
     "聯絡電話號碼": "contact_phone",
 }
+_ENSURE_LOCK = threading.Lock()
+_READY_ENGINES = set()
 
 
 def _now():
@@ -74,8 +76,17 @@ def json_datetime(value):
 
 def ensure_registration_tables(db=None):
     db = _resolve_db(db)
-    db.execute(CREATE_COMPETITION_REGISTRATION_SETTINGS)
-    db.execute(CREATE_COMPETITION_REGISTRATIONS)
+    engine = getattr(db, "_engine", None)
+    cache_key = engine
+    if cache_key is not None and cache_key in _READY_ENGINES:
+        return
+    with _ENSURE_LOCK:
+        if cache_key is not None and cache_key in _READY_ENGINES:
+            return
+        db.execute(CREATE_COMPETITION_REGISTRATION_SETTINGS)
+        db.execute(CREATE_COMPETITION_REGISTRATIONS)
+        if cache_key is not None:
+            _READY_ENGINES.add(cache_key)
 
 
 def get_registration_settings(db=None):
@@ -160,21 +171,17 @@ def submit_registration(data, competition_edition, db=None):
     if submitted_edition != current_edition:
         return {"ok": False, "message": "報名屆數已更新，請重新載入頁面後再提交。"}
 
-    count = db.query(
-        f"SELECT COUNT(*) AS n FROM {TABLE_COMPETITION_REGISTRATIONS} WHERE competition_edition=:edition",
-        {"edition": current_edition},
+    inventory = db.query(
+        f"""SELECT COUNT(*) AS n,
+                   COUNT(*) FILTER (WHERE team_name=:team_name) AS duplicate
+            FROM {TABLE_COMPETITION_REGISTRATIONS}
+            WHERE competition_edition=:edition""",
+        {"edition": current_edition, "team_name": form_data["team_name"]},
     )
-    if not count.empty and int(count.iloc[0]["n"] or 0) >= REGISTRATION_MAX_PER_EDITION:
+    if not inventory.empty and int(inventory.iloc[0]["n"] or 0) >= REGISTRATION_MAX_PER_EDITION:
         return {"ok": False, "message": "本屆網上報名名額已滿，請聯絡賽會人員。"}
-
-    duplicate = db.query(
-        f"""
-        SELECT 1 FROM {TABLE_COMPETITION_REGISTRATIONS}
-        WHERE competition_edition = :competition_edition AND team_name = :team_name
-        """,
-        {"competition_edition": current_edition, "team_name": form_data["team_name"]},
-    )
-    if not duplicate.empty:
+    duplicate_count = inventory.iloc[0].get("duplicate", 0) if not inventory.empty else 0
+    if int(duplicate_count or 0):
         return {"ok": False, "message": "此隊名已於本屆提交報名，請勿重覆提交。"}
 
     now = _now()
@@ -198,7 +205,7 @@ def submit_registration(data, competition_edition, db=None):
         error_text = str(exc).lower()
         if "duplicate key" in error_text or "unique" in error_text:
             return {"ok": False, "message": "此隊名已於本屆提交報名，請勿重覆提交。"}
-        return {"ok": False, "message": f"提交報名失敗：{exc}"}
+        return {"ok": False, "message": "提交報名失敗，請稍後再試或聯絡賽會人員。"}
     return {"ok": True, "team_name": form_data["team_name"]}
 
 
@@ -234,6 +241,7 @@ def _record_payload(row):
 
 def registration_admin_data(competition_edition=None, status="全部", db=None):
     db = _resolve_db(db)
+    now = _now()
     settings = get_registration_settings(db)
     editions_data = db.query(
         f"SELECT DISTINCT competition_edition FROM {TABLE_COMPETITION_REGISTRATIONS} "
@@ -246,22 +254,21 @@ def registration_admin_data(competition_edition=None, status="全部", db=None):
     if not editions:
         editions = [1]
     selected_edition = int(competition_edition) if competition_edition in editions else editions[0]
-    params = {"competition_edition": selected_edition}
-    where_sql = "WHERE competition_edition = :competition_edition"
-    if status in STATUS_LABELS:
-        where_sql += " AND status = :status"
-        params["status"] = status
-    items = []
-    count_rows = db.query(f"SELECT status,COUNT(*) AS count FROM {TABLE_COMPETITION_REGISTRATIONS} WHERE competition_edition=:competition_edition GROUP BY status", {"competition_edition":selected_edition})
+    count_rows = db.query(
+        f"""SELECT status,COUNT(*) AS count FROM {TABLE_COMPETITION_REGISTRATIONS}
+            WHERE competition_edition=:competition_edition GROUP BY status""",
+        {"competition_edition": selected_edition},
+    )
     counts = {key: 0 for key in STATUS_LABELS}
     for _, row in count_rows.iterrows():
-        if row["status"] in counts: counts[row["status"]] = int(row["count"])
+        if row["status"] in counts:
+            counts[row["status"]] = int(row["count"])
     return {
-        "settings": _settings_payload(settings), "now": json_datetime(_now()),
-        "default_end": json_datetime(_now() + dt.timedelta(days=14)),
+        "settings": _settings_payload(settings), "now": json_datetime(now),
+        "default_end": json_datetime(now + dt.timedelta(days=14)),
         "editions": editions, "selected_edition": selected_edition,
         "selected_status": status if status in STATUS_LABELS else "全部",
-        "status_labels": STATUS_LABELS, "status_counts": counts, "registrations": items,
+        "status_labels": STATUS_LABELS, "status_counts": counts, "registrations": [],
     }
 
 
@@ -274,9 +281,11 @@ def save_registration_settings(competition_edition, registration_start, registra
     if competition_edition < 1:
         return {"ok": False, "message": "比賽屆數必須為正整數。"}
     try:
-        start = dt.datetime.fromisoformat(str(registration_start))
-        end = dt.datetime.fromisoformat(str(registration_end))
-    except ValueError:
+        start = _coerce_datetime(dt.datetime.fromisoformat(str(registration_start)))
+        end = _coerce_datetime(dt.datetime.fromisoformat(str(registration_end)))
+    except (TypeError, ValueError):
+        return {"ok": False, "message": "請輸入有效的報名開始及截止時間。"}
+    if start is None or end is None:
         return {"ok": False, "message": "請輸入有效的報名開始及截止時間。"}
     if end <= start:
         return {"ok": False, "message": "報名截止時間必須遲於開始時間。"}
@@ -313,10 +322,13 @@ def update_registration_status(registration_id, status, db=None):
 
 def check_admin_password(password, db=None):
     db = _resolve_db(db)
-    result = db.query("SELECT value FROM system_config WHERE key = 'admin_password'")
-    if result.empty:
+    stored = get_config(db, "admin_password")
+    if not stored:
         return {"ok": False, "message": "系統錯誤：未能讀取密碼，請聯絡開發人員"}
-    if not verify_password((password or "").strip(), str(result.iloc[0]["value"])):
+    plain = (password or "").strip()
+    if not verify_password(plain, str(stored)):
         return {"ok": False, "message": "密碼錯誤"}
+    if not str(stored).startswith(("$2a$", "$2b$", "$2y$")):
+        set_config(db, "admin_password", hash_password(plain))
     append_login_record("admin", "admin", _now(), db=db)
     return {"ok": True}

@@ -11,12 +11,12 @@ import re
 import secrets
 import threading
 import time
+from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote_plus
 from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
-
-import tomllib
 
 import httpx
 import websockets
@@ -32,7 +32,6 @@ from schema import (
     CREATE_BANDWIDTH_USAGE_LOGS,
     CREATE_PRACTICE_DAILY_USAGE,
     CREATE_PUSH_SUBSCRIPTIONS,
-    CREATE_SYSTEM_CONFIG,
     CREATE_VIDEO_PROGRESS,
     CREATE_VIDEO_VIEWS,
     MEDIA_R2_STARTUP_MIGRATIONS,
@@ -43,6 +42,12 @@ from schema import (
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
 )
+from core.config_store import (
+    get_configs_from_connection,
+    migrate_legacy_config,
+    set_configs_on_connection,
+)
+from core.runtime_secrets import get_database_url, get_secret
 from debate_timing import (  # pure helpers, no side effects
     get_full_mock_sequence,
     split_mock_into_sessions,
@@ -52,7 +57,7 @@ from debate_timing import (  # pure helpers, no side effects
     DEBATE_FORMATS,
 )
 from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
-from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
+from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
 from api.auth_api import router as committee_router
@@ -101,7 +106,8 @@ from system_limits import (
     ROOM_TRANSCRIPT_MAX_ITEMS, ROOM_WS_SEND_TIMEOUT_SECONDS, SOLO_FREE_MONTHLY_LIMIT,
     SOLO_MOCK_MONTHLY_LIMIT, TTS_CONCURRENCY, TTS_LEXICON_CACHE_TTL_SECONDS, TTS_LEXICON_LIMIT,
     TTS_MAX_RESPONSE_BYTES, TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
-    TTS_PROVIDER_TIMEOUT_SECONDS, TTS_TEXT_MAX_CHARS, VIDEO_VIEW_DEDUPE_HOURS,
+    TTS_PROVIDER_TIMEOUT_SECONDS, TTS_TEXT_MAX_CHARS, VIDEO_PROGRESS_MAX_SECONDS,
+    VIDEO_VIEW_DEDUPE_HOURS,
 )
 
 
@@ -113,7 +119,13 @@ CACHE_MANIFEST = f"public, max-age={CACHE_MANIFEST_MAX_AGE_SECONDS}"
 CACHE_STATIC = f"public, max-age={CACHE_STATIC_MAX_AGE_SECONDS}, immutable"
 CACHE_SHARED = f"public, max-age={CACHE_SHARED_MAX_AGE_SECONDS}, stale-while-revalidate={CACHE_SHARED_STALE_SECONDS}"
 
-app = FastAPI()
+@asynccontextmanager
+async def _lifespan(_app):
+    run_safe_startup_migrations()
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 ESSENTIAL_ONLY_BLOCKED_PATHS = {
     "/api/ai-coach/run",
     "/api/ai-training/llm",
@@ -248,7 +260,24 @@ app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 logger = logging.getLogger("skh_proxy")
 _db_engine = None
-_streamlit_secrets = None
+_DDL_LOCK = threading.Lock()
+_DDL_READY_ENGINES = set()
+
+
+def _run_proxy_ddl_once(conn, schema_key: str, statements) -> None:
+    """Run compatibility DDL once per real engine, while keeping fakes simple."""
+
+    engine = getattr(conn, "engine", None)
+    cache_key = (engine, schema_key) if engine is not None else None
+    if cache_key is not None and cache_key in _DDL_READY_ENGINES:
+        return
+    with _DDL_LOCK:
+        if cache_key is not None and cache_key in _DDL_READY_ENGINES:
+            return
+        for statement in statements:
+            conn.execute(text(statement))
+        if cache_key is not None:
+            _DDL_READY_ENGINES.add(cache_key)
 
 
 def _cache_headers(cache_control):
@@ -263,60 +292,15 @@ def _binary_cache_headers(cache_control):
 
 
 def _get_db_url():
-    env_url = os.getenv("DATABASE_URL")
-    if env_url:
-        return env_url
-
-    secrets_path = BASE_DIR / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        return None
-
-    with secrets_path.open("rb") as f:
-        secrets = tomllib.load(f)
-
-    db = secrets.get("connections", {}).get("postgresql", {})
-    if not db:
-        return None
-
-    dialect = db.get("dialect", "postgresql")
-    username = quote_plus(str(db.get("username", "")))
-    password = quote_plus(str(db.get("password", "")))
-    host = db.get("host", "localhost")
-    port = db.get("port", "5432")
-    database = db.get("database", "")
-    return f"{dialect}://{username}:{password}@{host}:{port}/{database}"
-
-
-def _get_streamlit_secrets():
-    global _streamlit_secrets
-    if _streamlit_secrets is not None:
-        return _streamlit_secrets
-
-    secrets_path = BASE_DIR / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        _streamlit_secrets = {}
-        return _streamlit_secrets
-
-    try:
-        with secrets_path.open("rb") as f:
-            _streamlit_secrets = tomllib.load(f)
-    except Exception:
-        logger.exception("Failed to read Streamlit secrets")
-        _streamlit_secrets = {}
-    return _streamlit_secrets
+    return get_database_url()
 
 
 def _get_proxy_secret(key: str, default: str = "") -> str:
-    value = os.getenv(key)
-    if value is not None:
-        return value
-    value = _get_streamlit_secrets().get(key, default)
-    return str(value) if value is not None else default
+    return get_secret(key, default)
 
 
 def _get_vapid():
-    """VAPID config for streamlit-free push (core.push), or None if unconfigured.
-    Mirrors functions._get_vapid_config but reads the proxy's own secret source."""
+    """Return server-side VAPID configuration, or ``None`` when incomplete."""
     public_key = _get_proxy_secret("VAPID_PUBLIC_KEY")
     private_key = _get_proxy_secret("VAPID_PRIVATE_KEY")
     subject = _get_proxy_secret("VAPID_SUBJECT", "https://skhlmc-dbt-marksys.onrender.com")
@@ -350,25 +334,28 @@ def _get_db_engine():
     return _db_engine
 
 
-@app.on_event("startup")
 def run_safe_startup_migrations():
-    """Apply only the R2 compatibility DDL required before media endpoints run."""
+    """Apply small, idempotent compatibility migrations before serving traffic."""
     engine = _get_db_engine()
     if engine is None:
         logger.warning("Skipping startup migrations: database is not configured")
         return
     with engine.begin() as conn:
+        config_result = migrate_legacy_config(conn)
+        if config_result["unknown"]:
+            logger.warning(
+                "Migrated %s unregistered legacy config keys; classify them before "
+                "removing system_config",
+                config_result["unknown"],
+            )
         for ddl in MEDIA_R2_STARTUP_MIGRATIONS:
             conn.execute(text(ddl))
 
 
 class _ProxyDb:
-    """DB executor over the proxy's own SQLAlchemy engine, matching the duck-typed
-    contract consumed by ``core`` domain logic (query / execute / execute_count).
+    """Small SQLAlchemy adapter used by the domain modules.
 
-    The streamlit-free counterpart of ``db.StreamlitDb`` — lets the proxy reuse
-    ``core.vote_logic`` without importing Streamlit. Search path (public,
-    extensions) is already set by the engine's connect listener.
+    Search path (public, extensions) is set by the engine connect listener.
     """
 
     def __init__(self, engine):
@@ -415,17 +402,12 @@ def _verify_committee_token(token: str):
 
     user_id, sig = token.rsplit(":", 1)
     with engine.begin() as conn:
-        rows = conn.execute(
-            text("SELECT key,value FROM system_config WHERE key IN ('cookie_secret','login_disabled_accounts')")
-        ).fetchall()
-
-    configs = {str(row._mapping["key"]): row._mapping["value"] for row in rows}
+        configs = get_configs_from_connection(
+            conn, ("cookie_secret", "login_disabled_accounts")
+        )
     if "cookie_secret" not in configs:
         return None
-    try:
-        disabled_accounts = json.loads(str(configs.get("login_disabled_accounts") or "[]"))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        disabled_accounts = []
+    disabled_accounts = configs.get("login_disabled_accounts") or []
     if isinstance(disabled_accounts, list) and user_id in disabled_accounts:
         return None
 
@@ -455,12 +437,11 @@ def _get_relay_cookie_secret():
     if engine is None:
         return None
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
-        ).fetchone()
-    if row is None:
+        configs = get_configs_from_connection(conn, ("cookie_secret",))
+    secret = configs.get("cookie_secret")
+    if not secret:
         return None
-    _relay_cookie_secret = str(row._mapping["value"])
+    _relay_cookie_secret = str(secret)
     return _relay_cookie_secret
 
 
@@ -600,28 +581,19 @@ def _verify_review_token(token: str):
 
 
 def _require_committee_user(request: Request):
-    # The cookie is the primary source, but requests originating from the
-    # sandboxed Streamlit component iframe cannot carry a SameSite=Strict
-    # cookie, so fall back to a signed bearer token in the Authorization header.
     user_id = _verify_committee_cookie(request)
-    if not user_id:
-        auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            user_id = _verify_committee_token(auth[7:].strip())
     if not user_id:
         raise HTTPException(status_code=401, detail="Not logged in")
     return user_id
 
 
 def _ensure_push_subscriptions_table(conn):
-    conn.execute(text(CREATE_PUSH_SUBSCRIPTIONS))
-    conn.execute(text(
+    _run_proxy_ddl_once(conn, "push-subscriptions", (
+        CREATE_PUSH_SUBSCRIPTIONS,
         f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active "
-        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active)"
-    ))
-    conn.execute(text(
+        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active)",
         f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_inactive_updated "
-        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(updated_at) WHERE is_active=FALSE"
+        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(updated_at) WHERE is_active=FALSE",
     ))
 
 
@@ -657,15 +629,13 @@ def _bound_push_subscriptions(conn, user_id: str, now) -> None:
 
 
 def _ensure_video_tracking_tables(conn):
-    conn.execute(text(CREATE_VIDEO_VIEWS))
-    conn.execute(text(CREATE_VIDEO_PROGRESS))
-    conn.execute(text(
+    _run_proxy_ddl_once(conn, "video-tracking", (
+        CREATE_VIDEO_VIEWS,
+        CREATE_VIDEO_PROGRESS,
         f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated "
-        f"ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)"
-    ))
-    conn.execute(text(
+        f"ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)",
         f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated "
-        f"ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)"
+        f"ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)",
     ))
 
 
@@ -914,11 +884,17 @@ TTS_SEMAPHORE = asyncio.Semaphore(TTS_CONCURRENCY)
 
 
 async def _read_bounded_audio(response) -> bytes:
+    try:
+        declared = int(response.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > TTS_MAX_RESPONSE_BYTES:
+        raise TtsUnavailable("TTS response exceeds server limit", status=502)
     data = bytearray()
     async for chunk in response.aiter_bytes():
-        data.extend(chunk)
-        if len(data) > TTS_MAX_RESPONSE_BYTES:
+        if len(data) + len(chunk) > TTS_MAX_RESPONSE_BYTES:
             raise TtsUnavailable("TTS response exceeds server limit", status=502)
+        data.extend(chunk)
     if not data:
         raise TtsUnavailable("TTS returned empty audio", status=502)
     return bytes(data)
@@ -975,19 +951,29 @@ def _load_lexicon_overrides():
     return rows
 
 
+@lru_cache(maxsize=1)
+def _compiled_lexicon(rows):
+    """Compile the potentially large alternation once per cached lexicon."""
+    replacements = {}
+    for term_value, reading_value in rows:
+        replacements.setdefault(term_value, reading_value)
+    if not replacements:
+        return None, replacements
+    pattern = re.compile("|".join(re.escape(term) for term in replacements))
+    return pattern, replacements
+
+
 def _preprocess_tts_text(text_value: str) -> str:
-    """讀音字典前處理 (tts_rd_plan.md 第二節「讀音層」). 合成前把 tts_lexicon 嘅
+    """讀音字典前處理 (docs/ROADMAP.md P3「讀音層」). 合成前把 tts_lexicon 嘅
     term → reading 覆寫。單人 (/api/tts/azure) 同聯機 (_room_gemini_pump) 都經呢度,
     改字典一次兩邊生效。將來可喺呢度加 G2P (ToJyutping/PyCantonese)。"""
     processed = (text_value or "").strip()
     if not processed:
         return processed
-    replacements = {}
-    for term_value, reading_value in _load_lexicon_overrides():
-        replacements.setdefault(term_value, reading_value)
-    if not replacements:
+    rows = tuple(_load_lexicon_overrides())
+    pattern, replacements = _compiled_lexicon(rows)
+    if pattern is None:
         return processed
-    pattern = re.compile("|".join(re.escape(term) for term in replacements))
     return pattern.sub(lambda match: replacements[match.group(0)], processed)
 
 
@@ -1069,9 +1055,14 @@ async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
 async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
     """統一 TTS 入口:單人 (/api/tts/azure route)、聯機 (_room_gemini_pump)、
     將來 custom model 全部行呢度。換 provider = 改 TTS_PROVIDER secret。"""
-    processed = _preprocess_tts_text(text_value)
+    raw = str(text_value or "").strip()
+    if len(raw) > TTS_TEXT_MAX_CHARS:
+        raise TtsUnavailable("TTS text exceeds server limit", status=400)
+    processed = _preprocess_tts_text(raw)
     if not processed:
         raise TtsUnavailable("Missing text", status=400)
+    if len(processed) > TTS_TEXT_MAX_CHARS:
+        raise TtsUnavailable("TTS lexicon expansion exceeds server limit", status=400)
     provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
     async with TTS_SEMAPHORE:
         if provider == "custom":
@@ -1171,6 +1162,14 @@ async def video_progress(request: Request):
         duration_seconds = max(0, int(float(payload.get("duration_seconds") or 0)))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid progress payload")
+    if (
+        video_id <= 0
+        or watched_seconds > VIDEO_PROGRESS_MAX_SECONDS
+        or duration_seconds > VIDEO_PROGRESS_MAX_SECONDS
+    ):
+        raise HTTPException(status_code=400, detail="Invalid progress payload")
+    if duration_seconds:
+        watched_seconds = min(watched_seconds, duration_seconds)
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
@@ -1188,6 +1187,8 @@ async def video_progress(request: Request):
                     watched_seconds = EXCLUDED.watched_seconds,
                     duration_seconds = EXCLUDED.duration_seconds,
                     updated_at = EXCLUDED.updated_at
+                WHERE {TABLE_VIDEO_PROGRESS}.watched_seconds IS DISTINCT FROM EXCLUDED.watched_seconds
+                   OR {TABLE_VIDEO_PROGRESS}.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                 """
             ),
             {
@@ -1205,12 +1206,10 @@ async def video_progress(request: Request):
 # ---------------------------------------------------------------------------
 # Competition-day projector (big-screen display + operator control)
 #
-# Additive and self-contained: new routes are registered before the catch-all
-# proxy below, backed by a single lazily-created table (projector_state) plus
-# read-only reads of the existing matches/debaters tables. No Streamlit page,
-# existing endpoint, or schema migration is touched, so deploying this to
-# Render does not change existing behaviour. The projector intentionally shows
-# NO timer — timing stays on the chairperson's own device exactly as before.
+# These routes are backed by projector_state plus read-only match/debater data.
+# The compatibility DDL runs once per engine; P1 moves ownership to migrations.
+# The projector intentionally shows no timer: timing stays on the chairperson's
+# own device.
 # ---------------------------------------------------------------------------
 
 PROJECTOR_DEFAULT_DISPLAY = "main"
@@ -1251,7 +1250,7 @@ def _active_side(seg_side: str):
 
 
 def _ensure_projector_table(conn):
-    conn.execute(text(CREATE_PROJECTOR_STATE))
+    _run_proxy_ddl_once(conn, "projector", (CREATE_PROJECTOR_STATE,))
 
 
 def _resolve_projector_state(engine, display_key):
@@ -1792,21 +1791,15 @@ def _send_bandwidth_warning_once(status: dict) -> None:
         return
     marker = f"bandwidth_3gb_push_sent:{status['period']}"
     claimed = False
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc)
     with engine.begin() as conn:
-        conn.execute(text(CREATE_SYSTEM_CONFIG))
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('bandwidth_3gb_push'))"))
-        exists = conn.execute(text("SELECT 1 FROM system_config WHERE key=:key"), {"key": marker}).fetchone()
-        if not exists:
-            conn.execute(text("""INSERT INTO system_config(key,value,updated_at)
-                VALUES(:key,:value,:now)"""), {
-                "key": marker, "value": str(status["total_bytes"]), "now": now,
-            })
-            conn.execute(text("""INSERT INTO system_config(key,value,updated_at)
-                VALUES('bandwidth_developer_warning',:value,:now)
-                ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at"""), {
-                "value": json.dumps(status, ensure_ascii=False), "now": now,
-            })
+        existing = get_configs_from_connection(conn, (marker,))
+        if marker not in existing:
+            set_configs_on_connection(conn, {
+                marker: status["total_bytes"],
+                "bandwidth_developer_warning": status,
+            }, updated_at=now)
             claimed = True
     if not claimed:
         return
@@ -3883,15 +3876,9 @@ async def room_transcript(code: str, request: Request):
 
 @app.websocket("/room/{code}")
 async def room_ws(websocket: WebSocket, code: str):
-    # Auth before accept(): only committee-signed tokens (user_id:sig) get in,
-    # mirroring the Gemini relay's reject-before-handshake discipline.
-    token = websocket.query_params.get("u", "")
-    # Direct HTML pages use an HttpOnly committee cookie, while the old
-    # Streamlit component used a localStorage bearer token.  Accept either so
-    # a room does not fail merely because the browser cannot read HttpOnly.
-    user_id = _verify_committee_token(token)
-    if not user_id:
-        user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
+    # Authenticate before accept.  The same-origin HttpOnly cookie is the only
+    # browser credential, so signed member tokens never enter URLs or storage.
+    user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
     if not user_id:
         await websocket.close(code=1008)
         return

@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from core.review_logic import review_data
+from score_sheet_pdf import _individual_scores
 from scoring import FREE_DEBATE_CRITERIA, SPEECH_CRITERIA, free_debate_col, speech_col
 
 
@@ -58,13 +59,18 @@ class ReviewDb:
 
 
 class ReviewLogicTests(unittest.TestCase):
-    def test_review_data_matches_streamlit_totals_and_ranking_contract(self):
+    def test_pdf_accepts_json_list_rows_from_review_payload(self):
+        payload = json.loads(side_payload("正方隊"))
+        self.assertEqual(_individual_scores(payload), [50, 50, 50, 50])
+
+    def test_review_data_matches_totals_and_ranking_contract(self):
         result = review_data("test", db=ReviewDb())
         self.assertTrue(result["has_scores"])
         self.assertEqual(result["judges"], ["評判甲"])
         self.assertEqual(result["sides"]["正方"]["raw_df_a"][0]["總分（100）"], 50)
         self.assertEqual(result["sides"]["正方"]["raw_df_b"][0]["總分（55）"], 10)
         self.assertEqual(len(result["best_debaters"]), 8)
+        self.assertEqual(result["config"]["grand_total"], 460)
 
     def test_empty_score_state_has_stable_frontend_contract(self):
         result = review_data("test", db=ReviewDb(has_scores=False))
@@ -73,7 +79,7 @@ class ReviewLogicTests(unittest.TestCase):
         self.assertEqual(result["judges"], [])
         self.assertEqual(result["missing_sides"], [])
 
-    def test_pdf_endpoint_returns_downloadable_streamlit_equivalent(self):
+    def test_pdf_endpoint_returns_downloadable_score_sheet(self):
         from api.review_api import pdf
 
         class PdfDb:

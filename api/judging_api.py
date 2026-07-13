@@ -49,7 +49,7 @@ def _match_scope(request: Request):
 @router.get("/matches")
 def matches():
     from core.judging_logic import matches_for_judging
-    return {"matches": matches_for_judging(db=_db())}
+    return {"matches": matches_for_judging(db=_db(), summaries=True)}
 
 
 @router.get("/config")
@@ -93,12 +93,18 @@ def logout(response: Response):
 def state(request: Request, judge_name: str = ""):
     from core.judging_logic import has_final_submission, load_drafts, matches_for_judging, normalize_judge_name
     match_id = _match_scope(request)
-    match = next((item for item in matches_for_judging(db=_db()) if item["match_id"] == match_id), None)
+    database = _db()
+    matches = matches_for_judging(db=database, match_id=match_id)
+    match = matches[0] if matches else None
     if not match:
         raise HTTPException(404, "場次不存在。")
     judge = normalize_judge_name(judge_name)
-    return {"match": match, "judge_name": judge, "submitted": has_final_submission(match_id, judge, db=_db()) if judge else False,
-            "drafts": load_drafts(match_id, judge, db=_db()) if judge else {"正方": None, "反方": None}}
+    return {
+        "match": match,
+        "judge_name": judge,
+        "submitted": has_final_submission(match_id, judge, db=database) if judge else False,
+        "drafts": load_drafts(match_id, judge, db=database) if judge else {"正方": None, "反方": None},
+    }
 
 
 @router.post("/draft")
@@ -115,11 +121,12 @@ def save_draft(body: DraftBody, request: Request):
 def submit(body: FinalBody, request: Request):
     from core.judging_logic import load_drafts, submit_final_scores
     match_id = _match_scope(request)
-    drafts = load_drafts(match_id, body.judge_name, db=_db())
+    database = _db()
+    drafts = load_drafts(match_id, body.judge_name, db=database)
     if not drafts.get("正方") or not drafts.get("反方"):
         raise HTTPException(409, "請先分別完成正方及反方評分，並各自暫存。")
     try:
-        result = submit_final_scores(match_id, body.judge_name, body.pro_data, body.con_data, db=_db())
+        result = submit_final_scores(match_id, body.judge_name, body.pro_data, body.con_data, db=database)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not result:

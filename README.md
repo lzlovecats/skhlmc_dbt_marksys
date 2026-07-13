@@ -1,371 +1,171 @@
-# SKH LMC 辯電子分紙系統 | SKH LMC Debate Marking System
+# SKH LMC Debate Marking System
 
-> 聖呂中辯電子分紙系統
+聖呂中辯電子分紙及賽務平台。現行production是原生HTML/CSS/JavaScript + FastAPI + PostgreSQL；Render只啟動一個Uvicorn process，沒有Streamlit runtime。版本唯一來源是[`version.py`](version.py)。
 
-Current release version以[`version.py`](version.py)為唯一來源；本release集中管理
-bandwidth、RAM、storage及全系統資源限制。
+系統涵蓋報名、隊伍名單、賽程、電子分紙、賽果、辯題管治、影片／相片、committee帳戶、AI辯論練習、AI訓練資料、基金及營運工具。
 
-一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、隊伍自助提交名單、評判電子分紙、比賽片段重溫及成績統計。
+## 主要入口
 
-A full-featured electronic scoring and management platform for school debate competitions, covering topic voting, match management, team roster self-submission, live judge scoring, match video replay, and automated result aggregation.
-
----
-
-## 🌟 主要功能 | Key Features
-
-### 🗳️ 辯題徵集與投票系統 | Topic Voting System (`/vote`)
-**中文：**
-- 委員會成員可提出新辯題，由所有成員投票表決
-- 動態入庫門檻：`max(5, ⌈活躍成員數 × 40%⌉)` 票，且同意多於不同意
-- 動態罷免門檻：`max(6, ⌈活躍成員數 × 50%⌉)` 票，且同意多於不同意
-- 每個投票設有 7 日截止期限，逾期自動否決
-- 活躍成員制度：整體投票率 ≥ 40% 且最近10次至少參與3次
-- AI 審題建議（Gemini / ChatGPT 整合）
-
-**English:**
-- Committee members submit topics for collective vote
-- Dynamic entry threshold: `max(5, ⌈active_members × 40%⌉)` votes with majority
-- Dynamic deposition threshold: `max(6, ⌈active_members × 50%⌉)` votes with majority
-- 7-day voting deadline per topic, auto-rejected on expiry
-- Active member system: ≥ 40% overall participation rate AND ≥ 3 of last 10 votes
-- AI topic review suggestions (Gemini / ChatGPT integration)
-
----
-
-### ✨ AI 辯論易 | AI Debate Coach (`/ai-coach`)
-**中文：**
-- 內部委員會成員專用的 AI 辯論教練，可選擇 Gemini、DeepSeek 或 GPT 模型
-- **發言檢查**：輸入文字稿或粵語錄音（錄音分析需選 Gemini 模型），AI 根據正式評分標準（內容、辭鋒、組織、風度）提供詳細反饋及預估分數
-- **主線策劃**：根據辯題及立場生成完整比賽策略（論點、反駁、自由辯論策略、辯員分工）
-- **Gemini Live 自由辯論 / 完整 Mock**：可手動輸入辯題或從辯題庫選擇，由 AI 扮演相反立場；使用者按下「開始錄音」，完成發言後再送出，AI 會即時轉錄及回應。完整 Mock 會按賽制逐段響叮，並在需要時自動接力到下一個 Gemini Live session
-- **連線練習**：委員可建立或加入房間。真人對真人模式支援 1 對 1 練習及 AI 評判；多人對 AI 模式由 server 持有同一個 Gemini Live session，全房同步聽到 AI。完整 Mock 按賽制要求隊員在線並先分配辯位：星島 3 人，其餘賽制（包括基本法盃）4 人；聯中及星島的主辯／結辯由同一位負責
-- 單人及連線練習共用同一套賽制資料：自由辯論只支援校園隨想、聯中；完整 Mock 支援校園隨想、聯中、星島、基本法盃。星島完整 Mock 包含 6 次交互答問，不設自由辯論
-- 支援 Gemini 2.5 Flash、Gemini 3.5 Flash、Gemini 3.1 Pro Preview、DeepSeek V4 Pro 及 GPT-5.4
-- 會標示模型收費狀態，並提醒委員節約使用高級或收費模型
-- 開發者可在開發者設定啟用 / 停用 AI Provider 及設定預設模型
-- 可從系統場次載入比賽資料，或手動輸入外部比賽辯題
-- 策略建議可下載為 TXT 文件
-
-**English:**
-- Committee-only AI debate coach with selectable Gemini, DeepSeek, or GPT models
-- **Speech Review**: submit text or Cantonese audio recordings (audio review requires a Gemini model); AI provides detailed feedback and estimated scores based on the official scoring rubric (Content, Eloquence, Organisation, Manner)
-- **Strategy Planning**: generates full match strategy (arguments, counter-arguments, free debate tactics, role assignments) from a given motion and side
-- **Gemini Live Free Debate / Full Mock**: starts a timed live practice where AI plays the opposing side; users click to record, click again to submit, then receive transcription and AI response. Full Mock follows the debate format segment by segment and can auto-handoff between Gemini Live sessions
-- **Networked Practice**: committee members can create or join rooms. Human-vs-human rooms support 1v1 practice and AI judging; multi-member vs AI rooms share one server-owned Gemini Live session. Full Mock rooms require the format-specific number of online members and assigned roles before start: 3 for 星島, 4 for other formats including 基本法盃; in 聯中 and 星島, the main speaker and closing speaker are the same assigned member
-- Single-user and networked practice use the same debate format data: Free Debate supports only 校園隨想 and 聯中; Full Mock supports 校園隨想, 聯中, 星島 and 基本法盃. 星島 Full Mock includes six cross-examination rounds and has no free-debate segment
-- Supports Gemini 2.5 Flash, Gemini 3.5 Flash, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, and GPT-5.4
-- Shows model cost status and reminds committee members to conserve premium or paid model usage
-- Developers can enable / disable AI providers and set the default model from Developer settings
-- Can load match data from the system or accept manually entered external match topics
-- Strategy output downloadable as TXT
-
----
-
-### 🏠 主頁導航 | Home Page (`/`)
-**中文：**
-- 以身份分區（評判、賽會人員、參賽隊伍、一般人員、內部委員會成員）展示所有入口
-- 每個區塊提供一鍵跳轉對應頁面的快捷連結
-- 報名時間開放時，主頁標題下方會顯示下一屆比賽報名提示及報名連結
-- 支援手機版捷徑，可透過瀏覽器將系統加入手機主畫面；使用 `?install=1` 可顯示安裝指引
-
-**English:**
-- Identity-based card layout (Judge, Organiser, Teams, Public, Committee) with direct page links
-- One-click navigation to all system functions from a single landing page
-- When registration is open, a homepage banner appears below the title with the signup steps and registration link
-- Supports mobile home-screen shortcuts; open the homepage with `?install=1` to show installation guidance
-
----
-
-### 📝 比賽報名 | Competition Registration (`/registration`, `/registration-admin`)
-**中文：**
-- 報名時間內開放公開報名頁，收集隊名、四位辯員姓名及聯絡人資料
-- 同一屆比賽不可重覆提交相同隊名
-- 賽會人員可設定比賽屆數、報名開始／截止時間、查看報名紀錄、更新狀態及匯出 CSV
-
-**English:**
-- Public signup page opens only during the configured registration window
-- Captures team name, four debater names, and contact details
-- Prevents duplicate team names within the same competition edition
-- Organisers can set the edition/window, review submissions, update status, and export CSV
-
----
-
-### 📋 場次管理 | Match Management (`/match-info`)
-**中文：**
-- 建立及編輯比賽場次（日期、時間、辯題、隊伍、辯員）
-- 為正反方產生隨機專屬名單提交連結，讓隊伍自行填寫隊名及辯員姓名
-- 可查看各方提交狀態，並按需要重開填寫或重新生成連結
-- 從辯題庫隨機抽取辯題
-- 隨機抽籤決定正反方站位
-- 設定評判入場密碼（Access Code）
-- 刪除場次（連帶刪除所有相關評分紀錄）
-
-**English:**
-- Create and edit debate matches (date, time, motion, teams, debaters)
-- Generate random per-side roster links so teams can submit their own team and debater names
-- View each side's submission status, reopen a submitted link, or regenerate leaked links
-- Draw random topics from the topic bank
-- Randomly assign pro/con sides via draw
-- Set judge access codes per match
-- Delete matches (cascades to all related score records)
-
----
-
-### 🎬 比賽片段重溫 | Match Video Replay (`/video-replay`, `/video-admin`)
-**中文：**
-- 賽會人員可為現有場次新增多條 YouTube 比賽片段連結
-- 未使用電子分紙系統的舊比賽，可手動輸入比賽名稱、辯題及正反方隊名
-- 支援 `https://youtube.com/watch?v=...`、`youtube.com/watch?v=...`、`www.youtube.com/watch?v=...` 及 `youtu.be/...` 格式
-- 內部委員會成員登入後可在系統內播放片段，並查看觀看次數、留言、勝負投票及章節跳轉
-- 管理頁支援 CSV 批量匯入 YouTube Studio 影片清單，並可設定各辯位或環節的開始時間
-
-**English:**
-- Organisers can add multiple YouTube replay links for each existing match
-- Legacy matches that were not scored in the system can be added with manually entered metadata
-- Supports common YouTube URL formats, including links without an explicit `https://` prefix
-- Committee members can watch embedded replays after login, with view counts, comments, winner voting, and chapter jumps
-- The admin page supports CSV bulk import from YouTube Studio exports and per-section timestamps
-
----
-
-### 🖥️ 數據庫管理控制台 | Database Management Console (`/db-mgmt`)
-**中文：**
-- 賽會人員專用 SQL 控制台，直接查詢及操作生產數據庫
-- SELECT / INSERT / UPDATE / DELETE 均支援，結果以表格呈現
-- 安全保護：`system_config` 表不可在此修改；無 WHERE 條件的 UPDATE / DELETE 需二次確認
-
-**English:**
-- Organiser-only SQL console for direct production database access
-- Supports SELECT, INSERT, UPDATE, DELETE; results displayed as tables
-- Safety guards: `system_config` table is blocked from modification; UPDATE/DELETE without WHERE requires explicit re-confirmation
-
----
-
-### ⚖️ 電子評判分紙 | Live Judging Interface (`/judging`)
-**中文：**
-- 實時電子分紙，適合平板及手提電腦使用
-- 雲端自動暫存（PostgreSQL `score_drafts`），防止頁面刷新導致資料遺失
-- 細項評分：甲部（台上發言）× 4 辯員、乙部（自由辯論）、丙部（扣分及連貫性）
-- 提交前確認對話框，防止誤操作
-
-**English:**
-- Real-time digital score sheets optimised for tablets and laptops
-- Cloud auto-save to PostgreSQL `score_drafts`, preventing data loss on refresh
-- Granular scoring: Part A (Speeches) × 4 debaters, Part B (Free Debate), Part C (Deductions & Coherence)
-- Submission confirmation dialog to prevent accidental submissions
-
----
-
-### 📊 賽果統計與查分 | Results & Score Review (`/management`, `/review`)
-**中文：**
-- 即時統計多位評判的投票及得分
-- 評判提交後可選擇手動排名最佳辯論員（亦可自動根據發言分數填入或略過）
-- 隊伍查閱分紙（按評判逐張查看完整評分詳情）
-- 匯出指定評判的完整評分表 PDF（依 PDF template 填入資料）
-
-**English:**
-- Real-time aggregation of votes and scores across multiple judges
-- Judges can optionally rank best debater after submission (auto-fill from scores or skip)
-- Teams can review detailed per-judge score breakdowns
-- Export a selected judge's complete score sheet using the PDF template
-
----
-
-## 👥 用戶角色與權限 | User Roles & Access
-
-| 角色 / Role | 頁面 / Pages | 認證方式 / Auth |
+| 身份／功能 | 路徑 | 權限 |
 |---|---|---|
-| 評判 / Judge | 電子分紙 | 賽會提供入場密碼 |
-| 賽會人員 / Organiser | 報名管理、場次管理、比賽片段管理、賽果統計、數據庫控制台、抽取賽程 | 賽會人員密碼（存於 DB） |
-| 準參賽隊伍 / Prospective Teams | 比賽報名 | 無需登入（只限報名時間內） |
-| 參賽隊伍 / Teams | 提交比賽名單、查閱分紙 | 隨機專屬名單連結、查閱分紙密碼 |
-| 一般人員 / Public | 查閱辯題庫 | 無需登入 |
-| 委員會成員 / Committee | 辯題徵集、投票及罷免、✨AI 辯論易、比賽片段重溫 | 個人帳戶（用戶名稱 + 密碼） |
-| Developer | 開發者設定 | 開發者密碼（存於 DB） |
+| 主頁及身份導航 | `/` | 公開 |
+| 比賽報名 | `/registration` | 報名期內公開 |
+| 隊伍名單提交 | `/team-roster?token=…` | 場次專屬random token |
+| 電子分紙 | `/judging` | 場次access code |
+| 查閱分紙 | `/review` | 場次review password |
+| 公開辯題庫 | `/open_db` | 公開 |
+| 報名／場次／賽程／賽果管理 | `/admin-hub` | 賽會人員password |
+| 主席主持易 | `/chairperson` | 賽會人員password |
+| 辯題徵集、投票及罷免 | `/vote` | committee account |
+| 影片重溫、相片、AI辯論、AI訓練、基金 | 主頁committee區 | committee account；部分操作另需delegated role |
+| Database console | `/db-mgmt` | 賽會人員 + SQL password；設定／secret tables完全封鎖 |
+| Developer settings | `/dev-settings` | developer password |
 
----
+完整操作以[`assets/user_manual.md`](assets/user_manual.md)為準；比賽規則以[`assets/rules.md`](assets/rules.md)為準。
 
-## 🛠️ 技術架構 | Technology Stack
+## 架構
 
-| 組件 / Component | 技術 / Technology |
-|---|---|
-| 前端 / Frontend | 原生 HTML/CSS/JavaScript（共用 Vote UI design system） |
-| API / Runtime | FastAPI + Uvicorn；業務規則集中於 `core/` |
-| 數據庫 / Database | PostgreSQL（SQLAlchemy executor） |
-| 數據處理 / Data | Pandas, NumPy |
-| 文件輸出 / Document Export | ReportLab + pypdf PDF template overlay |
-| AI 整合 / AI | Google Gemini (`google-genai`) + OpenRouter (`openai` SDK) |
-| 身份管理 / Auth | FastAPI 簽署 HttpOnly cookie sessions |
-| 手機捷徑 / Mobile Shortcut | Web app manifest + service worker + Web Push |
-| 部署 / Deployment | Render Docker（`deploy/proxy.py`） |
+```text
+frontend/*  ──same-origin HTTP/WebSocket──>  api/*
+                                                   └─> core/*
+deploy/proxy.py ── app組裝／static／Live rooms ───────┘
+                    ├─ PostgreSQL / Supabase：結構化資料
+                    ├─ Cloudflare R2：相片及錄音binary
+                    └─ AI / TTS providers：按需外部請求
+```
 
----
+- `frontend/`：每頁可直接閱讀的HTML及共用browser assets；不用build step。
+- `api/`：HTTP payload、權限、pagination及response。
+- `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
+- `deploy/proxy.py`：FastAPI app、靜態路由、WebSocket relay/rooms及process runtime。
+- `schema.py`：新環境bootstrap及過渡migration；production schema演進將改用版本化migration。
+- `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
-## 🚀 快速開始 | Getting Started
+詳細domain/table地圖、production database audit及架構債見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。未完成的RLS、自家TTS、自家LLM、migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
-### 環境要求 | Prerequisites
-- Python 3.12+
-- 一個運行中的 PostgreSQL 實例 / A running PostgreSQL instance
+## 資料及資源原則
 
-### 安裝步驟 | Installation
+- Browser只call同源FastAPI，不直連Supabase Data API。
+- 相片及TTS錄音以短期presigned URL直接上／下載R2；Render及PostgreSQL只處理metadata，沒有BYTEA fallback。
+- List API在database層filter/count/page；大response、external HTTP、AI、TTS及upload均有code-level上限。
+- 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`只在遷移窗口作read fallback。
+- 新password寫入只存bcrypt hash；成功使用legacy plaintext credential登入時會即時升級，但production仍應主動rotate。
+- `system_config`及`app_config`均不可經Database console存取。
 
-**1. 安裝 Python 依賴 / Install Python dependencies**
+## 本機啟動
+
+### 1. Prerequisites
+
+- Python 3.11+
+- PostgreSQL
+- 系統CJK字型依賴見`packages.txt`
+
 ```bash
-pip install -r requirements.txt
+python -m venv venv
+./venv/bin/python -m pip install -r requirements.txt
 ```
 
-正式環境使用 `deploy/Dockerfile` 及 `deploy/start.sh` 在 Render 啟動 FastAPI。`packages.txt` 保留 CJK 字型依賴，供 PDF 及舊版相容流程使用。
+### 2. Secrets
 
-Production uses `deploy/Dockerfile` and `deploy/start.sh` to run FastAPI on Render. `packages.txt` retains the CJK font dependency for PDF output and legacy compatibility.
+Production優先讀環境變數，否則直接讀Render掛載的`/etc/secrets/secrets.toml`；本機可用已被Git忽略的`.secrets/secrets.toml`。舊`.streamlit/secrets.toml`只保留一個read-only兼容窗口。
 
-**2. 設定資料庫憑證 / Configure database credentials**
+最低需要database：
 
-在專案根目錄建立 `.streamlit/secrets.toml` / Create `.streamlit/secrets.toml`:
-```toml
-GEMINI_API_KEY = "your_gemini_api_key"
-OPENROUTER_API_KEY = "your_openrouter_api_key"
-AZURE_SPEECH_KEY = "your_azure_speech_key"
-AZURE_SPEECH_REGION = "eastasia"
-AZURE_TTS_VOICE = "zh-HK-HiuMaanNeural"
-AZURE_TTS_RATE = "0%"
-VAPID_PUBLIC_KEY = "your_vapid_public_key"
-VAPID_PRIVATE_KEY = "your_vapid_private_key"
-VAPID_SUBJECT = "https://skhlmc-dbt-marksys.onrender.com"
-R2_ACCOUNT_ID = "your_cloudflare_account_id"
-R2_ACCESS_KEY_ID = "your_bucket_scoped_access_key_id"
-R2_SECRET_ACCESS_KEY = "your_bucket_scoped_secret_access_key"
-R2_BUCKET = "marksys-media"
-R2_ENDPOINT = "https://your_account_id.r2.cloudflarestorage.com"
-# 選填：Gemini Live relay（見下）。設定後香港用戶會經 relay 連 Gemini Live。
-LIVE_RELAY_WS_BASE = "wss://skhlmc-dbt-marksys.onrender.com/gemini-live"
-
-[connections.postgresql]
-dialect = "postgresql"
-host = "your_host"
-port = "5432"
-database = "your_db"
-username = "your_user"
-password = "your_password"
+```bash
+export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
 ```
 
-`GEMINI_API_KEY` 用於 Gemini 模型及 Gemini Live 練習；`OPENROUTER_API_KEY` 用於 DeepSeek V4 Pro / GPT-5.4；`AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` 用於單人 Free De / Mock 及連線多人對 AI 的 Azure TTS 廣東話播放，未設定時會 fallback 用 Gemini Live 原生聲音。連線多人對 AI 房間由伺服器合成後同步廣播給全房（逐句合成、全房共用同一段音），可用 `ROOM_TTS_ENABLED=0` 關閉而維持原生聲音。TTS provider 由 `TTS_PROVIDER`（預設 `azure`，將來 `custom`）切換，自家粵語模型端點為 `CUSTOM_TTS_URL`，切換後單人與聯機同時生效。開發者設定只控制啟用的 AI Provider 及預設模型，不會儲存 API Key。
+可選功能按需要設定：
 
-Gemini Live 自由辯論、完整 Mock 及多人對 AI 連線房間會使用 `GEMINI_API_KEY` 建立 ephemeral token；如未設定此 Key，頁面仍可使用其他 AI 功能，但不能建立即時練習。
+| 功能 | Secrets |
+|---|---|
+| Gemini及Gemini Live | `GEMINI_API_KEY`, optional `LIVE_RELAY_WS_BASE` |
+| OpenRouter models | `OPENROUTER_API_KEY` |
+| Azure TTS | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, optional voice/rate/output format |
+| Custom TTS | `TTS_PROVIDER=custom`, `CUSTOM_TTS_URL`, `CUSTOM_TTS_API_KEY`, `CUSTOM_TTS_MODEL_VERSION` |
+| Web Push | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` |
+| Private media | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, optional `R2_ENDPOINT` |
 
-單人 Free De / Mock 的「要求 AI 評價」會經同一條 Gemini Live audio/TTS 流程讀出評語。連線練習房間的「AI 評判」目前只回傳文字評語，不會朗讀。
+實際AI model label/provider mapping只以[`ai_model_config.py`](ai_model_config.py)為準；README不複製會過期的model及價格清單。
 
-**Gemini Live 地區限制與 relay / Regional restriction & relay**
+### 3. 初始化database及登入secrets
 
-單人 Free De / Mock 由**使用者瀏覽器直接連** Google 的 WebSocket，Google 會以瀏覽器 IP 判斷地區。香港等未支援地區會被封鎖，令「打Free De」「打Mock」無法連線。
+新database先執行bootstrap：
 
-解決方法是經部署在**受支援地區**（本專案 Render 位於 Singapore）的 relay 轉駁：瀏覽器改連 `deploy/proxy.py` 的 `/gemini-live` 端點，由 relay 代連 Google，Google 看到的是 Singapore IP。
+```bash
+./venv/bin/python -c "from deploy.proxy import _get_db_engine; from schema import init_db; e=_get_db_engine(); c=e.connect(); init_db(c); c.close()"
+```
 
-- 設定 `LIVE_RELAY_WS_BASE`（例：`wss://<你的-render-域名>/gemini-live`）即啟用 relay；**留空／不設定則 fallback 直連 Google**（適合本地開發或本身在支援地區）。
-- 連線練習的多人對 AI 房間由 proxy server 持有 upstream Gemini Live socket；成員瀏覽器只連本系統房間 WebSocket，因此斷線後會每 5 秒自動重連，房間在全空後保留約 60 秒供短暫續連。
-- **授權**：`/gemini-live` 並非公開的開放 relay。app 會用資料庫 `system_config.cookie_secret` 對每個 ephemeral token 產生 HMAC 簽名（`auth.sign_relay_token`），relay 在撥號往 Google 前先驗證簽名（`proxy._verify_relay_signature`）。簽名不符會在 WebSocket handshake 前直接 reject（close 1008），確保只有本 app 發出的 token 用得到 relay，防止外人白嫖連線／頻寬。因此 relay 與主應用**必須共用同一個資料庫**（同一 `cookie_secret`）。
+先在本機產生三個不同的bcrypt hash及一個cookie secret，切勿把plaintext放入SQL、repo或shell history：
 
-The relay only serves tokens minted by this app: each ephemeral token is HMAC-signed with the shared `cookie_secret`, and the relay verifies the signature before dialing Google, rejecting unauthorized handshakes with close code 1008. The relay (`deploy/proxy.py`) and the app must therefore share the same database.
+```bash
+./venv/bin/python -c "from core.auth_logic import hash_password; import getpass; print(hash_password(getpass.getpass()))"
+./venv/bin/python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
-`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` 用於 PWA Web Push 通知；如未設定，辯題投票頁仍可正常使用，但不會啟用背景推送通知。
-
-`R2_*` 用於private Cloudflare R2相片及TTS錄音。本release延續R2-only：browser以
-短期presigned URL直接上載／下載binary，Render及Supabase只處理metadata；
-未設定R2時媒體功能會暫停，不會fallback到Supabase BYTEA。
-部署及舊資料遷移步驟見 [R2 media migration runbook](docs/R2_MEDIA_MIGRATION_RUNBOOK.md)，
-所有營運限額的唯一程式碼來源及部署生效步驟見
-[system limits](docs/SYSTEM_LIMITS.md)，服務月費及架構盤點見
-[services, costs and limits](docs/SERVICES_COSTS_AND_LIMITS.md)。
-Cloudflare custom domain及靜態資源cache見
-[edge cache runbook](docs/CLOUDFLARE_EDGE_CACHE_RUNBOOK.md)。
-
-**3. 初始化系統密碼 / Seed initial passwords**
-
-首次部署時，需直接在資料庫插入初始密碼（可以明文，登入後再改為加密版本）：
-
-On first deploy, seed initial passwords directly in the database (plaintext is accepted initially; change them via 開發者設定 after first login):
+再以database管理介面把hash/secret寫入typed store；把placeholder換成剛產生的值：
 
 ```sql
-INSERT INTO system_config (key, value, updated_at) VALUES
-  ('admin_password',      '<賽會人員密碼>', NOW()::TEXT),
-  ('developer_password',  '<開發者密碼>',   NOW()::TEXT);
+INSERT INTO app_config (key, namespace, value, value_type, is_secret)
+VALUES
+  ('admin_password',     'auth', to_jsonb('<ADMIN_BCRYPT>'::text), 'string', TRUE),
+  ('developer_password', 'auth', to_jsonb('<DEV_BCRYPT>'::text),   'string', TRUE),
+  ('sql_password',       'auth', to_jsonb('<SQL_BCRYPT>'::text),   'string', TRUE),
+  ('cookie_secret',      'auth', to_jsonb('<RANDOM_SECRET>'::text),'string', TRUE)
+ON CONFLICT (key) DO UPDATE SET
+  value=EXCLUDED.value,
+  namespace=EXCLUDED.namespace,
+  value_type=EXCLUDED.value_type,
+  is_secret=EXCLUDED.is_secret,
+  updated_at=NOW();
 ```
 
-**4. 啟動應用 / Run the app**
+### 4. Run
+
 ```bash
-uvicorn deploy.proxy:app --host 0.0.0.0 --port 8000
+./venv/bin/python -m uvicorn deploy.proxy:app --host 127.0.0.1 --port 8000
 ```
 
-## 🗄️ 資料庫結構 | Database Structure
+Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](deploy/start.sh)。`deploy/start.sh`從`system_limits.py`取得Uvicorn concurrency/WebSocket上限，並為512 MB Render instance設定glibc memory tuning。
 
-| 資料表 / Table | 內容 / Contents |
-|---|---|
-| `matches` | 場次資料（隊伍、辯題、密碼等）|
-| `match_videos` | 比賽片段連結（可連結現有場次，亦可記錄舊比賽手動資料）|
-| `match_roster_links` | 正反方自助提交名單的隨機 token、提交狀態及建立時間 |
-| `scores` | 正式提交的評判評分 |
-| `score_drafts` | 評判評分暫存（JSON 格式）|
-| `best_debater_rankings` | 評判手動提交的最佳辯論員排名 |
-| `topics` | 辯題庫 |
-| `topic_votes` | 待表決辯題投票紀錄 |
-| `topic_vote_ballots` | 辯題投票選票 |
-| `topic_removal_votes` | 辯題罷免投票紀錄 |
-| `topic_removal_vote_ballots` | 罷免投票選票 |
-| `accounts` | 委員會成員帳戶 |
-| `login_records` | 成員登入紀錄 |
-| `notification_reads` | 站內通知已讀紀錄 |
-| `competition_registration_settings` | 下一屆比賽報名設定（屆數、開始及截止時間）|
-| `competition_registrations` | 比賽報名紀錄（隊伍、辯員、聯絡人及狀態）|
-| `system_config` | 系統設定（賽會人員密碼、開發者密碼等，以 bcrypt 加密存放）|
+## 測試
 
----
-
-## 📁 檔案結構 | File Structure
-
-```
-├── main.py                   # 主入口 / Entry point, navigation
-├── home.py                   # 主頁 / Landing page with role-based navigation
-├── judging.py                # 電子分紙 / Judge scoring interface
-├── match_info.py             # 場次管理 / Match management
-├── team_roster.py            # 隱藏隊伍名單提交頁 / Hidden team roster submission page
-├── video_admin.py            # 比賽片段管理 / Match video management
-├── video_replay.py           # 比賽片段重溫 / Committee match video replay
-├── management.py             # 賽果統計 / Results dashboard
-├── registration.py           # 公開比賽報名 / Public competition registration
-├── registration_admin.py     # 比賽報名管理 / Registration management
-├── review.py                 # 查閱分紙 / Score review
-├── vote.py                   # 辯題投票系統 / Topic voting system
-├── open_db.py                # 公開辯題庫 / Public topic viewer
-├── db_mgmt.py                # 數據庫管理控制台 / SQL console (admin)
-├── dev_settings.py           # 開發者設定 / Developer settings (password management)
-├── draw_match_schedule.py    # 抽籤賽程 / Draw schedule
-├── ai_coach.py               # ✨AI 辯論易 / AI debate coach page
-├── ai_coach_helpers.py       # AI API 調用及 prompt 組裝 / AI API helpers
-├── functions.py              # 核心工具函數 / Core utilities
-├── scoring.py                # 評分常數及欄位 / Scoring constants
-├── score_sheet_pdf.py        # PDF template 填寫及匯出 / PDF template export
-├── schema.py                 # 資料庫建表語句 + Python DB table constants / DB schema + Python DB identifiers
-├── packages.txt              # CJK 字型 / CJK fonts
-└── assets/
-    ├── user_manual.md        # 使用手冊 / User manual
-    ├── rules.md              # 賽規 / Competition rules
-    └── *_reminder.md         # AI 審題建議 / AI topic review guides
+```bash
+./venv/bin/python -m pytest
+./venv/bin/python -m compileall -q api core deploy
+git diff --check
 ```
 
----
+Release/resource gates會檢查production不引用舊UI runtime、HTML保持可讀縮排、API pagination/resource boundaries及重要安全限制。涉及R2或database destructive操作的工具預設dry-run；不要把測試成功視為production data mutation批准。
 
-## 🔒 安全性 | Security
+## Database domains
 
-- 所有資料庫操作均使用參數化查詢，防範 SQL Injection
-- All database operations use parameterized queries to prevent SQL injection
-- 密碼以 session state 及 cookie 管理，不以明文傳輸
-- Session state and cookies handle credentials, avoiding plaintext transmission
-- 賽會人員密碼及開發者密碼以 bcrypt 加密存放於資料庫 `system_config` 表，不寫入設定檔
-- Organiser and developer passwords are bcrypt-hashed and stored in the `system_config` DB table, not in config files
-- 隊伍名單提交頁不會顯示於公開導航，只能透過資料庫儲存的隨機 token 連結進入；重新生成連結後舊 token 會失效
-- Team roster submission pages are hidden from public navigation and require random DB-backed token links; regenerated links invalidate old tokens
-- 數據庫管理控制台設有保護：禁止修改 `system_config` 表，無 WHERE 條件的危險操作須二次確認
-- The SQL console blocks modifications to `system_config` and requires explicit re-confirmation for UPDATE/DELETE without WHERE
+Production資料分為：
 
----
+- identity/access：accounts、login、notifications、push及typed config；
+- competition/scoring：registration、matches、rosters、drafts、scores及rankings；
+- topic governance：topic bank、proposals/removals、ballots及comments；
+- media：video metadata/activity及R2-backed photos；
+- AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions、eval/RAG/model lifecycle；
+- finance/operations：AI fund、lateness fund、bug reports及resource accounting。
 
-*Developed & Maintained by lzlovecats @ 2026*
+完整逐表保留理由、production drift及待處理indexes/FKs見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 營運文件
+
+- [`docs/SYSTEM_LIMITS.md`](docs/SYSTEM_LIMITS.md)：限額來源及deploy overrides
+- [`docs/SERVICES_COSTS_AND_LIMITS.md`](docs/SERVICES_COSTS_AND_LIMITS.md)：外部服務、費用及容量
+- [`docs/R2_MEDIA_MIGRATION_RUNBOOK.md`](docs/R2_MEDIA_MIGRATION_RUNBOOK.md)：R2 migration/finalization
+- [`docs/CLOUDFLARE_EDGE_CACHE_RUNBOOK.md`](docs/CLOUDFLARE_EDGE_CACHE_RUNBOOK.md)：edge cache
+- [`docs/ROADMAP.md`](docs/ROADMAP.md)：所有未完成工程的單一路線圖
+
+## 維護規則
+
+1. 業務規則只放`core/`；API不複製threshold/formula，HTML不自行決定權限。
+2. 新SQL必須parameterized，list query有界，寫入同一業務動作用transaction。
+3. 新table/column/index/RLS要有versioned migration、rollback及permission tests。
+4. HTML source保持正常縮排，不提交minified inline document；共用樣式/行為放`frontend/shared/`。
+5. Runtime需要的assets才放`assets/`；計劃更新`docs/ROADMAP.md`，不再新增散落migration diary。
+6. 修bug附regression test；資源改動同時更新`system_limits.py`及對應docs。
+
+Maintained by lzlovecats and contributors.

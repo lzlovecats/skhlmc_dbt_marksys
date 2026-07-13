@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from core.results_logic import RANK_COLUMNS, _best_debaters
+from core.results_logic import RANK_COLUMNS, _best_debaters, results_data
 
 
 class RankingDb:
@@ -24,6 +24,20 @@ def score_frame():
 
 
 class BestDebaterRankingTests(unittest.TestCase):
+    def test_preselected_unscored_match_does_not_fall_back_to_other_results(self):
+        class EmptySelectedDb:
+            def query(self, sql, params=None):
+                if "FROM scores s" in sql:
+                    self.selected = params["match_id"]
+                    return pd.DataFrame()
+                raise AssertionError(sql)
+
+        db = EmptySelectedDb()
+        result = results_data("current", db=db, match_ids=["current", "old-scored"])
+        self.assertEqual(db.selected, "current")
+        self.assertEqual(result["selected_match_id"], "current")
+        self.assertFalse(result["has_scores"])
+
     def test_partial_explicit_ranking_falls_back_to_speech_scores(self):
         rankings = [{"judge_name": "評判甲", "side": "pro", "position": 1, "rank": 1}]
         rows, best = _best_debaters("test", score_frame(), RankingDb(rankings))

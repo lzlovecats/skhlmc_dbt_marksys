@@ -317,7 +317,42 @@
               )
                 ? " open"
                 : "";
-              return `<details${expanded}><summary>#${report.id} ${esc(report.affected_page)}｜${esc(status)}</summary><div class="report-meta">提交時間：${esc(report.created_at)}｜更新時間：${esc(report.updated_at)}</div>${report.device_info ? `<div class="report-body"><strong>裝置及瀏覽器：</strong> ${esc(report.device_info)}</div>` : ""}<div class="report-heading">重現步驟</div><div class="report-body">${esc(report.reproduction_steps)}</div><div class="report-heading">預期結果</div><div class="report-body">${esc(report.expected_result || "未提供")}</div><div class="report-heading">實際結果</div><div class="report-body">${esc(report.actual_result)}</div>${report.extra_notes ? `<div class="report-heading">補充資料</div><div class="report-body">${esc(report.extra_notes)}</div>` : ""}${report.fixed_version ? `<div class="notice ok">已於版本 ${esc(report.fixed_version)} 修正。</div>` : ""}${report.developer_reply ? `<div class="report-heading">Developer 回覆</div><div class="reply">${esc(report.developer_reply)}</div>` : ""}</details>`;
+              const deviceInfo = report.device_info
+                ? `<div class="report-body">
+                    <strong>裝置及瀏覽器：</strong> ${esc(report.device_info)}
+                  </div>`
+                : "";
+              const extraNotes = report.extra_notes
+                ? `<div class="report-heading">補充資料</div>
+                  <div class="report-body">${esc(report.extra_notes)}</div>`
+                : "";
+              const fixedVersion = report.fixed_version
+                ? `<div class="notice ok">
+                    已於版本 ${esc(report.fixed_version)} 修正。
+                  </div>`
+                : "";
+              const developerReply = report.developer_reply
+                ? `<div class="report-heading">Developer 回覆</div>
+                  <div class="reply">${esc(report.developer_reply)}</div>`
+                : "";
+              return `<details${expanded}>
+                <summary>
+                  #${report.id} ${esc(report.affected_page)}｜${esc(status)}
+                </summary>
+                <div class="report-meta">
+                  提交時間：${esc(report.created_at)}｜更新時間：${esc(report.updated_at)}
+                </div>
+                ${deviceInfo}
+                <div class="report-heading">重現步驟</div>
+                <div class="report-body">${esc(report.reproduction_steps)}</div>
+                <div class="report-heading">預期結果</div>
+                <div class="report-body">${esc(report.expected_result || "未提供")}</div>
+                <div class="report-heading">實際結果</div>
+                <div class="report-body">${esc(report.actual_result)}</div>
+                ${extraNotes}
+                ${fixedVersion}
+                ${developerReply}
+              </details>`;
             })
             .join("");
         }

@@ -1,4 +1,4 @@
-"""Pure tournament-draw helpers shared by HTML APIs and legacy Streamlit."""
+"""Pure tournament-draw helpers used by the schedule API."""
 
 import random
 from system_limits import SCHEDULE_MAX_TEAM_NAME_CHARS, SCHEDULE_MAX_TEAMS

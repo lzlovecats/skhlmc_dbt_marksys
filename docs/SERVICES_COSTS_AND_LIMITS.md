@@ -2,7 +2,7 @@
 
 更新日期：2026-07-13
 
-部署狀態：Render production 為 **4.1.2**；此 workspace release以
+部署前基線：Render production 為 **4.1.2**；目標release為 **4.2.0**，實際版本仍以
 [`version.py`](../version.py)為準。R2 第一轉已完成，148 段錄音及45張相片均已驗證。
 必須先部署及驗收目前release，之後先可以finalizer永久移除兩個舊BYTEA columns。
 
@@ -165,7 +165,7 @@ Gemini Live。
 checkpoint會在當月同一行累加，不會每30秒新增一行；log預設只保留62日。記錄會
 加上Render dashboard既有用量基線，執行全系統月度預算：
 
-- 3.0GB：向全部委員發一次push notification，並在log及`system_config`寫入
+- 3.0GB：向全部委員發一次push notification，並在log及typed `app_config`寫入
   developer warning。
 - 3.5GB：停止新 Gemini Live／聯機房間；已開始的Live會在下一個30秒checkpoint
   由server強制結束，避免單一長session繼續穿透hard gate。
