@@ -170,10 +170,6 @@ def ensure_match_videos_table(db=None):
             "standalone_con_team",
         )
     )
-    statements.extend((
-        f"CREATE INDEX IF NOT EXISTS idx_match_videos_match_id ON {TABLE_MATCH_VIDEOS}(match_id)",
-        f"CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order ON {TABLE_MATCH_VIDEOS}(is_visible, display_order)",
-    ))
     _run_media_ddl_once(db, "match-videos", statements)
 
 
@@ -183,12 +179,6 @@ def ensure_video_interaction_tables(db=None):
     _run_media_ddl_once(db, "video-interactions", (
         CREATE_VIDEO_VIEWS, CREATE_VIDEO_COMMENTS, CREATE_VIDEO_VOTES,
         CREATE_VIDEO_CHAPTERS, CREATE_VIDEO_PROGRESS,
-        f"CREATE INDEX IF NOT EXISTS idx_video_views_video_id ON {TABLE_VIDEO_VIEWS}(video_id)",
-        f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)",
-        f"CREATE INDEX IF NOT EXISTS idx_video_comments_video_created ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC)",
-        f"CREATE INDEX IF NOT EXISTS idx_video_comments_user_created ON {TABLE_VIDEO_COMMENTS}(user_id, created_at DESC)",
-        f"CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice ON {TABLE_VIDEO_VOTES}(video_id, vote_choice)",
-        f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)",
     ))
 
 
@@ -207,10 +197,6 @@ def ensure_match_photos_table(db=None):
             ("width", "INTEGER"), ("height", "INTEGER"),
         )
     )
-    statements.extend((
-        f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)",
-        f"CREATE INDEX IF NOT EXISTS idx_match_photos_date_created ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC)",
-    ))
     _run_media_ddl_once(db, "match-photos", statements)
 
 

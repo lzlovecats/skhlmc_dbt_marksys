@@ -64,13 +64,9 @@ def _ensure_notification_reads(db):
     with _notification_schema_lock:
         if _notification_schema_ready:
             return
-        from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
+        from schema import CREATE_NOTIFICATION_READS
 
         db.execute(CREATE_NOTIFICATION_READS)
-        db.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at "
-            f"ON {TABLE_NOTIFICATION_READS}(read_at)"
-        )
         _notification_schema_ready = True
 
 

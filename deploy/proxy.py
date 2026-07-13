@@ -540,10 +540,6 @@ def _require_committee_user(request: Request):
 def _ensure_push_subscriptions_table(conn):
     _run_proxy_ddl_once(conn, "push-subscriptions", (
         CREATE_PUSH_SUBSCRIPTIONS,
-        f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active "
-        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active)",
-        f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_inactive_updated "
-        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(updated_at) WHERE is_active=FALSE",
     ))
 
 
@@ -582,10 +578,6 @@ def _ensure_video_tracking_tables(conn):
     _run_proxy_ddl_once(conn, "video-tracking", (
         CREATE_VIDEO_VIEWS,
         CREATE_VIDEO_PROGRESS,
-        f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated "
-        f"ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)",
-        f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated "
-        f"ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)",
     ))
 
 

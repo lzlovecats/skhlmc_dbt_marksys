@@ -246,7 +246,6 @@ def _initialize_training_schema(db):
         CREATE_RAG_DOCUMENTS, CREATE_RAG_CHUNKS, CREATE_AI_TRAINING_AUDIT,
     ):
         db.execute(ddl)
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at ON {TABLE_AI_TRAINING_AUDIT}(created_at)")
     eval_path = Path(__file__).resolve().parents[1] / "assets" / "ai_eval_cases_v0.json"
     if eval_path.exists():
         for case in json.loads(eval_path.read_text(encoding="utf-8")):

@@ -133,6 +133,7 @@ Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](d
 ```bash
 ./venv/bin/python tools/manage_db_migrations.py status
 ./venv/bin/python tools/manage_db_migrations.py apply
+./venv/bin/python tools/reconcile_db_schema.py
 ```
 
 ## 測試

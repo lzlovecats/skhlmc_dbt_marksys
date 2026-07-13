@@ -102,14 +102,6 @@ def _ensure_lateness(db):
         db.execute(CREATE_LATENESS_FUND_RECORDS)
         db.execute(CREATE_LATENESS_FUND_EXPENSES)
         db.execute(CREATE_LATENESS_FUND_PERIODS)
-        db.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date "
-            f"ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date)"
-        )
-        db.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date "
-            f"ON {TABLE_LATENESS_FUND_EXPENSES}(expense_date)"
-        )
         _LATENESS_SCHEMA_READY = True
 
 
@@ -326,7 +318,6 @@ def _ensure_ai(db):
                 db.execute(CREATE_AI_FUND_USAGE_LOGS)
                 db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
                 db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
-                db.execute(f"CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at ON {TABLE_AI_FUND_USAGE_LOGS}(created_at)")
                 db.execute(f"""DO $$
         DECLARE item RECORD;
         BEGIN

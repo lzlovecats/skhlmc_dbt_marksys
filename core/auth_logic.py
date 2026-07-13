@@ -36,7 +36,6 @@ def append_login_record(user_id: str, login_type: str, logged_in_at, db=None) ->
         if monotonic_now - _login_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
             return
         cutoff = datetime.datetime.now().replace(tzinfo=None) - datetime.timedelta(days=LOGIN_RECORD_RETENTION_DAYS)
-        db.execute(f"CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at ON {TABLE_LOGIN_RECORDS}(logged_in_at)")
         db.execute(f"DELETE FROM {TABLE_LOGIN_RECORDS} WHERE logged_in_at<:cutoff", {"cutoff": cutoff})
         _login_last_prune = monotonic_now
 

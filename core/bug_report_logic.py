@@ -41,7 +41,7 @@ _schema_ready = False
 
 
 def ensure_bug_reports_table(db=None):
-    """Create the legacy-compatible table/indexes once per worker."""
+    """Create the legacy-compatible table once per worker."""
     global _schema_ready
     if _schema_ready:
         return
@@ -50,14 +50,6 @@ def ensure_bug_reports_table(db=None):
             return
         db = _resolve_db(db)
         db.execute(CREATE_BUG_REPORTS)
-        db.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created "
-            f"ON {TABLE_BUG_REPORTS}(status, created_at DESC)"
-        )
-        db.execute(
-            f"CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created "
-            f"ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC)"
-        )
         _schema_ready = True
 
 

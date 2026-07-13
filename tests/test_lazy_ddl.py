@@ -41,7 +41,7 @@ class LazyDdlTests(unittest.TestCase):
         connection = _Connection()
         proxy._ensure_push_subscriptions_table(connection)
         proxy._ensure_push_subscriptions_table(connection)
-        self.assertEqual(len(connection.executed), 3)
+        self.assertEqual(len(connection.executed), 1)
 
 
 if __name__ == "__main__":
