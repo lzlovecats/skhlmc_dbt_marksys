@@ -1,0 +1,8 @@
+{
+  "captured_on": "2026-07-13",
+  "name": "production_baseline",
+  "schema_name": "public",
+  "source_schema_checksum": "18b2734a1abea3dfca2afb7e0f9678ef01e7d4d6fa99ffa2f3b5e1d5d235bffb",
+  "source_table_count": 42,
+  "version": "20260713_0000"
+}

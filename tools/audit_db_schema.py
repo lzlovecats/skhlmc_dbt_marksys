@@ -396,22 +396,28 @@ def snapshot_summary(snapshot: dict) -> dict:
     }
 
 
-def audit(engine, schema_name: str, *, exact_row_counts: bool = False) -> dict:
-    with engine.connect() as conn, conn.begin():
-        conn.execute(text("SET TRANSACTION READ ONLY"))
-        conn.execute(text("SET LOCAL lock_timeout = '2s'"))
-        conn.execute(text("SET LOCAL statement_timeout = '30s'"))
-        server_version = conn.execute(text("SHOW server_version")).scalar_one()
-        sections = {
-            name: _rows(conn, sql, schema_name)
-            for name, sql in CATALOG_QUERIES.items()
-        }
-        metrics = _rows(conn, METRICS_QUERY, schema_name)
-        counts = (
-            _exact_counts(conn, schema_name, sections["tables"])
-            if exact_row_counts
-            else None
-        )
+def audit_connection(
+    conn,
+    schema_name: str,
+    *,
+    exact_row_counts: bool = False,
+) -> dict:
+    """Audit through an existing transaction without changing its mode.
+
+    The caller owns transaction boundaries and timeouts. This lets a
+    migration tool verify a baseline checksum and record it atomically.
+    """
+    server_version = conn.execute(text("SHOW server_version")).scalar_one()
+    sections = {
+        name: _rows(conn, sql, schema_name)
+        for name, sql in CATALOG_QUERIES.items()
+    }
+    metrics = _rows(conn, METRICS_QUERY, schema_name)
+    counts = (
+        _exact_counts(conn, schema_name, sections["tables"])
+        if exact_row_counts
+        else None
+    )
     return build_snapshot(
         schema_name,
         str(server_version),
@@ -419,6 +425,18 @@ def audit(engine, schema_name: str, *, exact_row_counts: bool = False) -> dict:
         metrics,
         counts,
     )
+
+
+def audit(engine, schema_name: str, *, exact_row_counts: bool = False) -> dict:
+    with engine.connect() as conn, conn.begin():
+        conn.execute(text("SET TRANSACTION READ ONLY"))
+        conn.execute(text("SET LOCAL lock_timeout = '2s'"))
+        conn.execute(text("SET LOCAL statement_timeout = '30s'"))
+        return audit_connection(
+            conn,
+            schema_name,
+            exact_row_counts=exact_row_counts,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

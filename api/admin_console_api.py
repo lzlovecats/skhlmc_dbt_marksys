@@ -179,7 +179,7 @@ def _unsafe(sql):
     if ";" in compact: return "每次只可執行一條 SQL"
     if not re.match(r"^(SELECT|WITH|INSERT|UPDATE|DELETE)\b", upper):
         return "此頁只可執行 SELECT、WITH、INSERT、UPDATE 或 DELETE"
-    if re.search(r"\b(SYSTEM_CONFIG|APP_CONFIG)\b",upper): return "此頁不可存取應用程式設定資料表"
+    if re.search(r"\b(SYSTEM_CONFIG|APP_CONFIG|SCHEMA_MIGRATIONS)\b",upper): return "此頁不可存取應用程式內部資料表"
     if re.search(r"\b(DROP|TRUNCATE|ALTER|CREATE)\b",upper): return "此頁不可執行 DDL 語句"
     return ""
 

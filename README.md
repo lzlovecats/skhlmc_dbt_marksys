@@ -38,7 +38,7 @@ deploy/proxy.py ── app組裝／static／Live rooms ───────┘
 - `api/`：HTTP payload、權限、pagination及response。
 - `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
 - `deploy/proxy.py`：FastAPI app、靜態路由、WebSocket relay/rooms及process runtime。
-- `schema.py`：新環境bootstrap及過渡migration；production schema演進將改用版本化migration。
+- `schema.py`：新環境bootstrap及凍結中的歷史retrofit；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
 詳細domain/table地圖、production database audit及架構債見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。未完成的RLS、自家TTS、自家LLM、migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
@@ -50,7 +50,7 @@ deploy/proxy.py ── app組裝／static／Live rooms ───────┘
 - List API在database層filter/count/page；大response、external HTTP、AI、TTS及upload均有code-level上限。
 - 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`只在遷移窗口作read fallback。
 - 新password寫入只存bcrypt hash；成功使用legacy plaintext credential登入時會即時升級，但production仍應主動rotate。
-- `system_config`及`app_config`均不可經Database console存取。
+- `system_config`、`app_config`及內部`schema_migrations`均不可經Database console存取。
 
 ## 本機啟動
 
@@ -127,6 +127,13 @@ ON CONFLICT (key) DO UPDATE SET
 ```
 
 Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](deploy/start.sh)。`deploy/start.sh`從`system_limits.py`取得Uvicorn concurrency/WebSocket上限，並為512 MB Render instance設定glibc memory tuning。
+
+現有production/staging環境先以唯讀status核對migration history；所有mutation預設只輸出plan，必須另加對應versioned confirmation。`baseline`只供已核對catalog的既有環境使用，不可拿來掩蓋新database或drift：
+
+```bash
+./venv/bin/python tools/manage_db_migrations.py status
+./venv/bin/python tools/manage_db_migrations.py apply
+```
 
 ## 測試
 

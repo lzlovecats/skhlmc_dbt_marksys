@@ -185,6 +185,10 @@ class ResourceGuardTests(unittest.TestCase):
         self.assertEqual(_sql_cell(memoryview(b"abc")), "<binary 3 bytes omitted>")
         self.assertIn("只可執行", _unsafe("VACUUM FULL"))
         self.assertIn("不可存取", _unsafe("SELECT * FROM app_config"))
+        self.assertIn(
+            "不可存取",
+            _unsafe("SELECT * FROM public.schema_migrations"),
+        )
         self.assertEqual(_unsafe("SELECT 1"), "")
 
     def test_llm_training_text_has_a_hard_storage_bound(self):
