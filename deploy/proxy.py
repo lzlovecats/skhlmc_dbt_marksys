@@ -1953,6 +1953,12 @@ def _render_live_debate_html(
     """Server-render templates/live_debate.html the same way ai_coach does, so the
     kiosk gets the identical Live engine for Free De and multi-session Mock."""
     html = (BASE_DIR / "templates" / "live_debate.html").read_text(encoding="utf-8")
+    # Rebrand the static UI copy BEFORE injecting the JSON payloads: the system
+    # prompt, runtime prompts, segment labels and research brief legitimately
+    # contain「自由辯論」and must not be rewritten (prompts.py documents this
+    # contract).
+    if session_label != "自由辯論":
+        html = html.replace("自由辯論", session_label)
     relay_ws_base = _get_proxy_secret("LIVE_RELAY_WS_BASE", "") or ""
     token_sigs = {}
     if relay_ws_base:
@@ -1986,8 +1992,6 @@ def _render_live_debate_html(
     }
     for key, value in replacements.items():
         html = html.replace(key, value)
-    if session_label != "自由辯論":
-        html = html.replace("自由辯論", session_label)
     return html
 
 
@@ -2043,10 +2047,9 @@ async def appliance_ai_debate_live(request: Request):
     quota_error = _solo_live_quota_error(user_id, mode)
     if quota_error:
         return _practice_error_page("練習限額已用完", quota_error)
-    from api.ai_coach_api import consume_live_brief
-    research_brief=consume_live_brief(q.get("brief_id"),user_id)
     if not topic:
         return _practice_error_page("未有辯題", "請先輸入辯題再開始。")
+    brief_id = q.get("brief_id")
     if side not in ("正方", "反方"):
         side = "正方"
     allowed_formats = DEBATE_FORMATS if mode == "mock" else _PRACTICE_LIVE_FORMATS
@@ -2063,6 +2066,9 @@ async def appliance_ai_debate_live(request: Request):
         live_minutes = 2.5
 
     if mode == "mock":
+        # Match the /api/ai-coach/mock-plan clamp ([2,10]) so the previewed
+        # sequence and the rendered practice never disagree.
+        live_minutes = max(2.0, live_minutes)
         segments = get_full_mock_sequence(debate_format, free_debate_minutes=live_minutes if debate_format == "聯中" else None)
         sessions = split_mock_into_sessions(segments)
         total_minutes = full_mock_total_seconds(segments) / 60
@@ -2081,6 +2087,8 @@ async def appliance_ai_debate_live(request: Request):
         flat=[]
         for index,session in enumerate(sessions):
             flat.extend({**segment,"session":index} for segment in session["segments"])
+        from api.ai_coach_api import consume_live_brief
+        research_brief = consume_live_brief(brief_id, user_id)
         prompt=build_full_mock_live_prompt(topic,side,debate_format,free_debate_minutes=live_minutes if debate_format=="聯中" else None,research_brief=research_brief)
         html=_render_live_debate_html(
             tokens[0],prompt,total_minutes,[],False,segments=flat,tokens=tokens,
@@ -2100,8 +2108,15 @@ async def appliance_ai_debate_live(request: Request):
     if mint_error:
         return _practice_error_page("未能開始", mint_error)
 
+    from api.ai_coach_api import consume_live_brief
+    research_brief = consume_live_brief(brief_id, user_id)
     prompt = build_free_debate_live_prompt(topic, side, research_brief)
-    max_seconds = max(60, min(10 * 60, int(math.ceil(live_minutes * 2 * 60))))
+    # Relay deadline is wall-clock from connect: besides both sides' speech
+    # (live_minutes each) it must also absorb AI reply latency, turn gaps and
+    # the closing feedback, so give the same style of allowance and cap as the
+    # Mock sessions above. The old bufferless 10-minute cap killed normal
+    # sessions mid-practice with the server time limit.
+    max_seconds = max(60, min(30 * 60, int(math.ceil(live_minutes * 2 * 60)) + 180))
     html = _render_live_debate_html(
         token, prompt, live_minutes, bell_schedule, side == "反方",
         relay_user_id=user_id,relay_practice_kind="solo_free",
