@@ -1,55 +1,881 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e1117">
-  <title>AI基金</title><link rel="stylesheet" href="/shared/vote-ui.css"><link rel="stylesheet" href="/shared/app-shell.css">
-  <style>
-    main{max-width:84rem;margin:auto}h1{margin:.15rem 0;font-size:2rem}.topbar,.actions{display:flex;gap:.65rem;align-items:center;flex-wrap:wrap}.topbar{justify-content:space-between}.tabs{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0}.pane{display:none}.pane.active{display:block}.grid{display:grid;gap:1rem}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.split{grid-template-columns:repeat(2,minmax(0,1fr))}.wide{grid-column:1/-1}.metric b{display:block;font-size:1.45rem;margin-top:.25rem}.metric-4 b{font-variant-numeric:tabular-nums}.provider-stat{padding:.25rem}.provider-stat .value{font-size:1.25rem;font-weight:700}.table-wrap{overflow:auto;margin-top:.6rem}table{width:100%;border-collapse:collapse;font-size:.9rem;white-space:nowrap}th,td{border:1px solid var(--border);padding:.55rem;text-align:left;vertical-align:top}th{color:var(--muted)}td.wrap{white-space:normal;min-width:12rem}.warning{border-color:#927126;color:var(--warn)}.danger{color:var(--against);border-color:var(--against)}.section-head{display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap}.section-head h2{margin:.2rem 0}.download{display:inline-flex;text-decoration:none}.count{font-variant-numeric:tabular-nums}.dialog{width:min(34rem,calc(100% - 2rem));border:1px solid var(--border);border-radius:14px;background:var(--card);color:var(--text);padding:1.2rem}.dialog::backdrop{background:#000a}.dialog h2{margin-top:0}.dialog .actions{justify-content:flex-end;margin-top:1rem}.checkline{display:flex;gap:.6rem;align-items:flex-start}.checkline input{width:auto;margin-top:.25rem}.hidden{display:none!important}
-    @media(max-width:720px){.metrics,.split{grid-template-columns:1fr}.topbar{align-items:flex-start}.topbar .actions{width:100%}.topbar .actions>*{flex:1}.tabs{flex-wrap:nowrap;overflow-x:auto;padding-bottom:.25rem}.card form button.primary,form.card>button.primary,.mobile-wide{width:100%}.section-head .download{width:100%;justify-content:center}.dialog .actions{display:grid;grid-template-columns:1fr}.dialog .actions button{width:100%}}
-  </style>
-</head>
-<body><main>
-  <div class="topbar"><div><a class="back" href="/">← 返回主頁</a><h1>💲AI基金</h1></div><div class="actions"><button id="logout" class="hidden">登出</button></div></div>
-  <p class="caption">正式現金帳以 AI基金管理員確認的入數及 AI provider 付款紀錄為準；AI 用量成本只作估算。</p>
-  <details class="guide"><summary>ℹ️ AI基金使用指南</summary><div class="sub">• 在「入數 / 交易」提交入數紀錄，待 AI基金管理員確認後會計入 AI基金。<br>• 「AI 用量」顯示 AI 辯論易各功能的估算成本，只作參考。<br>• AI基金管理員可確認入數、記錄 provider 支出及更新基金設定。</div></details>
-  <section id="login" class="card hidden"><h2>內部委員會成員登入</h2><form class="login" id="loginForm"><label>用戶名稱<input id="loginUser" autocomplete="username" required></label><label>密碼<input id="loginPassword" type="password" autocomplete="current-password" required></label><button class="primary">登入</button></form></section>
-  <section id="app" class="hidden"><div id="notice"></div>
-    <nav id="tabs" class="tabs"><button class="active" data-pane="overview">總覽</button><button data-pane="deposit">入數 / 交易</button><button data-pane="usage">AI 用量</button><button id="adminTab" data-pane="admin" class="hidden">管理員</button></nav>
-    <section id="overview" class="pane active"><div id="metrics" class="grid metrics"></div><p id="suggestion" class="caption"></p><details open><summary>Provider 餘額</summary><div id="providers" class="grid split"></div><p id="providerAdminHint" class="caption hidden">如需更新 Google AI Studio 餘額或基金設定，請到「管理員」分頁。</p></details><details><summary>付款指示</summary><p id="instruction" style="white-space:pre-wrap"></p></details></section>
-    <section id="deposit" class="pane"><div class="grid split"><form id="depositForm" class="card"><h2>成員入數</h2><label>入數金額（HKD）<input id="depositAmount" type="number" min=".01" step=".01" required></label><label>付款方式<select id="depositMethod"><option>FPS</option><option>現金</option><option>Alipay</option><option>PayMe</option><option>其他</option></select></label><label>Reference / 交易編號（如有）<input id="depositReference"></label><label>備註（如有）<textarea id="depositNote"></textarea></label><button class="primary">提交入數紀錄</button></form><div class="card"><div class="section-head"><h2 id="transactionTitle">我的入數紀錄</h2><a class="button download" href="/api/ai-fund/export/transactions.csv">下載交易紀錄 CSV</a></div><div id="transactions"></div></div></div></section>
-    <section id="usage" class="pane"><div class="card"><div class="section-head"><div><h2>AI 用量估算</h2><p class="caption">只作參考，實際成本以 provider 帳單為準。</p></div><a class="button download" href="/api/ai-fund/export/usage.csv">下載最近用量 CSV</a></div><div id="usageTable"></div></div><div id="summaryCard" class="card hidden"><div class="section-head"><h2>按月 / 用戶 / 功能統計</h2><a class="button download" href="/api/ai-fund/export/usage-summary.csv">下載用量統計 CSV</a></div><div id="usageSummary"></div></div></section>
-    <section id="admin" class="pane"><div class="card"><div class="section-head"><h2>待確認入數（<span id="pendingCount" class="count">0</span>）</h2></div><div id="pending"></div></div><div class="grid split"><form id="adminTxForm" class="card"><h2>記錄 provider 支出 / 退款 / 調整</h2><label>交易類型<select id="adminType"><option value="provider_topup">AI provider 充值 / 帳單</option><option value="provider_refund">Provider 退款予基金</option><option value="member_refund">退款予委員</option><option value="adjustment">手動調整</option></select></label><label>Provider / 分類<select id="adminProvider"><option value="gemini">Gemini</option><option value="openrouter">OpenRouter</option><option value="other">其他</option></select></label><label>金額（HKD）<input id="adminAmount" type="number" step=".01" required><span class="caption">Provider 支出、兩類退款請輸入正數；手動調整可輸入正數或負數。Provider 退款會增加基金，退款予委員會扣減基金。</span></label><label>付款方式 / Provider<input id="adminMethod" placeholder="例如：OpenRouter、FPS"></label><label>Reference / 帳單編號（如有）<input id="adminReference"></label><label>原因 / 備註<textarea id="adminNote" required></textarea></label><button class="primary">新增已確認交易</button></form><div class="card"><h2>更新 Google AI Studio 餘額</h2><p class="caption">由 AI基金管理員從 AI Studio Billing 手動更新，並非 Google API 即時回傳。</p><form id="googleForm"><label>Google AI Studio 餘額（USD）<input id="googleBalance" type="number" min="0" step=".0001" required></label><button>更新餘額</button></form><hr><h2>AI基金設定</h2><form id="settingsForm"><label>目標金額（HKD）<input id="target" type="number" min="0" step=".01" required></label><label>低餘額警戒線（HKD）<input id="low" type="number" min="0" step=".01" required></label><label>付款指示<textarea id="settingsInstruction"></textarea></label><button class="primary">更新設定</button></form><hr><h2>重置 AI 用量紀錄</h2><p class="caption">刪除所有 AI 用量估算紀錄。此操作不可復原，不影響現金帳交易。</p><button id="resetUsage" class="danger mobile-wide">重置用量紀錄</button></div></div></section>
-  </section>
-</main>
-<dialog id="statusDialog" class="dialog"><form method="dialog"><h2 id="statusHeading"></h2><p id="statusSummary"></p><label>確認 / 拒絕備註（可選）<textarea id="statusNote"></textarea></label><div class="actions"><button value="cancel">取消</button><button id="statusSubmit" type="button" class="primary"></button></div></form></dialog>
-<dialog id="resetDialog" class="dialog"><form method="dialog"><h2>重置所有 AI 用量紀錄？</h2><p>此操作不可復原，但不會影響現金帳交易。</p><label class="checkline"><input id="resetConfirm" type="checkbox"><span>我確認要重置所有 AI 用量紀錄</span></label><div class="actions"><button value="cancel">取消</button><button id="resetSubmit" type="button" class="danger" disabled>確認重置</button></div></form></dialog>
-<div id="toast" class="toast"></div><div id="busy" class="busy"><div class="busy-pill"><i class="spinner"></i>處理中…</div></div>
-<script src="/shared/vote-ui.js"></script><script>
-(()=>{
-  const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const money=(n,d=2)=>'HKD '+Number(n||0).toLocaleString('en-HK',{minimumFractionDigits:d,maximumFractionDigits:d}), usd=n=>'US$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
-  const txLabels={member_deposit:'成員入數',provider_topup:'AI provider 充值 / 帳單',provider_refund:'Provider 退款予基金',member_refund:'退款予委員',adjustment:'手動調整'}, statusLabels={pending:'待確認',confirmed:'已確認',rejected:'已拒絕',success:'成功',failed:'失敗'}, providerLabels={general:'整體AI基金',gemini:'Gemini',openrouter:'OpenRouter',openai:'GPT',other:'其他'}, featureLabels={speech_review:'練習發言',strategy:'主線策劃',web_research:'搵料易',fact_check:'Fact Check易',free_debate_live:'打Free De',full_mock_live:'打完整Mock',vote_review:'辯題審查',vote_analysis:'辯題庫 / 往績分析',vote_discussion:'委員討論回應',tts_review:'AI訓練·錄音檢查',tts_script_analysis:'AI訓練·句庫分析',llm_review:'AI訓練·文字審查'};
-  let data=null,pendingRows={},pendingAction=null;
-  async function api(url,opt={}){const r=await fetch('/api'+url,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt});if(r.status===401){$('app').classList.add('hidden');$('login').classList.remove('hidden');$('logout').classList.add('hidden');throw Error('請先登入。')}const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||'操作失敗。');return d}
-  function table(rows,cols,action){if(!rows.length)return '<p class="caption">暫無紀錄。</p>';return '<div class="table-wrap"><table><thead><tr>'+cols.map(c=>'<th>'+c[0]+'</th>').join('')+(action?'<th>操作</th>':'')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>`<td class="${c[2]||''}">${esc(c[1](r))}</td>`).join('')+(action?'<td>'+action(r)+'</td>':'')+'</tr>').join('')+'</tbody></table></div>'}
-  async function serverPage(element,url,renderItems,page=1){const target=new URL(url,location.origin);target.searchParams.set('page',Math.max(1,page));const r=await fetch(target,{credentials:'same-origin'}),d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.detail||`HTTP ${r.status}`);element.innerHTML=renderItems(d.items||[],d);const old=element.nextElementSibling;if(old?.classList.contains('vote-pager-server'))old.remove();if((d.total_pages||1)>1){const pager=document.createElement('nav');pager.className='vote-pager vote-pager-server';pager.innerHTML=`<button type="button" data-page="prev" ${d.page<=1?'disabled':''}>上一頁</button><span>第 ${d.page} / ${d.total_pages} 頁（共 ${d.total} 筆）</span><button type="button" data-page="next" ${d.page>=d.total_pages?'disabled':''}>下一頁</button>`;pager.onclick=e=>{const action=e.target.closest('button')?.dataset.page;if(action)serverPage(element,url,renderItems,d.page+(action==='next'?1:-1)).catch(x=>VoteUI.toast($('toast'),'⚠️ '+x.message))};element.insertAdjacentElement('afterend',pager)}return d}
-  const txCols=[['編號',r=>r.id],['類型',r=>txLabels[r.transaction_type]||r.transaction_type],['狀態',r=>statusLabels[r.status]||r.status],['Provider',r=>providerLabels[r.provider]||r.provider],['金額',r=>money(r.amount_hkd)],['付款方式',r=>r.payment_method||'—'],['Reference',r=>r.reference_no||'—'],['備註',r=>r.note||'—','wrap'],['提交者',r=>r.created_by],['提交時間',r=>r.created_at]];
-  async function loadCollections(){
-    const jobs=[serverPage($('transactions'),'/api/ai-fund/transactions',rows=>table(rows,txCols)),serverPage($('usageTable'),'/api/ai-fund/usage',rows=>table(rows,[['時間',r=>r.created_at],['用戶',r=>r.user_id],['功能',r=>featureLabels[r.feature]||r.feature],['模型',r=>r.model_label],['Provider',r=>providerLabels[r.provider]||r.provider],['估算成本',r=>money(r.estimated_cost_hkd,4)],['狀態',r=>statusLabels[r.status]||r.status],['錯誤訊息',r=>r.error_message||'—','wrap']])),serverPage($('usageSummary'),'/api/ai-fund/usage-summary',(rows,meta)=>{$('summaryCard').classList.toggle('hidden',!meta.total);return table(rows,[['月份',r=>r.month],['用戶',r=>r.user_id],['Provider',r=>providerLabels[r.provider]||r.provider],['功能',r=>featureLabels[r.feature]||r.feature],['模型',r=>r.model_label],['使用次數',r=>r.uses],['估算成本',r=>money(r.estimated_cost_hkd,4)]])})];
-    if(data.is_treasurer)jobs.push(serverPage($('pending'),'/api/ai-fund/transactions?status=pending&transaction_type=member_deposit',(rows,meta)=>{pendingRows=Object.fromEntries(rows.map(r=>[String(r.id),r]));$('pendingCount').textContent=meta.total;return table(rows,[['編號',r=>r.id],['提交者',r=>r.created_by],['金額',r=>money(r.amount_hkd)],['付款方式',r=>r.payment_method||'—'],['Reference',r=>r.reference_no||'—'],['備註',r=>r.note||'—','wrap'],['提交時間',r=>r.created_at]],r=>`<div class="actions"><button data-status-id="${r.id}" data-status="confirmed">確認入數</button><button class="danger" data-status-id="${r.id}" data-status="rejected">拒絕入數</button></div>`) }));
-    await Promise.all(jobs);
-  }
-  function render(){const s=data.summary,st=data.settings,or=data.openrouter;$('login').classList.add('hidden');$('app').classList.remove('hidden');$('logout').classList.remove('hidden');$('adminTab').classList.toggle('hidden',!data.is_treasurer);$('providerAdminHint').classList.toggle('hidden',!data.is_treasurer);$('notice').innerHTML=!st.treasurers.length?'<div class="card warning">尚未設定 AI基金管理員。請先到開發者設定指定 AI基金管理員。</div>':data.is_treasurer?'<div class="card">你是 AI基金管理員，可確認入數、記錄支出及更新 AI基金設定。</div>':'';$('metrics').innerHTML=[['已確認現金餘額',money(s.balance_hkd),2],['待確認入數',money(s.pending_deposits_hkd),2],['最近 30 日 AI 用量（估算）',money(s.recent_usage_hkd,4),4]].map(x=>`<div class="card metric metric-${x[2]}"><span class="caption">${x[0]}</span><b>${x[1]}</b></div>`).join('')+(s.balance_hkd<st.low_balance_hkd?`<div class="card warning wide">餘額低於警戒線 ${money(st.low_balance_hkd)}，建議補充資金。</div>`:'');$('suggestion').textContent=`目標金額：${money(s.target_hkd)}｜建議補充：${money(s.suggested_total_hkd)}｜按 ${s.member_count} 人計每人約 ${money(s.suggested_per_member_hkd)}`;$('providers').innerHTML=`<div class="provider-stat"><b>OpenRouter 剩餘 credits</b><p class="value">${or.ok?usd(or.remaining_credits_usd):'未能讀取'}</p><p class="caption">${or.ok?`Purchased：${usd(or.total_credits_usd)}｜Used：${usd(or.total_usage_usd)}｜約 ${money(or.remaining_credits_usd*7.8)}`:esc(or.message||'OpenRouter credits 讀取失敗。')}<br>${or.ok?'由 OpenRouter credits API 即時讀取。':''}</p></div><div class="provider-stat"><b>Google AI Studio 手動餘額</b><p class="value">${data.google_balance.balance_usd===null?'未設定':usd(data.google_balance.balance_usd)}</p><p class="caption">${data.google_balance.balance_usd===null?'由 AI基金管理員從 AI Studio Billing 手動更新。':`約 ${money(data.google_balance.balance_usd*7.8)}｜更新：${esc(data.google_balance.updated_at||'—')}｜${esc(data.google_balance.updated_by||'—')}`}</p></div>`;$('instruction').textContent=st.payment_instruction;$('transactionTitle').textContent=data.is_treasurer?'交易紀錄':'我的入數紀錄';$('googleBalance').value=data.google_balance.balance_usd??0;$('target').value=st.target_hkd;$('low').value=st.low_balance_hkd;$('settingsInstruction').value=st.payment_instruction}
-  async function load(){VoteUI.setBusy($('busy'),true);try{data=await api('/ai-fund/data');data.openrouter=await api('/ai-fund/openrouter-credit').catch(e=>({ok:false,message:e.message}));render();await loadCollections()}catch(e){if(e.message!=='請先登入。')VoteUI.toast($('toast'),'⚠️ '+e.message)}finally{VoteUI.setBusy($('busy'),false)}}
-  async function mutate(url,opt,msg,after){VoteUI.setBusy($('busy'),true);try{const result=await api(url,opt);after?.(result);VoteUI.toast($('toast'),'✅ '+msg);await load()}catch(e){VoteUI.toast($('toast'),'⚠️ '+e.message)}finally{VoteUI.setBusy($('busy'),false)}}
-  document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{if(b.classList.contains('hidden'))return;document.querySelectorAll('#tabs button,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.pane).classList.add('active')});
-  $('depositForm').onsubmit=e=>{e.preventDefault();mutate('/ai-fund/deposits',{method:'POST',body:JSON.stringify({transaction_type:'member_deposit',amount:+$('depositAmount').value,payment_method:$('depositMethod').value,reference_no:$('depositReference').value,note:$('depositNote').value})},'入數紀錄已提交，待 AI基金管理員確認後會計入 AI基金。',()=>e.target.reset())};
-  $('adminTxForm').onsubmit=e=>{e.preventDefault();mutate('/ai-fund/admin/transactions',{method:'POST',body:JSON.stringify({transaction_type:$('adminType').value,provider:$('adminProvider').value,amount:+$('adminAmount').value,payment_method:$('adminMethod').value,reference_no:$('adminReference').value,note:$('adminNote').value})},'已新增交易紀錄。',()=>e.target.reset())};
-  $('googleForm').onsubmit=e=>{e.preventDefault();mutate('/ai-fund/admin/settings',{method:'POST',body:JSON.stringify({kind:'google_balance',balance_usd:+$('googleBalance').value})},'Google AI Studio 餘額已更新。')};$('settingsForm').onsubmit=e=>{e.preventDefault();mutate('/ai-fund/admin/settings',{method:'POST',body:JSON.stringify({kind:'settings',target_hkd:+$('target').value,low_balance_hkd:+$('low').value,payment_instruction:$('settingsInstruction').value})},'AI基金設定已更新。')};
-  document.addEventListener('click',e=>{const b=e.target.closest('[data-status-id]');if(!b)return;const row=pendingRows[b.dataset.statusId];if(!row)return;pendingAction={id:b.dataset.statusId,status:b.dataset.status};$('statusHeading').textContent=b.dataset.status==='confirmed'?'確認入數？':'拒絕入數？';$('statusSubmit').textContent=b.dataset.status==='confirmed'?'確認入數':'拒絕入數';$('statusSubmit').className=b.dataset.status==='confirmed'?'primary':'danger';$('statusSummary').textContent=`#${row.id}｜${row.created_by}｜${money(row.amount_hkd)}｜${row.payment_method||'—'}｜Reference：${row.reference_no||'—'}`;$('statusNote').value='';$('statusDialog').showModal()});
-  $('statusSubmit').onclick=()=>{if(!pendingAction)return;const a=pendingAction;$('statusDialog').close();mutate('/ai-fund/admin/transactions/'+a.id+'/status',{method:'POST',body:JSON.stringify({status:a.status,note:$('statusNote').value})},a.status==='confirmed'?'已確認入數。':'已拒絕入數。')};
-  $('resetUsage').onclick=()=>{$('resetConfirm').checked=false;$('resetSubmit').disabled=true;$('resetDialog').showModal()};$('resetConfirm').onchange=e=>$('resetSubmit').disabled=!e.target.checked;$('resetSubmit').onclick=()=>{$('resetDialog').close();mutate('/ai-fund/admin/settings',{method:'POST',body:JSON.stringify({kind:'reset_usage'})},'AI 用量紀錄已重置。')};
-  $('loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/committee/login',{method:'POST',body:JSON.stringify({user_id:$('loginUser').value,password:$('loginPassword').value})});e.target.reset();load()}catch(x){VoteUI.toast($('toast'),'⚠️ '+x.message)}};$('logout').onclick=async()=>{try{await api('/committee/logout',{method:'POST',body:'{}'})}finally{location.reload()}};
-  load();
-})();
-</script></body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>AI基金</title>
+    <link rel="stylesheet" href="/shared/vote-ui.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      main {
+        max-width: 84rem;
+        margin: auto;
+      }
+      h1 {
+        margin: 0.15rem 0;
+        font-size: 2rem;
+      }
+      .topbar,
+      .actions {
+        display: flex;
+        gap: 0.65rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .topbar {
+        justify-content: space-between;
+      }
+      .tabs {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin: 1rem 0;
+      }
+      .pane {
+        display: none;
+      }
+      .pane.active {
+        display: block;
+      }
+      .grid {
+        display: grid;
+        gap: 1rem;
+      }
+      .metrics {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .split {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .wide {
+        grid-column: 1/-1;
+      }
+      .metric b {
+        display: block;
+        font-size: 1.45rem;
+        margin-top: 0.25rem;
+      }
+      .metric-4 b {
+        font-variant-numeric: tabular-nums;
+      }
+      .provider-stat {
+        padding: 0.25rem;
+      }
+      .provider-stat .value {
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .table-wrap {
+        overflow: auto;
+        margin-top: 0.6rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+        white-space: nowrap;
+      }
+      th,
+      td {
+        border: 1px solid var(--border);
+        padding: 0.55rem;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+      }
+      td.wrap {
+        white-space: normal;
+        min-width: 12rem;
+      }
+      .warning {
+        border-color: #927126;
+        color: var(--warn);
+      }
+      .danger {
+        color: var(--against);
+        border-color: var(--against);
+      }
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .section-head h2 {
+        margin: 0.2rem 0;
+      }
+      .download {
+        display: inline-flex;
+        text-decoration: none;
+      }
+      .count {
+        font-variant-numeric: tabular-nums;
+      }
+      .dialog {
+        width: min(34rem, calc(100% - 2rem));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--card);
+        color: var(--text);
+        padding: 1.2rem;
+      }
+      .dialog::backdrop {
+        background: #000a;
+      }
+      .dialog h2 {
+        margin-top: 0;
+      }
+      .dialog .actions {
+        justify-content: flex-end;
+        margin-top: 1rem;
+      }
+      .checkline {
+        display: flex;
+        gap: 0.6rem;
+        align-items: flex-start;
+      }
+      .checkline input {
+        width: auto;
+        margin-top: 0.25rem;
+      }
+      .hidden {
+        display: none !important;
+      }
+      @media (max-width: 720px) {
+        .metrics,
+        .split {
+          grid-template-columns: 1fr;
+        }
+        .topbar {
+          align-items: flex-start;
+        }
+        .topbar .actions {
+          width: 100%;
+        }
+        .topbar .actions > * {
+          flex: 1;
+        }
+        .tabs {
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          padding-bottom: 0.25rem;
+        }
+        .card form button.primary,
+        form.card > button.primary,
+        .mobile-wide {
+          width: 100%;
+        }
+        .section-head .download {
+          width: 100%;
+          justify-content: center;
+        }
+        .dialog .actions {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+        .dialog .actions button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="topbar">
+        <div>
+          <a class="back" href="/">← 返回主頁</a>
+          <h1>💲AI基金</h1>
+        </div>
+        <div class="actions">
+          <button id="logout" class="hidden">登出</button>
+        </div>
+      </div>
+      <p class="caption">
+        正式現金帳以 AI基金管理員確認的入數及 AI provider 付款紀錄為準；AI
+        用量成本只作估算。
+      </p>
+      <details class="guide">
+        <summary>ℹ️ AI基金使用指南</summary>
+        <div class="sub">
+          • 在「入數 / 交易」提交入數紀錄，待 AI基金管理員確認後會計入
+          AI基金。<br />• 「AI 用量」顯示 AI
+          辯論易各功能的估算成本，只作參考。<br />• AI基金管理員可確認入數、記錄
+          provider 支出及更新基金設定。
+        </div>
+      </details>
+      <section id="login" class="card hidden">
+        <h2>內部委員會成員登入</h2>
+        <form class="login" id="loginForm">
+          <label
+            >用戶名稱<input
+              id="loginUser"
+              autocomplete="username"
+              required /></label
+          ><label
+            >密碼<input
+              id="loginPassword"
+              type="password"
+              autocomplete="current-password"
+              required /></label
+          ><button class="primary">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <div id="notice"></div>
+        <nav id="tabs" class="tabs">
+          <button class="active" data-pane="overview">總覽</button
+          ><button data-pane="deposit">入數 / 交易</button
+          ><button data-pane="usage">AI 用量</button
+          ><button id="adminTab" data-pane="admin" class="hidden">
+            管理員
+          </button>
+        </nav>
+        <section id="overview" class="pane active">
+          <div id="metrics" class="grid metrics"></div>
+          <p id="suggestion" class="caption"></p>
+          <details open>
+            <summary>Provider 餘額</summary>
+            <div id="providers" class="grid split"></div>
+            <p id="providerAdminHint" class="caption hidden">
+              如需更新 Google AI Studio 餘額或基金設定，請到「管理員」分頁。
+            </p>
+          </details>
+          <details>
+            <summary>付款指示</summary>
+            <p id="instruction" style="white-space: pre-wrap"></p>
+          </details>
+        </section>
+        <section id="deposit" class="pane">
+          <div class="grid split">
+            <form id="depositForm" class="card">
+              <h2>成員入數</h2>
+              <label
+                >入數金額（HKD）<input
+                  id="depositAmount"
+                  type="number"
+                  min=".01"
+                  step=".01"
+                  required /></label
+              ><label
+                >付款方式<select id="depositMethod">
+                  <option>FPS</option>
+                  <option>現金</option>
+                  <option>Alipay</option>
+                  <option>PayMe</option>
+                  <option>其他</option>
+                </select></label
+              ><label
+                >Reference / 交易編號（如有）<input
+                  id="depositReference" /></label
+              ><label>備註（如有）<textarea id="depositNote"></textarea></label
+              ><button class="primary">提交入數紀錄</button>
+            </form>
+            <div class="card">
+              <div class="section-head">
+                <h2 id="transactionTitle">我的入數紀錄</h2>
+                <a
+                  class="button download"
+                  href="/api/ai-fund/export/transactions.csv"
+                  >下載交易紀錄 CSV</a
+                >
+              </div>
+              <div id="transactions"></div>
+            </div>
+          </div>
+        </section>
+        <section id="usage" class="pane">
+          <div class="card">
+            <div class="section-head">
+              <div>
+                <h2>AI 用量估算</h2>
+                <p class="caption">只作參考，實際成本以 provider 帳單為準。</p>
+              </div>
+              <a class="button download" href="/api/ai-fund/export/usage.csv"
+                >下載最近用量 CSV</a
+              >
+            </div>
+            <div id="usageTable"></div>
+          </div>
+          <div id="summaryCard" class="card hidden">
+            <div class="section-head">
+              <h2>按月 / 用戶 / 功能統計</h2>
+              <a
+                class="button download"
+                href="/api/ai-fund/export/usage-summary.csv"
+                >下載用量統計 CSV</a
+              >
+            </div>
+            <div id="usageSummary"></div>
+          </div>
+        </section>
+        <section id="admin" class="pane">
+          <div class="card">
+            <div class="section-head">
+              <h2>
+                待確認入數（<span id="pendingCount" class="count">0</span>）
+              </h2>
+            </div>
+            <div id="pending"></div>
+          </div>
+          <div class="grid split">
+            <form id="adminTxForm" class="card">
+              <h2>記錄 provider 支出 / 退款 / 調整</h2>
+              <label
+                >交易類型<select id="adminType">
+                  <option value="provider_topup">
+                    AI provider 充值 / 帳單
+                  </option>
+                  <option value="provider_refund">Provider 退款予基金</option>
+                  <option value="member_refund">退款予委員</option>
+                  <option value="adjustment">手動調整</option>
+                </select></label
+              ><label
+                >Provider / 分類<select id="adminProvider">
+                  <option value="gemini">Gemini</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="other">其他</option>
+                </select></label
+              ><label
+                >金額（HKD）<input
+                  id="adminAmount"
+                  type="number"
+                  step=".01"
+                  required
+                /><span class="caption"
+                  >Provider
+                  支出、兩類退款請輸入正數；手動調整可輸入正數或負數。Provider
+                  退款會增加基金，退款予委員會扣減基金。</span
+                ></label
+              ><label
+                >付款方式 / Provider<input
+                  id="adminMethod"
+                  placeholder="例如：OpenRouter、FPS" /></label
+              ><label
+                >Reference / 帳單編號（如有）<input
+                  id="adminReference" /></label
+              ><label
+                >原因 / 備註<textarea id="adminNote" required></textarea></label
+              ><button class="primary">新增已確認交易</button>
+            </form>
+            <div class="card">
+              <h2>更新 Google AI Studio 餘額</h2>
+              <p class="caption">
+                由 AI基金管理員從 AI Studio Billing 手動更新，並非 Google API
+                即時回傳。
+              </p>
+              <form id="googleForm">
+                <label
+                  >Google AI Studio 餘額（USD）<input
+                    id="googleBalance"
+                    type="number"
+                    min="0"
+                    step=".0001"
+                    required /></label
+                ><button>更新餘額</button>
+              </form>
+              <hr />
+              <h2>AI基金設定</h2>
+              <form id="settingsForm">
+                <label
+                  >目標金額（HKD）<input
+                    id="target"
+                    type="number"
+                    min="0"
+                    step=".01"
+                    required /></label
+                ><label
+                  >低餘額警戒線（HKD）<input
+                    id="low"
+                    type="number"
+                    min="0"
+                    step=".01"
+                    required /></label
+                ><label
+                  >付款指示<textarea id="settingsInstruction"></textarea></label
+                ><button class="primary">更新設定</button>
+              </form>
+              <hr />
+              <h2>重置 AI 用量紀錄</h2>
+              <p class="caption">
+                刪除所有 AI 用量估算紀錄。此操作不可復原，不影響現金帳交易。
+              </p>
+              <button id="resetUsage" class="danger mobile-wide">
+                重置用量紀錄
+              </button>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+    <dialog id="statusDialog" class="dialog">
+      <form method="dialog">
+        <h2 id="statusHeading"></h2>
+        <p id="statusSummary"></p>
+        <label
+          >確認 / 拒絕備註（可選）<textarea id="statusNote"></textarea>
+        </label>
+        <div class="actions">
+          <button value="cancel">取消</button
+          ><button id="statusSubmit" type="button" class="primary"></button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="resetDialog" class="dialog">
+      <form method="dialog">
+        <h2>重置所有 AI 用量紀錄？</h2>
+        <p>此操作不可復原，但不會影響現金帳交易。</p>
+        <label class="checkline"
+          ><input id="resetConfirm" type="checkbox" /><span
+            >我確認要重置所有 AI 用量紀錄</span
+          ></label
+        >
+        <div class="actions">
+          <button value="cancel">取消</button
+          ><button id="resetSubmit" type="button" class="danger" disabled>
+            確認重置
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast"></div>
+    <div id="busy" class="busy">
+      <div class="busy-pill"><i class="spinner"></i>處理中…</div>
+    </div>
+    <script src="/shared/vote-ui.js"></script>
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id),
+          esc = (s) =>
+            String(s ?? "").replace(
+              /[&<>"']/g,
+              (c) =>
+                ({
+                  "&": "&amp;",
+                  "<": "&lt;",
+                  ">": "&gt;",
+                  '"': "&quot;",
+                  "'": "&#39;",
+                })[c],
+            );
+        const money = (n, d = 2) =>
+            "HKD " +
+            Number(n || 0).toLocaleString("en-HK", {
+              minimumFractionDigits: d,
+              maximumFractionDigits: d,
+            }),
+          usd = (n) =>
+            "US$" +
+            Number(n || 0).toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 4,
+            });
+        const txLabels = {
+            member_deposit: "成員入數",
+            provider_topup: "AI provider 充值 / 帳單",
+            provider_refund: "Provider 退款予基金",
+            member_refund: "退款予委員",
+            adjustment: "手動調整",
+          },
+          statusLabels = {
+            pending: "待確認",
+            confirmed: "已確認",
+            rejected: "已拒絕",
+            success: "成功",
+            failed: "失敗",
+          },
+          providerLabels = {
+            general: "整體AI基金",
+            gemini: "Gemini",
+            openrouter: "OpenRouter",
+            openai: "GPT",
+            other: "其他",
+          },
+          featureLabels = {
+            speech_review: "練習發言",
+            strategy: "主線策劃",
+            web_research: "搵料易",
+            fact_check: "Fact Check易",
+            free_debate_live: "打Free De",
+            full_mock_live: "打完整Mock",
+            vote_review: "辯題審查",
+            vote_analysis: "辯題庫 / 往績分析",
+            vote_discussion: "委員討論回應",
+            tts_review: "AI訓練·錄音檢查",
+            tts_script_analysis: "AI訓練·句庫分析",
+            llm_review: "AI訓練·文字審查",
+          };
+        let data = null,
+          pendingRows = {},
+          pendingAction = null;
+        async function api(url, opt = {}) {
+          const r = await fetch("/api" + url, {
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              ...(opt.headers || {}),
+            },
+            ...opt,
+          });
+          if (r.status === 401) {
+            $("app").classList.add("hidden");
+            $("login").classList.remove("hidden");
+            $("logout").classList.add("hidden");
+            throw Error("請先登入。");
+          }
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw Error(d.detail || "操作失敗。");
+          return d;
+        }
+        function table(rows, cols, action) {
+          if (!rows.length) return '<p class="caption">暫無紀錄。</p>';
+          return (
+            '<div class="table-wrap"><table><thead><tr>' +
+            cols.map((c) => "<th>" + c[0] + "</th>").join("") +
+            (action ? "<th>操作</th>" : "") +
+            "</tr></thead><tbody>" +
+            rows
+              .map(
+                (r) =>
+                  "<tr>" +
+                  cols
+                    .map(
+                      (c) => `<td class="${c[2] || ""}">${esc(c[1](r))}</td>`,
+                    )
+                    .join("") +
+                  (action ? "<td>" + action(r) + "</td>" : "") +
+                  "</tr>",
+              )
+              .join("") +
+            "</tbody></table></div>"
+          );
+        }
+        async function serverPage(element, url, renderItems, page = 1) {
+          const target = new URL(url, location.origin);
+          target.searchParams.set("page", Math.max(1, page));
+          const r = await fetch(target, { credentials: "same-origin" }),
+            d = await r.json().catch(() => ({}));
+          if (!r.ok) throw Error(d.detail || `HTTP ${r.status}`);
+          element.innerHTML = renderItems(d.items || [], d);
+          const old = element.nextElementSibling;
+          if (old?.classList.contains("vote-pager-server")) old.remove();
+          if ((d.total_pages || 1) > 1) {
+            const pager = document.createElement("nav");
+            pager.className = "vote-pager vote-pager-server";
+            pager.innerHTML = `<button type="button" data-page="prev" ${d.page <= 1 ? "disabled" : ""}>上一頁</button><span>第 ${d.page} / ${d.total_pages} 頁（共 ${d.total} 筆）</span><button type="button" data-page="next" ${d.page >= d.total_pages ? "disabled" : ""}>下一頁</button>`;
+            pager.onclick = (e) => {
+              const action = e.target.closest("button")?.dataset.page;
+              if (action)
+                serverPage(
+                  element,
+                  url,
+                  renderItems,
+                  d.page + (action === "next" ? 1 : -1),
+                ).catch((x) => VoteUI.toast($("toast"), "⚠️ " + x.message));
+            };
+            element.insertAdjacentElement("afterend", pager);
+          }
+          return d;
+        }
+        const txCols = [
+          ["編號", (r) => r.id],
+          ["類型", (r) => txLabels[r.transaction_type] || r.transaction_type],
+          ["狀態", (r) => statusLabels[r.status] || r.status],
+          ["Provider", (r) => providerLabels[r.provider] || r.provider],
+          ["金額", (r) => money(r.amount_hkd)],
+          ["付款方式", (r) => r.payment_method || "—"],
+          ["Reference", (r) => r.reference_no || "—"],
+          ["備註", (r) => r.note || "—", "wrap"],
+          ["提交者", (r) => r.created_by],
+          ["提交時間", (r) => r.created_at],
+        ];
+        async function loadCollections() {
+          const jobs = [
+            serverPage($("transactions"), "/api/ai-fund/transactions", (rows) =>
+              table(rows, txCols),
+            ),
+            serverPage($("usageTable"), "/api/ai-fund/usage", (rows) =>
+              table(rows, [
+                ["時間", (r) => r.created_at],
+                ["用戶", (r) => r.user_id],
+                ["功能", (r) => featureLabels[r.feature] || r.feature],
+                ["模型", (r) => r.model_label],
+                ["Provider", (r) => providerLabels[r.provider] || r.provider],
+                ["估算成本", (r) => money(r.estimated_cost_hkd, 4)],
+                ["狀態", (r) => statusLabels[r.status] || r.status],
+                ["錯誤訊息", (r) => r.error_message || "—", "wrap"],
+              ]),
+            ),
+            serverPage(
+              $("usageSummary"),
+              "/api/ai-fund/usage-summary",
+              (rows, meta) => {
+                $("summaryCard").classList.toggle("hidden", !meta.total);
+                return table(rows, [
+                  ["月份", (r) => r.month],
+                  ["用戶", (r) => r.user_id],
+                  ["Provider", (r) => providerLabels[r.provider] || r.provider],
+                  ["功能", (r) => featureLabels[r.feature] || r.feature],
+                  ["模型", (r) => r.model_label],
+                  ["使用次數", (r) => r.uses],
+                  ["估算成本", (r) => money(r.estimated_cost_hkd, 4)],
+                ]);
+              },
+            ),
+          ];
+          if (data.is_treasurer)
+            jobs.push(
+              serverPage(
+                $("pending"),
+                "/api/ai-fund/transactions?status=pending&transaction_type=member_deposit",
+                (rows, meta) => {
+                  pendingRows = Object.fromEntries(
+                    rows.map((r) => [String(r.id), r]),
+                  );
+                  $("pendingCount").textContent = meta.total;
+                  return table(
+                    rows,
+                    [
+                      ["編號", (r) => r.id],
+                      ["提交者", (r) => r.created_by],
+                      ["金額", (r) => money(r.amount_hkd)],
+                      ["付款方式", (r) => r.payment_method || "—"],
+                      ["Reference", (r) => r.reference_no || "—"],
+                      ["備註", (r) => r.note || "—", "wrap"],
+                      ["提交時間", (r) => r.created_at],
+                    ],
+                    (r) =>
+                      `<div class="actions"><button data-status-id="${r.id}" data-status="confirmed">確認入數</button><button class="danger" data-status-id="${r.id}" data-status="rejected">拒絕入數</button></div>`,
+                  );
+                },
+              ),
+            );
+          await Promise.all(jobs);
+        }
+        function render() {
+          const s = data.summary,
+            st = data.settings,
+            or = data.openrouter;
+          $("login").classList.add("hidden");
+          $("app").classList.remove("hidden");
+          $("logout").classList.remove("hidden");
+          $("adminTab").classList.toggle("hidden", !data.is_treasurer);
+          $("providerAdminHint").classList.toggle("hidden", !data.is_treasurer);
+          $("notice").innerHTML = !st.treasurers.length
+            ? '<div class="card warning">尚未設定 AI基金管理員。請先到開發者設定指定 AI基金管理員。</div>'
+            : data.is_treasurer
+              ? '<div class="card">你是 AI基金管理員，可確認入數、記錄支出及更新 AI基金設定。</div>'
+              : "";
+          $("metrics").innerHTML =
+            [
+              ["已確認現金餘額", money(s.balance_hkd), 2],
+              ["待確認入數", money(s.pending_deposits_hkd), 2],
+              ["最近 30 日 AI 用量（估算）", money(s.recent_usage_hkd, 4), 4],
+            ]
+              .map(
+                (x) =>
+                  `<div class="card metric metric-${x[2]}"><span class="caption">${x[0]}</span><b>${x[1]}</b></div>`,
+              )
+              .join("") +
+            (s.balance_hkd < st.low_balance_hkd
+              ? `<div class="card warning wide">餘額低於警戒線 ${money(st.low_balance_hkd)}，建議補充資金。</div>`
+              : "");
+          $("suggestion").textContent =
+            `目標金額：${money(s.target_hkd)}｜建議補充：${money(s.suggested_total_hkd)}｜按 ${s.member_count} 人計每人約 ${money(s.suggested_per_member_hkd)}`;
+          $("providers").innerHTML =
+            `<div class="provider-stat"><b>OpenRouter 剩餘 credits</b><p class="value">${or.ok ? usd(or.remaining_credits_usd) : "未能讀取"}</p><p class="caption">${or.ok ? `Purchased：${usd(or.total_credits_usd)}｜Used：${usd(or.total_usage_usd)}｜約 ${money(or.remaining_credits_usd * 7.8)}` : esc(or.message || "OpenRouter credits 讀取失敗。")}<br>${or.ok ? "由 OpenRouter credits API 即時讀取。" : ""}</p></div><div class="provider-stat"><b>Google AI Studio 手動餘額</b><p class="value">${data.google_balance.balance_usd === null ? "未設定" : usd(data.google_balance.balance_usd)}</p><p class="caption">${data.google_balance.balance_usd === null ? "由 AI基金管理員從 AI Studio Billing 手動更新。" : `約 ${money(data.google_balance.balance_usd * 7.8)}｜更新：${esc(data.google_balance.updated_at || "—")}｜${esc(data.google_balance.updated_by || "—")}`}</p></div>`;
+          $("instruction").textContent = st.payment_instruction;
+          $("transactionTitle").textContent = data.is_treasurer
+            ? "交易紀錄"
+            : "我的入數紀錄";
+          $("googleBalance").value = data.google_balance.balance_usd ?? 0;
+          $("target").value = st.target_hkd;
+          $("low").value = st.low_balance_hkd;
+          $("settingsInstruction").value = st.payment_instruction;
+        }
+        async function load() {
+          VoteUI.setBusy($("busy"), true);
+          try {
+            data = await api("/ai-fund/data");
+            data.openrouter = await api("/ai-fund/openrouter-credit").catch(
+              (e) => ({ ok: false, message: e.message }),
+            );
+            render();
+            await loadCollections();
+          } catch (e) {
+            if (e.message !== "請先登入。")
+              VoteUI.toast($("toast"), "⚠️ " + e.message);
+          } finally {
+            VoteUI.setBusy($("busy"), false);
+          }
+        }
+        async function mutate(url, opt, msg, after) {
+          VoteUI.setBusy($("busy"), true);
+          try {
+            const result = await api(url, opt);
+            after?.(result);
+            VoteUI.toast($("toast"), "✅ " + msg);
+            await load();
+          } catch (e) {
+            VoteUI.toast($("toast"), "⚠️ " + e.message);
+          } finally {
+            VoteUI.setBusy($("busy"), false);
+          }
+        }
+        document.querySelectorAll("#tabs button").forEach(
+          (b) =>
+            (b.onclick = () => {
+              if (b.classList.contains("hidden")) return;
+              document
+                .querySelectorAll("#tabs button,.pane")
+                .forEach((x) => x.classList.remove("active"));
+              b.classList.add("active");
+              $(b.dataset.pane).classList.add("active");
+            }),
+        );
+        $("depositForm").onsubmit = (e) => {
+          e.preventDefault();
+          mutate(
+            "/ai-fund/deposits",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                transaction_type: "member_deposit",
+                amount: +$("depositAmount").value,
+                payment_method: $("depositMethod").value,
+                reference_no: $("depositReference").value,
+                note: $("depositNote").value,
+              }),
+            },
+            "入數紀錄已提交，待 AI基金管理員確認後會計入 AI基金。",
+            () => e.target.reset(),
+          );
+        };
+        $("adminTxForm").onsubmit = (e) => {
+          e.preventDefault();
+          mutate(
+            "/ai-fund/admin/transactions",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                transaction_type: $("adminType").value,
+                provider: $("adminProvider").value,
+                amount: +$("adminAmount").value,
+                payment_method: $("adminMethod").value,
+                reference_no: $("adminReference").value,
+                note: $("adminNote").value,
+              }),
+            },
+            "已新增交易紀錄。",
+            () => e.target.reset(),
+          );
+        };
+        $("googleForm").onsubmit = (e) => {
+          e.preventDefault();
+          mutate(
+            "/ai-fund/admin/settings",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                kind: "google_balance",
+                balance_usd: +$("googleBalance").value,
+              }),
+            },
+            "Google AI Studio 餘額已更新。",
+          );
+        };
+        $("settingsForm").onsubmit = (e) => {
+          e.preventDefault();
+          mutate(
+            "/ai-fund/admin/settings",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                kind: "settings",
+                target_hkd: +$("target").value,
+                low_balance_hkd: +$("low").value,
+                payment_instruction: $("settingsInstruction").value,
+              }),
+            },
+            "AI基金設定已更新。",
+          );
+        };
+        document.addEventListener("click", (e) => {
+          const b = e.target.closest("[data-status-id]");
+          if (!b) return;
+          const row = pendingRows[b.dataset.statusId];
+          if (!row) return;
+          pendingAction = { id: b.dataset.statusId, status: b.dataset.status };
+          $("statusHeading").textContent =
+            b.dataset.status === "confirmed" ? "確認入數？" : "拒絕入數？";
+          $("statusSubmit").textContent =
+            b.dataset.status === "confirmed" ? "確認入數" : "拒絕入數";
+          $("statusSubmit").className =
+            b.dataset.status === "confirmed" ? "primary" : "danger";
+          $("statusSummary").textContent =
+            `#${row.id}｜${row.created_by}｜${money(row.amount_hkd)}｜${row.payment_method || "—"}｜Reference：${row.reference_no || "—"}`;
+          $("statusNote").value = "";
+          $("statusDialog").showModal();
+        });
+        $("statusSubmit").onclick = () => {
+          if (!pendingAction) return;
+          const a = pendingAction;
+          $("statusDialog").close();
+          mutate(
+            "/ai-fund/admin/transactions/" + a.id + "/status",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                status: a.status,
+                note: $("statusNote").value,
+              }),
+            },
+            a.status === "confirmed" ? "已確認入數。" : "已拒絕入數。",
+          );
+        };
+        $("resetUsage").onclick = () => {
+          $("resetConfirm").checked = false;
+          $("resetSubmit").disabled = true;
+          $("resetDialog").showModal();
+        };
+        $("resetConfirm").onchange = (e) =>
+          ($("resetSubmit").disabled = !e.target.checked);
+        $("resetSubmit").onclick = () => {
+          $("resetDialog").close();
+          mutate(
+            "/ai-fund/admin/settings",
+            { method: "POST", body: JSON.stringify({ kind: "reset_usage" }) },
+            "AI 用量紀錄已重置。",
+          );
+        };
+        $("loginForm").onsubmit = async (e) => {
+          e.preventDefault();
+          try {
+            await api("/committee/login", {
+              method: "POST",
+              body: JSON.stringify({
+                user_id: $("loginUser").value,
+                password: $("loginPassword").value,
+              }),
+            });
+            e.target.reset();
+            load();
+          } catch (x) {
+            VoteUI.toast($("toast"), "⚠️ " + x.message);
+          }
+        };
+        $("logout").onclick = async () => {
+          try {
+            await api("/committee/logout", { method: "POST", body: "{}" });
+          } finally {
+            location.reload();
+          }
+        };
+        load();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,261 +1,798 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-    <meta charset="utf-8">
+  <head>
+    <meta charset="utf-8" />
     <title>辯題徵集、投票及罷免</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#111827">
-    <link rel="stylesheet" href="/shared/app-shell.css"><style>
-        /* Always dark, to match the Streamlit app (config.toml base="dark").
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111827" />
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      /* Always dark, to match the Streamlit app (config.toml base="dark").
            Surfaces/text follow Streamlit's default dark theme (#0e1117 / #262730
            / #fafafa); agree=green, against=red kept for clarity, accent=blue so
            it never reads as an "against" red. */
-        :root {
-            color-scheme: dark;
-            --bg: #0e1117; --card: #262730; --text: #fafafa; --muted: #9aa0ab;
-            --border: #3a3d46; --agree: #29b46b; --against: #ff5c5c; --accent: #4c9bff;
-            --chip: #2b2f3a; --chip-text: #cdd3e0;
+      :root {
+        color-scheme: dark;
+        --bg: #0e1117;
+        --card: #262730;
+        --text: #fafafa;
+        --muted: #9aa0ab;
+        --border: #3a3d46;
+        --agree: #29b46b;
+        --against: #ff5c5c;
+        --accent: #4c9bff;
+        --chip: #2b2f3a;
+        --chip-text: #cdd3e0;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          system-ui,
+          -apple-system,
+          "PingFang HK",
+          "Noto Sans CJK HK",
+          sans-serif;
+        font-size: 16px;
+        line-height: 1.5;
+        padding: max(1rem, env(safe-area-inset-top)) 1rem
+          calc(2rem + env(safe-area-inset-bottom));
+      }
+      .wrap {
+        width: min(100%, 84rem);
+        margin: 0 auto;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 2rem;
+        line-height: 1.25;
+        margin: 0 0 0.55rem;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .badge {
+        background: var(--chip);
+        color: var(--chip-text);
+        border-radius: 999px;
+        padding: 0.15rem 0.6rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+      }
+      .login-state {
+        border-radius: 8px;
+        padding: 0.65rem 0.8rem;
+        margin: 0.45rem 0;
+        background: #1b2a3d;
+        color: var(--text);
+      }
+      .member-state {
+        margin: 0.45rem 0 0.8rem;
+        padding: 0.55rem 0.8rem;
+        border-radius: 8px;
+      }
+      .member-state.active {
+        background: #123524;
+        color: #8ee6b4;
+      }
+      .member-state.bypass {
+        background: #1b2a3d;
+        color: #b9d8ff;
+      }
+      .member-state.inactive {
+        background: #3b2d13;
+        color: #ffd27d;
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(max-content, 1fr));
+        gap: 0.35rem;
+        margin: 0.9rem 0 1rem;
+        overflow-x: auto;
+      }
+      .tab {
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        border-radius: 999px;
+        padding: 0.4rem 0.9rem;
+        cursor: pointer;
+        font: inherit;
+      }
+      .tab.active {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0.3rem 0 1rem;
+        flex-wrap: wrap;
+      }
+      button {
+        font: inherit;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 0.5rem 0.9rem;
+        cursor: pointer;
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1rem;
+        margin-bottom: 0.85rem;
+      }
+      .vote-card {
+        margin-bottom: 0.75rem;
+      }
+      .topic {
+        font-weight: 600;
+        font-size: 1.08rem;
+        line-height: 1.35;
+        margin-bottom: 0.4rem;
+      }
+      .vote-card .topic {
+        font-size: 1.22rem;
+        font-weight: 700;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.75rem;
+      }
+      .chip {
+        background: var(--chip);
+        color: var(--chip-text);
+        border-radius: 6px;
+        padding: 0.05rem 0.45rem;
+        font-size: 0.78rem;
+      }
+      .tallies {
+        display: flex;
+        gap: 1.2rem;
+        font-size: 0.95rem;
+        margin-top: 0.9rem;
+      }
+      .agree b {
+        color: var(--agree);
+      }
+      .against b {
+        color: var(--against);
+      }
+      .progress-label {
+        margin-top: 0.9rem;
+        font-weight: 600;
+      }
+      .progress {
+        height: 0.72rem;
+        border: 0;
+        border-radius: 999px;
+        overflow: hidden;
+        background: #2d2f3a;
+        margin-top: 0.35rem;
+        position: relative;
+      }
+      .progress > span {
+        display: block;
+        height: 100%;
+        min-width: 0;
+      }
+      .progress.agree-bar > span {
+        background: var(--agree);
+      }
+      .progress.against-bar > span {
+        background: #ff4b4b;
+      }
+      .deadline-past {
+        color: var(--against);
+        font-weight: 600;
+      }
+      .state {
+        text-align: center;
+        color: var(--muted);
+        padding: 2.5rem 1rem;
+      }
+      .err {
+        border-color: var(--against);
+      }
+      .warn {
+        border-color: #b98a2e;
+        background: #3b2d13;
+      }
+      .busy-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        background: rgba(0, 0, 0, 0.35);
+        display: none;
+        place-items: center;
+      }
+      .busy-overlay.show {
+        display: grid;
+      }
+      .busy-pill {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        background: var(--card);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0.6rem 1.15rem;
+        font-size: 0.92rem;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+      }
+      .spinner {
+        width: 1.05rem;
+        height: 1.05rem;
+        border: 2px solid var(--muted);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
         }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0; background: var(--bg); color: var(--text);
-            font-family: system-ui, -apple-system, "PingFang HK", "Noto Sans CJK HK", sans-serif;
-            font-size: 16px; line-height: 1.5;
-            padding: max(1rem, env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));
+      }
+      .section-title {
+        margin: 1.5rem 0 0.5rem;
+        font-size: 1rem;
+        color: var(--muted);
+      }
+      .pill-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .pill {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0.1rem 0.6rem;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+      a {
+        color: var(--accent);
+      }
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 1.1rem;
+        flex-wrap: wrap;
+      }
+      .actions button {
+        flex: 1 1 auto;
+        min-width: 8rem;
+      }
+      .btn-agree {
+        border-color: var(--agree);
+        color: var(--agree);
+      }
+      .btn-against {
+        border-color: var(--against);
+        color: var(--against);
+      }
+      .btn-on-agree {
+        background: var(--agree);
+        color: #fff;
+        border-color: var(--agree);
+      }
+      .btn-on-against {
+        background: var(--against);
+        color: #fff;
+        border-color: var(--against);
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .reasons {
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px dashed var(--border);
+      }
+      .reasons .pill-list {
+        margin-bottom: 0.5rem;
+      }
+      .reason-opts {
+        row-gap: 0.55rem;
+        margin-top: 0.45rem;
+      }
+      .reason-opt {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0.15rem 0.7rem;
+        font-size: 0.82rem;
+        cursor: pointer;
+        user-select: none;
+      }
+      .reason-opt.sel {
+        background: var(--chip);
+        color: var(--chip-text);
+        border-color: var(--chip-text);
+      }
+      textarea,
+      input[type="text"],
+      input[type="password"],
+      select {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg);
+        color: var(--text);
+        padding: 0.55rem;
+        font: inherit;
+      }
+      .field {
+        margin-bottom: 0.7rem;
+      }
+      .field label {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.25rem;
+      }
+      .row {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+      }
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.6rem;
+        margin-top: 0.6rem;
+      }
+      .metric {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.65rem;
+        background: var(--bg);
+      }
+      .metric .label {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      .metric .value {
+        font-weight: 700;
+        margin-top: 0.15rem;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 0.75rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 720px;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.5rem 0.55rem;
+        border: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        background: var(--bg);
+      }
+      details {
+        border-top: 1px dashed var(--border);
+        margin-top: 1rem;
+        padding-top: 0.75rem;
+      }
+      details .sub {
+        line-height: 1.75;
+      }
+      details .sub + .sub {
+        margin-top: 0.35rem;
+      }
+      .motion-extra {
+        margin: 0.75rem 0 1.6rem;
+      }
+      .discussion {
+        margin-bottom: 1.8rem;
+      }
+      .discussion .row {
+        margin-top: 0.85rem;
+        margin-bottom: 0.65rem;
+      }
+      .discussion textarea {
+        margin-top: 0.75rem;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+      }
+      .guide {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-top: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        margin: 0 0 1rem;
+      }
+      .guide > summary {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .guide .sub {
+        line-height: 1.95;
+        margin-top: 0.55rem;
+      }
+      .comment {
+        border-top: 1px solid var(--border);
+        padding: 0.5rem 0;
+      }
+      .comment:first-child {
+        border-top: 0;
+      }
+      .comment .by {
+        color: var(--muted);
+        font-size: 0.8rem;
+        margin-bottom: 0.15rem;
+      }
+      .ai-box {
+        line-height: 1.6;
+      }
+      .ai-box p {
+        margin: 0.45rem 0;
+      }
+      .ai-box h1,
+      .ai-box h2,
+      .ai-box h3,
+      .ai-box h4 {
+        margin: 0.8rem 0 0.4rem;
+        line-height: 1.3;
+      }
+      .ai-box h1 {
+        font-size: 1.35rem;
+      }
+      .ai-box h2 {
+        font-size: 1.2rem;
+      }
+      .ai-box h3,
+      .ai-box h4 {
+        font-size: 1.05rem;
+      }
+      .ai-box ul,
+      .ai-box ol {
+        margin: 0.45rem 0 0.45rem 1.25rem;
+        padding: 0;
+      }
+      .ai-box li {
+        margin: 0.18rem 0;
+      }
+      .analysis-tabs {
+        display: flex;
+        gap: 0.35rem;
+        margin: 0.7rem 0 1rem;
+        flex-wrap: wrap;
+      }
+      .mini-tab {
+        border-radius: 999px;
+        padding: 0.35rem 0.8rem;
+      }
+      .mini-tab.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .chart {
+        margin-top: 0.55rem;
+      }
+      .chart-row {
+        display: grid;
+        grid-template-columns: minmax(7rem, 12rem) 1fr 3.5rem;
+        gap: 0.5rem;
+        align-items: center;
+        margin: 0.28rem 0;
+        font-size: 0.86rem;
+      }
+      .chart-track {
+        height: 0.9rem;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .chart-fill {
+        height: 100%;
+        background: var(--accent);
+      }
+      .multi-select {
+        display: grid;
+        gap: 0.35rem;
+        max-height: 16rem;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.45rem;
+        background: var(--bg);
+      }
+      .multi-opt {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-start;
+        padding: 0.35rem 0.45rem;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .multi-opt:hover {
+        background: var(--chip);
+      }
+      .multi-opt input {
+        margin-top: 0.2rem;
+      }
+      .depose-filter-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 2fr) minmax(10rem, 1fr);
+        gap: 0.55rem;
+        margin-bottom: 0.55rem;
+      }
+      .selection-summary {
+        margin: 0.1rem 0 0.45rem;
+        color: var(--chip-text);
+        font-size: 0.9rem;
+        font-weight: 600;
+      }
+      .filter-empty {
+        color: var(--muted);
+        text-align: center;
+        padding: 0.8rem;
+      }
+      .toast {
+        position: fixed;
+        right: max(1rem, env(safe-area-inset-right));
+        top: max(1rem, env(safe-area-inset-top));
+        background: #000;
+        color: #fff;
+        border: 1px solid #333;
+        padding: 1rem 1.25rem;
+        border-radius: 12px;
+        font-size: 1.05rem;
+        line-height: 1.5;
+        font-weight: 600;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+        max-width: min(32rem, 92vw);
+        text-align: left;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+        z-index: 20;
+      }
+      .toast.show {
+        opacity: 1;
+      }
+      .notice-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        background: rgba(0, 0, 0, 0.72);
+        display: grid;
+        place-items: center;
+        padding: 1rem;
+      }
+      .notice-dialog {
+        width: min(36rem, 100%);
+        max-height: calc(100vh - 2rem);
+        overflow: auto;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+      }
+      .notice-dialog .topic {
+        font-size: 1.2rem;
+      }
+      .back-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 0.95rem;
+        margin-bottom: 0.6rem;
+      }
+      .back-link:hover {
+        text-decoration: underline;
+      }
+      @media (max-width: 520px) {
+        h1 {
+          font-size: 1.65rem;
         }
-        .wrap { width: min(100%, 84rem); margin: 0 auto; }
-        header { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
-        h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 .55rem; }
-        .sub { color: var(--muted); font-size: .9rem; }
-        .badge { background: var(--chip); color: var(--chip-text); border-radius: 999px; padding: .15rem .6rem; font-size: .8rem; font-weight: 600; }
-        .login-state { border-radius: 8px; padding: .65rem .8rem; margin: .45rem 0; background: #1b2a3d; color: var(--text); }
-        .member-state { margin: .45rem 0 .8rem; padding: .55rem .8rem; border-radius: 8px; }
-        .member-state.active { background: #123524; color: #8ee6b4; }
-        .member-state.bypass { background: #1b2a3d; color: #b9d8ff; }
-        .member-state.inactive { background: #3b2d13; color: #ffd27d; }
-        .tabs { display: grid; grid-template-columns: repeat(6, minmax(max-content, 1fr)); gap: .35rem; margin: .9rem 0 1rem; overflow-x: auto; }
-        .tab { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 999px; padding: .4rem .9rem; cursor: pointer; font: inherit; }
-        .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-        .toolbar { display: flex; align-items: center; gap: .5rem; margin: .3rem 0 1rem; flex-wrap: wrap; }
-        button {
-            font: inherit; border: 1px solid var(--border); background: var(--card); color: var(--text);
-            border-radius: 8px; padding: .5rem .9rem; cursor: pointer;
+        .metric-grid {
+          grid-template-columns: 1fr;
         }
-        button:active { transform: translateY(1px); }
-        button:disabled { opacity: .55; cursor: default; }
-        .card {
-            background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-            padding: 1rem; margin-bottom: .85rem;
+        .depose-filter-grid {
+          grid-template-columns: 1fr;
         }
-        .vote-card { margin-bottom: .75rem; }
-        .topic { font-weight: 600; font-size: 1.08rem; line-height: 1.35; margin-bottom: .4rem; }
-        .vote-card .topic { font-size: 1.22rem; font-weight: 700; }
-        .meta { color: var(--muted); font-size: .9rem; font-weight: 600; margin-bottom: .75rem; display: flex; flex-wrap: wrap; gap: .35rem .75rem; }
-        .chip { background: var(--chip); color: var(--chip-text); border-radius: 6px; padding: .05rem .45rem; font-size: .78rem; }
-        .tallies { display: flex; gap: 1.2rem; font-size: .95rem; margin-top: .9rem; }
-        .agree b { color: var(--agree); }
-        .against b { color: var(--against); }
-        .progress-label { margin-top: .9rem; font-weight: 600; }
-        .progress { height: .72rem; border: 0; border-radius: 999px; overflow: hidden; background: #2d2f3a; margin-top: .35rem; position: relative; }
-        .progress > span { display: block; height: 100%; min-width: 0; }
-        .progress.agree-bar > span { background: var(--agree); }
-        .progress.against-bar > span { background: #ff4b4b; }
-        .deadline-past { color: var(--against); font-weight: 600; }
-        .state { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
-        .err { border-color: var(--against); }
-        .warn { border-color: #b98a2e; background: #3b2d13; }
-        .busy-overlay { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.35); display: none; place-items: center; }
-        .busy-overlay.show { display: grid; }
-        .busy-pill { display: flex; align-items: center; gap: .55rem; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: .6rem 1.15rem; font-size: .92rem; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
-        .spinner { width: 1.05rem; height: 1.05rem; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .section-title { margin: 1.5rem 0 .5rem; font-size: 1rem; color: var(--muted); }
-        .pill-list { display: flex; flex-wrap: wrap; gap: .35rem; }
-        .pill { border: 1px solid var(--border); border-radius: 999px; padding: .1rem .6rem; font-size: .82rem; color: var(--muted); }
-        a { color: var(--accent); }
-        .actions { display: flex; gap: .5rem; margin-top: 1.1rem; flex-wrap: wrap; }
-        .actions button { flex: 1 1 auto; min-width: 8rem; }
-        .btn-agree { border-color: var(--agree); color: var(--agree); }
-        .btn-against { border-color: var(--against); color: var(--against); }
-        .btn-on-agree { background: var(--agree); color: #fff; border-color: var(--agree); }
-        .btn-on-against { background: var(--against); color: #fff; border-color: var(--against); }
-        .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-        .reasons { margin-top: .75rem; padding-top: .75rem; border-top: 1px dashed var(--border); }
-        .reasons .pill-list { margin-bottom: .5rem; }
-        .reason-opts { row-gap: .55rem; margin-top: .45rem; }
-        .reason-opt { border: 1px solid var(--border); border-radius: 999px; padding: .15rem .7rem; font-size: .82rem; cursor: pointer; user-select: none; }
-        .reason-opt.sel { background: var(--chip); color: var(--chip-text); border-color: var(--chip-text); }
-        textarea, input[type=text], input[type=password], select { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); padding: .55rem; font: inherit; }
-        .field { margin-bottom: .7rem; }
-        .field label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .25rem; }
-        .row { display: flex; gap: .5rem; margin-top: .5rem; }
-        .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; margin-top: .6rem; }
-        .metric { border: 1px solid var(--border); border-radius: 8px; padding: .65rem; background: var(--bg); }
-        .metric .label { color: var(--muted); font-size: .8rem; }
-        .metric .value { font-weight: 700; margin-top: .15rem; }
-        .table-wrap { overflow-x: auto; margin-top: .75rem; }
-        table { width: 100%; border-collapse: collapse; min-width: 720px; font-size: .9rem; }
-        th, td { text-align: left; padding: .5rem .55rem; border: 1px solid var(--border); white-space: nowrap; }
-        th { color: var(--muted); font-weight: 600; background: var(--bg); }
-        details { border-top: 1px dashed var(--border); margin-top: 1rem; padding-top: .75rem; }
-        details .sub { line-height: 1.75; }
-        details .sub + .sub { margin-top: .35rem; }
-        .motion-extra { margin: .75rem 0 1.6rem; }
-        .discussion { margin-bottom: 1.8rem; }
-        .discussion .row { margin-top: .85rem; margin-bottom: .65rem; }
-        .discussion textarea { margin-top: .75rem; }
-        summary { cursor: pointer; color: var(--muted); }
-        .guide { background: var(--card); border: 1px solid var(--border); border-top: 1px solid var(--border); border-radius: 12px; padding: .85rem 1rem; margin: 0 0 1rem; }
-        .guide > summary { color: var(--text); font-weight: 600; }
-        .guide .sub { line-height: 1.95; margin-top: .55rem; }
-        .comment { border-top: 1px solid var(--border); padding: .5rem 0; }
-        .comment:first-child { border-top: 0; }
-        .comment .by { color: var(--muted); font-size: .8rem; margin-bottom: .15rem; }
-        .ai-box { line-height: 1.6; }
-        .ai-box p { margin: .45rem 0; }
-        .ai-box h1, .ai-box h2, .ai-box h3, .ai-box h4 { margin: .8rem 0 .4rem; line-height: 1.3; }
-        .ai-box h1 { font-size: 1.35rem; }
-        .ai-box h2 { font-size: 1.2rem; }
-        .ai-box h3, .ai-box h4 { font-size: 1.05rem; }
-        .ai-box ul, .ai-box ol { margin: .45rem 0 .45rem 1.25rem; padding: 0; }
-        .ai-box li { margin: .18rem 0; }
-        .analysis-tabs { display: flex; gap: .35rem; margin: .7rem 0 1rem; flex-wrap: wrap; }
-        .mini-tab { border-radius: 999px; padding: .35rem .8rem; }
-        .mini-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-        .chart { margin-top: .55rem; }
-        .chart-row { display: grid; grid-template-columns: minmax(7rem, 12rem) 1fr 3.5rem; gap: .5rem; align-items: center; margin: .28rem 0; font-size: .86rem; }
-        .chart-track { height: .9rem; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
-        .chart-fill { height: 100%; background: var(--accent); }
-        .multi-select { display: grid; gap: .35rem; max-height: 16rem; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: .45rem; background: var(--bg); }
-        .multi-opt { display: flex; gap: .5rem; align-items: flex-start; padding: .35rem .45rem; border-radius: 6px; cursor: pointer; }
-        .multi-opt:hover { background: var(--chip); }
-        .multi-opt input { margin-top: .2rem; }
-        .depose-filter-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(10rem, 1fr); gap: .55rem; margin-bottom: .55rem; }
-        .selection-summary { margin: .1rem 0 .45rem; color: var(--chip-text); font-size: .9rem; font-weight: 600; }
-        .filter-empty { color: var(--muted); text-align: center; padding: .8rem; }
-        .toast { position: fixed; right: max(1rem, env(safe-area-inset-right)); top: max(1rem, env(safe-area-inset-top)); background: #000; color: #fff; border: 1px solid #333; padding: 1rem 1.25rem; border-radius: 12px; font-size: 1.05rem; line-height: 1.5; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: min(32rem, 92vw); text-align: left; box-shadow: 0 14px 40px rgba(0,0,0,.6); z-index: 20; }
-        .toast.show { opacity: 1; }
-        .notice-backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.72); display: grid; place-items: center; padding: 1rem; }
-        .notice-dialog { width: min(36rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
-        .notice-dialog .topic { font-size: 1.2rem; }
-        .back-link { display: inline-flex; align-items: center; gap: .3rem; color: var(--accent); text-decoration: none; font-size: .95rem; margin-bottom: .6rem; }
-        .back-link:hover { text-decoration: underline; }
-        @media (max-width: 520px) {
-            h1 { font-size: 1.65rem; }
-            .metric-grid { grid-template-columns: 1fr; }
-            .depose-filter-grid { grid-template-columns: 1fr; }
-        }
+      }
     </style>
-</head>
-<body>
-<div class="wrap">
-    <header>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
         <div>
-            <a class="back-link" href="/">← 返回主頁</a>
-            <h1>辯題徵集、投票及罷免</h1>
-            <div class="sub">活躍成員標準：整體投票率達 40%，且最近十次投票至少參與三次。</div>
-            <div id="who"></div>
+          <a class="back-link" href="/">← 返回主頁</a>
+          <h1>辯題徵集、投票及罷免</h1>
+          <div class="sub">
+            活躍成員標準：整體投票率達 40%，且最近十次投票至少參與三次。
+          </div>
+          <div id="who"></div>
         </div>
-    </header>
+      </header>
 
-    <div class="tabs" id="tabs">
+      <div class="tabs" id="tabs">
         <button class="tab active" data-tab="propose">📝 提案</button>
         <button class="tab" data-tab="vote">📊 辯題投票</button>
         <button class="tab" data-tab="depose">✂️ 罷免投票</button>
         <button class="tab" data-tab="bank_analysis">📈 AI分析</button>
         <button class="tab" data-tab="member_stats">👥 參與率</button>
         <button class="tab" data-tab="account">🔐 帳戶</button>
-    </div>
+      </div>
 
-    <details class="guide">
+      <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>
         <div class="sub">
-            • 請先使用內部委員會成員帳戶登入，再按需要切換至提出辯題、辯題投票、罷免投票或帳戶管理分頁。<br>
-            • 活躍成員可提出新辯題或罷免動議；所有成員均可參與投票。<br>
-            • 每項動議均設 7 日截止日期，達門檻且票數過半時會自動更新狀態。<br>
-            • 可在「🔐 帳戶」分頁啟用背景通知，新辯題及投票結果會推送到你的裝置（iPhone / iPad 需先加入主畫面）。
+          •
+          請先使用內部委員會成員帳戶登入，再按需要切換至提出辯題、辯題投票、罷免投票或帳戶管理分頁。<br />
+          • 活躍成員可提出新辯題或罷免動議；所有成員均可參與投票。<br />
+          • 每項動議均設 7 日截止日期，達門檻且票數過半時會自動更新狀態。<br />
+          • 可在「🔐
+          帳戶」分頁啟用背景通知，新辯題及投票結果會推送到你的裝置（iPhone /
+          iPad 需先加入主畫面）。
         </div>
-    </details>
+      </details>
 
-    <div id="content"><div class="state">載入中…</div></div>
-</div>
-<div class="toast" id="toast"></div>
-<div class="busy-overlay" id="busy"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
-<div id="noticeRoot"></div>
-<div id="confirmRoot"></div>
+      <div id="content"><div class="state">載入中…</div></div>
+    </div>
+    <div class="toast" id="toast"></div>
+    <div class="busy-overlay" id="busy">
+      <div class="busy-pill"><span class="spinner"></span>處理中…</div>
+    </div>
+    <div id="noticeRoot"></div>
+    <div id="confirmRoot"></div>
 
-<script src="/shared/vote-ui.js"></script>
-<script src="/shared/markdown.js"></script><script>
-(function () {
-    "use strict";
-    const content = document.getElementById("content");
-    const who = document.getElementById("who");
-    const toastEl = document.getElementById("toast");
-    const busyEl = document.getElementById("busy");
-    const noticeRoot = document.getElementById("noticeRoot");
-    const confirmRoot = document.getElementById("confirmRoot");
-    const tabsEl = document.getElementById("tabs");
+    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/markdown.js"></script>
+    <script>
+      (function () {
+        "use strict";
+        const content = document.getElementById("content");
+        const who = document.getElementById("who");
+        const toastEl = document.getElementById("toast");
+        const busyEl = document.getElementById("busy");
+        const noticeRoot = document.getElementById("noticeRoot");
+        const confirmRoot = document.getElementById("confirmRoot");
+        const tabsEl = document.getElementById("tabs");
 
-    // Mirror the constants in vote.py / functions.py.
-    const AI_COMMENT_USER = "Gemini";   // AI_COMMENT_USER_ID — replies rendered as markdown
-    const REJECTION_REASONS = [
-        "表述或界定不清", "正反責任失衡", "與現有題目重複或相似",
-        "討論價值不足", "題目表述可再修訂", "類別分類不當", "難度分類不當",
-    ];
-    const DEPOSE_REASONS = [
-        "題目已過時", "表述或界定不清", "正反責任失衡", "與現有題目重複或相似",
-        "討論價值不足", "已有更佳版本可取代", "類別分類不當", "難度分類不當",
-    ];
-    const CATEGORIES = [
-        "國際與時事", "科技與未來", "文化與生活",
-        "香港社會政策", "青少年與教育", "哲理／價值觀",
-    ];
-    const DIFFICULTIES = [
-        { v: 1, label: "Lv1 — 概念日常" },
-        { v: 2, label: "Lv2 — 一般議題" },
-        { v: 3, label: "Lv3 — 進階專業" },
-    ];
+        // Mirror the constants in vote.py / functions.py.
+        const AI_COMMENT_USER = "Gemini"; // AI_COMMENT_USER_ID — replies rendered as markdown
+        const REJECTION_REASONS = [
+          "表述或界定不清",
+          "正反責任失衡",
+          "與現有題目重複或相似",
+          "討論價值不足",
+          "題目表述可再修訂",
+          "類別分類不當",
+          "難度分類不當",
+        ];
+        const DEPOSE_REASONS = [
+          "題目已過時",
+          "表述或界定不清",
+          "正反責任失衡",
+          "與現有題目重複或相似",
+          "討論價值不足",
+          "已有更佳版本可取代",
+          "類別分類不當",
+          "難度分類不當",
+        ];
+        const CATEGORIES = [
+          "國際與時事",
+          "科技與未來",
+          "文化與生活",
+          "香港社會政策",
+          "青少年與教育",
+          "哲理／價值觀",
+        ];
+        const DIFFICULTIES = [
+          { v: 1, label: "Lv1 — 概念日常" },
+          { v: 2, label: "Lv2 — 一般議題" },
+          { v: 3, label: "Lv3 — 進階專業" },
+        ];
 
-    let ME = "";
-    let ACTIVITY = null;
-    let NOTI_CHECKED = false;
-    let BUSY = 0;
-    // Central busy state → shows the "處理中…" overlay so every action button
-    // click gives clear loading feedback and double-submits are blocked.
-    function setBusy(v) { BUSY = v; busyEl.classList.toggle("show", !!v); }
-    let TAB = "propose";
-    let ANALYSIS_TAB = "bank";
-    let openReasonFor = null;   // topic_text with an open against-reason panel (topic vote)
-    const CACHE_TTL = 20000;
-    const CACHE = Object.create(null);
+        let ME = "";
+        let ACTIVITY = null;
+        let NOTI_CHECKED = false;
+        let BUSY = 0;
+        // Central busy state → shows the "處理中…" overlay so every action button
+        // click gives clear loading feedback and double-submits are blocked.
+        function setBusy(v) {
+          BUSY = v;
+          busyEl.classList.toggle("show", !!v);
+        }
+        let TAB = "propose";
+        let ANALYSIS_TAB = "bank";
+        let openReasonFor = null; // topic_text with an open against-reason panel (topic vote)
+        const CACHE_TTL = 20000;
+        const CACHE = Object.create(null);
 
-    function esc(s) {
-        return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
-            { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-        ));
-    }
-    function cssEsc(s) { return String(s).replace(/["\\]/g, "\\$&"); }
-    function diffLabel(v) { const d = DIFFICULTIES.find(x => String(x.v) === String(v)); return d ? d.label : (v || ""); }
-    function progressBar(kind, label, count, threshold) {
-        const pct = threshold ? Math.min(100, Math.max(0, count / threshold * 100)) : 0;
-        return `<div class="progress-label">${esc(label)}：${esc(count)} / ${esc(threshold || "—")}</div><div class="progress ${kind}-bar"><span style="width:${pct}%"></span></div>`;
-    }
-    function md(s) {
-        return SafeMarkdown.render(s || "");
-    }
-    function invalidateCache() {
-        Object.keys(CACHE).forEach(k => delete CACHE[k]);
-    }
+        function esc(s) {
+          return String(s == null ? "" : s).replace(
+            /[&<>"']/g,
+            (c) =>
+              ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+              })[c],
+          );
+        }
+        function cssEsc(s) {
+          return String(s).replace(/["\\]/g, "\\$&");
+        }
+        function diffLabel(v) {
+          const d = DIFFICULTIES.find((x) => String(x.v) === String(v));
+          return d ? d.label : v || "";
+        }
+        function progressBar(kind, label, count, threshold) {
+          const pct = threshold
+            ? Math.min(100, Math.max(0, (count / threshold) * 100))
+            : 0;
+          return `<div class="progress-label">${esc(label)}：${esc(count)} / ${esc(threshold || "—")}</div><div class="progress ${kind}-bar"><span style="width:${pct}%"></span></div>`;
+        }
+        function md(s) {
+          return SafeMarkdown.render(s || "");
+        }
+        function invalidateCache() {
+          Object.keys(CACHE).forEach((k) => delete CACHE[k]);
+        }
 
-    let toastTimer = null;
-    function toast(msg) {
-        toastEl.textContent = msg;
-        toastEl.classList.add("show");
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => toastEl.classList.remove("show"), 4000);
-    }
-    function askConfirm(message, confirmLabel) {
-        return new Promise(resolve => {
+        let toastTimer = null;
+        function toast(msg) {
+          toastEl.textContent = msg;
+          toastEl.classList.add("show");
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(() => toastEl.classList.remove("show"), 4000);
+        }
+        function askConfirm(message, confirmLabel) {
+          return new Promise((resolve) => {
             confirmRoot.innerHTML = `<div class="notice-backdrop"><div class="notice-dialog" role="dialog" aria-modal="true" aria-label="確認操作">
                 <div class="topic">確認操作</div>
                 <div class="sub" style="color:var(--text)">${esc(message)}</div>
@@ -264,46 +801,51 @@
                     <button data-confirm="no">❌ 取消</button>
                 </div>
             </div></div>`;
-            confirmRoot.onclick = ev => {
-                const btn = ev.target.closest("button[data-confirm]");
-                if (!btn) return;
-                const accepted = btn.dataset.confirm === "yes";
-                confirmRoot.innerHTML = "";
-                confirmRoot.onclick = null;
-                resolve(accepted);
+            confirmRoot.onclick = (ev) => {
+              const btn = ev.target.closest("button[data-confirm]");
+              if (!btn) return;
+              const accepted = btn.dataset.confirm === "yes";
+              confirmRoot.innerHTML = "";
+              confirmRoot.onclick = null;
+              resolve(accepted);
             };
-        });
-    }
-    function toastFor(t, action, mode, mine) {
-        if (action === "withdraw") {
-            return mine === "agree" ? "↩️ 已撤回同意票！" : "↩️ 已撤回不同意票！";
+          });
         }
-        if (action === "agree") {
-            if (mine === "against") return mode === "depose" ? "↪️ 已轉投同意罷免票！" : "↪️ 已轉投同意票！";
+        function toastFor(t, action, mode, mine) {
+          if (action === "withdraw") {
+            return mine === "agree"
+              ? "↩️ 已撤回同意票！"
+              : "↩️ 已撤回不同意票！";
+          }
+          if (action === "agree") {
+            if (mine === "against")
+              return mode === "depose"
+                ? "↪️ 已轉投同意罷免票！"
+                : "↪️ 已轉投同意票！";
             return "☑️ 已投下同意票！";
-        }
-        if (action === "against") {
+          }
+          if (action === "against") {
             if (mine === "agree") return "↪️ 已轉投不同意票！";
             return "☑️ 已投下不同意票！";
+          }
+          return "☑️ 投票已更新";
         }
-        return "☑️ 投票已更新";
-    }
 
-    function myState(t) {
-        if ((t.agree_users || []).indexOf(ME) !== -1) return "agree";
-        if ((t.against_users || []).indexOf(ME) !== -1) return "against";
-        return null;
-    }
+        function myState(t) {
+          if ((t.agree_users || []).indexOf(ME) !== -1) return "agree";
+          if ((t.against_users || []).indexOf(ME) !== -1) return "against";
+          return null;
+        }
 
-    function notLoggedIn() {
-        who.innerHTML = "";
-        ME = "";
-        ACTIVITY = null;
-        NOTI_CHECKED = false;
-        noticeRoot.innerHTML = "";
-        confirmRoot.innerHTML = "";
-        tabsEl.style.display = "none";
-        content.innerHTML = `
+        function notLoggedIn() {
+          who.innerHTML = "";
+          ME = "";
+          ACTIVITY = null;
+          NOTI_CHECKED = false;
+          noticeRoot.innerHTML = "";
+          confirmRoot.innerHTML = "";
+          tabsEl.style.display = "none";
+          content.innerHTML = `
             <div class="card">
                 <div class="sub">請先使用內部委員會成員帳戶登入，再按需要切換至提出辯題、辯題投票、罷免投票或帳戶管理分頁。</div>
                 <div class="sub">活躍成員可提出新辯題或罷免動議；所有成員均可參與投票。</div>
@@ -319,39 +861,57 @@
                 <button class="btn-primary" data-act="login" style="width:100%">登入</button>
                 <div class="sub" id="loginMsg" style="margin-top:.5rem;color:var(--against)"></div>
             </div>`;
-        const pass = document.getElementById("loginPass");
-        if (pass) pass.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
-    }
+          const pass = document.getElementById("loginPass");
+          if (pass)
+            pass.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") doLogin();
+            });
+        }
 
-    async function doLogin() {
-        const u = (document.getElementById("loginUser").value || "").trim();
-        const p = document.getElementById("loginPass").value || "";
-        const msg = document.getElementById("loginMsg");
-        if (!u || !p) { msg.textContent = "請輸入帳號及密碼"; return; }
-        if (BUSY) return;
-        setBusy(true);
-        try {
-            const { res, data } = await postJSON("/api/committee/login", { user_id: u, password: p });
-            if (!res.ok) { msg.textContent = data.detail || ("登入失敗 " + res.status); return; }
+        async function doLogin() {
+          const u = (document.getElementById("loginUser").value || "").trim();
+          const p = document.getElementById("loginPass").value || "";
+          const msg = document.getElementById("loginMsg");
+          if (!u || !p) {
+            msg.textContent = "請輸入帳號及密碼";
+            return;
+          }
+          if (BUSY) return;
+          setBusy(true);
+          try {
+            const { res, data } = await postJSON("/api/committee/login", {
+              user_id: u,
+              password: p,
+            });
+            if (!res.ok) {
+              msg.textContent = data.detail || "登入失敗 " + res.status;
+              return;
+            }
             tabsEl.style.display = "";
             invalidateCache();
             await load();
             prefetchLikelyTabs();
-        } catch (e) {
+          } catch (e) {
             msg.textContent = "登入失敗：" + e.message;
-        } finally { setBusy(false); }
-    }
+          } finally {
+            setBusy(false);
+          }
+        }
 
-    async function doLogout() {
-        try { await postJSON("/api/committee/logout", {}); } catch (e) { /* ignore */ }
-        invalidateCache();
-        notLoggedIn();
-    }
+        async function doLogout() {
+          try {
+            await postJSON("/api/committee/logout", {});
+          } catch (e) {
+            /* ignore */
+          }
+          invalidateCache();
+          notLoggedIn();
+        }
 
-    async function checkNotification() {
-        if (NOTI_CHECKED || !ME) return;
-        NOTI_CHECKED = true;
-        try {
+        async function checkNotification() {
+          if (NOTI_CHECKED || !ME) return;
+          NOTI_CHECKED = true;
+          try {
             const data = await getJSON("/api/committee/notification");
             const n = data && data.notification;
             if (!n) return;
@@ -360,55 +920,70 @@
                 <div class="ai-box">${md(n.content)}</div>
                 <button class="btn-primary" data-notice-id="${esc(n.id)}" data-notice-title="${esc(n.title)}" style="width:100%;margin-top:.8rem">我已閱讀 ✓</button>
             </div></div>`;
-        } catch (e) { /* a notice failure must not block the vote page */ }
-    }
-
-    function setMemberState(data) {
-        if (data && typeof data.is_active === "boolean") ACTIVITY = data;
-        const state = ACTIVITY;
-        if (!ME) { who.innerHTML = ""; return; }
-        let status = "";
-        if (state) {
-            if (state.naturally_active) {
-                status = '<div class="member-state active">帳戶狀態：活躍成員</div>';
-            } else if (state.bypass_until) {
-                status = `<div class="member-state bypass">帳戶狀態：非活躍成員（提案限制已被臨時解除，至 ${esc(state.bypass_until)}）</div>`;
-            } else {
-                status = '<div class="member-state inactive">帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。</div>';
-            }
+          } catch (e) {
+            /* a notice failure must not block the vote page */
+          }
         }
-        who.innerHTML = `<div class="login-state">已登入帳戶：<strong>${esc(ME)}</strong></div>${status}`;
-    }
 
-    function updateTabCounts(voteCount, deposeCount) {
-        const voteTab = tabsEl.querySelector('[data-tab="vote"]');
-        const deposeTab = tabsEl.querySelector('[data-tab="depose"]');
-        if (voteTab && voteCount != null) voteTab.textContent = voteCount ? `📊 辯題投票 (${voteCount})` : "📊 辯題投票";
-        if (deposeTab && deposeCount != null) deposeTab.textContent = deposeCount ? `✂️ 罷免投票 (${deposeCount})` : "✂️ 罷免投票";
-    }
+        function setMemberState(data) {
+          if (data && typeof data.is_active === "boolean") ACTIVITY = data;
+          const state = ACTIVITY;
+          if (!ME) {
+            who.innerHTML = "";
+            return;
+          }
+          let status = "";
+          if (state) {
+            if (state.naturally_active) {
+              status =
+                '<div class="member-state active">帳戶狀態：活躍成員</div>';
+            } else if (state.bypass_until) {
+              status = `<div class="member-state bypass">帳戶狀態：非活躍成員（提案限制已被臨時解除，至 ${esc(state.bypass_until)}）</div>`;
+            } else {
+              status =
+                '<div class="member-state inactive">帳戶狀態：非活躍成員，你將不能提出新辯題或罷免動議，但仍可參與投票。</div>';
+            }
+          }
+          who.innerHTML = `<div class="login-state">已登入帳戶：<strong>${esc(ME)}</strong></div>${status}`;
+        }
 
-    // ── generic vote buttons (shared by topic + depose) ───────────────────────
-    function agreeButton(t, mine, mode) {
-        const label = mode === "depose" ? "同意罷免" : "同意";
-        if (mine === "agree")
+        function updateTabCounts(voteCount, deposeCount) {
+          const voteTab = tabsEl.querySelector('[data-tab="vote"]');
+          const deposeTab = tabsEl.querySelector('[data-tab="depose"]');
+          if (voteTab && voteCount != null)
+            voteTab.textContent = voteCount
+              ? `📊 辯題投票 (${voteCount})`
+              : "📊 辯題投票";
+          if (deposeTab && deposeCount != null)
+            deposeTab.textContent = deposeCount
+              ? `✂️ 罷免投票 (${deposeCount})`
+              : "✂️ 罷免投票";
+        }
+
+        // ── generic vote buttons (shared by topic + depose) ───────────────────────
+        function agreeButton(t, mine, mode) {
+          const label = mode === "depose" ? "同意罷免" : "同意";
+          if (mine === "agree")
             return `<button class="btn-on-agree" data-act="withdraw" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "withdraw", mode, mine))}">已同意 (點擊撤回)</button>`;
-        if (mine === "against")
+          if (mine === "against")
             return `<button class="btn-agree" data-act="agree" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "agree", mode, mine))}">轉投同意</button>`;
-        return `<button class="btn-agree" data-act="agree" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "agree", mode, mine))}">✅ ${label}</button>`;
-    }
-    function againstButton(t, mine, mode) {
-        const label = mode === "depose" ? "不同意罷免" : "不同意";
-        if (mine === "against")
+          return `<button class="btn-agree" data-act="agree" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "agree", mode, mine))}">✅ ${label}</button>`;
+        }
+        function againstButton(t, mine, mode) {
+          const label = mode === "depose" ? "不同意罷免" : "不同意";
+          if (mine === "against")
             return `<button class="btn-on-against" data-act="withdraw" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "withdraw", mode, mine))}">已反對 (點擊撤回)</button>`;
-        // topic against needs reasons (opens a panel); depose against is direct.
-        const act = mode === "depose" ? "against" : "against-open";
-        const text = mine === "agree" ? "轉投反對" : `❌ ${label}`;
-        return `<button class="btn-against" data-act="${act}" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "against", mode, mine))}">${text}</button>`;
-    }
-    function reasonPanel(t, mine) {
-        const opts = REJECTION_REASONS.map(r =>
-            `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`).join("");
-        return `
+          // topic against needs reasons (opens a panel); depose against is direct.
+          const act = mode === "depose" ? "against" : "against-open";
+          const text = mine === "agree" ? "轉投反對" : `❌ ${label}`;
+          return `<button class="btn-against" data-act="${act}" data-mode="${mode}" data-topic="${esc(t.topic_text)}" data-toast="${esc(toastFor(t, "against", mode, mine))}">${text}</button>`;
+        }
+        function reasonPanel(t, mine) {
+          const opts = REJECTION_REASONS.map(
+            (r) =>
+              `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`,
+          ).join("");
+          return `
             <div class="reasons" data-panel="${esc(t.topic_text)}">
                 <div class="sub">請選擇不同意原因（至少一項）：</div>
                 <div class="pill-list reason-opts">${opts}</div>
@@ -418,22 +993,27 @@
                     <button data-act="against-cancel" data-topic="${esc(t.topic_text)}">取消</button>
                 </div>
             </div>`;
-    }
-
-    function metaBits(t) {
-        const bits = [`🏷️ ${esc(t.category || "—")}`, esc(diffLabel(t.difficulty) || "—")];
-        if (t.deadline) {
-            bits.push(t.deadline_passed
-                ? `<span class="deadline-past">截止：${esc(t.deadline)} 23:59（已過期）</span>`
-                : `截止：${esc(t.deadline)} 23:59`);
         }
-        return bits.join(" ｜ ");
-    }
 
-    function discussionBlock(motionType, topic, count) {
-        const key = esc(topic);
-        const label = count ? `💬 討論區 (${count})` : "💬 討論區";
-        return `
+        function metaBits(t) {
+          const bits = [
+            `🏷️ ${esc(t.category || "—")}`,
+            esc(diffLabel(t.difficulty) || "—"),
+          ];
+          if (t.deadline) {
+            bits.push(
+              t.deadline_passed
+                ? `<span class="deadline-past">截止：${esc(t.deadline)} 23:59（已過期）</span>`
+                : `截止：${esc(t.deadline)} 23:59`,
+            );
+          }
+          return bits.join(" ｜ ");
+        }
+
+        function discussionBlock(motionType, topic, count) {
+          const key = esc(topic);
+          const label = count ? `💬 討論區 (${count})` : "💬 討論區";
+          return `
             <details class="discussion" data-motion-type="${motionType}" data-motion-key="${key}">
                 <summary>${esc(label)}</summary>
                 <div class="comments"><div class="sub" style="padding:.55rem 0">尚未載入。</div></div>
@@ -443,50 +1023,65 @@
                     <button data-act="comment-ai">Tag Gemini</button>
                 </div>
             </details>`;
-    }
+        }
 
-    async function loadComments(box) {
-        const motionType = box.dataset.motionType;
-        const motionKey = box.dataset.motionKey;
-        const target = box.querySelector(".comments");
-        target.innerHTML = '<div class="sub" style="padding:.55rem 0">載入中…</div>';
-        try {
-            const d = await getJSON(`/api/vote/comments?motion_type=${encodeURIComponent(motionType)}&motion_key=${encodeURIComponent(motionKey)}`);
+        async function loadComments(box) {
+          const motionType = box.dataset.motionType;
+          const motionKey = box.dataset.motionKey;
+          const target = box.querySelector(".comments");
+          target.innerHTML =
+            '<div class="sub" style="padding:.55rem 0">載入中…</div>';
+          try {
+            const d = await getJSON(
+              `/api/vote/comments?motion_type=${encodeURIComponent(motionType)}&motion_key=${encodeURIComponent(motionKey)}`,
+            );
             if (!d) return;
             const rows = d.comments || [];
-            target.innerHTML = rows.length ? rows.map(c => `
+            target.innerHTML = rows.length
+              ? rows
+                  .map(
+                    (c) => `
                 <div class="comment">
                     <div class="by"><b>${esc(c.user_id)}</b>　${esc(c.created_at)}</div>
                     ${c.user_id === AI_COMMENT_USER ? `<div class="ai-box">${md(c.comment_text)}</div>` : `<div>${esc(c.comment_text)}</div>`}
-                </div>`).join("") : '<div class="sub" style="padding:.55rem 0">暫時未有討論。</div>';
-        } catch (e) {
+                </div>`,
+                  )
+                  .join("")
+              : '<div class="sub" style="padding:.55rem 0">暫時未有討論。</div>';
+          } catch (e) {
             target.innerHTML = `<div class="sub" style="color:var(--against);padding:.55rem 0">載入留言失敗：${esc(e.message)}</div>`;
+          }
         }
-    }
 
-    // Warning banner for motions auto-rejected on this load (deadline passed).
-    function expiredBanner(expired, kind) {
-        if (!expired || !expired.length) return "";
-        return expired.map(e => {
-            const msg = kind === "depose"
-                ? `罷免動議「${esc(e.topic)}」投票期限（${esc(e.deadline)} 23:59）已過，未達罷免標準，動議自動取消。`
-                : `辯題「${esc(e.topic)}」投票期限（${esc(e.deadline)} 23:59）已過，未達入庫標準，系統自動否決。`;
-            return `<div class="card warn"><div class="sub" style="color:#ffd27d">⚠️ ${msg}</div></div>`;
-        }).join("");
-    }
+        // Warning banner for motions auto-rejected on this load (deadline passed).
+        function expiredBanner(expired, kind) {
+          if (!expired || !expired.length) return "";
+          return expired
+            .map((e) => {
+              const msg =
+                kind === "depose"
+                  ? `罷免動議「${esc(e.topic)}」投票期限（${esc(e.deadline)} 23:59）已過，未達罷免標準，動議自動取消。`
+                  : `辯題「${esc(e.topic)}」投票期限（${esc(e.deadline)} 23:59）已過，未達入庫標準，系統自動否決。`;
+              return `<div class="card warn"><div class="sub" style="color:#ffd27d">⚠️ ${msg}</div></div>`;
+            })
+            .join("");
+        }
 
-    // ── topic vote tab ────────────────────────────────────────────────────────
-    function renderVote(data) {
-        const list = data.pending || [];
-        let html = '<div class="card"><div class="topic">待表決辯題</div><div class="sub">當同意票數達入庫門檻，且同意票多於不同意票時，系統會自動將辯題寫入辯題庫。</div><div class="sub">當不同意票數達入庫門檻，且不同意票多於同意票時，系統會自動否決該辯題。</div><div class="actions"><button data-act="refresh">🔄 重新整理</button></div></div>';
-        html += expiredBanner(data.expired, "topic");
-        if (!list.length) {
+        // ── topic vote tab ────────────────────────────────────────────────────────
+        function renderVote(data) {
+          const list = data.pending || [];
+          let html =
+            '<div class="card"><div class="topic">待表決辯題</div><div class="sub">當同意票數達入庫門檻，且同意票多於不同意票時，系統會自動將辯題寫入辯題庫。</div><div class="sub">當不同意票數達入庫門檻，且不同意票多於同意票時，系統會自動否決該辯題。</div><div class="actions"><button data-act="refresh">🔄 重新整理</button></div></div>';
+          html += expiredBanner(data.expired, "topic");
+          if (!list.length) {
             html += '<div class="state">目前沒有待表決的辯題。</div>';
-        } else {
-            html += list.map(t => {
+          } else {
+            html += list
+              .map((t) => {
                 const mine = myState(t);
                 const thr = t.approval_threshold || 0;
-                const panel = openReasonFor === t.topic_text ? reasonPanel(t, mine) : "";
+                const panel =
+                  openReasonFor === t.topic_text ? reasonPanel(t, mine) : "";
                 return `
                     <div class="card vote-card">
                         <div class="topic">${esc(t.topic_text)}</div>
@@ -501,43 +1096,60 @@
                         ${renderAgainstReasons(t)}
                         ${discussionBlock("topic_vote", t.topic_text, t.comment_count || 0)}
                     </div>`;
-            }).join("");
+              })
+              .join("");
+          }
+          html += renderHistory(data.history || []);
+          content.innerHTML = html;
         }
-        html += renderHistory(data.history || []);
-        content.innerHTML = html;
-    }
-    function renderAgainstReasons(t) {
-        const reasonMap = t.against_reasons || {};
-        const all = [];
-        Object.keys(reasonMap).forEach(uid => (reasonMap[uid] || []).forEach(r => all.push(r)));
-        if (!all.length) return "";
-        const counts = {};
-        all.forEach(r => { counts[r] = (counts[r] || 0) + 1; });
-        const lines = Object.keys(counts).sort((a, b) => counts[b] - counts[a])
-            .map(r => `<div class="sub">• ${esc(r)}${counts[r] > 1 ? `（${counts[r]} 人）` : ""}</div>`).join("");
-        return `<details><summary>查看「${esc(t.topic_text)}」不同意理由</summary>${lines}</details>`;
-    }
-    function renderHistory(rows) {
-        const body = rows.length ? rows.map(h => {
-            const icon = h.status === "passed" ? "✅" : "❌";
-            return `<div class="sub">${icon} ${esc(h.topic_text)}　｜　${esc(h.category || "")}　｜　同意：${esc(h.agree)} ／ 不同意：${esc(h.against)} ／ 門檻：${esc(h.approval_threshold)}　｜　${esc(h.created_at)}</div>`;
-        }).join("") : '<div class="sub">暫無記錄</div>';
-        return `<details><summary>📜 投票歷史記錄（最近二十個）</summary><div style="padding-top:.45rem">${body}</div></details>`;
-    }
+        function renderAgainstReasons(t) {
+          const reasonMap = t.against_reasons || {};
+          const all = [];
+          Object.keys(reasonMap).forEach((uid) =>
+            (reasonMap[uid] || []).forEach((r) => all.push(r)),
+          );
+          if (!all.length) return "";
+          const counts = {};
+          all.forEach((r) => {
+            counts[r] = (counts[r] || 0) + 1;
+          });
+          const lines = Object.keys(counts)
+            .sort((a, b) => counts[b] - counts[a])
+            .map(
+              (r) =>
+                `<div class="sub">• ${esc(r)}${counts[r] > 1 ? `（${counts[r]} 人）` : ""}</div>`,
+            )
+            .join("");
+          return `<details><summary>查看「${esc(t.topic_text)}」不同意理由</summary>${lines}</details>`;
+        }
+        function renderHistory(rows) {
+          const body = rows.length
+            ? rows
+                .map((h) => {
+                  const icon = h.status === "passed" ? "✅" : "❌";
+                  return `<div class="sub">${icon} ${esc(h.topic_text)}　｜　${esc(h.category || "")}　｜　同意：${esc(h.agree)} ／ 不同意：${esc(h.against)} ／ 門檻：${esc(h.approval_threshold)}　｜　${esc(h.created_at)}</div>`;
+                })
+                .join("")
+            : '<div class="sub">暫無記錄</div>';
+          return `<details><summary>📜 投票歷史記錄（最近二十個）</summary><div style="padding-top:.45rem">${body}</div></details>`;
+        }
 
-    // ── depose tab ────────────────────────────────────────────────────────────
-    function renderDepose(data) {
-        const list = data.pending || [];
-        let html = '<div class="card"><div class="topic">罷免投票</div><div class="sub">當同意罷免票數達罷免門檻，且同意票多於不同意票時，系統會自動刪除辯題。</div><div class="sub">當不同意票數達罷免門檻，且不同意票多於同意票時，系統會自動否決罷免動議。</div><div class="actions"><button data-act="refresh">🔄 重新整理</button></div></div>';
-        html += expiredBanner(data.expired, "depose");
-        if (!list.length) {
+        // ── depose tab ────────────────────────────────────────────────────────────
+        function renderDepose(data) {
+          const list = data.pending || [];
+          let html =
+            '<div class="card"><div class="topic">罷免投票</div><div class="sub">當同意罷免票數達罷免門檻，且同意票多於不同意票時，系統會自動刪除辯題。</div><div class="sub">當不同意票數達罷免門檻，且不同意票多於同意票時，系統會自動否決罷免動議。</div><div class="actions"><button data-act="refresh">🔄 重新整理</button></div></div>';
+          html += expiredBanner(data.expired, "depose");
+          if (!list.length) {
             html += '<div class="state">目前沒有待罷免的辯題。</div>';
-        } else {
-            html += list.map(t => {
+          } else {
+            html += list
+              .map((t) => {
                 const mine = myState(t);
                 const thr = t.approval_threshold || data.depose_threshold || 0;
                 const reasons = (t.reasons || []).length
-                    ? `<details><summary>查看「${esc(t.topic_text)}」提出原因</summary><div class="sub" style="padding-top:.45rem">${esc((t.reasons || []).join("；"))}</div></details>` : "";
+                  ? `<details><summary>查看「${esc(t.topic_text)}」提出原因</summary><div class="sub" style="padding-top:.45rem">${esc((t.reasons || []).join("；"))}</div></details>`
+                  : "";
                 return `
                     <div class="card vote-card">
                         <div class="topic">${esc(t.topic_text)}</div>
@@ -551,22 +1163,34 @@
                         ${reasons}
                         ${discussionBlock("topic_removal", t.topic_text, t.comment_count || 0)}
                     </div>`;
-            }).join("");
+              })
+              .join("");
+          }
+          content.innerHTML = html;
         }
-        content.innerHTML = html;
-    }
-    function deposeProposeForm(bankTopics, deposeInfo, canPropose) {
-        if (!bankTopics.length)
+        function deposeProposeForm(bankTopics, deposeInfo, canPropose) {
+          if (!bankTopics.length)
             return `<div class="card"><div class="topic">提出罷免動議</div><div class="sub" style="margin-bottom:.6rem">${esc(deposeInfo)}</div><div class="sub">辯題庫暫無可提出罷免的辯題。</div></div>`;
-        const opts = bankTopics.map(t => `
+          const opts = bankTopics
+            .map(
+              (t) => `
             <label class="multi-opt" data-category="${esc(t.category || "未分類")}">
                 <input type="checkbox" value="${esc(t.topic_text)}">
                 <span>${esc(t.topic_text)}</span>
-            </label>`).join("");
-        const availableCategories = Array.from(new Set(bankTopics.map(t => t.category || "未分類")));
-        const categoryOpts = availableCategories.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
-        const reasonOpts = DEPOSE_REASONS.map(r => `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`).join("");
-        return `
+            </label>`,
+            )
+            .join("");
+          const availableCategories = Array.from(
+            new Set(bankTopics.map((t) => t.category || "未分類")),
+          );
+          const categoryOpts = availableCategories
+            .map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)
+            .join("");
+          const reasonOpts = DEPOSE_REASONS.map(
+            (r) =>
+              `<span class="reason-opt" data-reason="${esc(r)}">${esc(r)}</span>`,
+          ).join("");
+          return `
             <div class="card" id="deposeForm">
                 <div class="topic">提出罷免動議</div>
                 <div class="sub" style="margin-bottom:.6rem">${esc(deposeInfo)}</div>
@@ -583,26 +1207,40 @@
                 <div class="field"><label>其他補充原因（如有）</label><textarea id="deposeOther" rows="2" placeholder="例如：題目最近已在其他比賽打過。"></textarea></div>
                 <button class="btn-primary" data-act="depose-submit" ${canPropose ? "" : "disabled"}>提出罷免動議</button>
             </div>`;
-    }
+        }
 
-    // ── propose tab ───────────────────────────────────────────────────────────
-    function renderPropose(data) {
-        const cats = CATEGORIES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
-        const diffs = DIFFICULTIES.map(d => `<option value="${d.v}">${esc(d.label)}</option>`).join("");
-        const canPropose = data.is_active !== false;
-        const pendingFull = Number(data.pending_vote_count || 0) >= 10;
-        const deposeFull = Number(data.pending_depose_count || 0) >= 10;
-        const info = data && data.entry_threshold != null
-            ? `目前活躍成員：${data.active_count} 人 ｜ 入庫門檻：${data.entry_threshold} 票` : "";
-        const deposeInfo = data && data.depose_threshold != null
-            ? `目前活躍成員：${data.active_count} 人 ｜ 罷免門檻：${data.depose_threshold} 票` : "";
-        const inactiveTopic = canPropose ? "" : '<div class="member-state bypass">非活躍成員不能提出新辯題。</div>';
-        const inactiveDepose = canPropose ? "" : '<div class="member-state bypass">非活躍成員不能提出罷免動議。</div>';
-        const pendingWarning = pendingFull
-            ? `<div class="member-state inactive">目前已有 ${esc(data.pending_vote_count)} 個待表決辯題。請先到「📊 辯題投票」完成投票，直到待表決辯題數量少於10個後再提交新辯題。</div>` : "";
-        const deposeWarning = deposeFull
-            ? '<div class="member-state inactive">目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。</div>' : "";
-        content.innerHTML = `
+        // ── propose tab ───────────────────────────────────────────────────────────
+        function renderPropose(data) {
+          const cats = CATEGORIES.map(
+            (c) => `<option value="${esc(c)}">${esc(c)}</option>`,
+          ).join("");
+          const diffs = DIFFICULTIES.map(
+            (d) => `<option value="${d.v}">${esc(d.label)}</option>`,
+          ).join("");
+          const canPropose = data.is_active !== false;
+          const pendingFull = Number(data.pending_vote_count || 0) >= 10;
+          const deposeFull = Number(data.pending_depose_count || 0) >= 10;
+          const info =
+            data && data.entry_threshold != null
+              ? `目前活躍成員：${data.active_count} 人 ｜ 入庫門檻：${data.entry_threshold} 票`
+              : "";
+          const deposeInfo =
+            data && data.depose_threshold != null
+              ? `目前活躍成員：${data.active_count} 人 ｜ 罷免門檻：${data.depose_threshold} 票`
+              : "";
+          const inactiveTopic = canPropose
+            ? ""
+            : '<div class="member-state bypass">非活躍成員不能提出新辯題。</div>';
+          const inactiveDepose = canPropose
+            ? ""
+            : '<div class="member-state bypass">非活躍成員不能提出罷免動議。</div>';
+          const pendingWarning = pendingFull
+            ? `<div class="member-state inactive">目前已有 ${esc(data.pending_vote_count)} 個待表決辯題。請先到「📊 辯題投票」完成投票，直到待表決辯題數量少於10個後再提交新辯題。</div>`
+            : "";
+          const deposeWarning = deposeFull
+            ? '<div class="member-state inactive">目前已有10個辯題罷免動議。請先到「✂️ 罷免投票」完成投票，直到辯題罷免動議數量少於10個後再提交新動議。</div>'
+            : "";
+          content.innerHTML = `
             <div class="card">
                 <div class="topic">提出新辯題</div>
                 <div class="sub" style="margin-bottom:.6rem">${esc(info)}</div>
@@ -625,50 +1263,66 @@
             ${inactiveDepose}
             ${deposeWarning}
             ${deposeProposeForm(data.bank_topics || [], deposeInfo, canPropose && !deposeFull)}`;
-        filterDeposeTopics();
-    }
+          filterDeposeTopics();
+        }
 
-    function filterDeposeTopics() {
-        const form = document.getElementById("deposeForm");
-        if (!form) return;
-        const query = (form.querySelector("#deposeSearch")?.value || "").trim().toLocaleLowerCase("zh-HK");
-        const category = form.querySelector("#deposeCategory")?.value || "";
-        const options = Array.from(form.querySelectorAll("#deposeTopic .multi-opt"));
-        let visible = 0;
-        options.forEach(opt => {
+        function filterDeposeTopics() {
+          const form = document.getElementById("deposeForm");
+          if (!form) return;
+          const query = (form.querySelector("#deposeSearch")?.value || "")
+            .trim()
+            .toLocaleLowerCase("zh-HK");
+          const category = form.querySelector("#deposeCategory")?.value || "";
+          const options = Array.from(
+            form.querySelectorAll("#deposeTopic .multi-opt"),
+          );
+          let visible = 0;
+          options.forEach((opt) => {
             const topic = (opt.textContent || "").toLocaleLowerCase("zh-HK");
-            const show = (!query || topic.includes(query)) && (!category || opt.dataset.category === category);
+            const show =
+              (!query || topic.includes(query)) &&
+              (!category || opt.dataset.category === category);
             opt.hidden = !show;
             if (show) visible += 1;
-        });
-        const selected = options.filter(opt => opt.querySelector("input:checked")).length;
-        const summary = form.querySelector("#deposeSelectionSummary");
-        if (summary) summary.textContent = `已選 ${selected} 條 ｜ 顯示 ${visible} / ${options.length} 條`;
-        const empty = form.querySelector("#deposeFilterEmpty");
-        if (empty) empty.hidden = visible !== 0;
-    }
+          });
+          const selected = options.filter((opt) =>
+            opt.querySelector("input:checked"),
+          ).length;
+          const summary = form.querySelector("#deposeSelectionSummary");
+          if (summary)
+            summary.textContent = `已選 ${selected} 條 ｜ 顯示 ${visible} / ${options.length} 條`;
+          const empty = form.querySelector("#deposeFilterEmpty");
+          if (empty) empty.hidden = visible !== 0;
+        }
 
-    // ── member stats tab ─────────────────────────────────────────────────────
-    function metric(label, value) {
-        const shown = value === null || value === undefined || value === "" ? "—" : value;
-        return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(shown)}</div></div>`;
-    }
-    function renderMemberStats(data) {
-        const stats = (data.stats || []).slice().sort((a, b) => {
-            const aa = String(a["活躍狀態"] || "").includes("活躍") && !String(a["活躍狀態"] || "").includes("非活躍");
-            const bb = String(b["活躍狀態"] || "").includes("活躍") && !String(b["活躍狀態"] || "").includes("非活躍");
+        // ── member stats tab ─────────────────────────────────────────────────────
+        function metric(label, value) {
+          const shown =
+            value === null || value === undefined || value === "" ? "—" : value;
+          return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(shown)}</div></div>`;
+        }
+        function renderMemberStats(data) {
+          const stats = (data.stats || []).slice().sort((a, b) => {
+            const aa =
+              String(a["活躍狀態"] || "").includes("活躍") &&
+              !String(a["活躍狀態"] || "").includes("非活躍");
+            const bb =
+              String(b["活躍狀態"] || "").includes("活躍") &&
+              !String(b["活躍狀態"] || "").includes("非活躍");
             if (aa !== bb) return aa ? -1 : 1;
-            return String(a["用戶"] || "").localeCompare(String(b["用戶"] || ""));
-        });
-        const mine = data.current_user_stats;
-        let html = `
+            return String(a["用戶"] || "").localeCompare(
+              String(b["用戶"] || ""),
+            );
+          });
+          const mine = data.current_user_stats;
+          let html = `
             <div class="card">
                 <div class="topic">參與率</div>
                 <div class="sub">活躍成員標準：整體投票率 ≥ 40%，且最近10次投票至少參與3次。</div>
                 <div class="sub" style="margin-top:.45rem">辯題投票 + 罷免投票總數：${esc(data.total_vote_count)} 個 ｜ 目前活躍成員：${esc(data.active_count)} 人</div>
                 <div class="actions"><button data-act="refresh">🔄 重新整理</button></div>
             </div>`;
-        if (mine && ME !== "admin") {
+          if (mine && ME !== "admin") {
             html += `<div class="card">
                 <div class="topic">我的參與情況</div>
                 <div class="metric-grid">
@@ -678,11 +1332,13 @@
                     ${metric("活躍狀態", mine["活躍狀態"])}
                 </div>
             </div>`;
-        }
-        if (!stats.length) {
+          }
+          if (!stats.length) {
             html += '<div class="state">暫無成員資料。</div>';
-        } else {
-            const rows = stats.map(s => `
+          } else {
+            const rows = stats
+              .map(
+                (s) => `
                 <tr>
                     <td>${esc(s["用戶"])}</td>
                     <td>${esc(s["整體投票次數"])}</td>
@@ -691,7 +1347,9 @@
                     <td>${esc(s["同意票數"])}</td>
                     <td>${esc(s["投票同意率"])}</td>
                     <td>${esc(s["活躍狀態"])}</td>
-                </tr>`).join("");
+                </tr>`,
+              )
+              .join("");
             html += `<div class="card">
                 <div class="table-wrap">
                     <table>
@@ -703,33 +1361,45 @@
                     </table>
                 </div>
             </div>`;
+          }
+          content.innerHTML = html;
         }
-        content.innerHTML = html;
-    }
 
-    function chart(title, rows, suffix) {
-        rows = rows || [];
-        // Percentage charts (suffix "%") map value→width directly (0-100), so the
-        // bar reflects the real percentage. Count charts normalise to the group max.
-        const isPct = suffix === "%";
-        const max = isPct ? 100 : (rows.reduce((m, r) => Math.max(m, Number(r.value) || 0), 0) || 1);
-        const body = rows.length ? rows.map(r => {
-            const val = Number(r.value) || 0;
-            const width = val <= 0 ? 0 : Math.min(100, Math.max(2, val / max * 100));
-            return `<div class="chart-row"><div>${esc(r.label)}</div><div class="chart-track"><div class="chart-fill" style="width:${width}%"></div></div><div>${esc(Math.round(val * 10) / 10)}${suffix || ""}</div></div>`;
-        }).join("") : '<div class="sub">暫時未有數據。</div>';
-        return `<div class="card"><div class="topic">${esc(title)}</div><div class="chart">${body}</div></div>`;
-    }
+        function chart(title, rows, suffix) {
+          rows = rows || [];
+          // Percentage charts (suffix "%") map value→width directly (0-100), so the
+          // bar reflects the real percentage. Count charts normalise to the group max.
+          const isPct = suffix === "%";
+          const max = isPct
+            ? 100
+            : rows.reduce((m, r) => Math.max(m, Number(r.value) || 0), 0) || 1;
+          const body = rows.length
+            ? rows
+                .map((r) => {
+                  const val = Number(r.value) || 0;
+                  const width =
+                    val <= 0
+                      ? 0
+                      : Math.min(100, Math.max(2, (val / max) * 100));
+                  return `<div class="chart-row"><div>${esc(r.label)}</div><div class="chart-track"><div class="chart-fill" style="width:${width}%"></div></div><div>${esc(Math.round(val * 10) / 10)}${suffix || ""}</div></div>`;
+                })
+                .join("")
+            : '<div class="sub">暫時未有數據。</div>';
+          return `<div class="card"><div class="topic">${esc(title)}</div><div class="chart">${body}</div></div>`;
+        }
 
-    function renderAnalysis(data) {
-        const stale = (data.stale_topics || []).length
-            ? `<div class="card err"><div class="topic">資料核實提醒</div><div class="sub">偵測到以下題目已被罷免通過，但仍留在辯題庫：</div>${data.stale_topics.map(t => `<div class="sub">- ${esc(t)}</div>`).join("")}</div>` : "";
-        const bank = data.bank || {};
-        const history = data.history || {};
-        const visuals = data.history_visuals || { metrics: {}, charts: {} };
-        const changedHint = item => item.analysis && item.source_changed
-            ? '<div class="member-state inactive">⚠️ 分析完成後相關資料已有變動，以下 AI 內容可能未反映最新資料；建議重新分析。</div>' : "";
-        const bankHtml = `
+        function renderAnalysis(data) {
+          const stale = (data.stale_topics || []).length
+            ? `<div class="card err"><div class="topic">資料核實提醒</div><div class="sub">偵測到以下題目已被罷免通過，但仍留在辯題庫：</div>${data.stale_topics.map((t) => `<div class="sub">- ${esc(t)}</div>`).join("")}</div>`
+            : "";
+          const bank = data.bank || {};
+          const history = data.history || {};
+          const visuals = data.history_visuals || { metrics: {}, charts: {} };
+          const changedHint = (item) =>
+            item.analysis && item.source_changed
+              ? '<div class="member-state inactive">⚠️ 分析完成後相關資料已有變動，以下 AI 內容可能未反映最新資料；建議重新分析。</div>'
+              : "";
+          const bankHtml = `
             <div class="card">
                 <div class="topic">辯題庫分析</div>
                 <div class="sub">由 AI 分析辯題庫的類別／難度分佈、題目質素，並提出未來方向及即時可做建議。</div>
@@ -739,7 +1409,7 @@
                 <div class="actions" style="margin-top:1rem"><button data-act="ai-analysis" data-kind="bank">AI 分析辯題庫</button></div>
                 ${bank.analysis ? `<details open><summary>AI 分析結果</summary><div class="ai-box">${md(bank.analysis)}</div></details>` : ""}
             </div>`;
-        const historyHtml = `
+          const historyHtml = `
             <div class="card">
                 <div class="topic">過往投票紀錄分析</div>
                 <div class="sub">分析所有歷史辯題投票及罷免投票，了解整體委員會及各委員的投票偏好。</div>
@@ -761,7 +1431,7 @@
                 <div class="actions" style="margin-top:1rem"><button data-act="ai-analysis" data-kind="history">AI 分析過往投票紀錄</button></div>
                 ${history.analysis ? `<details open><summary>AI 分析結果</summary><div class="ai-box">${md(history.analysis)}</div></details>` : ""}
             </div>`;
-        content.innerHTML = `
+          content.innerHTML = `
             <div class="card">
                 <div class="topic">AI分析</div>
                 <div class="sub">集中分析辯題庫健康狀況及過往投票紀錄。分析結果會儲存並與所有委員共享。</div>
@@ -772,10 +1442,10 @@
             </div>
             ${stale}
             ${ANALYSIS_TAB === "bank" ? bankHtml : historyHtml}`;
-    }
+        }
 
-    function renderAccount() {
-        content.innerHTML = `
+        function renderAccount() {
+          content.innerHTML = `
             <div class="card">
                 <div class="topic">帳戶管理</div>
                 <details open>
@@ -795,392 +1465,644 @@
                 </details>
             </div>
             <button class="btn-primary" data-act="logout" style="width:100%;margin-top:.15rem">登出</button>`;
-    }
+        }
 
-    // ── data loading ──────────────────────────────────────────────────────────
-    async function getJSON(url) {
-        const res = await fetch(url, { credentials: "same-origin", headers: { "Accept": "application/json" } });
-        if (res.status === 401) { notLoggedIn(); return null; }
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        return res.json();
-    }
-    async function getJSONCached(url) {
-        const now = Date.now();
-        const hit = CACHE[url];
-        if (hit && hit.data && now - hit.time < CACHE_TTL) return hit.data;
-        if (hit && hit.promise) return hit.promise;
-        const promise = getJSON(url).then(data => {
-            CACHE[url] = { data, time: Date.now() };
-            return data;
-        }).finally(() => {
-            if (CACHE[url]) delete CACHE[url].promise;
-        });
-        CACHE[url] = { promise, time: now };
-        return promise;
-    }
-    function prefetchLikelyTabs() {
-        ["/api/vote/data", "/api/vote/depose-data", "/api/vote/member-stats", "/api/vote/analysis"]
-            .forEach(url => getJSONCached(url).catch(() => {}));
-    }
+        // ── data loading ──────────────────────────────────────────────────────────
+        async function getJSON(url) {
+          const res = await fetch(url, {
+            credentials: "same-origin",
+            headers: { Accept: "application/json" },
+          });
+          if (res.status === 401) {
+            notLoggedIn();
+            return null;
+          }
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json();
+        }
+        async function getJSONCached(url) {
+          const now = Date.now();
+          const hit = CACHE[url];
+          if (hit && hit.data && now - hit.time < CACHE_TTL) return hit.data;
+          if (hit && hit.promise) return hit.promise;
+          const promise = getJSON(url)
+            .then((data) => {
+              CACHE[url] = { data, time: Date.now() };
+              return data;
+            })
+            .finally(() => {
+              if (CACHE[url]) delete CACHE[url].promise;
+            });
+          CACHE[url] = { promise, time: now };
+          return promise;
+        }
+        function prefetchLikelyTabs() {
+          [
+            "/api/vote/data",
+            "/api/vote/depose-data",
+            "/api/vote/member-stats",
+            "/api/vote/analysis",
+          ].forEach((url) => getJSONCached(url).catch(() => {}));
+        }
 
-    async function load() {
-        content.innerHTML = '<div class="state">載入中…</div>';
-        try {
+        async function load() {
+          content.innerHTML = '<div class="state">載入中…</div>';
+          try {
             if (TAB === "depose") {
-                const d = await getJSONCached("/api/vote/depose-data");
-                if (!d) return;
-                ME = d.user_id || "";
-                setMemberState(d);
-                tabsEl.style.display = "";
-                updateTabCounts(null, d.pending_depose_count);
-                renderDepose(d);
+              const d = await getJSONCached("/api/vote/depose-data");
+              if (!d) return;
+              ME = d.user_id || "";
+              setMemberState(d);
+              tabsEl.style.display = "";
+              updateTabCounts(null, d.pending_depose_count);
+              renderDepose(d);
             } else if (TAB === "member_stats") {
-                const d = await getJSONCached("/api/vote/member-stats");
-                if (!d) return;
-                ME = d.user_id || "";
-                setMemberState(d);
-                tabsEl.style.display = "";
-                renderMemberStats(d);
+              const d = await getJSONCached("/api/vote/member-stats");
+              if (!d) return;
+              ME = d.user_id || "";
+              setMemberState(d);
+              tabsEl.style.display = "";
+              renderMemberStats(d);
             } else if (TAB === "bank_analysis") {
-                const d = await getJSONCached("/api/vote/analysis");
-                if (!d) return;
-                ME = d.user_id || "";
-                setMemberState(d);
-                tabsEl.style.display = "";
-                renderAnalysis(d);
+              const d = await getJSONCached("/api/vote/analysis");
+              if (!d) return;
+              ME = d.user_id || "";
+              setMemberState(d);
+              tabsEl.style.display = "";
+              renderAnalysis(d);
             } else if (TAB === "account") {
-                const d = await getJSON("/api/committee/me");
-                if (!d) return;
-                ME = d.user_id || "";
-                setMemberState(d);
-                tabsEl.style.display = "";
-                renderAccount();
+              const d = await getJSON("/api/committee/me");
+              if (!d) return;
+              ME = d.user_id || "";
+              setMemberState(d);
+              tabsEl.style.display = "";
+              renderAccount();
             } else {
-                const d = await getJSONCached("/api/vote/data");
-                if (!d) return;
-                ME = d.user_id || "";
-                setMemberState(d);
-                tabsEl.style.display = "";
-                updateTabCounts(d.pending_vote_count, d.pending_depose_count);
-                if (TAB === "propose") {
-                    const depose = await getJSONCached("/api/vote/depose-data");
-                    if (!depose) return;
-                    renderPropose(Object.assign({}, d, { bank_topics: depose.bank_topics || [], depose_threshold: depose.depose_threshold }));
-                }
-                else renderVote(d);
+              const d = await getJSONCached("/api/vote/data");
+              if (!d) return;
+              ME = d.user_id || "";
+              setMemberState(d);
+              tabsEl.style.display = "";
+              updateTabCounts(d.pending_vote_count, d.pending_depose_count);
+              if (TAB === "propose") {
+                const depose = await getJSONCached("/api/vote/depose-data");
+                if (!depose) return;
+                renderPropose(
+                  Object.assign({}, d, {
+                    bank_topics: depose.bank_topics || [],
+                    depose_threshold: depose.depose_threshold,
+                  }),
+                );
+              } else renderVote(d);
             }
             checkNotification();
-        } catch (e) {
-            content.innerHTML = '<div class="card err"><div class="topic">載入失敗</div>' +
-                '<div class="sub">' + esc(e.message) + '，請稍後再試或重新整理。</div></div>';
+          } catch (e) {
+            content.innerHTML =
+              '<div class="card err"><div class="topic">載入失敗</div>' +
+              '<div class="sub">' +
+              esc(e.message) +
+              "，請稍後再試或重新整理。</div></div>";
+          }
         }
-    }
 
-    // ── POST helpers ──────────────────────────────────────────────────────────
-    async function postJSON(url, payload) {
-        const res = await fetch(url, {
-            method: "POST", credentials: "same-origin",
-            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        // ── POST helpers ──────────────────────────────────────────────────────────
+        async function postJSON(url, payload) {
+          const res = await fetch(url, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
             body: JSON.stringify(payload),
-        });
-        const data = await res.json().catch(() => ({}));
-        return { res, data };
-    }
+          });
+          const data = await res.json().catch(() => ({}));
+          return { res, data };
+        }
 
-    async function cast(payload, toastMessage) {
-        if (BUSY) return;
-        setBusy(true);
-        try {
+        async function cast(payload, toastMessage) {
+          if (BUSY) return;
+          setBusy(true);
+          try {
             const { res, data } = await postJSON("/api/vote/cast", payload);
-            if (res.status === 401) { toast("⚠️ 登入已失效，請重新登入。"); return; }
-            if (res.status === 200 && data.status === "confirm_category") {
-                const pct = (data.ratio * 100).toFixed(1);
-                // The confirmation dialog has a lower z-index than the busy
-                // overlay. Clear the in-flight state before awaiting input.
-                setBusy(false);
-                if (!await askConfirm(
-                    `若此辯題通過，類別「${data.category}」將佔辯題庫 ${pct}%（現有 ${data.total} 題中已有 ${data.cat_count} 題同類）。仍要投同意票嗎？`,
-                    "✅ 確認投同意票"
-                )) return;
-                return cast(Object.assign({}, payload, { confirm_category: true }));
+            if (res.status === 401) {
+              toast("⚠️ 登入已失效，請重新登入。");
+              return;
             }
-            if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
+            if (res.status === 200 && data.status === "confirm_category") {
+              const pct = (data.ratio * 100).toFixed(1);
+              // The confirmation dialog has a lower z-index than the busy
+              // overlay. Clear the in-flight state before awaiting input.
+              setBusy(false);
+              if (
+                !(await askConfirm(
+                  `若此辯題通過，類別「${data.category}」將佔辯題庫 ${pct}%（現有 ${data.total} 題中已有 ${data.cat_count} 題同類）。仍要投同意票嗎？`,
+                  "✅ 確認投同意票",
+                ))
+              )
+                return;
+              return cast(
+                Object.assign({}, payload, { confirm_category: true }),
+              );
+            }
+            if (!res.ok) {
+              toast("⚠️ " + (data.detail || "錯誤 " + res.status));
+              return;
+            }
             if (data.resolved === "passed") {
-                toast(payload.mode === "depose"
-                    ? "🗑️ 罷免動議已通過，辯題已從辯題庫移除。"
-                    : "🎉 辯題已獲得足夠票數，已寫入辯題庫！");
+              toast(
+                payload.mode === "depose"
+                  ? "🗑️ 罷免動議已通過，辯題已從辯題庫移除。"
+                  : "🎉 辯題已獲得足夠票數，已寫入辯題庫！",
+              );
             } else if (data.resolved === "rejected") {
-                toast(payload.mode === "depose"
-                    ? "🛡️ 罷免動議已被否決。"
-                    : "❌ 辯題不同意票達門檻，已被否決。");
+              toast(
+                payload.mode === "depose"
+                  ? "🛡️ 罷免動議已被否決。"
+                  : "❌ 辯題不同意票達門檻，已被否決。",
+              );
             } else {
-                toast(toastMessage || "☑️ 投票已更新");
+              toast(toastMessage || "☑️ 投票已更新");
             }
             openReasonFor = null;
             invalidateCache();
             await load();
-        } catch (e) {
+          } catch (e) {
             toast("⚠️ 提交失敗：" + e.message);
-        } finally { setBusy(false); }
-    }
+          } finally {
+            setBusy(false);
+          }
+        }
 
-    async function submitDepose() {
-        if (BUSY) return;
-        const form = document.getElementById("deposeForm");
-        if (!form) return;
-        const topics = Array.from(form.querySelectorAll("#deposeTopic input:checked")).map(o => o.value);
-        const picked = Array.from(form.querySelectorAll(".reason-opt.sel")).map(e => e.dataset.reason);
-        const other = form.querySelector("#deposeOther").value.trim();
-        if (other) picked.push("其他：" + other);
-        if (!topics.length) { toast("⚠️ 請至少選擇一條辯題。"); return; }
-        if (!picked.length) { toast("⚠️ 請至少選擇一個罷免原因。"); return; }
-        setBusy(true);
-        try {
-            const { res, data } = await postJSON("/api/vote/depose", { topics, reasons: picked });
-            if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
-            toast((data.skipped || []).length ? "⚠️ 罷免動議已提出；部分重複辯題已略過。" : "☑️ 罷免動議已提出！");
+        async function submitDepose() {
+          if (BUSY) return;
+          const form = document.getElementById("deposeForm");
+          if (!form) return;
+          const topics = Array.from(
+            form.querySelectorAll("#deposeTopic input:checked"),
+          ).map((o) => o.value);
+          const picked = Array.from(
+            form.querySelectorAll(".reason-opt.sel"),
+          ).map((e) => e.dataset.reason);
+          const other = form.querySelector("#deposeOther").value.trim();
+          if (other) picked.push("其他：" + other);
+          if (!topics.length) {
+            toast("⚠️ 請至少選擇一條辯題。");
+            return;
+          }
+          if (!picked.length) {
+            toast("⚠️ 請至少選擇一個罷免原因。");
+            return;
+          }
+          setBusy(true);
+          try {
+            const { res, data } = await postJSON("/api/vote/depose", {
+              topics,
+              reasons: picked,
+            });
+            if (!res.ok) {
+              toast("⚠️ " + (data.detail || "錯誤 " + res.status));
+              return;
+            }
+            toast(
+              (data.skipped || []).length
+                ? "⚠️ 罷免動議已提出；部分重複辯題已略過。"
+                : "☑️ 罷免動議已提出！",
+            );
             invalidateCache();
             await load();
-        } catch (e) { toast("⚠️ 提交失敗：" + e.message); }
-        finally { setBusy(false); }
-    }
+          } catch (e) {
+            toast("⚠️ 提交失敗：" + e.message);
+          } finally {
+            setBusy(false);
+          }
+        }
 
-    async function submitPropose(confirmImbalance) {
-        if (BUSY) return;
-        const topic = document.getElementById("propTopic").value.trim();
-        const category = document.getElementById("propCategory").value;
-        const difficulty = parseInt(document.getElementById("propDifficulty").value, 10);
-        if (!topic) { toast("⚠️ 請輸入辯題內容。"); return; }
-        setBusy(true);
-        try {
-            const { res, data } = await postJSON("/api/vote/propose",
-                { topic, category, difficulty, confirm_imbalance: !!confirmImbalance });
+        async function submitPropose(confirmImbalance) {
+          if (BUSY) return;
+          const topic = document.getElementById("propTopic").value.trim();
+          const category = document.getElementById("propCategory").value;
+          const difficulty = parseInt(
+            document.getElementById("propDifficulty").value,
+            10,
+          );
+          if (!topic) {
+            toast("⚠️ 請輸入辯題內容。");
+            return;
+          }
+          setBusy(true);
+          try {
+            const { res, data } = await postJSON("/api/vote/propose", {
+              topic,
+              category,
+              difficulty,
+              confirm_imbalance: !!confirmImbalance,
+            });
             if (res.status === 200 && data.status === "confirm_imbalance") {
-                const pct = (data.ratio * 100).toFixed(1);
-                // See cast(): a visible busy overlay would otherwise block this dialog.
-                setBusy(false);
-                if (await askConfirm(
-                    `類別「${data.category}」目前已佔辯題庫 ${pct}%（共 ${data.total} 題中有 ${data.cat_count} 題）。繼續新增同類辯題將令辯題庫失衡，是否確認提交？`,
-                    "✅ 確認繼續提交"
-                )) {
-                    return submitPropose(true);
-                }
-                return;
+              const pct = (data.ratio * 100).toFixed(1);
+              // See cast(): a visible busy overlay would otherwise block this dialog.
+              setBusy(false);
+              if (
+                await askConfirm(
+                  `類別「${data.category}」目前已佔辯題庫 ${pct}%（共 ${data.total} 題中有 ${data.cat_count} 題）。繼續新增同類辯題將令辯題庫失衡，是否確認提交？`,
+                  "✅ 確認繼續提交",
+                )
+              ) {
+                return submitPropose(true);
+              }
+              return;
             }
-            if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
+            if (!res.ok) {
+              toast("⚠️ " + (data.detail || "錯誤 " + res.status));
+              return;
+            }
             toast(`☑️ 辯題已加入投票區（截止 ${data.deadline}）！`);
             invalidateCache();
             await load();
-        } catch (e) { toast("⚠️ 提交失敗：" + e.message); }
-        finally { setBusy(false); }
-    }
+          } catch (e) {
+            toast("⚠️ 提交失敗：" + e.message);
+          } finally {
+            setBusy(false);
+          }
+        }
 
-    async function aiReviewTopic() {
-        if (BUSY) return;
-        const topic = document.getElementById("propTopic").value.trim();
-        const category = document.getElementById("propCategory").value;
-        const difficulty = parseInt(document.getElementById("propDifficulty").value, 10);
-        const box = document.getElementById("proposalAiReview");
-        if (!topic) { toast("⚠️ 請先輸入完整辯題。"); return; }
-        setBusy(true);
-        box.innerHTML = '<div class="sub" style="margin-top:.7rem">AI 正在審查提案，請稍候…</div>';
-        try {
-            const { res, data } = await postJSON("/api/vote/ai-review", { topic, category, difficulty });
-            if (!res.ok) { box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">${esc(data.detail || "AI 審查失敗")}</div>`; return; }
-            box.innerHTML = `<details open><summary>AI 審查結果</summary><div class="ai-box">${md(data.review)}</div></details>`;
-        } catch (e) {
-            box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">AI 審查失敗：${esc(e.message)}</div>`;
-        } finally { setBusy(false); }
-    }
-
-    async function submitComment(btn, tagAi) {
-        if (BUSY) return;
-        const box = btn.closest(".discussion");
-        const textEl = box.querySelector("textarea");
-        const text = textEl.value.trim();
-        if (!text && !tagAi) { toast("⚠️ 請輸入內容。"); return; }
-        setBusy(true);
-        try {
-            const { res, data } = await postJSON("/api/vote/comments", {
-                motion_type: box.dataset.motionType,
-                motion_key: box.dataset.motionKey,
-                text,
-                tag_ai: !!tagAi,
+        async function aiReviewTopic() {
+          if (BUSY) return;
+          const topic = document.getElementById("propTopic").value.trim();
+          const category = document.getElementById("propCategory").value;
+          const difficulty = parseInt(
+            document.getElementById("propDifficulty").value,
+            10,
+          );
+          const box = document.getElementById("proposalAiReview");
+          if (!topic) {
+            toast("⚠️ 請先輸入完整辯題。");
+            return;
+          }
+          setBusy(true);
+          box.innerHTML =
+            '<div class="sub" style="margin-top:.7rem">AI 正在審查提案，請稍候…</div>';
+          try {
+            const { res, data } = await postJSON("/api/vote/ai-review", {
+              topic,
+              category,
+              difficulty,
             });
-            if (!res.ok) { toast("⚠️ " + (data.detail || ("錯誤 " + res.status))); return; }
-            if (data.status === "ai_failed") toast("⚠️ 留言已儲存，但 AI 回應失敗。");
+            if (!res.ok) {
+              box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">${esc(data.detail || "AI 審查失敗")}</div>`;
+              return;
+            }
+            box.innerHTML = `<details open><summary>AI 審查結果</summary><div class="ai-box">${md(data.review)}</div></details>`;
+          } catch (e) {
+            box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">AI 審查失敗：${esc(e.message)}</div>`;
+          } finally {
+            setBusy(false);
+          }
+        }
+
+        async function submitComment(btn, tagAi) {
+          if (BUSY) return;
+          const box = btn.closest(".discussion");
+          const textEl = box.querySelector("textarea");
+          const text = textEl.value.trim();
+          if (!text && !tagAi) {
+            toast("⚠️ 請輸入內容。");
+            return;
+          }
+          setBusy(true);
+          try {
+            const { res, data } = await postJSON("/api/vote/comments", {
+              motion_type: box.dataset.motionType,
+              motion_key: box.dataset.motionKey,
+              text,
+              tag_ai: !!tagAi,
+            });
+            if (!res.ok) {
+              toast("⚠️ " + (data.detail || "錯誤 " + res.status));
+              return;
+            }
+            if (data.status === "ai_failed")
+              toast("⚠️ 留言已儲存，但 AI 回應失敗。");
             else toast(data.ai_replied ? "☑️ AI 已回覆討論" : "☑️ 已成功留言");
             textEl.value = "";
             invalidateCache();
             await loadComments(box);
-        } catch (e) {
+          } catch (e) {
             toast("⚠️ 留言失敗：" + e.message);
-        } finally { setBusy(false); }
-    }
+          } finally {
+            setBusy(false);
+          }
+        }
 
-    async function runAnalysis(kind) {
-        if (BUSY) return;
-        setBusy(true);
-        toast("⏳ AI 正在分析，請稍候…");
-        try {
-            const { res, data } = await postJSON("/api/vote/analysis/ai", { kind });
-            if (!res.ok) { toast("⚠️ " + (data.detail || "AI 分析失敗")); return; }
-            toast(kind === "bank" ? "☑️ 已更新辯題庫分析" : "☑️ 已更新過往投票紀錄分析");
+        async function runAnalysis(kind) {
+          if (BUSY) return;
+          setBusy(true);
+          toast("⏳ AI 正在分析，請稍候…");
+          try {
+            const { res, data } = await postJSON("/api/vote/analysis/ai", {
+              kind,
+            });
+            if (!res.ok) {
+              toast("⚠️ " + (data.detail || "AI 分析失敗"));
+              return;
+            }
+            toast(
+              kind === "bank"
+                ? "☑️ 已更新辯題庫分析"
+                : "☑️ 已更新過往投票紀錄分析",
+            );
             invalidateCache();
             await load();
-        } catch (e) {
+          } catch (e) {
             toast("⚠️ AI 分析失敗：" + e.message);
-        } finally { setBusy(false); }
-    }
-
-    async function pushEnable() {
-        if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-            toast("⚠️ 此瀏覽器未支援背景通知。"); return;
+          } finally {
+            setBusy(false);
+          }
         }
-        try {
+
+        async function pushEnable() {
+          if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+            toast("⚠️ 此瀏覽器未支援背景通知。");
+            return;
+          }
+          try {
             const reg = await navigator.serviceWorker.register("/sw.js");
             const permission = await Notification.requestPermission();
-            if (permission !== "granted") { toast("⚠️ 未允許通知。"); return; }
-            const swText = await fetch("/sw.js").then(r => r.text());
+            if (permission !== "granted") {
+              toast("⚠️ 未允許通知。");
+              return;
+            }
+            const swText = await fetch("/sw.js").then((r) => r.text());
             const m = swText.match(/const VAPID_PUBLIC_KEY = "([^"]*)"/);
             const key = m ? m[1] : "";
-            if (!key) { toast("⚠️ 尚未設定 Web Push 金鑰。"); return; }
+            if (!key) {
+              toast("⚠️ 尚未設定 Web Push 金鑰。");
+              return;
+            }
             function urlBase64ToUint8Array(base64String) {
-                const padding = "=".repeat((4 - base64String.length % 4) % 4);
-                const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-                const rawData = window.atob(base64);
-                return Uint8Array.from([...rawData].map(ch => ch.charCodeAt(0)));
+              const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+              const base64 = (base64String + padding)
+                .replace(/-/g, "+")
+                .replace(/_/g, "/");
+              const rawData = window.atob(base64);
+              return Uint8Array.from(
+                [...rawData].map((ch) => ch.charCodeAt(0)),
+              );
             }
             let sub = await reg.pushManager.getSubscription();
-            if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
-            const { res, data } = await postJSON("/api/push/subscribe", sub.toJSON());
+            if (!sub)
+              sub = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(key),
+              });
+            const { res, data } = await postJSON(
+              "/api/push/subscribe",
+              sub.toJSON(),
+            );
             toast(res.ok && data.ok ? "☑️ 通知已啟用。" : "⚠️ 通知啟用失敗。");
-        } catch (e) { toast("⚠️ 通知啟用失敗：" + e.message); }
-    }
+          } catch (e) {
+            toast("⚠️ 通知啟用失敗：" + e.message);
+          }
+        }
 
-    async function pushDisable() {
-        try {
+        async function pushDisable() {
+          try {
             const reg = await navigator.serviceWorker.getRegistration();
             const sub = reg ? await reg.pushManager.getSubscription() : null;
             if (sub) {
-                await postJSON("/api/push/unsubscribe", { endpoint: sub.endpoint });
-                await sub.unsubscribe();
+              await postJSON("/api/push/unsubscribe", {
+                endpoint: sub.endpoint,
+              });
+              await sub.unsubscribe();
             } else {
-                await postJSON("/api/push/unsubscribe", {});
+              await postJSON("/api/push/unsubscribe", {});
             }
             toast("☑️ 通知已停用。");
-        } catch (e) { toast("⚠️ 通知停用失敗：" + e.message); }
-    }
+          } catch (e) {
+            toast("⚠️ 通知停用失敗：" + e.message);
+          }
+        }
 
-    async function changePassword() {
-        if (BUSY) return;
-        const current_password = document.getElementById("pwCurrent").value || "";
-        const new_password = document.getElementById("pwNew").value || "";
-        const confirm_password = document.getElementById("pwConfirm").value || "";
-        if (!current_password) { toast("⚠️ 請輸入目前密碼。"); return; }
-        if (!new_password) { toast("⚠️ 請輸入新密碼。"); return; }
-        if (new_password !== confirm_password) { toast("⚠️ 兩次輸入的新密碼不一致。"); return; }
-        setBusy(true);
-        try {
-            const { res, data } = await postJSON("/api/committee/password", { current_password, new_password, confirm_password });
-            if (!res.ok) { toast("⚠️ " + (data.detail || "密碼更改失敗")); return; }
+        async function changePassword() {
+          if (BUSY) return;
+          const current_password =
+            document.getElementById("pwCurrent").value || "";
+          const new_password = document.getElementById("pwNew").value || "";
+          const confirm_password =
+            document.getElementById("pwConfirm").value || "";
+          if (!current_password) {
+            toast("⚠️ 請輸入目前密碼。");
+            return;
+          }
+          if (!new_password) {
+            toast("⚠️ 請輸入新密碼。");
+            return;
+          }
+          if (new_password !== confirm_password) {
+            toast("⚠️ 兩次輸入的新密碼不一致。");
+            return;
+          }
+          setBusy(true);
+          try {
+            const { res, data } = await postJSON("/api/committee/password", {
+              current_password,
+              new_password,
+              confirm_password,
+            });
+            if (!res.ok) {
+              toast("⚠️ " + (data.detail || "密碼更改失敗"));
+              return;
+            }
             document.getElementById("pwCurrent").value = "";
             document.getElementById("pwNew").value = "";
             document.getElementById("pwConfirm").value = "";
             toast("☑️ 帳戶密碼已更改！下次登入請使用新密碼！");
-        } catch (e) { toast("⚠️ 密碼更改失敗：" + e.message); }
-        finally { setBusy(false); }
-    }
-
-    // ── event delegation ──────────────────────────────────────────────────────
-    content.addEventListener("input", function (ev) {
-        if (ev.target.id === "deposeSearch") filterDeposeTopics();
-    });
-
-    content.addEventListener("change", function (ev) {
-        if (ev.target.id === "deposeCategory" || ev.target.closest("#deposeTopic")) {
-            filterDeposeTopics();
+          } catch (e) {
+            toast("⚠️ 密碼更改失敗：" + e.message);
+          } finally {
+            setBusy(false);
+          }
         }
-    });
 
-    content.addEventListener("click", function (ev) {
-        const optEl = ev.target.closest(".reason-opt");
-        if (optEl) { optEl.classList.toggle("sel"); return; }
+        // ── event delegation ──────────────────────────────────────────────────────
+        content.addEventListener("input", function (ev) {
+          if (ev.target.id === "deposeSearch") filterDeposeTopics();
+        });
 
-        const btn = ev.target.closest("button[data-act]");
-        if (!btn) return;
-        const act = btn.dataset.act;
-        const topic = btn.dataset.topic;
-        const mode = btn.dataset.mode || "topic";
+        content.addEventListener("change", function (ev) {
+          if (
+            ev.target.id === "deposeCategory" ||
+            ev.target.closest("#deposeTopic")
+          ) {
+            filterDeposeTopics();
+          }
+        });
 
-        if (act === "login") { doLogin(); return; }
-        if (act === "agree") { cast({ mode, topic, action: "agree" }, btn.dataset.toast); return; }
-        if (act === "withdraw") { cast({ mode, topic, action: "withdraw" }, btn.dataset.toast); return; }
-        if (act === "against") { cast({ mode, topic, action: "against" }, btn.dataset.toast); return; }  // depose: no reasons
-        if (act === "against-open") { openReasonFor = topic; renderVoteReopen(); return; }
-        if (act === "against-cancel") { openReasonFor = null; renderVoteReopen(); return; }
-        if (act === "against-submit") {
-            const panel = content.querySelector(`.reasons[data-panel="${cssEsc(topic)}"]`);
-            const picked = Array.from(panel.querySelectorAll(".reason-opt.sel")).map(e => e.dataset.reason);
+        content.addEventListener("click", function (ev) {
+          const optEl = ev.target.closest(".reason-opt");
+          if (optEl) {
+            optEl.classList.toggle("sel");
+            return;
+          }
+
+          const btn = ev.target.closest("button[data-act]");
+          if (!btn) return;
+          const act = btn.dataset.act;
+          const topic = btn.dataset.topic;
+          const mode = btn.dataset.mode || "topic";
+
+          if (act === "login") {
+            doLogin();
+            return;
+          }
+          if (act === "agree") {
+            cast({ mode, topic, action: "agree" }, btn.dataset.toast);
+            return;
+          }
+          if (act === "withdraw") {
+            cast({ mode, topic, action: "withdraw" }, btn.dataset.toast);
+            return;
+          }
+          if (act === "against") {
+            cast({ mode, topic, action: "against" }, btn.dataset.toast);
+            return;
+          } // depose: no reasons
+          if (act === "against-open") {
+            openReasonFor = topic;
+            renderVoteReopen();
+            return;
+          }
+          if (act === "against-cancel") {
+            openReasonFor = null;
+            renderVoteReopen();
+            return;
+          }
+          if (act === "against-submit") {
+            const panel = content.querySelector(
+              `.reasons[data-panel="${cssEsc(topic)}"]`,
+            );
+            const picked = Array.from(
+              panel.querySelectorAll(".reason-opt.sel"),
+            ).map((e) => e.dataset.reason);
             const other = panel.querySelector("textarea").value.trim();
             if (other) picked.push("其他：" + other);
-            if (!picked.length) { toast("⚠️ 請至少選擇一個不同意原因。"); return; }
-            cast({ mode: "topic", topic, action: "against", reasons: picked }, btn.dataset.toast);
+            if (!picked.length) {
+              toast("⚠️ 請至少選擇一個不同意原因。");
+              return;
+            }
+            cast(
+              { mode: "topic", topic, action: "against", reasons: picked },
+              btn.dataset.toast,
+            );
             return;
-        }
-        if (act === "depose-submit") { submitDepose(); return; }
-        if (act === "propose-submit") { submitPropose(false); return; }
-        if (act === "ai-review-topic") { aiReviewTopic(); return; }
-        if (act === "comment-post") { submitComment(btn, false); return; }
-        if (act === "comment-ai") { submitComment(btn, true); return; }
-        if (act === "analysis-tab") { ANALYSIS_TAB = btn.dataset.kind || "bank"; load(); return; }
-        if (act === "ai-analysis") { runAnalysis(btn.dataset.kind); return; }
-        if (act === "push-enable") { pushEnable(); return; }
-        if (act === "push-disable") { pushDisable(); return; }
-        if (act === "password-change") { changePassword(); return; }
-        if (act === "logout") { doLogout(); return; }
-        if (act === "refresh") { invalidateCache(); load(); return; }
-    });
-
-    content.addEventListener("toggle", function (ev) {
-        const box = ev.target.closest && ev.target.closest(".discussion");
-        if (!box || !box.open || box.dataset.loaded === "1") return;
-        box.dataset.loaded = "1";
-        loadComments(box);
-    }, true);
-
-    noticeRoot.addEventListener("click", async function (ev) {
-        const btn = ev.target.closest("button[data-notice-id]");
-        if (!btn) return;
-        const { res, data } = await postJSON("/api/committee/notification/read", {
-            notification_id: Number(btn.dataset.noticeId),
-            notification_title: btn.dataset.noticeTitle || "",
+          }
+          if (act === "depose-submit") {
+            submitDepose();
+            return;
+          }
+          if (act === "propose-submit") {
+            submitPropose(false);
+            return;
+          }
+          if (act === "ai-review-topic") {
+            aiReviewTopic();
+            return;
+          }
+          if (act === "comment-post") {
+            submitComment(btn, false);
+            return;
+          }
+          if (act === "comment-ai") {
+            submitComment(btn, true);
+            return;
+          }
+          if (act === "analysis-tab") {
+            ANALYSIS_TAB = btn.dataset.kind || "bank";
+            load();
+            return;
+          }
+          if (act === "ai-analysis") {
+            runAnalysis(btn.dataset.kind);
+            return;
+          }
+          if (act === "push-enable") {
+            pushEnable();
+            return;
+          }
+          if (act === "push-disable") {
+            pushDisable();
+            return;
+          }
+          if (act === "password-change") {
+            changePassword();
+            return;
+          }
+          if (act === "logout") {
+            doLogout();
+            return;
+          }
+          if (act === "refresh") {
+            invalidateCache();
+            load();
+            return;
+          }
         });
-        if (!res.ok) { toast("⚠️ " + (data.detail || "未能記錄通知狀態")); return; }
-        noticeRoot.innerHTML = "";
-    });
 
-    // Re-render only the topic-vote tab (to open/close a reason panel) without refetch.
-    let LAST_VOTE_DATA = null;
-    function renderVoteReopen() { if (LAST_VOTE_DATA) renderVote(LAST_VOTE_DATA); }
-    const _origRenderVote = renderVote;
-    renderVote = function (data) { LAST_VOTE_DATA = data; _origRenderVote(data); };
+        content.addEventListener(
+          "toggle",
+          function (ev) {
+            const box = ev.target.closest && ev.target.closest(".discussion");
+            if (!box || !box.open || box.dataset.loaded === "1") return;
+            box.dataset.loaded = "1";
+            loadComments(box);
+          },
+          true,
+        );
 
-    function syncTabs() {
-        Array.from(tabsEl.querySelectorAll(".tab")).forEach(b =>
-            b.classList.toggle("active", b.dataset.tab === TAB));
-    }
-    tabsEl.addEventListener("click", function (ev) {
-        const b = ev.target.closest(".tab");
-        if (!b) return;
-        TAB = b.dataset.tab;
-        openReasonFor = null;
-        syncTabs();
+        noticeRoot.addEventListener("click", async function (ev) {
+          const btn = ev.target.closest("button[data-notice-id]");
+          if (!btn) return;
+          const { res, data } = await postJSON(
+            "/api/committee/notification/read",
+            {
+              notification_id: Number(btn.dataset.noticeId),
+              notification_title: btn.dataset.noticeTitle || "",
+            },
+          );
+          if (!res.ok) {
+            toast("⚠️ " + (data.detail || "未能記錄通知狀態"));
+            return;
+          }
+          noticeRoot.innerHTML = "";
+        });
+
+        // Re-render only the topic-vote tab (to open/close a reason panel) without refetch.
+        let LAST_VOTE_DATA = null;
+        function renderVoteReopen() {
+          if (LAST_VOTE_DATA) renderVote(LAST_VOTE_DATA);
+        }
+        const _origRenderVote = renderVote;
+        renderVote = function (data) {
+          LAST_VOTE_DATA = data;
+          _origRenderVote(data);
+        };
+
+        function syncTabs() {
+          Array.from(tabsEl.querySelectorAll(".tab")).forEach((b) =>
+            b.classList.toggle("active", b.dataset.tab === TAB),
+          );
+        }
+        tabsEl.addEventListener("click", function (ev) {
+          const b = ev.target.closest(".tab");
+          if (!b) return;
+          TAB = b.dataset.tab;
+          openReasonFor = null;
+          syncTabs();
+          load();
+        });
+
         load();
-    });
-
-    load();
-})();
-</script>
-</body>
+      })();
+    </script>
+  </body>
 </html>

@@ -34,6 +34,14 @@ TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
 TABLE_TTS_SCRIPTS = "tts_scripts"
 TABLE_TTS_LEXICON = "tts_lexicon"
 TABLE_LLM_TRAINING_SUBMISSIONS = "llm_training_submissions"
+TABLE_AI_DATASET_SNAPSHOTS = "ai_dataset_snapshots"
+TABLE_AI_DATASET_SNAPSHOT_ITEMS = "ai_dataset_snapshot_items"
+TABLE_AI_MODEL_VERSIONS = "ai_model_versions"
+TABLE_AI_EVAL_CASES = "ai_eval_cases"
+TABLE_AI_EVAL_RUNS = "ai_eval_runs"
+TABLE_RAG_DOCUMENTS = "rag_documents"
+TABLE_RAG_CHUNKS = "rag_chunks"
+TABLE_AI_TRAINING_AUDIT = "ai_training_audit"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
@@ -493,6 +501,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_CONSENTS} (
     consent_text     TEXT        NOT NULL,
     consented_at     TIMESTAMP   DEFAULT NOW(),
     withdrawn_at     TIMESTAMP,
+    voice_cloning_confirmed BOOLEAN DEFAULT FALSE,
+    cloud_processing_confirmed BOOLEAN DEFAULT FALSE,
+    is_minor         BOOLEAN DEFAULT FALSE,
+    guardian_confirmed BOOLEAN DEFAULT FALSE,
     PRIMARY KEY (user_id, consent_version),
     CONSTRAINT fk_tts_voice_consents_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
@@ -511,6 +523,11 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
     file_ext          TEXT,
     size_bytes        INTEGER,
     duration_seconds  INTEGER,
+    audio_sha256      TEXT,
+    measured_duration_seconds NUMERIC,
+    sample_rate_hz    INTEGER,
+    channel_count     INTEGER,
+    detected_format   TEXT,
     ai_review_status  TEXT        CHECK (ai_review_status IN ('passed', 'failed', 'error')),
     ai_review_json    TEXT,
     ai_transcript     TEXT,
@@ -596,6 +613,128 @@ CREATE TABLE IF NOT EXISTS {TABLE_LLM_TRAINING_SUBMISSIONS} (
     CONSTRAINT fk_llm_training_submissions_reviewer
         FOREIGN KEY (reviewed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
+);
+"""
+
+# Reproducible AI datasets, model releases, evaluation and RAG governance.
+# The pgvector column is added by an isolated migration below so a database
+# without permission to enable extensions can still run the rest of the app.
+CREATE_AI_DATASET_SNAPSHOTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_DATASET_SNAPSHOTS} (
+    snapshot_id       TEXT PRIMARY KEY,
+    dataset_kind      TEXT NOT NULL CHECK (dataset_kind IN ('tts', 'llm')),
+    speaker_user_id   TEXT,
+    consent_version   TEXT,
+    item_count        INTEGER NOT NULL DEFAULT 0,
+    total_seconds     NUMERIC NOT NULL DEFAULT 0,
+    manifest_sha256   TEXT NOT NULL,
+    manifest_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    status            TEXT NOT NULL DEFAULT 'ready'
+        CHECK (status IN ('draft', 'ready', 'withdrawn', 'archived')),
+    created_by        TEXT,
+    created_at        TIMESTAMP DEFAULT NOW()
+);
+"""
+
+CREATE_AI_DATASET_SNAPSHOT_ITEMS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_DATASET_SNAPSHOT_ITEMS} (
+    snapshot_id       TEXT NOT NULL REFERENCES {TABLE_AI_DATASET_SNAPSHOTS}(snapshot_id) ON DELETE CASCADE,
+    source_table      TEXT NOT NULL,
+    source_id         TEXT NOT NULL,
+    source_sha256     TEXT,
+    consent_version   TEXT,
+    split_name        TEXT CHECK (split_name IN ('train', 'validation', 'test')),
+    metadata_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    PRIMARY KEY (snapshot_id, source_table, source_id)
+);
+"""
+
+CREATE_AI_MODEL_VERSIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_MODEL_VERSIONS} (
+    model_id           TEXT PRIMARY KEY,
+    model_type         TEXT NOT NULL CHECK (model_type IN ('tts', 'llm', 'embedding')),
+    base_model         TEXT NOT NULL,
+    dataset_snapshot_id TEXT REFERENCES {TABLE_AI_DATASET_SNAPSHOTS}(snapshot_id),
+    artifact_uri       TEXT,
+    status             TEXT NOT NULL DEFAULT 'research'
+        CHECK (status IN ('research', 'candidate', 'deployable', 'retired', 'blocked')),
+    config_json        JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    metrics_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    created_by         TEXT,
+    created_at         TIMESTAMP DEFAULT NOW(),
+    updated_at         TIMESTAMP DEFAULT NOW()
+);
+"""
+
+CREATE_AI_EVAL_CASES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CASES} (
+    case_id          TEXT PRIMARY KEY,
+    task_type        TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    input_json       JSONB NOT NULL,
+    rubric_json      JSONB NOT NULL,
+    reference_text   TEXT,
+    is_active        BOOLEAN DEFAULT TRUE,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+"""
+
+CREATE_AI_EVAL_RUNS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_RUNS} (
+    id               BIGSERIAL PRIMARY KEY,
+    case_id          TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CASES}(case_id),
+    model_label      TEXT NOT NULL,
+    pipeline_version TEXT NOT NULL,
+    output_text      TEXT NOT NULL,
+    score_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    usage_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    created_by       TEXT,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+"""
+
+CREATE_RAG_DOCUMENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_RAG_DOCUMENTS} (
+    document_id       TEXT PRIMARY KEY,
+    submission_id     INTEGER REFERENCES {TABLE_LLM_TRAINING_SUBMISSIONS}(id) ON DELETE CASCADE,
+    title             TEXT,
+    data_type         TEXT,
+    topic_text        TEXT,
+    side              TEXT,
+    source_note       TEXT,
+    content_sha256    TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'withdrawn', 'archived')),
+    embedding_model   TEXT NOT NULL,
+    embedding_version TEXT NOT NULL,
+    indexed_at        TIMESTAMP DEFAULT NOW()
+);
+"""
+
+CREATE_RAG_CHUNKS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_RAG_CHUNKS} (
+    chunk_id          TEXT PRIMARY KEY,
+    document_id       TEXT NOT NULL REFERENCES {TABLE_RAG_DOCUMENTS}(document_id) ON DELETE CASCADE,
+    chunk_index       INTEGER NOT NULL,
+    content_text      TEXT NOT NULL,
+    token_estimate    INTEGER NOT NULL DEFAULT 0,
+    embedding_model   TEXT NOT NULL,
+    embedding_version TEXT NOT NULL,
+    embedding_json    JSONB,
+    metadata_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    created_at        TIMESTAMP DEFAULT NOW(),
+    UNIQUE (document_id, chunk_index)
+);
+"""
+
+CREATE_AI_TRAINING_AUDIT = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_TRAINING_AUDIT} (
+    id             BIGSERIAL PRIMARY KEY,
+    actor_user_id  TEXT,
+    action         TEXT NOT NULL,
+    target_type    TEXT NOT NULL,
+    target_id      TEXT,
+    details_json   JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    created_at     TIMESTAMP DEFAULT NOW()
 );
 """
 
@@ -1000,6 +1139,14 @@ ALL_SCHEMAS = [
     CREATE_TTS_SCRIPTS,               # → (standalone)
     CREATE_TTS_LEXICON,               # → (standalone)
     CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
+    CREATE_AI_DATASET_SNAPSHOTS,
+    CREATE_AI_DATASET_SNAPSHOT_ITEMS,
+    CREATE_AI_MODEL_VERSIONS,
+    CREATE_AI_EVAL_CASES,
+    CREATE_AI_EVAL_RUNS,
+    CREATE_RAG_DOCUMENTS,
+    CREATE_RAG_CHUNKS,
+    CREATE_AI_TRAINING_AUDIT,
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
@@ -1027,6 +1174,15 @@ ALL_SCHEMAS = [
 # ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
 # that deleting/removing a topic also clears its removal-vote row and ballots.
 MIGRATIONS = [
+    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS voice_cloning_confirmed BOOLEAN DEFAULT FALSE",
+    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS cloud_processing_confirmed BOOLEAN DEFAULT FALSE",
+    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS guardian_confirmed BOOLEAN DEFAULT FALSE",
+    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS is_minor BOOLEAN DEFAULT FALSE",
+    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS audio_sha256 TEXT",
+    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS measured_duration_seconds NUMERIC",
+    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER",
+    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS channel_count INTEGER",
+    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS detected_format TEXT",
     f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS script_type TEXT DEFAULT 'short'",
     f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_id TEXT",
     f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_title TEXT",
@@ -1034,6 +1190,12 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
         ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order)
     """,
+    f"CREATE INDEX IF NOT EXISTS idx_snapshot_items_source ON {TABLE_AI_DATASET_SNAPSHOT_ITEMS}(source_table, source_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_models_type_status ON {TABLE_AI_MODEL_VERSIONS}(model_type, status)",
+    f"CREATE INDEX IF NOT EXISTS idx_rag_documents_status ON {TABLE_RAG_DOCUMENTS}(status, data_type)",
+    f"CREATE INDEX IF NOT EXISTS idx_rag_chunks_document ON {TABLE_RAG_CHUNKS}(document_id, chunk_index)",
+    "CREATE EXTENSION IF NOT EXISTS vector",
+    f"ALTER TABLE {TABLE_RAG_CHUNKS} ADD COLUMN IF NOT EXISTS embedding vector(768)",
     f"""
     DO $$
     DECLARE cname text;

@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import re
+import subprocess
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -17,8 +19,14 @@ from sqlalchemy import text
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
 
 from schema import (
+    CREATE_AI_DATASET_SNAPSHOTS, CREATE_AI_DATASET_SNAPSHOT_ITEMS,
+    CREATE_AI_EVAL_CASES, CREATE_AI_EVAL_RUNS, CREATE_AI_MODEL_VERSIONS,
+    CREATE_AI_TRAINING_AUDIT, CREATE_RAG_CHUNKS, CREATE_RAG_DOCUMENTS,
     CREATE_LLM_TRAINING_SUBMISSIONS, CREATE_TTS_LEXICON, CREATE_TTS_SCRIPTS,
     CREATE_TTS_VOICE_CONSENTS, CREATE_TTS_VOICE_RECORDINGS,
+    TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+    TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_RUNS, TABLE_AI_MODEL_VERSIONS,
+    TABLE_AI_TRAINING_AUDIT, TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
     TABLE_LLM_TRAINING_SUBMISSIONS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
     TABLE_TTS_VOICE_CONSENTS, TABLE_TTS_VOICE_RECORDINGS,
 )
@@ -28,8 +36,8 @@ from prompts import (
 )
 
 router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
-CONSENT_VERSION = "tts_voice_v1_2026_07"
-CONSENT_TEXT = "我同意聖呂中辯收集本人在本頁提交的錄音，用作廣東話 TTS（文字轉語音）、讀音檢查及相關 AI 研究測試。錄音可能用於分析本人聲線及建立語音模型。我明白可向開發者要求撤回未來使用授權。"
+CONSENT_VERSION = "tts_voice_v2_2026_07"
+CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 TTS、讀音檢查及建立可生成近似本人聲音的語音模型；資料可交由受控雲端 GPU／AI 服務處理，但不會公開原始錄音或 checkpoint。我可撤回未來使用；撤回後錄音不再納入新資料集，使用過該錄音的 checkpoint會被停止部署並安排排除資料重訓。未成年錄音者須另有家長／學校授權。"
 ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_reviewers"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
 ADMIN_RECORDING_PAGE_SIZE = 5
@@ -52,6 +60,12 @@ DEFAULT_SCRIPT_BANK = [
 
 class ConsentBody(BaseModel):
     agreed: bool
+    # The page presents CONSENT_TEXT as one indivisible agreement. Defaults keep
+    # older direct-HTML clients compatible while the stored columns remain explicit.
+    voice_cloning_confirmed: bool = True
+    cloud_processing_confirmed: bool = True
+    is_minor: bool = False
+    guardian_confirmed: bool = False
 
 
 class RecordingBody(BaseModel):
@@ -113,6 +127,30 @@ class ManuscriptBody(BaseModel):
     active: bool = True
 
 
+class SnapshotBody(BaseModel):
+    dataset_kind: str
+    speaker_user_id: str = ""
+
+
+class ModelMetricsBody(BaseModel):
+    metrics: dict = Field(default_factory=dict)
+    status: str | None = None
+
+
+class ModelRegisterBody(BaseModel):
+    model_id: str
+    model_type: str
+    base_model: str
+    dataset_snapshot_id: str | None = None
+    artifact_uri: str = ""
+    config: dict = Field(default_factory=dict)
+
+
+class RagReindexBody(BaseModel):
+    embedding_model: str = "gemini-embedding-2"
+    embedding_version: str = "gemini-embedding-2@2026-04"
+
+
 def _admin(request):
     user, db = _ctx(request)
     if not _is_admin(db, user):
@@ -144,6 +182,34 @@ def _ctx(request):
     user = _require_committee_user(request); db = get_vote_db()
     db.execute(CREATE_TTS_VOICE_CONSENTS); db.execute(CREATE_TTS_VOICE_RECORDINGS)
     db.execute(CREATE_TTS_SCRIPTS); db.execute(CREATE_TTS_LEXICON); db.execute(CREATE_LLM_TRAINING_SUBMISSIONS)
+    for ddl in (
+        CREATE_AI_DATASET_SNAPSHOTS, CREATE_AI_DATASET_SNAPSHOT_ITEMS,
+        CREATE_AI_MODEL_VERSIONS, CREATE_AI_EVAL_CASES, CREATE_AI_EVAL_RUNS,
+        CREATE_RAG_DOCUMENTS, CREATE_RAG_CHUNKS, CREATE_AI_TRAINING_AUDIT,
+    ):
+        db.execute(ddl)
+    eval_path = Path(__file__).resolve().parents[1] / "assets" / "ai_eval_cases_v0.json"
+    if eval_path.exists():
+        for case in json.loads(eval_path.read_text(encoding="utf-8")):
+            db.execute(f"""INSERT INTO {TABLE_AI_EVAL_CASES}
+                (case_id,task_type,title,input_json,rubric_json,reference_text,is_active)
+                VALUES(:id,:task,:title,CAST(:input AS jsonb),CAST(:rubric AS jsonb),:reference,TRUE)
+                ON CONFLICT(case_id) DO NOTHING""",
+                {"id":case["case_id"],"task":case["task_type"],"title":case["title"],
+                 "input":_json_param(case["input"]),"rubric":_json_param(case["rubric"]),
+                 "reference":case.get("reference_text")})
+    for ddl in (
+        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS voice_cloning_confirmed BOOLEAN DEFAULT FALSE",
+        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS cloud_processing_confirmed BOOLEAN DEFAULT FALSE",
+        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS is_minor BOOLEAN DEFAULT FALSE",
+        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS guardian_confirmed BOOLEAN DEFAULT FALSE",
+        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS audio_sha256 TEXT",
+        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS measured_duration_seconds NUMERIC",
+        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER",
+        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS channel_count INTEGER",
+        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS detected_format TEXT",
+    ):
+        db.execute(ddl)
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_TTS_SCRIPTS}")
     if count.empty or int(count.iloc[0]["n"] or 0) == 0:
         for order, (script_id, category, value) in enumerate(DEFAULT_SCRIPT_BANK):
@@ -168,6 +234,47 @@ def _rows(frame):
     return [dict(row) for row in frame.to_dict(orient="records")]
 
 
+def _probe_audio(audio: bytes, mime: str, claimed_duration: int) -> dict:
+    suffix = "." + _audio_ext(mime)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
+            handle.write(audio); handle.flush()
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries",
+                 "format=format_name,duration:stream=codec_type,sample_rate,channels",
+                 "-of", "json", handle.name],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(503, "伺服器未能執行音訊格式驗證") from exc
+    if result.returncode != 0:
+        raise HTTPException(400, "錄音檔案損壞或實際格式不受支援")
+    try:
+        info = json.loads(result.stdout or "{}")
+        fmt = info.get("format") or {}
+        stream = next(x for x in (info.get("streams") or []) if x.get("codec_type") == "audio")
+        duration = float(fmt.get("duration") or 0)
+        sample_rate = int(stream.get("sample_rate") or 0)
+        channels = int(stream.get("channels") or 0)
+        format_name = str(fmt.get("format_name") or "")
+    except (ValueError, TypeError, StopIteration) as exc:
+        raise HTTPException(400, "錄音未包含可讀取的聲音軌") from exc
+    if not 1 <= duration <= 60.5:
+        raise HTTPException(400, "錄音實際長度必須為 1 至 60 秒")
+    tolerance = max(2.0, duration * 0.2)
+    if abs(duration - int(claimed_duration or 0)) > tolerance:
+        raise HTTPException(400, "錄音實際長度與瀏覽器回報不符，請重新錄製")
+    expected = {
+        "audio/webm": ("webm", "matroska"), "audio/mp4": ("mov", "mp4"),
+        "audio/mpeg": ("mp3",), "audio/wav": ("wav",), "audio/ogg": ("ogg",),
+    }[mime]
+    if not any(name in format_name for name in expected):
+        raise HTTPException(400, "錄音宣稱格式與實際檔案格式不符")
+    return {"duration": round(duration, 3), "sample_rate": sample_rate,
+            "channels": channels, "format": format_name,
+            "sha256": hashlib.sha256(audio).hexdigest()}
+
+
 def _audio_payload(body):
     try:
         audio = base64.b64decode(body.audio_base64, validate=True)
@@ -182,7 +289,44 @@ def _audio_payload(body):
         raise HTTPException(400, "錄音超過 10MB")
     if not 1 <= int(body.duration_seconds or 0) <= 60:
         raise HTTPException(400, "錄音長度必須為 1 至 60 秒")
-    return audio, mime
+    return audio, mime, _probe_audio(audio, mime, body.duration_seconds)
+
+
+def _audit(db, actor, action, target_type, target_id="", details=None):
+    db.execute(
+        f"INSERT INTO {TABLE_AI_TRAINING_AUDIT}(actor_user_id,action,target_type,target_id,details_json) "
+        "VALUES(:actor,:action,:target_type,:target_id,CAST(:details AS jsonb))",
+        {"actor": actor, "action": action, "target_type": target_type,
+         "target_id": str(target_id or ""),
+         "details": json.dumps(details or {}, ensure_ascii=False, default=str)},
+    )
+
+
+def _json_param(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _split_name(group_key: str) -> str:
+    bucket = int(hashlib.sha256(group_key.encode("utf-8")).hexdigest()[:8], 16) % 10
+    return "test" if bucket == 0 else "validation" if bucket == 1 else "train"
+
+
+def _rag_chunks(value: str, size: int = 700, overlap: int = 100) -> list[str]:
+    value = re.sub(r"\r\n?", "\n", str(value or "")).strip()
+    if not value:
+        return []
+    chunks, start = [], 0
+    while start < len(value):
+        end = min(len(value), start + size)
+        if end < len(value):
+            boundary = max(value.rfind(mark, start + size // 2, end) for mark in "。！？\n；")
+            if boundary >= start + size // 2:
+                end = boundary + 1
+        chunks.append(value[start:end].strip())
+        if end >= len(value):
+            break
+        start = max(start + 1, end - overlap)
+    return [chunk for chunk in chunks if chunk]
 
 
 def _audio_ext(mime):
@@ -301,9 +445,22 @@ def recording_audio(record_id: int, request: Request):
 def consent(body: ConsentBody, request: Request):
     user, db = _ctx(request)
     if not body.agreed: raise HTTPException(400, "必須同意錄音用途及授權安排")
-    db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_CONSENTS}(user_id,consent_version,consent_text,consented_at,withdrawn_at)
-                   VALUES(:user,:version,:consent,:now,NULL)
-                   ON CONFLICT(user_id,consent_version) DO UPDATE SET consent_text=EXCLUDED.consent_text,consented_at=EXCLUDED.consented_at,withdrawn_at=NULL""", {"user":user,"version":CONSENT_VERSION,"consent":CONSENT_TEXT,"now":datetime.now()})
+    if not body.voice_cloning_confirmed or not body.cloud_processing_confirmed:
+        raise HTTPException(400, "必須確認聲線模型及受控雲端處理用途")
+    if body.is_minor and not body.guardian_confirmed:
+        raise HTTPException(400, "未成年錄音者必須確認已取得家長／學校授權")
+    db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_CONSENTS}
+                   (user_id,consent_version,consent_text,consented_at,withdrawn_at,
+                    voice_cloning_confirmed,cloud_processing_confirmed,is_minor,guardian_confirmed)
+                   VALUES(:user,:version,:consent,:now,NULL,TRUE,TRUE,:minor,:guardian)
+                   ON CONFLICT(user_id,consent_version) DO UPDATE SET
+                    consent_text=EXCLUDED.consent_text,consented_at=EXCLUDED.consented_at,
+                    withdrawn_at=NULL,voice_cloning_confirmed=TRUE,cloud_processing_confirmed=TRUE,
+                    is_minor=EXCLUDED.is_minor,guardian_confirmed=EXCLUDED.guardian_confirmed""",
+               {"user":user,"version":CONSENT_VERSION,"consent":CONSENT_TEXT,"now":datetime.now(),
+                "minor":body.is_minor,"guardian":body.guardian_confirmed})
+    _audit(db, user, "consent_granted", "tts_consent", CONSENT_VERSION,
+           {"is_minor": body.is_minor, "guardian_confirmed": body.guardian_confirmed})
     return {"ok": True}
 
 
@@ -312,6 +469,13 @@ def withdraw(request: Request):
     user, db = _ctx(request)
     db.execute(f"UPDATE {TABLE_TTS_VOICE_CONSENTS} SET withdrawn_at=:now WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user":user,"version":CONSENT_VERSION,"now":datetime.now()})
     db.execute(f"UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status='withdrawn' WHERE speaker_user_id=:user AND status!='withdrawn'", {"user":user})
+    db.execute(f"""UPDATE {TABLE_AI_DATASET_SNAPSHOTS} SET status='withdrawn'
+                   WHERE dataset_kind='tts' AND speaker_user_id=:user AND status IN ('draft','ready')""", {"user": user})
+    db.execute(f"""UPDATE {TABLE_AI_MODEL_VERSIONS} SET status='blocked',updated_at=:now
+                   WHERE dataset_snapshot_id IN (SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOTS}
+                   WHERE dataset_kind='tts' AND speaker_user_id=:user) AND status!='retired'""",
+               {"user": user, "now": datetime.now()})
+    _audit(db, user, "consent_withdrawn", "tts_consent", CONSENT_VERSION)
     return {"ok":True}
 
 
@@ -323,7 +487,7 @@ def recording(body: RecordingBody, request: Request):
     if active.empty: raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id":body.script_id})
     if script.empty: raise HTTPException(404, "錄音句子不存在或已停用")
-    audio, mime = _audio_payload(body)
+    audio, mime, probe = _audio_payload(body)
     duplicate = db.query(
         f"SELECT 1 FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user AND script_id=:script "
         "AND status IN ('pending','accepted') LIMIT 1",
@@ -338,8 +502,18 @@ def recording(body: RecordingBody, request: Request):
     ):
         raise HTTPException(400, "錄音未通過 AI 音質及稿件一致性檢查")
     review_status = "error" if body.manual_review else "passed"
-    db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id,script_id,prompt_text,audio_data,mime_type,file_ext,size_bytes,duration_seconds,ai_review_status,ai_review_json,ai_transcript,status,created_at)
-                   VALUES(:user,:script,:prompt,:audio,:mime,:ext,:size,:duration,:review_status,:review_json,:transcript,'pending',:now)""", {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],"audio":audio,"mime":mime,"ext":_audio_ext(mime),"size":len(audio),"duration":int(body.duration_seconds),"review_status":review_status,"review_json":json.dumps(body.ai_review or {},ensure_ascii=False),"transcript":str((body.ai_review or {}).get("transcript") or ""),"now":datetime.now()})
+    db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_RECORDINGS}
+                   (speaker_user_id,script_id,prompt_text,audio_data,mime_type,file_ext,size_bytes,
+                    duration_seconds,audio_sha256,measured_duration_seconds,sample_rate_hz,
+                    channel_count,detected_format,ai_review_status,ai_review_json,ai_transcript,status,created_at)
+                   VALUES(:user,:script,:prompt,:audio,:mime,:ext,:size,:duration,:sha,:measured,
+                    :sample_rate,:channels,:detected,:review_status,:review_json,:transcript,'pending',:now)""",
+               {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],"audio":audio,
+                "mime":mime,"ext":_audio_ext(mime),"size":len(audio),"duration":int(body.duration_seconds),
+                "sha":probe["sha256"],"measured":probe["duration"],"sample_rate":probe["sample_rate"],
+                "channels":probe["channels"],"detected":probe["format"],"review_status":review_status,
+                "review_json":json.dumps(body.ai_review or {},ensure_ascii=False),
+                "transcript":str((body.ai_review or {}).get("transcript") or ""),"now":datetime.now()})
     return {"ok":True, "message":"錄音已提交，等待人工審核。"}
 
 
@@ -352,7 +526,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
     """
     user, db = _ctx(request)
     if user not in _users(db, ALLOWED_KEY): raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
-    audio, mime = _audio_payload(body)
+    audio, mime, _probe = _audio_payload(body)
     consent = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user": user, "version": CONSENT_VERSION})
     if consent.empty: raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id": body.script_id})
@@ -432,8 +606,10 @@ def withdraw_llm(submission_id: int, request: Request):
     user, db = _ctx(request)
     row=db.query(f"SELECT status FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id AND submitted_by=:user",{"id":submission_id,"user":user})
     if row.empty: raise HTTPException(404,"找不到提交")
-    if row.iloc[0]["status"] != "pending": raise HTTPException(409,"只有待審核資料可以撤回")
+    if row.iloc[0]["status"] not in ("pending", "accepted"): raise HTTPException(409,"只有待審核或已接受資料可以撤回")
     db.execute(f"UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS} SET status='withdrawn' WHERE id=:id",{"id":submission_id})
+    db.execute(f"UPDATE {TABLE_RAG_DOCUMENTS} SET status='withdrawn' WHERE submission_id=:id", {"id": submission_id})
+    _audit(db, user, "submission_withdrawn", "llm_submission", submission_id)
     return {"ok":True}
 
 
@@ -574,7 +750,7 @@ def deactivate_complete(request: Request):
     _user, db = _admin(request); allowed = _users(db, ALLOWED_KEY)
     if not allowed: return {"ok":True,"deactivated":0}
     rows=db.query(f"""SELECT s.script_id FROM {TABLE_TTS_SCRIPTS}s LEFT JOIN {TABLE_TTS_VOICE_RECORDINGS}r
-      ON r.script_id=s.script_id AND r.status IN ('pending','accepted') AND r.speaker_user_id=ANY(:users)
+      ON r.script_id=s.script_id AND r.status='accepted' AND r.speaker_user_id=ANY(:users)
       WHERE s.is_active=TRUE GROUP BY s.script_id HAVING COUNT(DISTINCT r.speaker_user_id)>=:required""",{"users":allowed,"required":len(allowed)})
     complete_ids={str(x) for x in rows["script_id"].tolist()} if not rows.empty else set()
     active = _rows(db.query(f"SELECT script_id,script_type,manuscript_id FROM {TABLE_TTS_SCRIPTS} WHERE is_active=TRUE"))
@@ -640,7 +816,14 @@ def export_recordings(request: Request, speaker: str = ""):
     _user, db = _admin(request)
     where, params = "status='accepted'", {}
     if speaker.strip(): where += " AND speaker_user_id=:speaker"; params["speaker"] = speaker.strip()
-    rows = _rows(db.query(f"SELECT id,speaker_user_id,script_id,prompt_text,audio_data,mime_type,file_ext FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE {where} ORDER BY id", params))
+    rows = _rows(db.query(f"""SELECT r.id,r.speaker_user_id,r.script_id,r.prompt_text,r.audio_data,
+        r.mime_type,r.file_ext,r.audio_sha256,
+        COALESCE(r.measured_duration_seconds,r.duration_seconds) AS duration_seconds,
+        r.sample_rate_hz,r.channel_count,r.detected_format,r.ai_transcript,
+        s.manuscript_id,s.manuscript_title,s.category
+        FROM {TABLE_TTS_VOICE_RECORDINGS} r LEFT JOIN {TABLE_TTS_SCRIPTS} s ON s.script_id=r.script_id
+        WHERE {where.replace('status', 'r.status').replace('speaker_user_id', 'r.speaker_user_id')}
+        ORDER BY r.id""", params))
     output = io.BytesIO(); manifest = []
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for row in rows:
@@ -648,7 +831,9 @@ def export_recordings(request: Request, speaker: str = ""):
             ext = re.sub(r"[^a-z0-9]", "", str(row.get("file_ext") or "webm").lower()) or "webm"
             name = f"audio/{row['id']}_{row['script_id']}.{ext}"; archive.writestr(name, audio)
             manifest.append({**row, "file": name})
-        csv_buffer=io.StringIO(); fields=["id","speaker_user_id","script_id","prompt_text","mime_type","file_ext","file"]
+        csv_buffer=io.StringIO(); fields=["id","speaker_user_id","script_id","prompt_text","mime_type","file_ext","file",
+            "audio_sha256","duration_seconds","sample_rate_hz","channel_count","detected_format","ai_transcript",
+            "manuscript_id","manuscript_title","category"]
         writer=csv.DictWriter(csv_buffer,fieldnames=fields); writer.writeheader()
         for item in manifest: writer.writerow({key:item.get(key,"") for key in fields})
         archive.writestr("metadata.csv", csv_buffer.getvalue().encode("utf-8-sig"))
@@ -670,10 +855,15 @@ def review_recording(record_id:int, body:ReviewBody, request:Request):
     user,db=_ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可審核")
     if body.status not in ('accepted','rejected'): raise HTTPException(400,"狀態不正確")
-    row = db.query(f"SELECT status FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id", {"id": record_id})
+    row = db.query(f"SELECT status,script_id FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id", {"id": record_id})
     if row.empty: raise HTTPException(404, "找不到錄音")
     if row.iloc[0]["status"] != "pending": raise HTTPException(409, "只有待審核錄音可以更新")
-    db.execute(f"UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":record_id}); return {"ok":True}
+    db.execute(f"UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":record_id})
+    if body.status == "rejected":
+        db.execute(f"UPDATE {TABLE_TTS_SCRIPTS} SET is_active=TRUE,updated_at=:now WHERE script_id=:script",
+                   {"script": row.iloc[0]["script_id"], "now": datetime.now()})
+    _audit(db, user, "recording_reviewed", "tts_recording", record_id, {"status": body.status})
+    return {"ok":True}
 
 
 @router.post("/llm/{submission_id}/review")
@@ -684,4 +874,241 @@ def review_llm(submission_id:int, body:ReviewBody, request:Request):
     row = db.query(f"SELECT status FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id", {"id": submission_id})
     if row.empty: raise HTTPException(404, "找不到提交")
     if row.iloc[0]["status"] != "pending": raise HTTPException(409, "只有待審核資料可以更新")
-    db.execute(f"UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":submission_id}); return {"ok":True}
+    db.execute(f"UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":submission_id})
+    if body.status == "rejected":
+        db.execute(f"UPDATE {TABLE_RAG_DOCUMENTS} SET status='archived' WHERE submission_id=:id", {"id": submission_id})
+    _audit(db, user, "submission_reviewed", "llm_submission", submission_id, {"status": body.status})
+    return {"ok":True}
+
+
+@router.get("/readiness")
+def readiness(request: Request):
+    _user, db = _admin(request)
+    speakers = _rows(db.query(f"""SELECT r.speaker_user_id,
+        COUNT(*) FILTER (WHERE r.status='accepted') AS accepted_clips,
+        ROUND(COALESCE(SUM(COALESCE(r.measured_duration_seconds,r.duration_seconds))
+              FILTER (WHERE r.status='accepted'),0)/60.0,1) AS accepted_minutes,
+        COUNT(*) FILTER (WHERE r.status='pending') AS pending_clips,
+        ROUND(COALESCE(SUM(COALESCE(r.measured_duration_seconds,r.duration_seconds))
+              FILTER (WHERE r.status='pending'),0)/60.0,1) AS pending_minutes,
+        COUNT(*) FILTER (WHERE r.status='accepted' AND c.consent_version=:version
+              AND c.withdrawn_at IS NULL AND c.voice_cloning_confirmed=TRUE
+              AND c.cloud_processing_confirmed=TRUE
+              AND (c.is_minor=FALSE OR c.guardian_confirmed=TRUE)) AS eligible_clips
+      FROM {TABLE_TTS_VOICE_RECORDINGS} r
+      LEFT JOIN {TABLE_TTS_VOICE_CONSENTS} c ON c.user_id=r.speaker_user_id
+      GROUP BY r.speaker_user_id ORDER BY accepted_minutes DESC""", {"version": CONSENT_VERSION}))
+    lexicon = db.query(f"SELECT COUNT(*) n FROM {TABLE_TTS_LEXICON} WHERE is_active=TRUE")
+    llm = _rows(db.query(f"""SELECT data_type,COUNT(*) docs,COALESCE(SUM(LENGTH(content_text)),0) chars
+        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
+        AND anonymized=TRUE AND permission_confirmed=TRUE GROUP BY data_type ORDER BY docs DESC"""))
+    active_lexicon = int(lexicon.iloc[0]["n"] or 0) if not lexicon.empty else 0
+    eval_rows = db.query(f"SELECT COUNT(*) n FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE")
+    eval_count = int(eval_rows.iloc[0]["n"] or 0) if not eval_rows.empty else 0
+    return json_safe({"consent_version": CONSENT_VERSION, "speakers": speakers,
+        "active_lexicon": active_lexicon, "llm_by_type": llm, "active_eval_cases": eval_count,
+        "gates": {"tts_min_train_minutes": 30, "tts_target_collected_minutes": 40,
+                  "tts_min_lexicon": 50, "llm_eval_cases": 30,
+                  "llm_min_instruction_pairs_for_lora": 500}})
+
+
+@router.get("/eval/cases")
+def eval_cases(request: Request):
+    _user, db = _admin(request)
+    return json_safe({"items": _rows(db.query(f"""SELECT case_id,task_type,title,input_json,
+        rubric_json,reference_text FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE
+        ORDER BY task_type,case_id"""))})
+
+
+@router.post("/eval/runs")
+async def eval_baseline(request: Request):
+    user, db = _admin(request)
+    payload_body = await request.json()
+    model_label = str(payload_body.get("model_label") or "Gemini 2.5 Flash")
+    cases = _rows(db.query(f"SELECT case_id,task_type,title,input_json,rubric_json FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE ORDER BY case_id"))
+    _audit(db, user, "eval_baseline_requested", "eval_run", model_label, {"cases": len(cases)})
+    return {"ok":True,"model_label":model_label,"case_count":len(cases),
+            "message":"評估題已鎖定；請由受控eval worker逐題執行並寫入ai_eval_runs，API不會在單一HTTP request內長時間批量呼叫模型。"}
+
+
+@router.post("/datasets/snapshots")
+def create_snapshot(body: SnapshotBody, request: Request):
+    user, db = _admin(request)
+    if body.dataset_kind not in ("tts", "llm"):
+        raise HTTPException(400, "dataset_kind只可為tts或llm")
+    items = []
+    total_seconds = 0.0
+    if body.dataset_kind == "tts":
+        speaker = body.speaker_user_id.strip()
+        if not speaker:
+            raise HTTPException(400, "TTS snapshot必須指定單一speaker")
+        rows = _rows(db.query(f"""SELECT r.id,r.script_id,r.prompt_text,r.audio_data,r.audio_sha256,
+                COALESCE(r.measured_duration_seconds,r.duration_seconds,0) duration_seconds,
+                s.manuscript_id,s.category,c.consent_version
+            FROM {TABLE_TTS_VOICE_RECORDINGS} r
+            JOIN {TABLE_TTS_SCRIPTS} s ON s.script_id=r.script_id
+            JOIN {TABLE_TTS_VOICE_CONSENTS} c ON c.user_id=r.speaker_user_id
+              AND c.consent_version=:version AND c.withdrawn_at IS NULL
+              AND c.voice_cloning_confirmed=TRUE AND c.cloud_processing_confirmed=TRUE
+              AND (c.is_minor=FALSE OR c.guardian_confirmed=TRUE)
+            WHERE r.status='accepted' AND r.speaker_user_id=:speaker ORDER BY r.id""",
+            {"speaker": speaker, "version": CONSENT_VERSION}))
+        for row in rows:
+            raw = row.pop("audio_data")
+            raw = raw.tobytes() if isinstance(raw, memoryview) else bytes(raw)
+            sha = row.get("audio_sha256") or hashlib.sha256(raw).hexdigest()
+            group = str(row.get("manuscript_id") or row["script_id"])
+            seconds = float(row.get("duration_seconds") or 0)
+            total_seconds += seconds
+            items.append({"source_table": TABLE_TTS_VOICE_RECORDINGS, "source_id": str(row["id"]),
+                "source_sha256": sha, "consent_version": CONSENT_VERSION,
+                "split_name": _split_name(group), "metadata": {"script_id": row["script_id"],
+                "prompt_text": row["prompt_text"], "manuscript_id": row.get("manuscript_id"),
+                "category": row.get("category"), "duration_seconds": seconds}})
+    else:
+        speaker = ""
+        rows = _rows(db.query(f"""SELECT id,data_type,title,topic_text,side,content_text,source_note
+            FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
+            AND anonymized=TRUE AND permission_confirmed=TRUE ORDER BY id"""))
+        for row in rows:
+            sha = hashlib.sha256(str(row["content_text"]).encode("utf-8")).hexdigest()
+            group = str(row.get("topic_text") or row["id"])
+            items.append({"source_table": TABLE_LLM_TRAINING_SUBMISSIONS, "source_id": str(row["id"]),
+                "source_sha256": sha, "consent_version": None, "split_name": _split_name(group),
+                "metadata": row})
+    if not items:
+        raise HTTPException(400, "沒有符合授權及審核條件的資料")
+    manifest = {"dataset_kind": body.dataset_kind, "speaker_user_id": speaker,
+                "consent_version": CONSENT_VERSION if body.dataset_kind == "tts" else None,
+                "items": items}
+    manifest_json = _json_param(manifest)
+    digest = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
+    snapshot_id = f"{body.dataset_kind}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{digest[:10]}"
+    db.execute(f"""INSERT INTO {TABLE_AI_DATASET_SNAPSHOTS}
+        (snapshot_id,dataset_kind,speaker_user_id,consent_version,item_count,total_seconds,
+         manifest_sha256,manifest_json,status,created_by)
+        VALUES(:id,:kind,:speaker,:consent,:count,:seconds,:sha,CAST(:manifest AS jsonb),'ready',:user)""",
+        {"id":snapshot_id,"kind":body.dataset_kind,"speaker":speaker or None,
+         "consent":CONSENT_VERSION if body.dataset_kind == "tts" else None,"count":len(items),
+         "seconds":total_seconds,"sha":digest,"manifest":manifest_json,"user":user})
+    for item in items:
+        db.execute(f"""INSERT INTO {TABLE_AI_DATASET_SNAPSHOT_ITEMS}
+            (snapshot_id,source_table,source_id,source_sha256,consent_version,split_name,metadata_json)
+            VALUES(:snapshot,:table,:source,:sha,:consent,:split,CAST(:metadata AS jsonb))""",
+            {"snapshot":snapshot_id,"table":item["source_table"],"source":item["source_id"],
+             "sha":item["source_sha256"],"consent":item["consent_version"],
+             "split":item["split_name"],"metadata":_json_param(item["metadata"])})
+    _audit(db, user, "snapshot_created", "dataset_snapshot", snapshot_id,
+           {"kind": body.dataset_kind, "items": len(items), "manifest_sha256": digest})
+    return {"ok":True,"snapshot_id":snapshot_id,"manifest_sha256":digest,
+            "item_count":len(items),"total_seconds":round(total_seconds,3)}
+
+
+@router.get("/models")
+def models(request: Request):
+    _user, db = _admin(request)
+    return json_safe({"items": _rows(db.query(f"""SELECT model_id,model_type,base_model,
+        dataset_snapshot_id,artifact_uri,status,config_json,metrics_json,created_by,created_at,updated_at
+        FROM {TABLE_AI_MODEL_VERSIONS} ORDER BY created_at DESC"""))})
+
+
+@router.post("/models")
+def register_model(body: ModelRegisterBody, request: Request):
+    user, db = _admin(request)
+    if body.model_type not in ("tts", "llm", "embedding") or not body.model_id.strip() or not body.base_model.strip():
+        raise HTTPException(400, "模型資料不完整")
+    if body.dataset_snapshot_id:
+        snap = db.query(f"SELECT status FROM {TABLE_AI_DATASET_SNAPSHOTS} WHERE snapshot_id=:id",
+                        {"id": body.dataset_snapshot_id})
+        if snap.empty or snap.iloc[0]["status"] != "ready":
+            raise HTTPException(400, "模型必須連結ready dataset snapshot")
+    db.execute(f"""INSERT INTO {TABLE_AI_MODEL_VERSIONS}
+        (model_id,model_type,base_model,dataset_snapshot_id,artifact_uri,status,config_json,created_by)
+        VALUES(:id,:type,:base,:snapshot,:uri,'research',CAST(:config AS jsonb),:user)""",
+        {"id":body.model_id.strip(),"type":body.model_type,"base":body.base_model.strip(),
+         "snapshot":body.dataset_snapshot_id,"uri":body.artifact_uri.strip() or None,
+         "config":_json_param(body.config),"user":user})
+    _audit(db, user, "model_registered", "model", body.model_id, {"type": body.model_type})
+    return {"ok": True, "model_id": body.model_id}
+
+
+@router.post("/models/{model_id}/metrics")
+def model_metrics(model_id: str, body: ModelMetricsBody, request: Request):
+    user, db = _admin(request)
+    row = db.query(f"SELECT model_type,dataset_snapshot_id,status FROM {TABLE_AI_MODEL_VERSIONS} WHERE model_id=:id",
+                   {"id": model_id})
+    if row.empty: raise HTTPException(404, "找不到模型")
+    status = body.status or str(row.iloc[0]["status"])
+    if status not in ("research","candidate","deployable","retired","blocked"):
+        raise HTTPException(400, "模型狀態不正確")
+    if status == "deployable":
+        required = {"cer","mos","pronunciation_accuracy","first_audio_ms"} if row.iloc[0]["model_type"] == "tts" else {"eval_score"}
+        missing = required - set(body.metrics)
+        if missing: raise HTTPException(400, "deployable模型缺少評估指標：" + ", ".join(sorted(missing)))
+    db.execute(f"UPDATE {TABLE_AI_MODEL_VERSIONS} SET metrics_json=CAST(:metrics AS jsonb),status=:status,updated_at=:now WHERE model_id=:id",
+               {"metrics":_json_param(body.metrics),"status":status,"now":datetime.now(),"id":model_id})
+    _audit(db, user, "model_metrics_updated", "model", model_id, {"status": status})
+    return {"ok":True,"status":status}
+
+
+@router.post("/rag/reindex")
+async def rag_reindex(body: RagReindexBody, request: Request):
+    user, db = _admin(request)
+    if body.embedding_model != "gemini-embedding-2":
+        raise HTTPException(400, "目前只支援gemini-embedding-2，避免混用embedding space")
+    from deploy.proxy import _get_proxy_secret
+    api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
+    if not api_key: raise HTTPException(503, "未設定GEMINI_API_KEY")
+    try:
+        db.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        db.execute(f"ALTER TABLE {TABLE_RAG_CHUNKS} ADD COLUMN IF NOT EXISTS embedding vector(768)")
+    except Exception as exc:
+        raise HTTPException(503, "Supabase尚未啟用pgvector extension") from exc
+    submissions = _rows(db.query(f"""SELECT id,data_type,title,topic_text,side,content_text,source_note
+        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
+        AND anonymized=TRUE AND permission_confirmed=TRUE ORDER BY id"""))
+    db.execute(f"UPDATE {TABLE_RAG_DOCUMENTS} SET status='withdrawn' WHERE submission_id IN
+        (SELECT id FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status!='accepted')")
+    indexed = 0
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{body.embedding_model}:embedContent"
+    async with httpx.AsyncClient(timeout=60) as client:
+        for submission in submissions:
+            document_id = f"llm-{submission['id']}"
+            content_sha = hashlib.sha256(str(submission["content_text"]).encode("utf-8")).hexdigest()
+            db.execute(f"""INSERT INTO {TABLE_RAG_DOCUMENTS}
+                (document_id,submission_id,title,data_type,topic_text,side,source_note,content_sha256,
+                 status,embedding_model,embedding_version,indexed_at)
+                VALUES(:doc,:submission,:title,:type,:topic,:side,:source,:sha,'active',:model,:version,:now)
+                ON CONFLICT(document_id) DO UPDATE SET title=EXCLUDED.title,data_type=EXCLUDED.data_type,
+                 topic_text=EXCLUDED.topic_text,side=EXCLUDED.side,source_note=EXCLUDED.source_note,
+                 content_sha256=EXCLUDED.content_sha256,status='active',embedding_model=EXCLUDED.embedding_model,
+                 embedding_version=EXCLUDED.embedding_version,indexed_at=EXCLUDED.indexed_at""",
+                {"doc":document_id,"submission":submission["id"],"title":submission.get("title"),
+                 "type":submission.get("data_type"),"topic":submission.get("topic_text"),
+                 "side":submission.get("side"),"source":submission.get("source_note"),"sha":content_sha,
+                 "model":body.embedding_model,"version":body.embedding_version,"now":datetime.now()})
+            db.execute(f"DELETE FROM {TABLE_RAG_CHUNKS} WHERE document_id=:doc", {"doc": document_id})
+            for index, chunk in enumerate(_rag_chunks(submission["content_text"])):
+                response = await client.post(endpoint, params={"key":api_key}, json={
+                    "content":{"parts":[{"text":chunk}]}, "outputDimensionality":768})
+                response.raise_for_status()
+                values = ((response.json().get("embedding") or {}).get("values") or [])
+                if len(values) != 768: raise HTTPException(502, "Embedding API回傳維度不正確")
+                chunk_id = f"{document_id}-{index:04d}-{hashlib.sha256(chunk.encode()).hexdigest()[:10]}"
+                vector_text = "[" + ",".join(f"{float(x):.9g}" for x in values) + "]"
+                db.execute(f"""INSERT INTO {TABLE_RAG_CHUNKS}
+                    (chunk_id,document_id,chunk_index,content_text,token_estimate,embedding_model,
+                     embedding_version,embedding_json,embedding,metadata_json)
+                    VALUES(:id,:doc,:idx,:content,:tokens,:model,:version,CAST(:json AS jsonb),
+                     CAST(:vector AS vector),CAST(:metadata AS jsonb))""",
+                    {"id":chunk_id,"doc":document_id,"idx":index,"content":chunk,
+                     "tokens":max(1,len(chunk)//2),"model":body.embedding_model,
+                     "version":body.embedding_version,"json":_json_param(values),"vector":vector_text,
+                     "metadata":_json_param({"data_type":submission.get("data_type"),
+                                               "topic_text":submission.get("topic_text"),
+                                               "side":submission.get("side")})})
+                indexed += 1
+    _audit(db, user, "rag_reindexed", "rag_index", body.embedding_version,
+           {"documents": len(submissions), "chunks": indexed})
+    return {"ok":True,"documents":len(submissions),"chunks":indexed,
+            "embedding_model":body.embedding_model,"embedding_version":body.embedding_version}

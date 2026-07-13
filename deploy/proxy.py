@@ -633,7 +633,12 @@ def tts_provider_configured() -> bool:
     live-room server-side TTS turns on (else the room stays on Gemini native audio)."""
     provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
     if provider == "custom":
-        return bool(_get_proxy_secret("CUSTOM_TTS_URL").strip())
+        model_id = _get_proxy_secret("CUSTOM_TTS_MODEL_VERSION").strip()
+        return bool(
+            _get_proxy_secret("CUSTOM_TTS_URL").strip()
+            and _get_proxy_secret("CUSTOM_TTS_API_KEY").strip()
+            and model_id and _model_is_deployable(model_id, "tts")
+        )
     return bool(
         _get_proxy_secret("AZURE_SPEECH_KEY").strip()
         and _get_proxy_secret("AZURE_SPEECH_REGION").strip()
@@ -642,6 +647,26 @@ def tts_provider_configured() -> bool:
 
 _LEXICON_TTL = 60.0  # seconds; dictionary edits in ai_training.py take effect within this
 _lexicon_cache = {"rows": None, "at": 0.0}
+_deployable_model_cache = {"values": {}, "at": 0.0}
+
+
+def _model_is_deployable(model_id: str, model_type: str) -> bool:
+    now = time.monotonic()
+    key = (model_id, model_type)
+    if now - _deployable_model_cache["at"] < 60 and key in _deployable_model_cache["values"]:
+        return bool(_deployable_model_cache["values"][key])
+    allowed = False
+    try:
+        engine = _get_db_engine()
+        with engine.connect() as conn:
+            allowed = conn.execute(text("""SELECT EXISTS(SELECT 1 FROM ai_model_versions
+                WHERE model_id=:model AND model_type=:type AND status='deployable')"""),
+                {"model": model_id, "type": model_type}).scalar()
+    except Exception as exc:
+        logger.info("model deployable gate unavailable: %s", exc)
+    _deployable_model_cache["values"][key] = bool(allowed)
+    _deployable_model_cache["at"] = now
+    return bool(allowed)
 
 
 def _load_lexicon_overrides():
@@ -737,12 +762,34 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
 
 
 async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
-    """自家粵語 TTS (tts_rd_plan.md 第三節). 待 v0 checkpoint 出咗先實作:
-    call CUSTOM_TTS_URL、回傳音 bytes + mime。而家先 stub。"""
+    """Call the authenticated custom TTS service using the stable wire contract."""
     custom_url = _get_proxy_secret("CUSTOM_TTS_URL").strip()
-    if not custom_url:
+    api_key = _get_proxy_secret("CUSTOM_TTS_API_KEY").strip()
+    model_version = _get_proxy_secret("CUSTOM_TTS_MODEL_VERSION").strip()
+    if not custom_url or not api_key or not model_version:
         raise TtsUnavailable("Custom TTS is not configured", status=503)
-    raise TtsUnavailable("Custom TTS is not implemented yet", status=503)
+    if not _model_is_deployable(model_version, "tts"):
+        raise TtsUnavailable("Custom TTS model has not passed the deployable gate", status=503)
+    request_id = secrets.token_urlsafe(12)
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=5)) as client:
+            response = await client.post(custom_url, headers={
+                "Authorization": f"Bearer {api_key}", "Accept": "audio/*",
+                "X-Request-ID": request_id,
+            }, json={"text": text_value, "model_version": model_version,
+                     "request_id": request_id})
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning("custom TTS failed request_id=%s: %s", request_id, exc)
+        raise TtsUnavailable("Custom TTS request failed", status=502) from exc
+    mime = (response.headers.get("content-type") or "audio/wav").split(";", 1)[0]
+    if not response.content or not mime.startswith("audio/"):
+        raise TtsUnavailable("Custom TTS returned invalid audio", status=502)
+    logger.info("custom TTS success request_id=%s model=%s elapsed_ms=%d bytes=%d",
+                request_id, response.headers.get("x-model-version") or model_version,
+                int((time.monotonic() - started) * 1000), len(response.content))
+    return response.content, mime
 
 
 async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
@@ -753,7 +800,11 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
         raise TtsUnavailable("Missing text", status=400)
     provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
     if provider == "custom":
-        return await _synthesize_custom(processed)
+        try:
+            return await _synthesize_custom(processed)
+        except TtsUnavailable as exc:
+            logger.warning("custom TTS unavailable; falling back to Azure: %s", exc)
+            return await _synthesize_azure(processed)
     return await _synthesize_azure(processed)
 
 

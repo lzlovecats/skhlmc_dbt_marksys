@@ -1,159 +1,266 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-HK">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>賽務投影</title>
-<style>
-  :root {
-    --bg: #0b1220;
-    --panel: #131c31;
-    --muted: #7d8aa6;
-    --text: #f4f7ff;
-    --pro: #2e7d32;
-    --con: #b3261e;
-    --accent: #f9a825;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: "Noto Sans CJK HK", "PingFang HK", "Microsoft JhengHei", sans-serif;
-    overflow: hidden;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-  .hidden { display: none !important; }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>賽務投影</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #131c31;
+        --muted: #7d8aa6;
+        --text: #f4f7ff;
+        --pro: #2e7d32;
+        --con: #b3261e;
+        --accent: #f9a825;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          "Noto Sans CJK HK", "PingFang HK", "Microsoft JhengHei", sans-serif;
+        overflow: hidden;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      .hidden {
+        display: none !important;
+      }
 
-  /* holding screen (nothing configured or hidden) */
-  #holding {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 2vh;
-    text-align: center;
-  }
-  #holding .school { font-size: 4vw; font-weight: 800; letter-spacing: .1em; }
-  #holding .sub { font-size: 1.8vw; color: var(--muted); }
+      /* holding screen (nothing configured or hidden) */
+      #holding {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 2vh;
+        text-align: center;
+      }
+      #holding .school {
+        font-size: 4vw;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+      }
+      #holding .sub {
+        font-size: 1.8vw;
+        color: var(--muted);
+      }
 
-  /* live board */
-  #board { flex: 1; display: none; flex-direction: column; padding: 4vh 4vw; }
-  .motion-label { font-size: 1.6vw; color: var(--muted); letter-spacing: .2em; }
-  .motion {
-    font-size: 4.2vw; font-weight: 800; line-height: 1.2; margin-top: 1vh;
-    max-height: 26vh; overflow: hidden;
-  }
+      /* live board */
+      #board {
+        flex: 1;
+        display: none;
+        flex-direction: column;
+        padding: 4vh 4vw;
+      }
+      .motion-label {
+        font-size: 1.6vw;
+        color: var(--muted);
+        letter-spacing: 0.2em;
+      }
+      .motion {
+        font-size: 4.2vw;
+        font-weight: 800;
+        line-height: 1.2;
+        margin-top: 1vh;
+        max-height: 26vh;
+        overflow: hidden;
+      }
 
-  .teams { display: flex; gap: 2vw; margin-top: 4vh; flex: 1; }
-  .team {
-    flex: 1; border-radius: 1.4vw; background: var(--panel);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 3vh 2vw; border: .5vh solid transparent; transition: all .25s ease;
-  }
-  .team .side { font-size: 2vw; font-weight: 700; opacity: .85; }
-  .team.pro .side { color: #7ee787; }
-  .team.con .side { color: #ff8a80; }
-  .team .name { font-size: 3.4vw; font-weight: 800; margin-top: 1.5vh; text-align: center; }
-  .team.active { border-color: var(--accent); transform: scale(1.02); }
-  .team.active.pro { background: linear-gradient(180deg, rgba(46,125,50,.35), var(--panel)); }
-  .team.active.con { background: linear-gradient(180deg, rgba(179,38,30,.35), var(--panel)); }
+      .teams {
+        display: flex;
+        gap: 2vw;
+        margin-top: 4vh;
+        flex: 1;
+      }
+      .team {
+        flex: 1;
+        border-radius: 1.4vw;
+        background: var(--panel);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 3vh 2vw;
+        border: 0.5vh solid transparent;
+        transition: all 0.25s ease;
+      }
+      .team .side {
+        font-size: 2vw;
+        font-weight: 700;
+        opacity: 0.85;
+      }
+      .team.pro .side {
+        color: #7ee787;
+      }
+      .team.con .side {
+        color: #ff8a80;
+      }
+      .team .name {
+        font-size: 3.4vw;
+        font-weight: 800;
+        margin-top: 1.5vh;
+        text-align: center;
+      }
+      .team.active {
+        border-color: var(--accent);
+        transform: scale(1.02);
+      }
+      .team.active.pro {
+        background: linear-gradient(
+          180deg,
+          rgba(46, 125, 50, 0.35),
+          var(--panel)
+        );
+      }
+      .team.active.con {
+        background: linear-gradient(
+          180deg,
+          rgba(179, 38, 30, 0.35),
+          var(--panel)
+        );
+      }
 
-  .now {
-    margin-top: 4vh; text-align: center;
-    background: var(--panel); border-radius: 1.4vw; padding: 3vh 2vw;
-  }
-  .now .label { font-size: 1.6vw; color: var(--muted); letter-spacing: .2em; }
-  .now .role { font-size: 3.6vw; font-weight: 800; margin-top: 1vh; }
-  .now .speaker { font-size: 2.4vw; color: var(--accent); margin-top: .6vh; }
-  .now.pro .role { color: #7ee787; }
-  .now.con .role { color: #ff8a80; }
+      .now {
+        margin-top: 4vh;
+        text-align: center;
+        background: var(--panel);
+        border-radius: 1.4vw;
+        padding: 3vh 2vw;
+      }
+      .now .label {
+        font-size: 1.6vw;
+        color: var(--muted);
+        letter-spacing: 0.2em;
+      }
+      .now .role {
+        font-size: 3.6vw;
+        font-weight: 800;
+        margin-top: 1vh;
+      }
+      .now .speaker {
+        font-size: 2.4vw;
+        color: var(--accent);
+        margin-top: 0.6vh;
+      }
+      .now.pro .role {
+        color: #7ee787;
+      }
+      .now.con .role {
+        color: #ff8a80;
+      }
 
-  #conn {
-    position: fixed; bottom: 1.2vh; right: 1.4vw;
-    font-size: 1vw; color: var(--muted); opacity: .6;
-  }
-</style>
-</head>
-<body>
-  <div id="holding">
-    <div class="school">校園隨想辯論比賽</div>
-    <div class="sub">準備中…</div>
-  </div>
-
-  <div id="board">
-    <div>
-      <div class="motion-label">辯題</div>
-      <div class="motion" id="motion">—</div>
+      #conn {
+        position: fixed;
+        bottom: 1.2vh;
+        right: 1.4vw;
+        font-size: 1vw;
+        color: var(--muted);
+        opacity: 0.6;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="holding">
+      <div class="school">校園隨想辯論比賽</div>
+      <div class="sub">準備中…</div>
     </div>
-    <div class="teams">
-      <div class="team pro" id="teamPro">
-        <div class="side">正方</div>
-        <div class="name" id="proTeam">—</div>
+
+    <div id="board">
+      <div>
+        <div class="motion-label">辯題</div>
+        <div class="motion" id="motion">—</div>
       </div>
-      <div class="team con" id="teamCon">
-        <div class="side">反方</div>
-        <div class="name" id="conTeam">—</div>
+      <div class="teams">
+        <div class="team pro" id="teamPro">
+          <div class="side">正方</div>
+          <div class="name" id="proTeam">—</div>
+        </div>
+        <div class="team con" id="teamCon">
+          <div class="side">反方</div>
+          <div class="name" id="conTeam">—</div>
+        </div>
+      </div>
+      <div class="now" id="now">
+        <div class="label">而家發言</div>
+        <div class="role" id="role">—</div>
+        <div class="speaker" id="speaker"></div>
       </div>
     </div>
-    <div class="now" id="now">
-      <div class="label">而家發言</div>
-      <div class="role" id="role">—</div>
-      <div class="speaker" id="speaker"></div>
-    </div>
-  </div>
 
-  <div id="conn"></div>
+    <div id="conn"></div>
 
-<script>
-(function () {
-  var DISPLAY = new URLSearchParams(location.search).get("display") || "main";
-  var POLL_MS = 2000;
-  var holding = document.getElementById("holding");
-  var board = document.getElementById("board");
-  var conn = document.getElementById("conn");
-  var fails = 0;
+    <script>
+      (function () {
+        var DISPLAY =
+          new URLSearchParams(location.search).get("display") || "main";
+        var POLL_MS = 2000;
+        var holding = document.getElementById("holding");
+        var board = document.getElementById("board");
+        var conn = document.getElementById("conn");
+        var fails = 0;
 
-  function show(el, on) { el.style.display = on ? (el === board ? "flex" : "flex") : "none"; }
+        function show(el, on) {
+          el.style.display = on ? (el === board ? "flex" : "flex") : "none";
+        }
 
-  function render(s) {
-    if (!s || !s.configured || !s.visible) {
-      show(board, false); show(holding, true);
-      return;
-    }
-    show(holding, false); show(board, true);
+        function render(s) {
+          if (!s || !s.configured || !s.visible) {
+            show(board, false);
+            show(holding, true);
+            return;
+          }
+          show(holding, false);
+          show(board, true);
 
-    document.getElementById("motion").textContent = s.motion || "—";
-    document.getElementById("proTeam").textContent = s.pro_team || "—";
-    document.getElementById("conTeam").textContent = s.con_team || "—";
-    document.getElementById("role").textContent = s.segment_label || "—";
-    document.getElementById("speaker").textContent = s.speaker_name || "";
+          document.getElementById("motion").textContent = s.motion || "—";
+          document.getElementById("proTeam").textContent = s.pro_team || "—";
+          document.getElementById("conTeam").textContent = s.con_team || "—";
+          document.getElementById("role").textContent = s.segment_label || "—";
+          document.getElementById("speaker").textContent = s.speaker_name || "";
 
-    var teamPro = document.getElementById("teamPro");
-    var teamCon = document.getElementById("teamCon");
-    var now = document.getElementById("now");
-    teamPro.classList.toggle("active", s.active_side === "pro");
-    teamCon.classList.toggle("active", s.active_side === "con");
-    now.classList.toggle("pro", s.active_side === "pro");
-    now.classList.toggle("con", s.active_side === "con");
-  }
+          var teamPro = document.getElementById("teamPro");
+          var teamCon = document.getElementById("teamCon");
+          var now = document.getElementById("now");
+          teamPro.classList.toggle("active", s.active_side === "pro");
+          teamCon.classList.toggle("active", s.active_side === "con");
+          now.classList.toggle("pro", s.active_side === "pro");
+          now.classList.toggle("con", s.active_side === "con");
+        }
 
-  function poll() {
-    fetch("/api/projector/state?display=" + encodeURIComponent(DISPLAY), { cache: "no-store" })
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(function (s) { fails = 0; conn.textContent = ""; render(s); })
-      .catch(function () {
-        fails++;
-        if (fails > 2) conn.textContent = "連線中斷，重試中…";
-      });
-  }
+        function poll() {
+          fetch("/api/projector/state?display=" + encodeURIComponent(DISPLAY), {
+            cache: "no-store",
+          })
+            .then(function (r) {
+              if (!r.ok) throw new Error(r.status);
+              return r.json();
+            })
+            .then(function (s) {
+              fails = 0;
+              conn.textContent = "";
+              render(s);
+            })
+            .catch(function () {
+              fails++;
+              if (fails > 2) conn.textContent = "連線中斷，重試中…";
+            });
+        }
 
-  poll();
-  setInterval(poll, POLL_MS);
-})();
-</script>
-</body>
+        poll();
+        setInterval(poll, POLL_MS);
+      })();
+    </script>
+  </body>
 </html>

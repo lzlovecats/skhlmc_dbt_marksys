@@ -1,944 +1,1567 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  :root { color-scheme: dark; --bg:#0e1117; --panel:#262730; --panel-2:#171923;
-    --border:#3a3d46; --text:#fafafa; --muted:#9aa0ab; --green:#29b46b;
-    --blue:#4c9bff; --red:#ff5c5c; --amber:#ffd27d; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-      "PingFang HK", "Noto Sans CJK HK", "Microsoft JhengHei", sans-serif;
-    background:var(--bg); color:var(--text); padding:clamp(12px,2.5vw,30px);
-    max-width:1100px; margin:0 auto;
-  }
-  .practice-nav { display:flex; justify-content:space-between; align-items:center; gap:14px;
-    margin-bottom:18px; }
-  .practice-nav strong { font-size:clamp(22px,2.6vw,34px); }
-  .back-link { color:var(--muted); text-decoration:none; background:var(--panel-2);
-    border:2px solid var(--border); border-radius:12px; padding:12px 20px;
-    font-size:clamp(16px,1.7vw,22px); font-weight:800; white-space:nowrap; }
-  .card { background:var(--panel); border:1px solid var(--border); border-radius:20px;
-    padding:clamp(18px,2.5vw,28px); margin-bottom:18px; }
-  .row { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
-  .grow { flex:1 1 auto; }
-  h2 { margin:0 0 6px; font-size:clamp(22px,2.4vw,31px); }
-  .muted { color:var(--muted); font-size:clamp(15px,1.5vw,19px); line-height:1.5; }
-  .code {
-    font-size:clamp(30px,4vw,48px); font-weight:800; letter-spacing:6px; color:#60a5fa;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  button {
-    min-height:56px; font-size:clamp(17px,1.7vw,22px); font-weight:750; padding:12px 20px;
-    border-radius:14px; border:2px solid var(--border); background:var(--panel-2);
-    color:var(--text); cursor:pointer; transition:.12s;
-  }
-  button:hover:not(:disabled) { background:#30363d; }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  button.primary { background:var(--green); border-color:var(--green); color:#fff; }
-  button.primary:hover:not(:disabled) { background:#2fa863; }
-  button.warn { background:#3d1f1f; border-color:#6e2b2b; }
-  button.pick.active { background:var(--blue); border-color:var(--blue); }
-  .talk {
-    width:100%; min-height:94px; font-size:clamp(24px,2.8vw,36px); font-weight:800;
-    padding:22px; margin-top:14px; background:var(--blue); border-color:var(--blue);
-  }
-  .talk.live { background:#da3633; border-color:#f85149; animation:pulse 1s infinite; }
-  @keyframes pulse { 50% { opacity:.7; } }
-  .timer { font-size:clamp(54px,8vw,86px); font-weight:800; font-variant-numeric:tabular-nums;
-    text-align:center; margin:10px 0; }
-  .side-timers { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:14px 0; }
-  .side-timer { background:#0d1117; border:1px solid var(--border); border-radius:14px; padding:14px; text-align:center; }
-  .side-timer strong { display:block; font-size:clamp(15px,1.5vw,19px); margin-bottom:6px; }
-  .side-timer span { font-size:clamp(28px,4vw,44px); font-weight:800; font-variant-numeric:tabular-nums; }
-  .side-timer.over span { color:#f85149; }
-  .seg { text-align:center; font-size:clamp(22px,2.5vw,32px); font-weight:800; }
-  .sidechip { display:inline-block; padding:2px 10px; border-radius:20px;
-    font-size:clamp(14px,1.4vw,18px); margin-left:6px; }
-  .side-正方 { background:#132e1c; color:#3fb950; }
-  .side-反方 { background:#2e1616; color:#f85149; }
-  .side-雙方, .side-準備 { background:#22272e; color:#8b949e; }
-  .poschip { display:inline-block; padding:3px 9px; border-radius:8px;
-    font-size:14px; background:#1f2937; color:#c9d1d9; }
-  ul.roster { list-style:none; margin:6px 0 0; padding:0; }
-  ul.roster li { padding:12px 14px; border-radius:12px; background:#0d1117;
-    margin-bottom:8px; display:flex; gap:10px; align-items:center; font-size:clamp(16px,1.6vw,20px); }
-  .dot { width:9px; height:9px; border-radius:50%; background:#3fb950; }
-  .dot.off { background:#6e7681; }
-  .badge { font-size:14px; padding:3px 9px; border-radius:8px; background:#30363d; }
-  .meterwrap { height:12px; background:#0d1117; border-radius:7px; overflow:hidden;
-    margin-top:12px; }
-  .meter { height:100%; width:0%; background:#3fb950; transition:width .08s; }
-  #log { font-size:16px; color:var(--muted); max-height:170px; overflow:auto;
-    white-space:pre-wrap; line-height:1.5; }
-  #transcript, #judgement { font-size:clamp(16px,1.55vw,20px); color:#c9d1d9; max-height:260px; overflow:auto;
-    white-space:pre-wrap; line-height:1.7; }
-  #judgement { color:#f0f6fc; }
-  .test-result { margin-top:8px; font-size:clamp(16px,1.5vw,19px); color:#c9d1d9; white-space:pre-wrap; line-height:1.6; }
-  .hidden { display:none !important; }
-  .status { font-size:clamp(16px,1.55vw,20px); color:#f3bd55; line-height:1.5; }
-  @media (max-width: 560px) {
-    body { padding:max(.85rem,env(safe-area-inset-top)) .85rem calc(1rem + env(safe-area-inset-bottom)); }
-    .practice-nav { align-items:stretch; flex-direction:column; gap:.55rem; margin-bottom:.75rem; }
-    .practice-nav strong { font-size:1.4rem; }
-    .back-link { min-height:2.7rem; padding:.55rem .9rem; border-width:1px; border-radius:8px; text-align:center; font-size:16px; }
-    .card { border-radius:12px; padding:1rem; margin-bottom:.85rem; }
-    .row { gap:8px; }
-    .top-row { align-items:flex-start; }
-    .code { font-size:30px; letter-spacing:4px; }
-    button { width:100%; min-height:2.7rem; padding:.55rem .8rem; border-width:1px; border-radius:8px; font-size:16px; }
-    #rolePick button { flex:1 1 0; }
-    #hostControls .row button, #networkTest .row button { flex:1 1 45%; }
-    .talk { min-height:72px; font-size:21px; padding:.8rem; }
-    .timer { font-size:46px; margin:4px 0; }
-    .side-timers { gap:.55rem; }
-    .side-timer { padding:.7rem; border-radius:8px; }
-    .side-timer span { font-size:25px; }
-    #log { max-height:130px; }
-    #transcript, #judgement { max-height:200px; }
-  }
-</style>
-</head>
-<body>
-  <div class="practice-nav hidden" id="practiceNav">
-    <strong>🎧 聯機辯論練習</strong>
-    <a class="back-link" href="/practice/ai-debate">◀ 返回 AI 練習</a>
-  </div>
-  <div class="card">
-    <div class="row top-row">
-      <div class="grow">
-        <h2>🎧 連線練習室 <span id="modeLabel" class="muted"></span></h2>
-        <div class="muted" id="topicLine"></div>
-      </div>
-      <div style="text-align:right">
-        <div class="muted">房間代碼</div>
-        <div class="code" id="codeText">-----</div>
-      </div>
-    </div>
-    <div class="status" id="connStatus">連線中…</div>
-  </div>
-
-  <div class="card" id="networkTest">
-    <div class="muted" style="margin-bottom:6px">開始前測試</div>
-    <div class="test-result" id="networkTestResult">主持按「開始」後，系統會自動檢查所有成員的麥克風、播放權限及連線狀態；全部通過後才會開始。</div>
-  </div>
-
-  <div class="card">
-    <div class="muted">成員</div>
-    <ul class="roster" id="roster"></ul>
-    <div class="row" id="rolePick" style="margin-top:8px">
-      <span class="muted" id="rolePickLabel">選擇立場：</span>
-      <span class="row" id="rolePickButtons"></span>
-    </div>
-  </div>
-
-  <div class="card" id="stage">
-    <div class="seg" id="segLabel">等待開始…</div>
-    <div class="timer" id="timer">00:00</div>
-    <div class="side-timers hidden" id="sideTimers">
-      <div class="side-timer" id="proTimerBox"><strong>正方已用</strong><span id="proTimer">00:00</span></div>
-      <div class="side-timer" id="conTimerBox"><strong>反方已用</strong><span id="conTimer">00:00</span></div>
-    </div>
-    <div class="muted" id="segSub" style="text-align:center"></div>
-    <div class="meterwrap"><div class="meter" id="meter"></div></div>
-    <button class="talk" id="talkBtn" disabled>按一下開始發言</button>
-    <div class="status" id="turnHint" style="text-align:center;margin-top:6px"></div>
-  </div>
-
-  <div class="card" id="hostControls">
-    <div class="muted" style="margin-bottom:6px">主持控制</div>
-    <div class="row">
-      <button class="primary" id="startBtn">開始</button>
-      <button id="prevBtn">上一段</button>
-      <button id="nextBtn">下一段 ▶</button>
-      <button id="judgeBtn">AI 評判</button>
-      <button class="warn" id="endBtn">結束</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="muted">狀態記錄</div>
-    <div id="log"></div>
-  </div>
-
-  <div class="card">
-    <div class="muted">逐字稿</div>
-    <div id="transcript">支援語音轉文字的瀏覽器會自動記錄發言，方便 AI 評判。</div>
-  </div>
-
-  <div class="card">
-    <div class="muted">AI 評判</div>
-    <div id="judgement">練習後由主持按「AI 評判」，系統會根據逐字稿判定勝方並提供建議。</div>
-  </div>
-
-<script>
-  // ── injected by _render_room_debate_component ──
-  const ROOM_CODE = __ROOM_CODE__;
-  const ROOM_WS_BASE = __ROOM_WS_BASE__;
-  const MODE = __MODE__;                 // "A" | "B"
-  const BELL_SRC = __BELL_SRC__;
-  const BELL_VOLUME = 0.9;
-
-  // ── state ──
-  let ws = null, myUid = null, isHost = false, myRole = null, myPosition = null;
-  let roomStructure = "", positionLabels = {}, requiredPositions = [];
-  let phase = "lobby", segIndex = 0, segTotal = 0, segLabel = "", segSide = "";
-  let segSeconds = 0, segBells = [], segStartedMs = null, activeSpeaker = null;
-  let sideElapsedMs = { "正方": 0, "反方": 0 };
-  let activeTurnUser = null, activeTurnSide = null, activeTurnStartedMs = null;
-  let expectedTurnSide = null;
-  let serverOffset = 0;                  // serverNow = Date.now() + serverOffset
-  let firedBells = new Set();
-  let isRecording = false, micReady = false, reconnectTimer = 0, reconnectAttempt = 0;
-  let aiSpeaking = false;
-  let recognition = null, recogText = "", recognitionFinal = "", recognitionStopping = false;
-  let transcriptItems = [];
-  let precheckActive = false, activePrecheckId = null;
-  let networkTestStartedAt = 0, networkTestTimer = 0;
-  let stream = null, inputCtx = null, sourceNode = null, processor = null;
-  let outputCtx = null, playAt = 0;
-  const JITTER_BUFFER_SECONDS = 0.12;
-  let bellCtx = null, bellBuffer = null, bellLoading = null;
-
-  const $ = (id) => document.getElementById(id);
-  if (new URLSearchParams(location.search).get("from") === "practice") {
-    $("practiceNav").classList.remove("hidden");
-  }
-  function log(msg) {
-    const el = $("log");
-    el.textContent += (el.textContent ? "\n" : "") + msg;
-    el.scrollTop = el.scrollHeight;
-  }
-  function setConn(txt) { $("connStatus").textContent = txt; }
-  function appendTranscript(item) {
-    if (!item || !item.text) return;
-    transcriptItems.push(item);
-    renderTranscriptBySide();
-  }
-  function transcriptLine(item) {
-    const speaker = (item.side || "未標示") + (item.speaker ? "（" + item.speaker + "）" : "");
-    return speaker + "：" + item.text;
-  }
-  function renderTranscriptBySide() {
-    const el = $("transcript");
-    if (!transcriptItems.length) {
-      el.textContent = "支援語音轉文字的瀏覽器會自動記錄發言，方便 AI 評判。";
-      return;
-    }
-    const pro = transcriptItems.filter(item => item.side === "正方").map(transcriptLine);
-    const con = transcriptItems.filter(item => item.side === "反方").map(transcriptLine);
-    const other = transcriptItems.filter(item => item.side !== "正方" && item.side !== "反方").map(transcriptLine);
-    const sections = [
-      "正方：\n" + (pro.length ? pro.join("\n") : "（暫未記錄）"),
-      "反方：\n" + (con.length ? con.join("\n") : "（暫未記錄）")
-    ];
-    if (other.length) sections.push("其他：\n" + other.join("\n"));
-    el.textContent = sections.join("\n\n");
-    el.scrollTop = el.scrollHeight;
-  }
-  function renderTranscript(list) {
-    transcriptItems = (list || []).filter(item => item && item.text);
-    renderTranscriptBySide();
-  }
-
-  // ── committee token from parent app (same as live_debate authToken) ──
-  function authToken() {
-    try {
-      const t = window.parent && window.parent.localStorage
-        ? window.parent.localStorage.getItem("committee_user") : "";
-      if (t) return t;
-    } catch (e) {}
-    try { return window.localStorage.getItem("committee_user") || ""; }
-    catch (e) { return ""; }
-  }
-  function wsBase() {
-    if (ROOM_WS_BASE) return ROOM_WS_BASE;
-    try {
-      const loc = window.parent.location;
-      return (loc.protocol === "https:" ? "wss:" : "ws:") + "//" + loc.host + "/room";
-    } catch (e) {}
-    return (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/room";
-  }
-
-  // ── audio helpers (copied from live_debate.html) ──
-  function downsampleBuffer(buffer, inputRate, outputRate) {
-    if (outputRate === inputRate) return buffer;
-    const ratio = inputRate / outputRate;
-    const newLength = Math.round(buffer.length / ratio);
-    const result = new Float32Array(newLength);
-    for (let i = 0; i < newLength; i++) result[i] = buffer[Math.floor(i * ratio)] || 0;
-    return result;
-  }
-  function floatTo16BitPCM(float32) {
-    const pcm = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32[i]));
-      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    return pcm;
-  }
-  function bytesToBase64(bytes) {
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk)
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-    return btoa(binary);
-  }
-  function pcmBase64ToFloat32(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const view = new DataView(bytes.buffer);
-    const samples = new Float32Array(bytes.byteLength / 2);
-    for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
-    return samples;
-  }
-  function playPcm(base64, mimeType) {
-    if (!outputCtx) outputCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (outputCtx.state === "suspended") outputCtx.resume();
-    const m = String(mimeType || "").match(/rate=(\d+)/);
-    const sampleRate = m ? parseInt(m[1], 10) : 24000;
-    const samples = pcmBase64ToFloat32(base64);
-    if (!samples.length) return;
-    const buffer = outputCtx.createBuffer(1, samples.length, sampleRate);
-    buffer.copyToChannel(samples, 0);
-    const src = outputCtx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(outputCtx.destination);
-    // Keep a short queue ahead of the speaker.  Starting every received PCM
-    // frame immediately creates audible dropouts whenever mobile WebSocket
-    // delivery is bursty; this buffer trades 120 ms latency for continuity.
-    playAt = Math.max(playAt, outputCtx.currentTime + JITTER_BUFFER_SECONDS);
-    src.start(playAt);
-    playAt += buffer.duration;
-  }
-
-  // ── mode B server-side TTS: play the shared Azure/custom voice blobs, in the
-  // order the server sent them (one queue, one <audio> at a time), so every
-  // member hears the same synthesized sentences. Cleared on barge-in/interrupt.
-  let ttsQueue = [], ttsPlaying = false, ttsCurrentAudio = null, ttsCurrentUrl = "";
-  function base64ToBlob(b64, mime) {
-    const bin = atob(b64 || "");
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new Blob([bytes], { type: mime || "audio/mpeg" });
-  }
-  function enqueueTtsAudio(b64, mime) {
-    if (!b64) return;
-    ttsQueue.push(base64ToBlob(b64, mime));
-    processTtsQueue();
-  }
-  function processTtsQueue() {
-    if (ttsPlaying) return;
-    const blob = ttsQueue.shift();
-    if (!blob) return;
-    ttsPlaying = true;
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    ttsCurrentAudio = audio;
-    ttsCurrentUrl = url;
-    const done = () => {
-      URL.revokeObjectURL(url);
-      if (ttsCurrentAudio === audio) ttsCurrentAudio = null;
-      if (ttsCurrentUrl === url) ttsCurrentUrl = "";
-      ttsPlaying = false;
-      processTtsQueue();
-    };
-    audio.onended = done;
-    audio.onerror = done;
-    audio.play().catch(done);
-  }
-  function clearTtsQueue() {
-    ttsQueue = [];
-    if (ttsCurrentAudio) {
-      try { ttsCurrentAudio.pause(); } catch (e) {}
-    }
-    if (ttsCurrentUrl) {
-      try { URL.revokeObjectURL(ttsCurrentUrl); } catch (e) {}
-    }
-    ttsCurrentAudio = null;
-    ttsCurrentUrl = "";
-    ttsPlaying = false;
-  }
-
-  function setNetworkTest(text) {
-    $("networkTestResult").textContent = text;
-  }
-  function makeTestToneBase64() {
-    const sampleRate = 16000;
-    const seconds = 0.7;
-    const count = Math.floor(sampleRate * seconds);
-    const pcm = new Int16Array(count);
-    for (let i = 0; i < count; i++) {
-      const t = i / sampleRate;
-      const wave = Math.sin(2 * Math.PI * 880 * t);
-      const fade = Math.min(1, i / 800, (count - i) / 800);
-      pcm[i] = Math.round(wave * fade * 0x3fff);
-    }
-    return bytesToBase64(new Uint8Array(pcm.buffer));
-  }
-  async function playLocalTestTone() {
-    if (!outputCtx) outputCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (outputCtx.state === "suspended") await outputCtx.resume();
-    playPcm(makeTestToneBase64(), "audio/pcm;rate=16000");
-  }
-  function latencyLabel(ms) {
-    if (ms < 150) return "穩定";
-    if (ms < 400) return "一般";
-    return "偏慢";
-  }
-  async function checkPermissions() {
-    const lines = [];
-    let ok = true;
-    try {
-      await playLocalTestTone();
-      lines.push("音訊播放：正常");
-    } catch (e) {
-      lines.push("音訊播放：未能播放");
-      ok = false;
-    }
-    try {
-      await startMic();
-      lines.push("麥克風權限：已允許");
-    } catch (e) {
-      lines.push("麥克風權限：未允許（" + e.message + "）");
-      ok = false;
-    }
-    const wsOk = !!(ws && ws.readyState === WebSocket.OPEN);
-    lines.push("房間連線：" + (wsOk ? "已連線" : "未連線"));
-    if (!wsOk) ok = false;
-    const message = lines.join("\n");
-    setNetworkTest(message);
-    return { ok, message };
-  }
-  async function runNetworkTest() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setNetworkTest("未連線，無法進行測試。");
-      return;
-    }
-    try { await playLocalTestTone(); } catch (e) {}
-    networkTestStartedAt = Date.now();
-    setNetworkTest("測試中：已播放本機測試聲，並向房內其他人發送測試聲…");
-    if (networkTestTimer) clearTimeout(networkTestTimer);
-    networkTestTimer = setTimeout(() => {
-      setNetworkTest("測試超時：WebSocket 回應偏慢或已斷線。");
-    }, 4000);
-    const tone = makeTestToneBase64();
-    ws.send(JSON.stringify({ type: "test_ping", client_ts: networkTestStartedAt }));
-    ws.send(JSON.stringify({ type: "test_audio", data: tone, mimeType: "audio/pcm;rate=16000" }));
-  }
-  async function startMic() {
-    if (micReady) return;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
-      throw new Error("此瀏覽器不支援麥克風錄音。");
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
-    inputCtx = new (window.AudioContext || window.webkitAudioContext)();
-    await inputCtx.resume();
-    sourceNode = inputCtx.createMediaStreamSource(stream);
-    processor = inputCtx.createScriptProcessor(2048, 1, 1);
-    processor.onaudioprocess = (event) => {
-      if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const raw = event.inputBuffer.getChannelData(0);
-      let peak = 0;
-      for (let i = 0; i < raw.length; i++) peak = Math.max(peak, Math.abs(raw[i]));
-      $("meter").style.width = Math.min(100, Math.round(peak * 150)) + "%";
-      const down = downsampleBuffer(raw, inputCtx.sampleRate, 16000);
-      const pcm = floatTo16BitPCM(down);
-      ws.send(JSON.stringify({
-        type: "audio",
-        data: bytesToBase64(new Uint8Array(pcm.buffer)),
-        mimeType: "audio/pcm;rate=16000"
-      }));
-    };
-    sourceNode.connect(processor);
-    // ScriptProcessor needs an output connection in some browsers, but routing
-    // the mic straight to speakers causes feedback and can suspend the audio
-    // graph on mobile. Keep a silent sink instead.
-    const silentGain = inputCtx.createGain();
-    silentGain.gain.value = 0;
-    processor.connect(silentGain);
-    silentGain.connect(inputCtx.destination);
-    micReady = true;
-  }
-
-  // ── bells (copied/adapted from live_debate.html) ──
-  function getBellCtx() {
-    if (!bellCtx) bellCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (bellCtx.state === "suspended") bellCtx.resume();
-    return bellCtx;
-  }
-  function loadBell() {
-    if (!BELL_SRC) return Promise.resolve(null);
-    if (!bellLoading) {
-      bellLoading = fetch(BELL_SRC).then(r => r.arrayBuffer())
-        .then(a => getBellCtx().decodeAudioData(a))
-        .then(b => { bellBuffer = b; return b; }).catch(() => null);
-    }
-    return bellLoading;
-  }
-  function playTone(count) {
-    const ctx = getBellCtx();
-    for (let i = 0; i < count; i++) {
-      const osc = ctx.createOscillator(), gain = ctx.createGain();
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.8);
-      gain.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + i * 0.8 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.8 + 0.28);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + i * 0.8); osc.stop(ctx.currentTime + i * 0.8 + 0.3);
-    }
-  }
-  async function playBell(count) {
-    const ctx = getBellCtx();
-    if (ctx.state === "suspended") await ctx.resume();
-    if (!bellBuffer) await loadBell();
-    if (!bellBuffer) { playTone(count); return; }
-    for (let i = 0; i < count; i++) {
-      const src = ctx.createBufferSource(), gain = ctx.createGain();
-      src.buffer = bellBuffer; gain.gain.value = BELL_VOLUME;
-      src.connect(gain); gain.connect(ctx.destination);
-      src.start(ctx.currentTime + i * 0.8);
-    }
-  }
-  function fireBellOnce(key, rings) {
-    if (firedBells.has(key)) return;
-    firedBells.add(key);
-    playBell(rings);
-  }
-  function formatTime(sec) {
-    const m = Math.max(0, Math.floor(sec / 60)), s = Math.max(0, Math.floor(sec % 60));
-    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-  }
-
-  // ── server-authoritative timer follower ──
-  function serverNow() { return Date.now() + serverOffset; }
-  function segElapsed() {
-    if (phase !== "active" || segStartedMs == null) return 0;
-    return (serverNow() - segStartedMs) / 1000;
-  }
-  function sideUsedSeconds(side) {
-    let ms = Number(sideElapsedMs[side] || 0);
-    if (activeTurnSide === side && activeTurnStartedMs != null) {
-      ms += Math.max(0, serverNow() - activeTurnStartedMs);
-    }
-    return ms / 1000;
-  }
-  function updateSideTimers() {
-    const isFree = phase === "active" && segSide === "雙方";
-    $("sideTimers").classList.toggle("hidden", !isFree);
-    if (!isFree) return;
-    const pro = sideUsedSeconds("正方");
-    const con = sideUsedSeconds("反方");
-    $("proTimer").textContent = formatTime(pro) + " / " + formatTime(segSeconds);
-    $("conTimer").textContent = formatTime(con) + " / " + formatTime(segSeconds);
-    $("proTimerBox").classList.toggle("over", segSeconds && pro >= segSeconds);
-    $("conTimerBox").classList.toggle("over", segSeconds && con >= segSeconds);
-  }
-  function tick() {
-    updateSideTimers();
-    if (phase !== "active" || segStartedMs == null) return;
-    const elapsed = segElapsed();
-    if (segSide === "雙方" && myRole) {
-      $("timer").textContent = formatTime(sideUsedSeconds(myRole));
-    } else {
-      $("timer").textContent = formatTime(elapsed);
-    }
-    if (segSide === "雙方") {
-      if (activeTurnSide) {
-        const used = sideUsedSeconds(activeTurnSide);
-        segBells.forEach((b, i) => {
-          if (used >= Number(b.t || 0)) fireBellOnce("b" + activeTurnSide + "-" + i, Number(b.rings || 1));
-        });
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0e1117;
+        --panel: #262730;
+        --panel-2: #171923;
+        --border: #3a3d46;
+        --text: #fafafa;
+        --muted: #9aa0ab;
+        --green: #29b46b;
+        --blue: #4c9bff;
+        --red: #ff5c5c;
+        --amber: #ffd27d;
       }
-    } else {
-      segBells.forEach((b, i) => {
-        if (elapsed >= Number(b.t || 0)) fireBellOnce("b" + segIndex + "-" + i, Number(b.rings || 1));
-      });
-    }
-    const over = segSeconds && (
-      (segSide === "雙方" && myRole) ? sideUsedSeconds(myRole) >= segSeconds : elapsed >= segSeconds
-    );
-    $("timer").style.color = over ? "#f85149" : "#e6e6e6";
-    if (isRecording && !canSpeak()) stopTalk();
-    else refreshTalk();
-  }
-  setInterval(tick, 250);
-
-  // ── UI derivation ──
-  function canSpeak() {
-    if (phase !== "active" || segSide === "準備") return false;
-    if (aiSpeaking) return false;
-    if (activeTurnUser && activeTurnUser !== myUid) return false;
-    if (MODE === "B") {
-      // Mode B: the team shares one side; members speak only on their own-side
-      // segments or the free (雙方) segment. AI-side segments are AI-only.
-      if (segSide !== myRole && segSide !== "雙方") return false;
-      if (activeSpeaker != null) return activeSpeaker === myUid;
-      if (segSide === "雙方" && segSeconds && myRole && sideUsedSeconds(myRole) >= segSeconds) return false;
-      return true;
-    }
-    if (expectedTurnSide && myRole !== expectedTurnSide) return false;
-    if (segSide === "雙方" && segSeconds && myRole && sideUsedSeconds(myRole) >= segSeconds) return false;
-    if (activeSpeaker == null) return segSide === "雙方";   // free debate: both open
-    return activeSpeaker === myUid;
-  }
-  function refreshTalk() {
-    const btn = $("talkBtn");
-    const ok = canSpeak();
-    btn.disabled = !ok;
-    if (!ok && isRecording) stopTalk();
-    if (phase !== "active") { $("turnHint").textContent = ""; return; }
-    if (aiSpeaking) $("turnHint").textContent = "🤖 AI 發言中…";
-    else if (ok) $("turnHint").textContent = isRecording ? "錄音中 — 再按一下停止" : "輪到你 — 按一下開始，發言完畢後再按一下停止";
-    else if (segSide === "準備") $("turnHint").textContent = "準備時間";
-    else if (MODE === "B" && segSide && segSide !== myRole && segSide !== "雙方") $("turnHint").textContent = "輪到 AI（" + segSide + "）發言";
-    else if (MODE === "B" && activeSpeaker && activeSpeaker !== myUid) $("turnHint").textContent = "輪到已分配辯位嘅隊員發言";
-    else if (expectedTurnSide) $("turnHint").textContent = "自由辯論由" + expectedTurnSide + "先發言";
-    else if (segSide === "雙方" && segSeconds && myRole && sideUsedSeconds(myRole) >= segSeconds) $("turnHint").textContent = "你方時間已用完";
-    else if (activeTurnUser && activeTurnUser !== myUid) $("turnHint").textContent = "等待對方發言完畢…";
-    else $("turnHint").textContent = "等待其他人發言…";
-  }
-  function updateHostButtons() {
-    if (!isHost) return;
-    $("startBtn").disabled = phase !== "lobby" || precheckActive;
-    $("startBtn").textContent = precheckActive ? "檢查中…" : "開始";
-    $("prevBtn").disabled = phase !== "active" || segIndex <= 0;
-    $("nextBtn").disabled = phase !== "active" || segTotal <= 1 || segIndex >= segTotal - 1;
-    $("judgeBtn").disabled = phase === "lobby";
-  }
-  function renderRolePick() {
-    const box = $("rolePick");
-    const buttons = $("rolePickButtons");
-    buttons.innerHTML = "";
-    const showSidePick = MODE === "A" && phase === "lobby";
-    const showPositionPick = MODE === "B" && roomStructure === "mock" && phase === "lobby";
-    box.classList.toggle("hidden", !(showSidePick || showPositionPick));
-    if (showSidePick) {
-      $("rolePickLabel").textContent = "選擇立場：";
-      ["正方", "反方"].forEach(side => {
-        const b = document.createElement("button");
-        b.className = "pick" + (side === myRole ? " active" : "");
-        b.textContent = side;
-        b.dataset.side = side;
-        b.addEventListener("click", () => {
-          if (ws && ws.readyState === WebSocket.OPEN)
-            ws.send(JSON.stringify({ type: "claim_role", side }));
-        });
-        buttons.appendChild(b);
-      });
-    } else if (showPositionPick) {
-      $("rolePickLabel").textContent = "選擇辯位：";
-      const positions = requiredPositions.length
-        ? requiredPositions.map(Number)
-        : Object.keys(positionLabels).map(Number).filter(Boolean).sort((a, b) => a - b);
-      positions.forEach(pos => {
-        const b = document.createElement("button");
-        b.className = "pick" + (pos === myPosition ? " active" : "");
-        b.textContent = positionLabels[pos] || ("第 " + pos + " 位");
-        b.dataset.position = pos;
-        b.addEventListener("click", () => {
-          if (ws && ws.readyState === WebSocket.OPEN)
-            ws.send(JSON.stringify({ type: "claim_position", position: pos }));
-        });
-        buttons.appendChild(b);
-      });
-    }
-  }
-  function renderRoster(list) {
-    const ul = $("roster"); ul.innerHTML = "";
-    let sawMe = false;
-    (list || []).forEach(m => {
-      const li = document.createElement("li");
-      const nm = m.user_id === myUid ? (m.user_id + "（你）") : m.user_id;
-      li.innerHTML = '<span class="dot' + (m.connected ? "" : " off") + '"></span>' +
-        '<span class="grow">' + nm + '</span>' +
-        (m.role ? '<span class="sidechip side-' + m.role + '">' + m.role + '</span>' : "") +
-        (m.position_label ? '<span class="poschip">' + m.position_label + '</span>' : "") +
-        (m.is_host ? '<span class="badge">主持</span>' : "");
-      ul.appendChild(li);
-      if (m.user_id === myUid) {
-        sawMe = true;
-        if (m.role) myRole = m.role;
-        myPosition = m.position || null;
+      * {
+        box-sizing: border-box;
       }
-    });
-    if (!sawMe) myPosition = null;
-    renderRolePick();
-  }
-  function applyState(s) {
-    phase = s.phase; segIndex = s.seg_index; segTotal = s.seg_total;
-    if (phase === "active" || phase === "ended") {
-      precheckActive = false;
-      activePrecheckId = null;
-    }
-    segLabel = s.seg_label || ""; segSide = s.side || "";
-    segSeconds = s.seconds || 0; segBells = s.bells || [];
-    activeSpeaker = s.active_speaker;
-    sideElapsedMs = s.side_elapsed_ms || { "正方": 0, "反方": 0 };
-    activeTurnUser = s.active_turn_user || null;
-    activeTurnSide = s.active_turn_side || null;
-    activeTurnStartedMs = s.active_turn_started_ms || null;
-    expectedTurnSide = s.expected_turn_side || null;
-    if (s.server_now_ms) serverOffset = s.server_now_ms - Date.now();
-    if (s.seg_started_ms != null && s.seg_started_ms !== segStartedMs) firedBells = new Set();
-    segStartedMs = s.seg_started_ms;
-    const chip = segSide ? ' <span class="sidechip side-' + segSide + '">' + segSide + '</span>' : "";
-    $("segLabel").innerHTML = (phase === "lobby" ? "等待主持開始…" :
-      (phase === "ended" ? "已結束" : segLabel + chip));
-    $("segSub").textContent = (phase === "active" && segTotal > 1)
-      ? ("第 " + (segIndex + 1) + " / " + segTotal + " 段") : "";
-    if (phase !== "active") { $("timer").textContent = "00:00"; }
-    renderRolePick();
-    $("networkTest").classList.toggle("hidden", phase !== "lobby");
-    updateSideTimers();
-    updateHostButtons();
-    refreshTalk();
-  }
-
-  // ── speech recognition for AI judge transcript ──
-  function makeRecognition() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return null;
-    const r = new SR();
-    r.lang = "zh-HK";
-    r.continuous = true;
-    r.interimResults = true;
-    r.onresult = (event) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const piece = event.results[i][0].transcript || "";
-        if (event.results[i].isFinal) recognitionFinal += piece;
-        else interim += piece;
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang HK",
+          "Noto Sans CJK HK", "Microsoft JhengHei", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        padding: clamp(12px, 2.5vw, 30px);
+        max-width: 1100px;
+        margin: 0 auto;
       }
-      recogText = (recognitionFinal + interim).trim();
-    };
-    r.onerror = (event) => {
-      // Network/no-speech ends are common on mobile.  Keep recording audio and
-      // restart recognition below where the browser permits it.
-      if (event.error !== "aborted") log("逐字稿暫時中斷：" + event.error);
-    };
-    r.onend = () => {
-      if (isRecording && !recognitionStopping) {
-        try { r.start(); } catch (e) {}
+      .practice-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 18px;
       }
-    };
-    return r;
-  }
-  function startRecognition() {
-    recogText = ""; recognitionFinal = ""; recognitionStopping = false;
-    recognition = makeRecognition();
-    if (!recognition) return;
-    try { recognition.start(); } catch (e) {}
-  }
-  function stopRecognitionAndSend() {
-    const text = (recognitionFinal || recogText).trim();
-    if (recognition) {
-      recognitionStopping = true;
-      try { recognition.stop(); } catch (e) {}
-    }
-    recognition = null;
-    recogText = "";
-    if (text && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "transcript", text }));
-    }
-  }
-
-  // ── talk (toggle recording) ──
-  async function startTalk() {
-    if (!canSpeak() || isRecording) return;
-    try { await startMic(); } catch (e) { log("麥克風錯誤：" + e.message); return; }
-    isRecording = true;
-    $("talkBtn").classList.add("live");
-    $("talkBtn").textContent = "按一下停止";
-    startRecognition();
-    refreshTalk();
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_begin" }));
-  }
-  function stopTalk(sendTurn = true, sendTranscript = true) {
-    if (!isRecording) return;
-    isRecording = false;
-    $("meter").style.width = "0%";
-    $("talkBtn").classList.remove("live");
-    $("talkBtn").textContent = "按一下開始發言";
-    if (sendTranscript) stopRecognitionAndSend();
-    else if (recognition) {
-      recognitionStopping = true;
-      try { recognition.stop(); } catch (e) {}
-      recognition = null;
-      recogText = "";
-    }
-    refreshTalk();
-    if (sendTurn && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "turn_end" }));
-  }
-  function toggleTalk() {
-    if (isRecording) stopTalk();
-    else startTalk();
-  }
-
-  // ── mode B: play the shared AI (Gemini Live) native audio, synced to all ──
-  function handleServerContent(sc) {
-    if (!sc) return;
-    if (sc.interrupted) {
-      if (outputCtx) playAt = outputCtx.currentTime;
-      clearTtsQueue();  // barge-in: drop any queued/playing synthesized speech
-    }
-    const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
-    parts.forEach(part => {
-      if (part.inlineData && part.inlineData.data) {
-        playPcm(part.inlineData.data, part.inlineData.mimeType);
+      .practice-nav strong {
+        font-size: clamp(22px, 2.6vw, 34px);
       }
-    });
-  }
-
-  // ── websocket ──
-  function connect() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-    const token = authToken();
-    if (!ROOM_CODE) { setConn("未有房間代碼。"); return; }
-    // New HTML pages authenticate with an HttpOnly same-origin cookie.  The
-    // server also accepts the legacy localStorage token when one exists.
-    const url = wsBase() + "/" + ROOM_CODE + (token ? "?u=" + encodeURIComponent(token) : "");
-    ws = new WebSocket(url);
-    ws.onopen = () => { reconnectAttempt = 0; setConn("已連線 ✅"); };
-    ws.onclose = (ev) => {
-      ws = null;
-      const retryable = ev.code !== 1008 && ev.code !== 1013;
-      const delay = Math.min(12000, 1000 * Math.pow(2, reconnectAttempt++));
-      setConn("連線中斷（" + ev.code + "）。" + (retryable ? Math.ceil(delay / 1000) + " 秒後重試…" : "房間不存在或尚未登入。"));
-      if (retryable && !reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = 0; connect(); }, delay);
-    };
-    ws.onerror = () => { setConn("連線錯誤。"); };
-    ws.onmessage = (ev) => {
-      let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      handle(msg);
-    };
-  }
-  function handle(msg) {
-    switch (msg.type) {
-      case "roster":
-        if (msg.you) myUid = msg.you;
-        if (msg.structure) roomStructure = msg.structure;
-        if (msg.position_labels) positionLabels = msg.position_labels;
-        if (msg.required_positions) requiredPositions = msg.required_positions;
-        if (typeof msg.is_host === "boolean") {
-          isHost = msg.is_host;
-          $("hostControls").classList.toggle("hidden", !isHost);
-          updateHostButtons();
+      .back-link {
+        color: var(--muted);
+        text-decoration: none;
+        background: var(--panel-2);
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 20px;
+        font-size: clamp(16px, 1.7vw, 22px);
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: clamp(18px, 2.5vw, 28px);
+        margin-bottom: 18px;
+      }
+      .row {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .grow {
+        flex: 1 1 auto;
+      }
+      h2 {
+        margin: 0 0 6px;
+        font-size: clamp(22px, 2.4vw, 31px);
+      }
+      .muted {
+        color: var(--muted);
+        font-size: clamp(15px, 1.5vw, 19px);
+        line-height: 1.5;
+      }
+      .code {
+        font-size: clamp(30px, 4vw, 48px);
+        font-weight: 800;
+        letter-spacing: 6px;
+        color: #60a5fa;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      button {
+        min-height: 56px;
+        font-size: clamp(17px, 1.7vw, 22px);
+        font-weight: 750;
+        padding: 12px 20px;
+        border-radius: 14px;
+        border: 2px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+        cursor: pointer;
+        transition: 0.12s;
+      }
+      button:hover:not(:disabled) {
+        background: #30363d;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      button.primary {
+        background: var(--green);
+        border-color: var(--green);
+        color: #fff;
+      }
+      button.primary:hover:not(:disabled) {
+        background: #2fa863;
+      }
+      button.warn {
+        background: #3d1f1f;
+        border-color: #6e2b2b;
+      }
+      button.pick.active {
+        background: var(--blue);
+        border-color: var(--blue);
+      }
+      .talk {
+        width: 100%;
+        min-height: 94px;
+        font-size: clamp(24px, 2.8vw, 36px);
+        font-weight: 800;
+        padding: 22px;
+        margin-top: 14px;
+        background: var(--blue);
+        border-color: var(--blue);
+      }
+      .talk.live {
+        background: #da3633;
+        border-color: #f85149;
+        animation: pulse 1s infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.7;
         }
-        if (msg.topic != null) $("topicLine").textContent = msg.topic ? ("辯題：" + msg.topic) : "";
-        if (msg.transcript) renderTranscript(msg.transcript);
-        if (msg.judgement) $("judgement").textContent = msg.judgement;
-        renderRoster(msg.roster);
-        break;
-      case "state": applyState(msg); break;
-      case "precheck_request":
-        runAutoPrecheck(msg.check_id);
-        break;
-      case "precheck_status":
-        renderPrecheckStatus(msg);
-        break;
-      case "precheck_failed":
-        precheckActive = false;
-        renderPrecheckStatus(msg, true);
-        updateHostButtons();
-        break;
-      case "peer_audio": if (msg.from !== myUid) playPcm(msg.data, msg.mimeType); break;
-      case "test_pong": {
-        const sent = Number(msg.client_ts || networkTestStartedAt || 0);
-        const rtt = sent ? Date.now() - sent : 0;
+      }
+      .timer {
+        font-size: clamp(54px, 8vw, 86px);
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+        margin: 10px 0;
+      }
+      .side-timers {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin: 14px 0;
+      }
+      .side-timer {
+        background: #0d1117;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+        text-align: center;
+      }
+      .side-timer strong {
+        display: block;
+        font-size: clamp(15px, 1.5vw, 19px);
+        margin-bottom: 6px;
+      }
+      .side-timer span {
+        font-size: clamp(28px, 4vw, 44px);
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+      .side-timer.over span {
+        color: #f85149;
+      }
+      .seg {
+        text-align: center;
+        font-size: clamp(22px, 2.5vw, 32px);
+        font-weight: 800;
+      }
+      .sidechip {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 20px;
+        font-size: clamp(14px, 1.4vw, 18px);
+        margin-left: 6px;
+      }
+      .side-正方 {
+        background: #132e1c;
+        color: #3fb950;
+      }
+      .side-反方 {
+        background: #2e1616;
+        color: #f85149;
+      }
+      .side-雙方,
+      .side-準備 {
+        background: #22272e;
+        color: #8b949e;
+      }
+      .poschip {
+        display: inline-block;
+        padding: 3px 9px;
+        border-radius: 8px;
+        font-size: 14px;
+        background: #1f2937;
+        color: #c9d1d9;
+      }
+      ul.roster {
+        list-style: none;
+        margin: 6px 0 0;
+        padding: 0;
+      }
+      ul.roster li {
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: #0d1117;
+        margin-bottom: 8px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        font-size: clamp(16px, 1.6vw, 20px);
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #3fb950;
+      }
+      .dot.off {
+        background: #6e7681;
+      }
+      .badge {
+        font-size: 14px;
+        padding: 3px 9px;
+        border-radius: 8px;
+        background: #30363d;
+      }
+      .meterwrap {
+        height: 12px;
+        background: #0d1117;
+        border-radius: 7px;
+        overflow: hidden;
+        margin-top: 12px;
+      }
+      .meter {
+        height: 100%;
+        width: 0%;
+        background: #3fb950;
+        transition: width 0.08s;
+      }
+      #log {
+        font-size: 16px;
+        color: var(--muted);
+        max-height: 170px;
+        overflow: auto;
+        white-space: pre-wrap;
+        line-height: 1.5;
+      }
+      #transcript,
+      #judgement {
+        font-size: clamp(16px, 1.55vw, 20px);
+        color: #c9d1d9;
+        max-height: 260px;
+        overflow: auto;
+        white-space: pre-wrap;
+        line-height: 1.7;
+      }
+      #judgement {
+        color: #f0f6fc;
+      }
+      .test-result {
+        margin-top: 8px;
+        font-size: clamp(16px, 1.5vw, 19px);
+        color: #c9d1d9;
+        white-space: pre-wrap;
+        line-height: 1.6;
+      }
+      .hidden {
+        display: none !important;
+      }
+      .status {
+        font-size: clamp(16px, 1.55vw, 20px);
+        color: #f3bd55;
+        line-height: 1.5;
+      }
+      @media (max-width: 560px) {
+        body {
+          padding: max(0.85rem, env(safe-area-inset-top)) 0.85rem
+            calc(1rem + env(safe-area-inset-bottom));
+        }
+        .practice-nav {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 0.55rem;
+          margin-bottom: 0.75rem;
+        }
+        .practice-nav strong {
+          font-size: 1.4rem;
+        }
+        .back-link {
+          min-height: 2.7rem;
+          padding: 0.55rem 0.9rem;
+          border-width: 1px;
+          border-radius: 8px;
+          text-align: center;
+          font-size: 16px;
+        }
+        .card {
+          border-radius: 12px;
+          padding: 1rem;
+          margin-bottom: 0.85rem;
+        }
+        .row {
+          gap: 8px;
+        }
+        .top-row {
+          align-items: flex-start;
+        }
+        .code {
+          font-size: 30px;
+          letter-spacing: 4px;
+        }
+        button {
+          width: 100%;
+          min-height: 2.7rem;
+          padding: 0.55rem 0.8rem;
+          border-width: 1px;
+          border-radius: 8px;
+          font-size: 16px;
+        }
+        #rolePick button {
+          flex: 1 1 0;
+        }
+        #hostControls .row button,
+        #networkTest .row button {
+          flex: 1 1 45%;
+        }
+        .talk {
+          min-height: 72px;
+          font-size: 21px;
+          padding: 0.8rem;
+        }
+        .timer {
+          font-size: 46px;
+          margin: 4px 0;
+        }
+        .side-timers {
+          gap: 0.55rem;
+        }
+        .side-timer {
+          padding: 0.7rem;
+          border-radius: 8px;
+        }
+        .side-timer span {
+          font-size: 25px;
+        }
+        #log {
+          max-height: 130px;
+        }
+        #transcript,
+        #judgement {
+          max-height: 200px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="practice-nav hidden" id="practiceNav">
+      <strong>🎧 聯機辯論練習</strong>
+      <a class="back-link" href="/practice/ai-debate">◀ 返回 AI 練習</a>
+    </div>
+    <div class="card">
+      <div class="row top-row">
+        <div class="grow">
+          <h2>🎧 連線練習室 <span id="modeLabel" class="muted"></span></h2>
+          <div class="muted" id="topicLine"></div>
+        </div>
+        <div style="text-align: right">
+          <div class="muted">房間代碼</div>
+          <div class="code" id="codeText">-----</div>
+        </div>
+      </div>
+      <div class="status" id="connStatus">連線中…</div>
+    </div>
+
+    <div class="card" id="networkTest">
+      <div class="muted" style="margin-bottom: 6px">開始前測試</div>
+      <div class="test-result" id="networkTestResult">
+        主持按「開始」後，系統會自動檢查所有成員的麥克風、播放權限及連線狀態；全部通過後才會開始。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">成員</div>
+      <ul class="roster" id="roster"></ul>
+      <div class="row" id="rolePick" style="margin-top: 8px">
+        <span class="muted" id="rolePickLabel">選擇立場：</span>
+        <span class="row" id="rolePickButtons"></span>
+      </div>
+    </div>
+
+    <div class="card" id="stage">
+      <div class="seg" id="segLabel">等待開始…</div>
+      <div class="timer" id="timer">00:00</div>
+      <div class="side-timers hidden" id="sideTimers">
+        <div class="side-timer" id="proTimerBox">
+          <strong>正方已用</strong><span id="proTimer">00:00</span>
+        </div>
+        <div class="side-timer" id="conTimerBox">
+          <strong>反方已用</strong><span id="conTimer">00:00</span>
+        </div>
+      </div>
+      <div class="muted" id="segSub" style="text-align: center"></div>
+      <div class="meterwrap"><div class="meter" id="meter"></div></div>
+      <button class="talk" id="talkBtn" disabled>按一下開始發言</button>
+      <div
+        class="status"
+        id="turnHint"
+        style="text-align: center; margin-top: 6px"
+      ></div>
+    </div>
+
+    <div class="card" id="hostControls">
+      <div class="muted" style="margin-bottom: 6px">主持控制</div>
+      <div class="row">
+        <button class="primary" id="startBtn">開始</button>
+        <button id="prevBtn">上一段</button>
+        <button id="nextBtn">下一段 ▶</button>
+        <button id="judgeBtn">AI 評判</button>
+        <button class="warn" id="endBtn">結束</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">狀態記錄</div>
+      <div id="log"></div>
+    </div>
+
+    <div class="card">
+      <div class="muted">逐字稿</div>
+      <div id="transcript">
+        支援語音轉文字的瀏覽器會自動記錄發言，方便 AI 評判。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">AI 評判</div>
+      <div id="judgement">
+        練習後由主持按「AI 評判」，系統會根據逐字稿判定勝方並提供建議。
+      </div>
+    </div>
+
+    <script>
+      // ── injected by _render_room_debate_component ──
+      const ROOM_CODE = __ROOM_CODE__;
+      const ROOM_WS_BASE = __ROOM_WS_BASE__;
+      const MODE = __MODE__; // "A" | "B"
+      const BELL_SRC = __BELL_SRC__;
+      const BELL_VOLUME = 0.9;
+
+      // ── state ──
+      let ws = null,
+        myUid = null,
+        isHost = false,
+        myRole = null,
+        myPosition = null;
+      let roomStructure = "",
+        positionLabels = {},
+        requiredPositions = [];
+      let phase = "lobby",
+        segIndex = 0,
+        segTotal = 0,
+        segLabel = "",
+        segSide = "";
+      let segSeconds = 0,
+        segBells = [],
+        segStartedMs = null,
+        activeSpeaker = null;
+      let sideElapsedMs = { 正方: 0, 反方: 0 };
+      let activeTurnUser = null,
+        activeTurnSide = null,
+        activeTurnStartedMs = null;
+      let expectedTurnSide = null;
+      let serverOffset = 0; // serverNow = Date.now() + serverOffset
+      let firedBells = new Set();
+      let isRecording = false,
+        micReady = false,
+        reconnectTimer = 0,
+        reconnectAttempt = 0;
+      let aiSpeaking = false;
+      let recognition = null,
+        recogText = "",
+        recognitionFinal = "",
+        recognitionStopping = false;
+      let transcriptItems = [];
+      let precheckActive = false,
+        activePrecheckId = null;
+      let networkTestStartedAt = 0,
+        networkTestTimer = 0;
+      let stream = null,
+        inputCtx = null,
+        sourceNode = null,
+        processor = null;
+      let outputCtx = null,
+        playAt = 0;
+      const JITTER_BUFFER_SECONDS = 0.12;
+      let bellCtx = null,
+        bellBuffer = null,
+        bellLoading = null;
+
+      const $ = (id) => document.getElementById(id);
+      if (new URLSearchParams(location.search).get("from") === "practice") {
+        $("practiceNav").classList.remove("hidden");
+      }
+      function log(msg) {
+        const el = $("log");
+        el.textContent += (el.textContent ? "\n" : "") + msg;
+        el.scrollTop = el.scrollHeight;
+      }
+      function setConn(txt) {
+        $("connStatus").textContent = txt;
+      }
+      function appendTranscript(item) {
+        if (!item || !item.text) return;
+        transcriptItems.push(item);
+        renderTranscriptBySide();
+      }
+      function transcriptLine(item) {
+        const speaker =
+          (item.side || "未標示") +
+          (item.speaker ? "（" + item.speaker + "）" : "");
+        return speaker + "：" + item.text;
+      }
+      function renderTranscriptBySide() {
+        const el = $("transcript");
+        if (!transcriptItems.length) {
+          el.textContent =
+            "支援語音轉文字的瀏覽器會自動記錄發言，方便 AI 評判。";
+          return;
+        }
+        const pro = transcriptItems
+          .filter((item) => item.side === "正方")
+          .map(transcriptLine);
+        const con = transcriptItems
+          .filter((item) => item.side === "反方")
+          .map(transcriptLine);
+        const other = transcriptItems
+          .filter((item) => item.side !== "正方" && item.side !== "反方")
+          .map(transcriptLine);
+        const sections = [
+          "正方：\n" + (pro.length ? pro.join("\n") : "（暫未記錄）"),
+          "反方：\n" + (con.length ? con.join("\n") : "（暫未記錄）"),
+        ];
+        if (other.length) sections.push("其他：\n" + other.join("\n"));
+        el.textContent = sections.join("\n\n");
+        el.scrollTop = el.scrollHeight;
+      }
+      function renderTranscript(list) {
+        transcriptItems = (list || []).filter((item) => item && item.text);
+        renderTranscriptBySide();
+      }
+
+      // ── committee token from parent app (same as live_debate authToken) ──
+      function authToken() {
+        try {
+          const t =
+            window.parent && window.parent.localStorage
+              ? window.parent.localStorage.getItem("committee_user")
+              : "";
+          if (t) return t;
+        } catch (e) {}
+        try {
+          return window.localStorage.getItem("committee_user") || "";
+        } catch (e) {
+          return "";
+        }
+      }
+      function wsBase() {
+        if (ROOM_WS_BASE) return ROOM_WS_BASE;
+        try {
+          const loc = window.parent.location;
+          return (
+            (loc.protocol === "https:" ? "wss:" : "ws:") +
+            "//" +
+            loc.host +
+            "/room"
+          );
+        } catch (e) {}
+        return (
+          (location.protocol === "https:" ? "wss:" : "ws:") +
+          "//" +
+          location.host +
+          "/room"
+        );
+      }
+
+      // ── audio helpers (copied from live_debate.html) ──
+      function downsampleBuffer(buffer, inputRate, outputRate) {
+        if (outputRate === inputRate) return buffer;
+        const ratio = inputRate / outputRate;
+        const newLength = Math.round(buffer.length / ratio);
+        const result = new Float32Array(newLength);
+        for (let i = 0; i < newLength; i++)
+          result[i] = buffer[Math.floor(i * ratio)] || 0;
+        return result;
+      }
+      function floatTo16BitPCM(float32) {
+        const pcm = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        return pcm;
+      }
+      function bytesToBase64(bytes) {
+        let binary = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk)
+          binary += String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, i + chunk),
+          );
+        return btoa(binary);
+      }
+      function pcmBase64ToFloat32(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const view = new DataView(bytes.buffer);
+        const samples = new Float32Array(bytes.byteLength / 2);
+        for (let i = 0; i < samples.length; i++)
+          samples[i] = view.getInt16(i * 2, true) / 32768;
+        return samples;
+      }
+      function playPcm(base64, mimeType) {
+        if (!outputCtx)
+          outputCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (outputCtx.state === "suspended") outputCtx.resume();
+        const m = String(mimeType || "").match(/rate=(\d+)/);
+        const sampleRate = m ? parseInt(m[1], 10) : 24000;
+        const samples = pcmBase64ToFloat32(base64);
+        if (!samples.length) return;
+        const buffer = outputCtx.createBuffer(1, samples.length, sampleRate);
+        buffer.copyToChannel(samples, 0);
+        const src = outputCtx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(outputCtx.destination);
+        // Keep a short queue ahead of the speaker.  Starting every received PCM
+        // frame immediately creates audible dropouts whenever mobile WebSocket
+        // delivery is bursty; this buffer trades 120 ms latency for continuity.
+        playAt = Math.max(
+          playAt,
+          outputCtx.currentTime + JITTER_BUFFER_SECONDS,
+        );
+        src.start(playAt);
+        playAt += buffer.duration;
+      }
+
+      // ── mode B server-side TTS: play the shared Azure/custom voice blobs, in the
+      // order the server sent them (one queue, one <audio> at a time), so every
+      // member hears the same synthesized sentences. Cleared on barge-in/interrupt.
+      let ttsQueue = [],
+        ttsPlaying = false,
+        ttsCurrentAudio = null,
+        ttsCurrentUrl = "";
+      function base64ToBlob(b64, mime) {
+        const bin = atob(b64 || "");
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mime || "audio/mpeg" });
+      }
+      function enqueueTtsAudio(b64, mime) {
+        if (!b64) return;
+        ttsQueue.push(base64ToBlob(b64, mime));
+        processTtsQueue();
+      }
+      function processTtsQueue() {
+        if (ttsPlaying) return;
+        const blob = ttsQueue.shift();
+        if (!blob) return;
+        ttsPlaying = true;
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        ttsCurrentAudio = audio;
+        ttsCurrentUrl = url;
+        const done = () => {
+          URL.revokeObjectURL(url);
+          if (ttsCurrentAudio === audio) ttsCurrentAudio = null;
+          if (ttsCurrentUrl === url) ttsCurrentUrl = "";
+          ttsPlaying = false;
+          processTtsQueue();
+        };
+        audio.onended = done;
+        audio.onerror = done;
+        audio.play().catch(done);
+      }
+      function clearTtsQueue() {
+        ttsQueue = [];
+        if (ttsCurrentAudio) {
+          try {
+            ttsCurrentAudio.pause();
+          } catch (e) {}
+        }
+        if (ttsCurrentUrl) {
+          try {
+            URL.revokeObjectURL(ttsCurrentUrl);
+          } catch (e) {}
+        }
+        ttsCurrentAudio = null;
+        ttsCurrentUrl = "";
+        ttsPlaying = false;
+      }
+
+      function setNetworkTest(text) {
+        $("networkTestResult").textContent = text;
+      }
+      function makeTestToneBase64() {
+        const sampleRate = 16000;
+        const seconds = 0.7;
+        const count = Math.floor(sampleRate * seconds);
+        const pcm = new Int16Array(count);
+        for (let i = 0; i < count; i++) {
+          const t = i / sampleRate;
+          const wave = Math.sin(2 * Math.PI * 880 * t);
+          const fade = Math.min(1, i / 800, (count - i) / 800);
+          pcm[i] = Math.round(wave * fade * 0x3fff);
+        }
+        return bytesToBase64(new Uint8Array(pcm.buffer));
+      }
+      async function playLocalTestTone() {
+        if (!outputCtx)
+          outputCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (outputCtx.state === "suspended") await outputCtx.resume();
+        playPcm(makeTestToneBase64(), "audio/pcm;rate=16000");
+      }
+      function latencyLabel(ms) {
+        if (ms < 150) return "穩定";
+        if (ms < 400) return "一般";
+        return "偏慢";
+      }
+      async function checkPermissions() {
+        const lines = [];
+        let ok = true;
+        try {
+          await playLocalTestTone();
+          lines.push("音訊播放：正常");
+        } catch (e) {
+          lines.push("音訊播放：未能播放");
+          ok = false;
+        }
+        try {
+          await startMic();
+          lines.push("麥克風權限：已允許");
+        } catch (e) {
+          lines.push("麥克風權限：未允許（" + e.message + "）");
+          ok = false;
+        }
+        const wsOk = !!(ws && ws.readyState === WebSocket.OPEN);
+        lines.push("房間連線：" + (wsOk ? "已連線" : "未連線"));
+        if (!wsOk) ok = false;
+        const message = lines.join("\n");
+        setNetworkTest(message);
+        return { ok, message };
+      }
+      async function runNetworkTest() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          setNetworkTest("未連線，無法進行測試。");
+          return;
+        }
+        try {
+          await playLocalTestTone();
+        } catch (e) {}
+        networkTestStartedAt = Date.now();
+        setNetworkTest("測試中：已播放本機測試聲，並向房內其他人發送測試聲…");
         if (networkTestTimer) clearTimeout(networkTestTimer);
-        setNetworkTest("WebSocket 延遲：" + rtt + "ms（" + latencyLabel(rtt) + "）。已向房內其他人發測試聲。");
-        break;
+        networkTestTimer = setTimeout(() => {
+          setNetworkTest("測試超時：WebSocket 回應偏慢或已斷線。");
+        }, 4000);
+        const tone = makeTestToneBase64();
+        ws.send(
+          JSON.stringify({
+            type: "test_ping",
+            client_ts: networkTestStartedAt,
+          }),
+        );
+        ws.send(
+          JSON.stringify({
+            type: "test_audio",
+            data: tone,
+            mimeType: "audio/pcm;rate=16000",
+          }),
+        );
       }
-      case "heartbeat_ack":
-        if (msg.server_now_ms) serverOffset = msg.server_now_ms - Date.now();
-        break;
-      case "test_audio":
-        if (msg.from !== myUid) {
-          playPcm(msg.data, msg.mimeType);
-          log((msg.from || "對方") + " 發出測試聲");
-          if (ws && ws.readyState === WebSocket.OPEN)
-            ws.send(JSON.stringify({ type: "test_received", source: msg.from }));
+      async function startMic() {
+        if (micReady) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+          throw new Error("此瀏覽器不支援麥克風錄音。");
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        inputCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await inputCtx.resume();
+        sourceNode = inputCtx.createMediaStreamSource(stream);
+        processor = inputCtx.createScriptProcessor(2048, 1, 1);
+        processor.onaudioprocess = (event) => {
+          if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+          const raw = event.inputBuffer.getChannelData(0);
+          let peak = 0;
+          for (let i = 0; i < raw.length; i++)
+            peak = Math.max(peak, Math.abs(raw[i]));
+          $("meter").style.width = Math.min(100, Math.round(peak * 150)) + "%";
+          const down = downsampleBuffer(raw, inputCtx.sampleRate, 16000);
+          const pcm = floatTo16BitPCM(down);
+          ws.send(
+            JSON.stringify({
+              type: "audio",
+              data: bytesToBase64(new Uint8Array(pcm.buffer)),
+              mimeType: "audio/pcm;rate=16000",
+            }),
+          );
+        };
+        sourceNode.connect(processor);
+        // ScriptProcessor needs an output connection in some browsers, but routing
+        // the mic straight to speakers causes feedback and can suspend the audio
+        // graph on mobile. Keep a silent sink instead.
+        const silentGain = inputCtx.createGain();
+        silentGain.gain.value = 0;
+        processor.connect(silentGain);
+        silentGain.connect(inputCtx.destination);
+        micReady = true;
+      }
+
+      // ── bells (copied/adapted from live_debate.html) ──
+      function getBellCtx() {
+        if (!bellCtx)
+          bellCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (bellCtx.state === "suspended") bellCtx.resume();
+        return bellCtx;
+      }
+      function loadBell() {
+        if (!BELL_SRC) return Promise.resolve(null);
+        if (!bellLoading) {
+          bellLoading = fetch(BELL_SRC)
+            .then((r) => r.arrayBuffer())
+            .then((a) => getBellCtx().decodeAudioData(a))
+            .then((b) => {
+              bellBuffer = b;
+              return b;
+            })
+            .catch(() => null);
         }
-        break;
-      case "test_received":
-        if (msg.source === myUid) {
-          const current = $("networkTestResult").textContent;
-          setNetworkTest(current + "\n" + (msg.from || "有成員") + " 已收到你的測試聲。");
+        return bellLoading;
+      }
+      function playTone(count) {
+        const ctx = getBellCtx();
+        for (let i = 0; i < count; i++) {
+          const osc = ctx.createOscillator(),
+            gain = ctx.createGain();
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.8);
+          gain.gain.exponentialRampToValueAtTime(
+            0.4,
+            ctx.currentTime + i * 0.8 + 0.02,
+          );
+          gain.gain.exponentialRampToValueAtTime(
+            0.0001,
+            ctx.currentTime + i * 0.8 + 0.28,
+          );
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + i * 0.8);
+          osc.stop(ctx.currentTime + i * 0.8 + 0.3);
         }
-        break;
-      case "serverContent": handleServerContent(msg.serverContent); break;  // mode B: AI audio
-      case "tts_audio": enqueueTtsAudio(msg.data, msg.mime); break;          // mode B: shared Azure/自家 voice
-      case "tts_fallback_hint": log("AI 讀音暫時改用 Gemini 原生聲音。"); break;
-      case "ai_ready": log("AI 對手已就緒。"); break;
-      case "speaking":
-        if (msg.user_id === "AI") { aiSpeaking = !!msg.speaking; refreshTalk(); }
-        log((msg.user_id === myUid ? "你" : (msg.user_id === "AI" ? "AI" : (msg.user_id || "對方"))) + (msg.speaking ? " 開始發言" : " 發言完畢"));
-        break;
-      case "turn_rejected":
-        if (isRecording) stopTalk(false, false);
-        log(msg.message || "暫時未能開始發言");
-        break;
-      case "transcript": appendTranscript(msg.item); break;
-      case "judgement_pending": $("judgement").textContent = "AI 評判正在整理結果…"; break;
-      case "judgement": $("judgement").textContent = msg.text || "AI 評判沒有回傳內容。"; break;
-      case "peer_left": log((msg.user_id || "有人") + " 已離開"); break;
-      case "ended": setConn("練習已結束。"); phase = "ended"; applyState({ phase: "ended", seg_index: 0, seg_total: 0 }); break;
-      case "error": log("⚠️ " + (msg.message || "錯誤")); setConn(msg.message || "錯誤"); break;
-      case "chat": log("💬 " + (msg.from || "") + "：" + (msg.text || "")); break;
-    }
-  }
+      }
+      async function playBell(count) {
+        const ctx = getBellCtx();
+        if (ctx.state === "suspended") await ctx.resume();
+        if (!bellBuffer) await loadBell();
+        if (!bellBuffer) {
+          playTone(count);
+          return;
+        }
+        for (let i = 0; i < count; i++) {
+          const src = ctx.createBufferSource(),
+            gain = ctx.createGain();
+          src.buffer = bellBuffer;
+          gain.gain.value = BELL_VOLUME;
+          src.connect(gain);
+          gain.connect(ctx.destination);
+          src.start(ctx.currentTime + i * 0.8);
+        }
+      }
+      function fireBellOnce(key, rings) {
+        if (firedBells.has(key)) return;
+        firedBells.add(key);
+        playBell(rings);
+      }
+      function formatTime(sec) {
+        const m = Math.max(0, Math.floor(sec / 60)),
+          s = Math.max(0, Math.floor(sec % 60));
+        return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+      }
 
-  // ── wire up ──
-  $("codeText").textContent = ROOM_CODE || "-----";
-  $("modeLabel").textContent = MODE === "B" ? "· 多人對 AI" : "· 真人對真人";
-  const talkBtn = $("talkBtn");
-  talkBtn.addEventListener("click", toggleTalk);
-  $("startBtn").addEventListener("click", () => sendHost("start"));
-  $("nextBtn").addEventListener("click", () => sendHost("next_segment"));
-  $("prevBtn").addEventListener("click", () => ws && ws.send(JSON.stringify({ type: "set_segment", index: Math.max(0, segIndex - 1) })));
-  $("judgeBtn").addEventListener("click", () => sendHost("request_judgement"));
-  $("endBtn").addEventListener("click", () => { if (confirm("結束呢節練習？")) sendHost("end"); });
-  function sendHost(type) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type })); }
+      // ── server-authoritative timer follower ──
+      function serverNow() {
+        return Date.now() + serverOffset;
+      }
+      function segElapsed() {
+        if (phase !== "active" || segStartedMs == null) return 0;
+        return (serverNow() - segStartedMs) / 1000;
+      }
+      function sideUsedSeconds(side) {
+        let ms = Number(sideElapsedMs[side] || 0);
+        if (activeTurnSide === side && activeTurnStartedMs != null) {
+          ms += Math.max(0, serverNow() - activeTurnStartedMs);
+        }
+        return ms / 1000;
+      }
+      function updateSideTimers() {
+        const isFree = phase === "active" && segSide === "雙方";
+        $("sideTimers").classList.toggle("hidden", !isFree);
+        if (!isFree) return;
+        const pro = sideUsedSeconds("正方");
+        const con = sideUsedSeconds("反方");
+        $("proTimer").textContent =
+          formatTime(pro) + " / " + formatTime(segSeconds);
+        $("conTimer").textContent =
+          formatTime(con) + " / " + formatTime(segSeconds);
+        $("proTimerBox").classList.toggle(
+          "over",
+          segSeconds && pro >= segSeconds,
+        );
+        $("conTimerBox").classList.toggle(
+          "over",
+          segSeconds && con >= segSeconds,
+        );
+      }
+      function tick() {
+        updateSideTimers();
+        if (phase !== "active" || segStartedMs == null) return;
+        const elapsed = segElapsed();
+        if (segSide === "雙方" && myRole) {
+          $("timer").textContent = formatTime(sideUsedSeconds(myRole));
+        } else {
+          $("timer").textContent = formatTime(elapsed);
+        }
+        if (segSide === "雙方") {
+          if (activeTurnSide) {
+            const used = sideUsedSeconds(activeTurnSide);
+            segBells.forEach((b, i) => {
+              if (used >= Number(b.t || 0))
+                fireBellOnce(
+                  "b" + activeTurnSide + "-" + i,
+                  Number(b.rings || 1),
+                );
+            });
+          }
+        } else {
+          segBells.forEach((b, i) => {
+            if (elapsed >= Number(b.t || 0))
+              fireBellOnce("b" + segIndex + "-" + i, Number(b.rings || 1));
+          });
+        }
+        const over =
+          segSeconds &&
+          (segSide === "雙方" && myRole
+            ? sideUsedSeconds(myRole) >= segSeconds
+            : elapsed >= segSeconds);
+        $("timer").style.color = over ? "#f85149" : "#e6e6e6";
+        if (isRecording && !canSpeak()) stopTalk();
+        else refreshTalk();
+      }
+      setInterval(tick, 250);
 
-  function precheckMemberLine(uid, result) {
-    if (!result) return uid + "：等待檢查";
-    return uid + "：" + (result.ok ? "通過" : "未通過") + (result.message ? "\n  " + result.message.replace(/\n/g, "\n  ") : "");
-  }
-  function renderPrecheckStatus(msg, failed = false) {
-    const members = msg.members || [];
-    const results = msg.results || {};
-    const lines = members.map(uid => precheckMemberLine(uid, results[uid]));
-    setNetworkTest((failed ? "開始前檢查未全部通過，請處理後由主持再按開始。\n" : "開始前檢查中，全部成員通過後會自動開始。\n") + lines.join("\n"));
-  }
-  async function runAutoPrecheck(checkId) {
-    precheckActive = true;
-    activePrecheckId = checkId;
-    setNetworkTest("主持已要求開始前檢查，正在檢查本機權限及連線…");
-    updateHostButtons();
-    const result = await checkPermissions();
-    if (ws && ws.readyState === WebSocket.OPEN && activePrecheckId === checkId) {
-      ws.send(JSON.stringify({
-        type: "precheck_result",
-        check_id: checkId,
-        ok: result.ok,
-        message: result.message
-      }));
-    }
-  }
+      // ── UI derivation ──
+      function canSpeak() {
+        if (phase !== "active" || segSide === "準備") return false;
+        if (aiSpeaking) return false;
+        if (activeTurnUser && activeTurnUser !== myUid) return false;
+        if (MODE === "B") {
+          // Mode B: the team shares one side; members speak only on their own-side
+          // segments or the free (雙方) segment. AI-side segments are AI-only.
+          if (segSide !== myRole && segSide !== "雙方") return false;
+          if (activeSpeaker != null) return activeSpeaker === myUid;
+          if (
+            segSide === "雙方" &&
+            segSeconds &&
+            myRole &&
+            sideUsedSeconds(myRole) >= segSeconds
+          )
+            return false;
+          return true;
+        }
+        if (expectedTurnSide && myRole !== expectedTurnSide) return false;
+        if (
+          segSide === "雙方" &&
+          segSeconds &&
+          myRole &&
+          sideUsedSeconds(myRole) >= segSeconds
+        )
+          return false;
+        if (activeSpeaker == null) return segSide === "雙方"; // free debate: both open
+        return activeSpeaker === myUid;
+      }
+      function refreshTalk() {
+        const btn = $("talkBtn");
+        const ok = canSpeak();
+        btn.disabled = !ok;
+        if (!ok && isRecording) stopTalk();
+        if (phase !== "active") {
+          $("turnHint").textContent = "";
+          return;
+        }
+        if (aiSpeaking) $("turnHint").textContent = "🤖 AI 發言中…";
+        else if (ok)
+          $("turnHint").textContent = isRecording
+            ? "錄音中 — 再按一下停止"
+            : "輪到你 — 按一下開始，發言完畢後再按一下停止";
+        else if (segSide === "準備") $("turnHint").textContent = "準備時間";
+        else if (
+          MODE === "B" &&
+          segSide &&
+          segSide !== myRole &&
+          segSide !== "雙方"
+        )
+          $("turnHint").textContent = "輪到 AI（" + segSide + "）發言";
+        else if (MODE === "B" && activeSpeaker && activeSpeaker !== myUid)
+          $("turnHint").textContent = "輪到已分配辯位嘅隊員發言";
+        else if (expectedTurnSide)
+          $("turnHint").textContent =
+            "自由辯論由" + expectedTurnSide + "先發言";
+        else if (
+          segSide === "雙方" &&
+          segSeconds &&
+          myRole &&
+          sideUsedSeconds(myRole) >= segSeconds
+        )
+          $("turnHint").textContent = "你方時間已用完";
+        else if (activeTurnUser && activeTurnUser !== myUid)
+          $("turnHint").textContent = "等待對方發言完畢…";
+        else $("turnHint").textContent = "等待其他人發言…";
+      }
+      function updateHostButtons() {
+        if (!isHost) return;
+        $("startBtn").disabled = phase !== "lobby" || precheckActive;
+        $("startBtn").textContent = precheckActive ? "檢查中…" : "開始";
+        $("prevBtn").disabled = phase !== "active" || segIndex <= 0;
+        $("nextBtn").disabled =
+          phase !== "active" || segTotal <= 1 || segIndex >= segTotal - 1;
+        $("judgeBtn").disabled = phase === "lobby";
+      }
+      function renderRolePick() {
+        const box = $("rolePick");
+        const buttons = $("rolePickButtons");
+        buttons.innerHTML = "";
+        const showSidePick = MODE === "A" && phase === "lobby";
+        const showPositionPick =
+          MODE === "B" && roomStructure === "mock" && phase === "lobby";
+        box.classList.toggle("hidden", !(showSidePick || showPositionPick));
+        if (showSidePick) {
+          $("rolePickLabel").textContent = "選擇立場：";
+          ["正方", "反方"].forEach((side) => {
+            const b = document.createElement("button");
+            b.className = "pick" + (side === myRole ? " active" : "");
+            b.textContent = side;
+            b.dataset.side = side;
+            b.addEventListener("click", () => {
+              if (ws && ws.readyState === WebSocket.OPEN)
+                ws.send(JSON.stringify({ type: "claim_role", side }));
+            });
+            buttons.appendChild(b);
+          });
+        } else if (showPositionPick) {
+          $("rolePickLabel").textContent = "選擇辯位：";
+          const positions = requiredPositions.length
+            ? requiredPositions.map(Number)
+            : Object.keys(positionLabels)
+                .map(Number)
+                .filter(Boolean)
+                .sort((a, b) => a - b);
+          positions.forEach((pos) => {
+            const b = document.createElement("button");
+            b.className = "pick" + (pos === myPosition ? " active" : "");
+            b.textContent = positionLabels[pos] || "第 " + pos + " 位";
+            b.dataset.position = pos;
+            b.addEventListener("click", () => {
+              if (ws && ws.readyState === WebSocket.OPEN)
+                ws.send(
+                  JSON.stringify({ type: "claim_position", position: pos }),
+                );
+            });
+            buttons.appendChild(b);
+          });
+        }
+      }
+      function renderRoster(list) {
+        const ul = $("roster");
+        ul.innerHTML = "";
+        let sawMe = false;
+        (list || []).forEach((m) => {
+          const li = document.createElement("li");
+          const nm = m.user_id === myUid ? m.user_id + "（你）" : m.user_id;
+          li.innerHTML =
+            '<span class="dot' +
+            (m.connected ? "" : " off") +
+            '"></span>' +
+            '<span class="grow">' +
+            nm +
+            "</span>" +
+            (m.role
+              ? '<span class="sidechip side-' +
+                m.role +
+                '">' +
+                m.role +
+                "</span>"
+              : "") +
+            (m.position_label
+              ? '<span class="poschip">' + m.position_label + "</span>"
+              : "") +
+            (m.is_host ? '<span class="badge">主持</span>' : "");
+          ul.appendChild(li);
+          if (m.user_id === myUid) {
+            sawMe = true;
+            if (m.role) myRole = m.role;
+            myPosition = m.position || null;
+          }
+        });
+        if (!sawMe) myPosition = null;
+        renderRolePick();
+      }
+      function applyState(s) {
+        phase = s.phase;
+        segIndex = s.seg_index;
+        segTotal = s.seg_total;
+        if (phase === "active" || phase === "ended") {
+          precheckActive = false;
+          activePrecheckId = null;
+        }
+        segLabel = s.seg_label || "";
+        segSide = s.side || "";
+        segSeconds = s.seconds || 0;
+        segBells = s.bells || [];
+        activeSpeaker = s.active_speaker;
+        sideElapsedMs = s.side_elapsed_ms || { 正方: 0, 反方: 0 };
+        activeTurnUser = s.active_turn_user || null;
+        activeTurnSide = s.active_turn_side || null;
+        activeTurnStartedMs = s.active_turn_started_ms || null;
+        expectedTurnSide = s.expected_turn_side || null;
+        if (s.server_now_ms) serverOffset = s.server_now_ms - Date.now();
+        if (s.seg_started_ms != null && s.seg_started_ms !== segStartedMs)
+          firedBells = new Set();
+        segStartedMs = s.seg_started_ms;
+        const chip = segSide
+          ? ' <span class="sidechip side-' +
+            segSide +
+            '">' +
+            segSide +
+            "</span>"
+          : "";
+        $("segLabel").innerHTML =
+          phase === "lobby"
+            ? "等待主持開始…"
+            : phase === "ended"
+              ? "已結束"
+              : segLabel + chip;
+        $("segSub").textContent =
+          phase === "active" && segTotal > 1
+            ? "第 " + (segIndex + 1) + " / " + segTotal + " 段"
+            : "";
+        if (phase !== "active") {
+          $("timer").textContent = "00:00";
+        }
+        renderRolePick();
+        $("networkTest").classList.toggle("hidden", phase !== "lobby");
+        updateSideTimers();
+        updateHostButtons();
+        refreshTalk();
+      }
 
-  loadBell();
-  // Keep mobile/reverse-proxy WebSockets warm while speakers pause between
-  // turns.  Without this, an idle connection can die silently and audio only
-  // returns after the browser's next reconnect.
-  setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "heartbeat" }));
-  }, 15000);
-  connect();
-</script>
-</body>
+      // ── speech recognition for AI judge transcript ──
+      function makeRecognition() {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) return null;
+        const r = new SR();
+        r.lang = "zh-HK";
+        r.continuous = true;
+        r.interimResults = true;
+        r.onresult = (event) => {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const piece = event.results[i][0].transcript || "";
+            if (event.results[i].isFinal) recognitionFinal += piece;
+            else interim += piece;
+          }
+          recogText = (recognitionFinal + interim).trim();
+        };
+        r.onerror = (event) => {
+          // Network/no-speech ends are common on mobile.  Keep recording audio and
+          // restart recognition below where the browser permits it.
+          if (event.error !== "aborted") log("逐字稿暫時中斷：" + event.error);
+        };
+        r.onend = () => {
+          if (isRecording && !recognitionStopping) {
+            try {
+              r.start();
+            } catch (e) {}
+          }
+        };
+        return r;
+      }
+      function startRecognition() {
+        recogText = "";
+        recognitionFinal = "";
+        recognitionStopping = false;
+        recognition = makeRecognition();
+        if (!recognition) return;
+        try {
+          recognition.start();
+        } catch (e) {}
+      }
+      function stopRecognitionAndSend() {
+        const text = (recognitionFinal || recogText).trim();
+        if (recognition) {
+          recognitionStopping = true;
+          try {
+            recognition.stop();
+          } catch (e) {}
+        }
+        recognition = null;
+        recogText = "";
+        if (text && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "transcript", text }));
+        }
+      }
+
+      // ── talk (toggle recording) ──
+      async function startTalk() {
+        if (!canSpeak() || isRecording) return;
+        try {
+          await startMic();
+        } catch (e) {
+          log("麥克風錯誤：" + e.message);
+          return;
+        }
+        isRecording = true;
+        $("talkBtn").classList.add("live");
+        $("talkBtn").textContent = "按一下停止";
+        startRecognition();
+        refreshTalk();
+        if (ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: "turn_begin" }));
+      }
+      function stopTalk(sendTurn = true, sendTranscript = true) {
+        if (!isRecording) return;
+        isRecording = false;
+        $("meter").style.width = "0%";
+        $("talkBtn").classList.remove("live");
+        $("talkBtn").textContent = "按一下開始發言";
+        if (sendTranscript) stopRecognitionAndSend();
+        else if (recognition) {
+          recognitionStopping = true;
+          try {
+            recognition.stop();
+          } catch (e) {}
+          recognition = null;
+          recogText = "";
+        }
+        refreshTalk();
+        if (sendTurn && ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: "turn_end" }));
+      }
+      function toggleTalk() {
+        if (isRecording) stopTalk();
+        else startTalk();
+      }
+
+      // ── mode B: play the shared AI (Gemini Live) native audio, synced to all ──
+      function handleServerContent(sc) {
+        if (!sc) return;
+        if (sc.interrupted) {
+          if (outputCtx) playAt = outputCtx.currentTime;
+          clearTtsQueue(); // barge-in: drop any queued/playing synthesized speech
+        }
+        const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
+        parts.forEach((part) => {
+          if (part.inlineData && part.inlineData.data) {
+            playPcm(part.inlineData.data, part.inlineData.mimeType);
+          }
+        });
+      }
+
+      // ── websocket ──
+      function connect() {
+        if (
+          ws &&
+          (ws.readyState === WebSocket.OPEN ||
+            ws.readyState === WebSocket.CONNECTING)
+        )
+          return;
+        const token = authToken();
+        if (!ROOM_CODE) {
+          setConn("未有房間代碼。");
+          return;
+        }
+        // New HTML pages authenticate with an HttpOnly same-origin cookie.  The
+        // server also accepts the legacy localStorage token when one exists.
+        const url =
+          wsBase() +
+          "/" +
+          ROOM_CODE +
+          (token ? "?u=" + encodeURIComponent(token) : "");
+        ws = new WebSocket(url);
+        ws.onopen = () => {
+          reconnectAttempt = 0;
+          setConn("已連線 ✅");
+        };
+        ws.onclose = (ev) => {
+          ws = null;
+          const retryable = ev.code !== 1008 && ev.code !== 1013;
+          const delay = Math.min(12000, 1000 * Math.pow(2, reconnectAttempt++));
+          setConn(
+            "連線中斷（" +
+              ev.code +
+              "）。" +
+              (retryable
+                ? Math.ceil(delay / 1000) + " 秒後重試…"
+                : "房間不存在或尚未登入。"),
+          );
+          if (retryable && !reconnectTimer)
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = 0;
+              connect();
+            }, delay);
+        };
+        ws.onerror = () => {
+          setConn("連線錯誤。");
+        };
+        ws.onmessage = (ev) => {
+          let msg;
+          try {
+            msg = JSON.parse(ev.data);
+          } catch (e) {
+            return;
+          }
+          handle(msg);
+        };
+      }
+      function handle(msg) {
+        switch (msg.type) {
+          case "roster":
+            if (msg.you) myUid = msg.you;
+            if (msg.structure) roomStructure = msg.structure;
+            if (msg.position_labels) positionLabels = msg.position_labels;
+            if (msg.required_positions)
+              requiredPositions = msg.required_positions;
+            if (typeof msg.is_host === "boolean") {
+              isHost = msg.is_host;
+              $("hostControls").classList.toggle("hidden", !isHost);
+              updateHostButtons();
+            }
+            if (msg.topic != null)
+              $("topicLine").textContent = msg.topic
+                ? "辯題：" + msg.topic
+                : "";
+            if (msg.transcript) renderTranscript(msg.transcript);
+            if (msg.judgement) $("judgement").textContent = msg.judgement;
+            renderRoster(msg.roster);
+            break;
+          case "state":
+            applyState(msg);
+            break;
+          case "precheck_request":
+            runAutoPrecheck(msg.check_id);
+            break;
+          case "precheck_status":
+            renderPrecheckStatus(msg);
+            break;
+          case "precheck_failed":
+            precheckActive = false;
+            renderPrecheckStatus(msg, true);
+            updateHostButtons();
+            break;
+          case "peer_audio":
+            if (msg.from !== myUid) playPcm(msg.data, msg.mimeType);
+            break;
+          case "test_pong": {
+            const sent = Number(msg.client_ts || networkTestStartedAt || 0);
+            const rtt = sent ? Date.now() - sent : 0;
+            if (networkTestTimer) clearTimeout(networkTestTimer);
+            setNetworkTest(
+              "WebSocket 延遲：" +
+                rtt +
+                "ms（" +
+                latencyLabel(rtt) +
+                "）。已向房內其他人發測試聲。",
+            );
+            break;
+          }
+          case "heartbeat_ack":
+            if (msg.server_now_ms)
+              serverOffset = msg.server_now_ms - Date.now();
+            break;
+          case "test_audio":
+            if (msg.from !== myUid) {
+              playPcm(msg.data, msg.mimeType);
+              log((msg.from || "對方") + " 發出測試聲");
+              if (ws && ws.readyState === WebSocket.OPEN)
+                ws.send(
+                  JSON.stringify({ type: "test_received", source: msg.from }),
+                );
+            }
+            break;
+          case "test_received":
+            if (msg.source === myUid) {
+              const current = $("networkTestResult").textContent;
+              setNetworkTest(
+                current + "\n" + (msg.from || "有成員") + " 已收到你的測試聲。",
+              );
+            }
+            break;
+          case "serverContent":
+            handleServerContent(msg.serverContent);
+            break; // mode B: AI audio
+          case "tts_audio":
+            enqueueTtsAudio(msg.data, msg.mime);
+            break; // mode B: shared Azure/自家 voice
+          case "tts_fallback_hint":
+            log("AI 讀音暫時改用 Gemini 原生聲音。");
+            break;
+          case "ai_ready":
+            log("AI 對手已就緒。");
+            break;
+          case "speaking":
+            if (msg.user_id === "AI") {
+              aiSpeaking = !!msg.speaking;
+              refreshTalk();
+            }
+            log(
+              (msg.user_id === myUid
+                ? "你"
+                : msg.user_id === "AI"
+                  ? "AI"
+                  : msg.user_id || "對方") +
+                (msg.speaking ? " 開始發言" : " 發言完畢"),
+            );
+            break;
+          case "turn_rejected":
+            if (isRecording) stopTalk(false, false);
+            log(msg.message || "暫時未能開始發言");
+            break;
+          case "transcript":
+            appendTranscript(msg.item);
+            break;
+          case "judgement_pending":
+            $("judgement").textContent = "AI 評判正在整理結果…";
+            break;
+          case "judgement":
+            $("judgement").textContent = msg.text || "AI 評判沒有回傳內容。";
+            break;
+          case "peer_left":
+            log((msg.user_id || "有人") + " 已離開");
+            break;
+          case "ended":
+            setConn("練習已結束。");
+            phase = "ended";
+            applyState({ phase: "ended", seg_index: 0, seg_total: 0 });
+            break;
+          case "error":
+            log("⚠️ " + (msg.message || "錯誤"));
+            setConn(msg.message || "錯誤");
+            break;
+          case "chat":
+            log("💬 " + (msg.from || "") + "：" + (msg.text || ""));
+            break;
+        }
+      }
+
+      // ── wire up ──
+      $("codeText").textContent = ROOM_CODE || "-----";
+      $("modeLabel").textContent =
+        MODE === "B" ? "· 多人對 AI" : "· 真人對真人";
+      const talkBtn = $("talkBtn");
+      talkBtn.addEventListener("click", toggleTalk);
+      $("startBtn").addEventListener("click", () => sendHost("start"));
+      $("nextBtn").addEventListener("click", () => sendHost("next_segment"));
+      $("prevBtn").addEventListener(
+        "click",
+        () =>
+          ws &&
+          ws.send(
+            JSON.stringify({
+              type: "set_segment",
+              index: Math.max(0, segIndex - 1),
+            }),
+          ),
+      );
+      $("judgeBtn").addEventListener("click", () =>
+        sendHost("request_judgement"),
+      );
+      $("endBtn").addEventListener("click", () => {
+        if (confirm("結束呢節練習？")) sendHost("end");
+      });
+      function sendHost(type) {
+        if (ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type }));
+      }
+
+      function precheckMemberLine(uid, result) {
+        if (!result) return uid + "：等待檢查";
+        return (
+          uid +
+          "：" +
+          (result.ok ? "通過" : "未通過") +
+          (result.message ? "\n  " + result.message.replace(/\n/g, "\n  ") : "")
+        );
+      }
+      function renderPrecheckStatus(msg, failed = false) {
+        const members = msg.members || [];
+        const results = msg.results || {};
+        const lines = members.map((uid) =>
+          precheckMemberLine(uid, results[uid]),
+        );
+        setNetworkTest(
+          (failed
+            ? "開始前檢查未全部通過，請處理後由主持再按開始。\n"
+            : "開始前檢查中，全部成員通過後會自動開始。\n") + lines.join("\n"),
+        );
+      }
+      async function runAutoPrecheck(checkId) {
+        precheckActive = true;
+        activePrecheckId = checkId;
+        setNetworkTest("主持已要求開始前檢查，正在檢查本機權限及連線…");
+        updateHostButtons();
+        const result = await checkPermissions();
+        if (
+          ws &&
+          ws.readyState === WebSocket.OPEN &&
+          activePrecheckId === checkId
+        ) {
+          ws.send(
+            JSON.stringify({
+              type: "precheck_result",
+              check_id: checkId,
+              ok: result.ok,
+              message: result.message,
+            }),
+          );
+        }
+      }
+
+      loadBell();
+      // Keep mobile/reverse-proxy WebSockets warm while speakers pause between
+      // turns.  Without this, an idle connection can die silently and audio only
+      // returns after the browser's next reconnect.
+      setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: "heartbeat" }));
+      }, 15000);
+      connect();
+    </script>
+  </body>
 </html>

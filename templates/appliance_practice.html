@@ -1,537 +1,968 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-HK">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>賽務練習專用機</title>
-<style>
-:root {
-    --bg: #0e0f13;
-    --panel: #16181f;
-    --panel-2: #1e2129;
-    --border: #2c313d;
-    --text: #eef1f6;
-    --muted: #9aa3b2;
-    --green: #38c172;
-    --green-d: #2fa863;
-    --amber: #ff9800;
-    --red: #ff4b4b;
-    --blue: #3b82f6;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body {
-    background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK", "PingFang HK", Roboto, sans-serif;
-    height: 100%; -webkit-font-smoothing: antialiased;
-}
-body { display: flex; flex-direction: column; min-height: 100vh; overflow-x: hidden; }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>賽務練習專用機</title>
+    <style>
+      :root {
+        --bg: #0e0f13;
+        --panel: #16181f;
+        --panel-2: #1e2129;
+        --border: #2c313d;
+        --text: #eef1f6;
+        --muted: #9aa3b2;
+        --green: #38c172;
+        --green-d: #2fa863;
+        --amber: #ff9800;
+        --red: #ff4b4b;
+        --blue: #3b82f6;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK",
+          "PingFang HK", Roboto, sans-serif;
+        height: 100%;
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
 
-/* ---- top bar ---- */
-.topbar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px; padding: 18px clamp(16px, 3vw, 40px);
-    border-bottom: 1px solid var(--border); background: var(--panel);
-}
-.brand { font-size: clamp(22px, 2.6vw, 34px); font-weight: 800; letter-spacing: .5px; }
-.brand .sub { color: var(--muted); font-weight: 600; font-size: .62em; margin-left: 10px; }
+      /* ---- top bar ---- */
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px clamp(16px, 3vw, 40px);
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      .brand {
+        font-size: clamp(22px, 2.6vw, 34px);
+        font-weight: 800;
+        letter-spacing: 0.5px;
+      }
+      .brand .sub {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 0.62em;
+        margin-left: 10px;
+      }
 
-.mode-switch { display: flex; gap: 10px; }
-.mode-btn {
-    font-size: clamp(18px, 1.9vw, 26px); font-weight: 700; color: var(--muted);
-    background: var(--panel-2); border: 2px solid var(--border); border-radius: 14px;
-    padding: 14px 26px; cursor: pointer; transition: all .15s; white-space: nowrap;
-}
-.mode-btn.active { color: #fff; background: var(--green); border-color: var(--green); }
+      .mode-switch {
+        display: flex;
+        gap: 10px;
+      }
+      .mode-btn {
+        font-size: clamp(18px, 1.9vw, 26px);
+        font-weight: 700;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 2px solid var(--border);
+        border-radius: 14px;
+        padding: 14px 26px;
+        cursor: pointer;
+        transition: all 0.15s;
+        white-space: nowrap;
+      }
+      .mode-btn.active {
+        color: #fff;
+        background: var(--green);
+        border-color: var(--green);
+      }
 
-/* ---- content ---- */
-.content {
-    flex: 1; padding: clamp(16px, 2.5vw, 36px);
-    display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto;
-}
-.panel { display: none; width: 100%; }
-.panel.active { display: block; }
+      /* ---- content ---- */
+      .content {
+        flex: 1;
+        padding: clamp(16px, 2.5vw, 36px);
+        display: flex;
+        flex-direction: column;
+        justify-content: safe center;
+        overflow-y: auto;
+      }
+      .panel {
+        display: none;
+        width: 100%;
+      }
+      .panel.active {
+        display: block;
+      }
 
-/* ---- timer controls ---- */
-.controls {
-    display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: flex-end;
-    margin-bottom: 22px;
-}
-.field { display: flex; flex: 1 1 250px; min-width: 0; flex-direction: column; gap: 8px; }
-.field label { font-size: clamp(15px, 1.4vw, 20px); color: var(--muted); font-weight: 700; }
-.field select, .field input {
-    font-size: clamp(20px, 2vw, 28px); font-weight: 700; color: var(--text);
-    background: var(--panel-2); border: 2px solid var(--border); border-radius: 12px;
-    padding: 12px 16px; min-width: 0; width: 100%;
-}
-.output-btn {
-    font-size: clamp(18px, 1.8vw, 25px); font-weight: 800; color: #fff;
-    background: var(--blue); border: 2px solid var(--blue); border-radius: 12px;
-    padding: 12px 18px; min-height: 58px; width: 100%; cursor: pointer;
-}
-.output-btn:hover { background: #2f6fe0; }
-.output-status { max-width: 330px; color: var(--muted); font-size: clamp(14px, 1.2vw, 17px); font-weight: 650; }
-.output-status.ready { color: var(--green); }
-.output-status.warn { color: var(--amber); }
+      /* ---- timer controls ---- */
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 18px 26px;
+        align-items: flex-end;
+        margin-bottom: 22px;
+      }
+      .field {
+        display: flex;
+        flex: 1 1 250px;
+        min-width: 0;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .field label {
+        font-size: clamp(15px, 1.4vw, 20px);
+        color: var(--muted);
+        font-weight: 700;
+      }
+      .field select,
+      .field input {
+        font-size: clamp(20px, 2vw, 28px);
+        font-weight: 700;
+        color: var(--text);
+        background: var(--panel-2);
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 16px;
+        min-width: 0;
+        width: 100%;
+      }
+      .output-btn {
+        font-size: clamp(18px, 1.8vw, 25px);
+        font-weight: 800;
+        color: #fff;
+        background: var(--blue);
+        border: 2px solid var(--blue);
+        border-radius: 12px;
+        padding: 12px 18px;
+        min-height: 58px;
+        width: 100%;
+        cursor: pointer;
+      }
+      .output-btn:hover {
+        background: #2f6fe0;
+      }
+      .output-status {
+        max-width: 330px;
+        color: var(--muted);
+        font-size: clamp(14px, 1.2vw, 17px);
+        font-weight: 650;
+      }
+      .output-status.ready {
+        color: var(--green);
+      }
+      .output-status.warn {
+        color: var(--amber);
+      }
 
-/* ---- stage selector ---- */
-.stage-selector {
-    display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px;
-}
-.stage-btn {
-    flex: 1 1 150px; text-align: center; cursor: pointer;
-    font-size: clamp(18px, 1.8vw, 26px); font-weight: 700; color: var(--muted);
-    background: var(--panel-2); border: 2px solid var(--border); border-radius: 14px;
-    padding: 16px 8px; transition: all .15s;
-}
-.stage-btn:hover { background: #262a34; color: var(--text); }
-.stage-btn.active { color: #fff; background: var(--red); border-color: var(--red); }
+      /* ---- stage selector ---- */
+      .stage-selector {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+      .stage-btn {
+        flex: 1 1 150px;
+        text-align: center;
+        cursor: pointer;
+        font-size: clamp(18px, 1.8vw, 26px);
+        font-weight: 700;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 2px solid var(--border);
+        border-radius: 14px;
+        padding: 16px 8px;
+        transition: all 0.15s;
+      }
+      .stage-btn:hover {
+        background: #262a34;
+        color: var(--text);
+      }
+      .stage-btn.active {
+        color: #fff;
+        background: var(--red);
+        border-color: var(--red);
+      }
 
-/* ---- big display ---- */
-.sw-label { text-align: center; font-size: clamp(20px, 2.2vw, 32px); color: var(--muted); font-weight: 700; margin-bottom: 6px; }
-.sw-display {
-    font-size: clamp(76px, 14vw, 190px); font-weight: 800; text-align: center;
-    padding: clamp(12px, 2.2vw, 30px) 10px; border-radius: 24px; margin: 6px 0;
-    font-variant-numeric: tabular-nums; letter-spacing: 2px;
-    transition: background .3s, color .3s; line-height: 1;
-}
-.sw-display.normal   { background: #12321c; color: #4dd07f; }
-.sw-display.warning  { background: #3a2a0a; color: var(--amber); }
-.sw-display.overtime { background: #3a1414; color: var(--red); }
+      /* ---- big display ---- */
+      .sw-label {
+        text-align: center;
+        font-size: clamp(20px, 2.2vw, 32px);
+        color: var(--muted);
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .sw-display {
+        font-size: clamp(76px, 14vw, 190px);
+        font-weight: 800;
+        text-align: center;
+        padding: clamp(12px, 2.2vw, 30px) 10px;
+        border-radius: 24px;
+        margin: 6px 0;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 2px;
+        transition:
+          background 0.3s,
+          color 0.3s;
+        line-height: 1;
+      }
+      .sw-display.normal {
+        background: #12321c;
+        color: #4dd07f;
+      }
+      .sw-display.warning {
+        background: #3a2a0a;
+        color: var(--amber);
+      }
+      .sw-display.overtime {
+        background: #3a1414;
+        color: var(--red);
+      }
 
-.btn-row { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 16px; }
-.btn {
-    font-size: clamp(20px, 2vw, 30px); font-weight: 800; cursor: pointer;
-    border: none; border-radius: 16px; padding: 16px clamp(28px, 4vw, 56px);
-    color: #fff; transition: all .15s; min-width: 150px;
-}
-.btn:active { transform: translateY(2px); }
-.btn-start { background: var(--green); } .btn-start:hover { background: var(--green-d); }
-.btn-pause { background: var(--amber); }
-.btn-reset { background: #4b5160; } .btn-reset:hover { background: #59607a; }
-.btn-test  { background: var(--blue); }
-#single-start { font-size: clamp(24px, 2.6vw, 40px); padding: 20px clamp(44px, 6vw, 84px); box-shadow: 0 6px 18px rgba(56, 193, 114, .28); }
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        justify-content: center;
+        margin-top: 16px;
+      }
+      .btn {
+        font-size: clamp(20px, 2vw, 30px);
+        font-weight: 800;
+        cursor: pointer;
+        border: none;
+        border-radius: 16px;
+        padding: 16px clamp(28px, 4vw, 56px);
+        color: #fff;
+        transition: all 0.15s;
+        min-width: 150px;
+      }
+      .btn:active {
+        transform: translateY(2px);
+      }
+      .btn-start {
+        background: var(--green);
+      }
+      .btn-start:hover {
+        background: var(--green-d);
+      }
+      .btn-pause {
+        background: var(--amber);
+      }
+      .btn-reset {
+        background: #4b5160;
+      }
+      .btn-reset:hover {
+        background: #59607a;
+      }
+      .btn-test {
+        background: var(--blue);
+      }
+      #single-start {
+        font-size: clamp(24px, 2.6vw, 40px);
+        padding: 20px clamp(44px, 6vw, 84px);
+        box-shadow: 0 6px 18px rgba(56, 193, 114, 0.28);
+      }
 
-/* ---- bell schedule ---- */
-.bell-schedule {
-    margin-top: 16px; padding: 12px 18px; background: var(--panel);
-    border: 1px solid var(--border); border-radius: 16px;
-    display: flex; flex-wrap: wrap; gap: 2px 22px; align-items: baseline;
-}
-.bell-schedule h4 { font-size: clamp(14px, 1.3vw, 18px); color: var(--muted); margin: 0 8px 2px 0; flex-basis: 100%; }
-.bell-item { font-size: clamp(14px, 1.3vw, 18px); padding: 3px 0; color: #7d8493; font-weight: 600; }
-.bell-item.fired { color: var(--green); }
+      /* ---- bell schedule ---- */
+      .bell-schedule {
+        margin-top: 16px;
+        padding: 12px 18px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px 22px;
+        align-items: baseline;
+      }
+      .bell-schedule h4 {
+        font-size: clamp(14px, 1.3vw, 18px);
+        color: var(--muted);
+        margin: 0 8px 2px 0;
+        flex-basis: 100%;
+      }
+      .bell-item {
+        font-size: clamp(14px, 1.3vw, 18px);
+        padding: 3px 0;
+        color: #7d8493;
+        font-weight: 600;
+      }
+      .bell-item.fired {
+        color: var(--green);
+      }
 
-/* ---- free (dual) timer ---- */
-.free-wrap { display: flex; flex-wrap: wrap; gap: 22px; }
-.free-side { flex: 1 1 320px; text-align: center; background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 18px; }
-.free-side h3 { font-size: clamp(24px, 2.4vw, 36px); margin-bottom: 10px; }
-.free-side .sw-display { font-size: clamp(64px, 11vw, 150px); }
+      /* ---- free (dual) timer ---- */
+      .free-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 22px;
+      }
+      .free-side {
+        flex: 1 1 320px;
+        text-align: center;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 18px;
+      }
+      .free-side h3 {
+        font-size: clamp(24px, 2.4vw, 36px);
+        margin-bottom: 10px;
+      }
+      .free-side .sw-display {
+        font-size: clamp(64px, 11vw, 150px);
+      }
 
-/* ---- AI panel ---- */
-.ai-card {
-    max-width: 900px; margin: clamp(20px, 5vh, 70px) auto; text-align: center;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 26px;
-    padding: clamp(30px, 5vw, 70px) clamp(20px, 4vw, 56px);
-}
-.ai-card .emoji { font-size: clamp(56px, 9vw, 110px); line-height: 1; }
-.ai-card h2 { font-size: clamp(30px, 4vw, 56px); font-weight: 800; margin: 18px 0 14px; }
-.ai-card p { font-size: clamp(18px, 2vw, 27px); color: var(--muted); line-height: 1.6; margin-bottom: 30px; }
-.ai-launch {
-    display: inline-block; font-size: clamp(24px, 3vw, 40px); font-weight: 800;
-    color: #fff; background: var(--blue); border: none; border-radius: 20px;
-    padding: clamp(18px, 2.5vw, 30px) clamp(40px, 6vw, 80px); cursor: pointer;
-    text-decoration: none; transition: all .15s;
-}
-.ai-launch:hover { background: #2f6fe0; }
-.ai-note { margin-top: 24px; font-size: clamp(14px, 1.4vw, 19px); color: #6b7280; }
-@media (max-width: 1400px) {
-    .topbar { align-items: stretch; flex-direction: column; }
-    .mode-switch { width: 100%; }
-    .mode-btn { flex: 1 1 0; }
-}
-@media (max-width: 680px) {
-    .brand .sub { display: block; margin: 4px 0 0; }
-    .mode-switch { flex-direction: column; }
-    .mode-btn { width: 100%; }
-}
-</style>
-</head>
-<body>
-<div class="topbar">
-    <div class="brand">聖呂中辯恒常訓練<span class="sub">練習專用機</span></div>
-    <div class="mode-switch">
-        <button class="mode-btn active" id="mode-timer" onclick="switchMode('timer')">🔔 叮叮計時</button>
-        <button class="mode-btn" id="mode-ai" onclick="switchMode('ai')">🤖 AI 辯論練習</button>
+      /* ---- AI panel ---- */
+      .ai-card {
+        max-width: 900px;
+        margin: clamp(20px, 5vh, 70px) auto;
+        text-align: center;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 26px;
+        padding: clamp(30px, 5vw, 70px) clamp(20px, 4vw, 56px);
+      }
+      .ai-card .emoji {
+        font-size: clamp(56px, 9vw, 110px);
+        line-height: 1;
+      }
+      .ai-card h2 {
+        font-size: clamp(30px, 4vw, 56px);
+        font-weight: 800;
+        margin: 18px 0 14px;
+      }
+      .ai-card p {
+        font-size: clamp(18px, 2vw, 27px);
+        color: var(--muted);
+        line-height: 1.6;
+        margin-bottom: 30px;
+      }
+      .ai-launch {
+        display: inline-block;
+        font-size: clamp(24px, 3vw, 40px);
+        font-weight: 800;
+        color: #fff;
+        background: var(--blue);
+        border: none;
+        border-radius: 20px;
+        padding: clamp(18px, 2.5vw, 30px) clamp(40px, 6vw, 80px);
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.15s;
+      }
+      .ai-launch:hover {
+        background: #2f6fe0;
+      }
+      .ai-note {
+        margin-top: 24px;
+        font-size: clamp(14px, 1.4vw, 19px);
+        color: #6b7280;
+      }
+      @media (max-width: 1400px) {
+        .topbar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .mode-switch {
+          width: 100%;
+        }
+        .mode-btn {
+          flex: 1 1 0;
+        }
+      }
+      @media (max-width: 680px) {
+        .brand .sub {
+          display: block;
+          margin: 4px 0 0;
+        }
+        .mode-switch {
+          flex-direction: column;
+        }
+        .mode-btn {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="brand">
+        聖呂中辯恒常訓練<span class="sub">練習專用機</span>
+      </div>
+      <div class="mode-switch">
+        <button
+          class="mode-btn active"
+          id="mode-timer"
+          onclick="switchMode('timer')"
+        >
+          🔔 叮叮計時
+        </button>
+        <button class="mode-btn" id="mode-ai" onclick="switchMode('ai')">
+          🤖 AI 辯論練習
+        </button>
+      </div>
     </div>
-</div>
 
-<div class="content">
-    <!-- ============ 叮叮計時 ============ -->
-    <div class="panel active" id="panel-timer">
+    <div class="content">
+      <!-- ============ 叮叮計時 ============ -->
+      <div class="panel active" id="panel-timer">
         <div class="controls">
-            <div class="field">
-                <label>賽制</label>
-                <select id="format-select" onchange="onFormatChange()"></select>
+          <div class="field">
+            <label>賽制</label>
+            <select id="format-select" onchange="onFormatChange()"></select>
+          </div>
+          <div class="field" id="free-field" style="display: none">
+            <label>自由辯論（每邊，分鐘）</label>
+            <input
+              type="number"
+              id="free-minutes"
+              value="5"
+              min="2"
+              max="10"
+              step="0.5"
+              onchange="reloadConfig()"
+            />
+          </div>
+          <div class="field">
+            <label>結辯準備（分鐘）</label>
+            <input
+              type="number"
+              id="closing-prep"
+              value="2"
+              min="0.5"
+              max="10"
+              step="0.5"
+              onchange="reloadConfig()"
+            />
+          </div>
+          <div class="field">
+            <label>鈴聲輸出（網頁音量固定 100%）</label>
+            <button
+              type="button"
+              class="output-btn"
+              id="speaker-button"
+              onclick="selectSpeaker()"
+            >
+              🔊 連接 Bluetooth／喇叭
+            </button>
+            <div class="output-status" id="speaker-status">
+              目前使用系統預設喇叭
             </div>
-            <div class="field" id="free-field" style="display:none;">
-                <label>自由辯論（每邊，分鐘）</label>
-                <input type="number" id="free-minutes" value="5" min="2" max="10" step="0.5" onchange="reloadConfig()">
-            </div>
-            <div class="field">
-                <label>結辯準備（分鐘）</label>
-                <input type="number" id="closing-prep" value="2" min="0.5" max="10" step="0.5" onchange="reloadConfig()">
-            </div>
-            <div class="field">
-                <label>鈴聲輸出（網頁音量固定 100%）</label>
-                <button type="button" class="output-btn" id="speaker-button" onclick="selectSpeaker()">🔊 連接 Bluetooth／喇叭</button>
-                <div class="output-status" id="speaker-status">目前使用系統預設喇叭</div>
-            </div>
+          </div>
         </div>
 
         <div class="stage-selector" id="stage-selector"></div>
 
         <div id="single-timer">
-            <div class="sw-label" id="single-label">計時</div>
-            <div class="sw-display normal" id="single-display">0:00</div>
-            <div class="btn-row">
-                <button class="btn btn-start" id="single-start" onclick="toggleSingle()">開始</button>
-                <button class="btn btn-test" onclick="testBell()">🔔 測試聲音</button>
-                <button class="btn btn-reset" onclick="resetSingle()">重置</button>
-            </div>
-            <div class="bell-schedule" id="single-bells"></div>
+          <div class="sw-label" id="single-label">計時</div>
+          <div class="sw-display normal" id="single-display">0:00</div>
+          <div class="btn-row">
+            <button
+              class="btn btn-start"
+              id="single-start"
+              onclick="toggleSingle()"
+            >
+              開始
+            </button>
+            <button class="btn btn-test" onclick="testBell()">
+              🔔 測試聲音
+            </button>
+            <button class="btn btn-reset" onclick="resetSingle()">重置</button>
+          </div>
+          <div class="bell-schedule" id="single-bells"></div>
         </div>
 
-        <div id="free-timer" style="display:none;">
-            <div class="free-wrap">
-                <div class="free-side">
-                    <h3>正方</h3>
-                    <div class="sw-display normal" id="free-pro-display">0:00</div>
-                    <div class="btn-row">
-                        <button class="btn btn-start" id="free-pro-btn" onclick="toggleFree('pro')">開始</button>
-                        <button class="btn btn-reset" onclick="resetFree('pro')">重置</button>
-                    </div>
-                </div>
-                <div class="free-side">
-                    <h3>反方</h3>
-                    <div class="sw-display normal" id="free-con-display">0:00</div>
-                    <div class="btn-row">
-                        <button class="btn btn-start" id="free-con-btn" onclick="toggleFree('con')">開始</button>
-                        <button class="btn btn-reset" onclick="resetFree('con')">重置</button>
-                    </div>
-                </div>
+        <div id="free-timer" style="display: none">
+          <div class="free-wrap">
+            <div class="free-side">
+              <h3>正方</h3>
+              <div class="sw-display normal" id="free-pro-display">0:00</div>
+              <div class="btn-row">
+                <button
+                  class="btn btn-start"
+                  id="free-pro-btn"
+                  onclick="toggleFree('pro')"
+                >
+                  開始
+                </button>
+                <button class="btn btn-reset" onclick="resetFree('pro')">
+                  重置
+                </button>
+              </div>
             </div>
-            <div class="btn-row"><button class="btn btn-test" onclick="testBell()">🔔 測試聲音</button></div>
-            <div class="bell-schedule" id="free-bells"></div>
+            <div class="free-side">
+              <h3>反方</h3>
+              <div class="sw-display normal" id="free-con-display">0:00</div>
+              <div class="btn-row">
+                <button
+                  class="btn btn-start"
+                  id="free-con-btn"
+                  onclick="toggleFree('con')"
+                >
+                  開始
+                </button>
+                <button class="btn btn-reset" onclick="resetFree('con')">
+                  重置
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-test" onclick="testBell()">
+              🔔 測試聲音
+            </button>
+          </div>
+          <div class="bell-schedule" id="free-bells"></div>
         </div>
-    </div>
+      </div>
 
-    <!-- ============ AI 辯論練習 ============ -->
-    <div class="panel" id="panel-ai">
+      <!-- ============ AI 辯論練習 ============ -->
+      <div class="panel" id="panel-ai">
         <div class="ai-card">
-            <div class="emoji">🤖</div>
-            <h2>AI 辯論練習</h2>
-            <p>用 Gemini Live 同 AI 做自由辯論或全場模擬練習，AI 會即場回應同計時。<br>撳下面掣就開始。</p>
-            <a class="ai-launch" href="/practice/ai-debate">▶ 開始 AI 辯論練習</a>
-            <div class="ai-note">練習完成後可按 <b>Alt + F4</b> 返主選單。</div>
+          <div class="emoji">🤖</div>
+          <h2>AI 辯論練習</h2>
+          <p>
+            用 Gemini Live 同 AI 做自由辯論或全場模擬練習，AI
+            會即場回應同計時。<br />撳下面掣就開始。
+          </p>
+          <a class="ai-launch" href="/practice/ai-debate"
+            >▶ 開始 AI 辯論練習</a
+          >
+          <div class="ai-note">練習完成後可按 <b>Alt + F4</b> 返主選單。</div>
         </div>
+      </div>
     </div>
-</div>
 
-<script>
-// ---------- bell audio (Web Audio; falls back to a synth tone) ----------
-const BELL_SRC = "/api/practice/bell";
-const BELL_BOOST = 12.0;
-let bellBuffer = null, bellLoading = null, audioCtx = null, bellMaster = null;
+    <script>
+      // ---------- bell audio (Web Audio; falls back to a synth tone) ----------
+      const BELL_SRC = "/api/practice/bell";
+      const BELL_BOOST = 12.0;
+      let bellBuffer = null,
+        bellLoading = null,
+        audioCtx = null,
+        bellMaster = null;
 
-function getAudioCtx() {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === "suspended") audioCtx.resume();
-    return audioCtx;
-}
-function getBellOutput() {
-    const ctx = getAudioCtx();
-    if (!bellMaster) {
-        const boost = ctx.createGain(), limiter = ctx.createDynamicsCompressor();
-        boost.gain.value = BELL_BOOST;
-        limiter.threshold.value = -8; limiter.knee.value = 0; limiter.ratio.value = 20;
-        limiter.attack.value = 0.003; limiter.release.value = 0.25;
-        boost.connect(limiter); limiter.connect(ctx.destination);
-        bellMaster = boost;
-    }
-    return bellMaster;
-}
-async function selectSpeaker() {
-    const status = document.getElementById("speaker-status");
-    const button = document.getElementById("speaker-button");
-    try {
-        const ctx = await prepareBell();
-        if (!navigator.mediaDevices || typeof navigator.mediaDevices.selectAudioOutput !== "function" || typeof ctx.setSinkId !== "function") {
-            status.textContent = "此瀏覽器未能直接揀輸出；請先喺系統 Bluetooth 設定連線，鈴聲會跟系統預設喇叭。";
+      function getAudioCtx() {
+        if (!audioCtx)
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        return audioCtx;
+      }
+      function getBellOutput() {
+        const ctx = getAudioCtx();
+        if (!bellMaster) {
+          const boost = ctx.createGain(),
+            limiter = ctx.createDynamicsCompressor();
+          boost.gain.value = BELL_BOOST;
+          limiter.threshold.value = -8;
+          limiter.knee.value = 0;
+          limiter.ratio.value = 20;
+          limiter.attack.value = 0.003;
+          limiter.release.value = 0.25;
+          boost.connect(limiter);
+          limiter.connect(ctx.destination);
+          bellMaster = boost;
+        }
+        return bellMaster;
+      }
+      async function selectSpeaker() {
+        const status = document.getElementById("speaker-status");
+        const button = document.getElementById("speaker-button");
+        try {
+          const ctx = await prepareBell();
+          if (
+            !navigator.mediaDevices ||
+            typeof navigator.mediaDevices.selectAudioOutput !== "function" ||
+            typeof ctx.setSinkId !== "function"
+          ) {
+            status.textContent =
+              "此瀏覽器未能直接揀輸出；請先喺系統 Bluetooth 設定連線，鈴聲會跟系統預設喇叭。";
             status.className = "output-status warn";
             return;
-        }
-        button.disabled = true; button.textContent = "正在選擇喇叭…";
-        const device = await navigator.mediaDevices.selectAudioOutput();
-        await ctx.setSinkId(device.deviceId);
-        status.textContent = "已連接：" + (device.label || "所選喇叭") + "（網頁音量 100%）";
-        status.className = "output-status ready";
-        button.textContent = "🔊 更改 Bluetooth／喇叭";
-        await playBell(1);
-    } catch (error) {
-        if (error && error.name === "NotAllowedError") {
+          }
+          button.disabled = true;
+          button.textContent = "正在選擇喇叭…";
+          const device = await navigator.mediaDevices.selectAudioOutput();
+          await ctx.setSinkId(device.deviceId);
+          status.textContent =
+            "已連接：" + (device.label || "所選喇叭") + "（網頁音量 100%）";
+          status.className = "output-status ready";
+          button.textContent = "🔊 更改 Bluetooth／喇叭";
+          await playBell(1);
+        } catch (error) {
+          if (error && error.name === "NotAllowedError") {
             status.textContent = "未有選擇喇叭，繼續使用系統預設輸出。";
-        } else {
-            status.textContent = "未能切換喇叭：" + (error.message || "請檢查 Bluetooth 連線");
+          } else {
+            status.textContent =
+              "未能切換喇叭：" + (error.message || "請檢查 Bluetooth 連線");
+          }
+          status.className = "output-status warn";
+        } finally {
+          button.disabled = false;
+          if (button.textContent === "正在選擇喇叭…")
+            button.textContent = "🔊 連接 Bluetooth／喇叭";
         }
-        status.className = "output-status warn";
-    } finally {
-        button.disabled = false;
-        if (button.textContent === "正在選擇喇叭…") button.textContent = "🔊 連接 Bluetooth／喇叭";
-    }
-}
-async function prepareBell() {
-    const ctx = getAudioCtx();
-    if (ctx.state === "suspended") await ctx.resume();
-    loadBell();
-    return ctx;
-}
-async function loadBell() {
-    if (!bellLoading) {
-        bellLoading = fetch(BELL_SRC)
-            .then(r => r.arrayBuffer())
-            .then(a => getAudioCtx().decodeAudioData(a))
-            .then(b => { bellBuffer = b; return b; })
+      }
+      async function prepareBell() {
+        const ctx = getAudioCtx();
+        if (ctx.state === "suspended") await ctx.resume();
+        loadBell();
+        return ctx;
+      }
+      async function loadBell() {
+        if (!bellLoading) {
+          bellLoading = fetch(BELL_SRC)
+            .then((r) => r.arrayBuffer())
+            .then((a) => getAudioCtx().decodeAudioData(a))
+            .then((b) => {
+              bellBuffer = b;
+              return b;
+            })
             .catch(() => null);
-    }
-    return bellLoading;
-}
-function playTone(count) {
-    const ctx = getAudioCtx();
-    for (let i = 0; i < count; i++) {
-        const osc = ctx.createOscillator(), gain = ctx.createGain();
-        osc.type = "sine"; osc.frequency.value = 850;
-        gain.gain.setValueAtTime(0.45, ctx.currentTime + i * 0.35);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.35 + 0.22);
-        osc.connect(gain); gain.connect(getBellOutput());
-        osc.start(ctx.currentTime + i * 0.35); osc.stop(ctx.currentTime + i * 0.35 + 0.22);
-    }
-}
-async function playBell(count) {
-    const ctx = getAudioCtx();
-    if (ctx.state === "suspended") await ctx.resume();
-    if (!bellBuffer) await loadBell();
-    if (!bellBuffer) { playTone(count); return; }
-    for (let i = 0; i < count; i++) {
-        const src = ctx.createBufferSource();
-        src.buffer = bellBuffer;
-        src.connect(getBellOutput());
-        src.start(ctx.currentTime + i * 0.8);
-    }
-}
-async function testBell() { await prepareBell(); await playBell(1); }
-
-// ---------- mode switch ----------
-function switchMode(mode) {
-    document.getElementById("panel-timer").classList.toggle("active", mode === "timer");
-    document.getElementById("panel-ai").classList.toggle("active", mode === "ai");
-    document.getElementById("mode-timer").classList.toggle("active", mode === "timer");
-    document.getElementById("mode-ai").classList.toggle("active", mode === "ai");
-}
-
-// ---------- timer engine (config loaded from /api/practice/timer-config) ----------
-let cfg = null;                     // { timer_stages, bell_schedules, warning_times, overtime_times }
-let currentStage = "main";
-let sRunning = false, sElapsed = 0, sStartTs = 0, sFired = new Set(), sRaf = 0;
-let fState = {
-    pro: { running: false, elapsed: 0, startTs: 0, fired: new Set(), raf: 0 },
-    con: { running: false, elapsed: 0, startTs: 0, fired: new Set(), raf: 0 },
-};
-
-function fmtTime(sec) {
-    const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
-    return m + ":" + String(s).padStart(2, "0");
-}
-function stageLabel(id) {
-    const found = (cfg.timer_stages || []).find(x => x[0] === id);
-    return found ? found[1] : "";
-}
-function getDisplayClass(sec, stage) {
-    const w = cfg.warning_times[stage], o = cfg.overtime_times[stage];
-    if (o !== null && o !== undefined && sec >= o) return "overtime";
-    if (w !== null && w !== undefined && sec >= w) return "warning";
-    return "normal";
-}
-
-async function reloadConfig() {
-    const fmt = document.getElementById("format-select").value;
-    const free = document.getElementById("free-minutes").value;
-    const prep = document.getElementById("closing-prep").value;
-    const url = "/api/practice/timer-config?format=" + encodeURIComponent(fmt) +
-                "&free_minutes=" + encodeURIComponent(free) +
-                "&closing_prep_minutes=" + encodeURIComponent(prep);
-    const res = await fetch(url);
-    cfg = await res.json();
-    buildStages();
-}
-function onFormatChange() {
-    const fmt = document.getElementById("format-select").value;
-    document.getElementById("free-field").style.display = (fmt === "聯中") ? "flex" : "none";
-    reloadConfig();
-}
-
-function buildStages() {
-    const sel = document.getElementById("stage-selector");
-    sel.innerHTML = "";
-    (cfg.timer_stages || []).forEach(([id, label], idx) => {
-        const b = document.createElement("div");
-        b.className = "stage-btn" + (idx === 0 ? " active" : "");
-        b.id = "stage-" + id;
-        b.textContent = label;
-        b.onclick = () => selectStage(id);
-        sel.appendChild(b);
-    });
-    currentStage = (cfg.timer_stages && cfg.timer_stages[0]) ? cfg.timer_stages[0][0] : "main";
-    applyStageView();
-}
-
-function selectStage(stage) {
-    resetSingle(); resetFree("pro"); resetFree("con");
-    currentStage = stage;
-    document.querySelectorAll(".stage-btn").forEach(b => b.classList.remove("active"));
-    const el = document.getElementById("stage-" + stage);
-    if (el) el.classList.add("active");
-    applyStageView();
-}
-function applyStageView() {
-    if (currentStage === "free") {
-        document.getElementById("single-timer").style.display = "none";
-        document.getElementById("free-timer").style.display = "block";
-        renderFreeBells();
-    } else {
-        document.getElementById("single-timer").style.display = "block";
-        document.getElementById("free-timer").style.display = "none";
-        document.getElementById("single-label").textContent = stageLabel(currentStage) + "計時";
-        renderSingleBells();
-    }
-}
-
-// ----- single timer -----
-function renderSingleBells() {
-    const sched = cfg.bell_schedules[currentStage] || [];
-    document.getElementById("single-bells").innerHTML =
-        "<h4>鈴聲時間表</h4>" + sched.map((b, i) => '<div class="bell-item" id="sb-' + i + '">' + b.label + "</div>").join("");
-}
-function updateSingleDisplay() {
-    const el = document.getElementById("single-display");
-    el.textContent = fmtTime(sElapsed);
-    el.className = "sw-display " + getDisplayClass(sElapsed, currentStage);
-}
-function singleTick() {
-    if (!sRunning) return;
-    sElapsed = (performance.now() - sStartTs) / 1000;
-    updateSingleDisplay();
-    (cfg.bell_schedules[currentStage] || []).forEach((b, i) => {
-        if (!sFired.has(i) && sElapsed >= b.t) {
-            sFired.add(i); playBell(b.rings);
-            const bel = document.getElementById("sb-" + i); if (bel) bel.classList.add("fired");
         }
-    });
-    sRaf = requestAnimationFrame(singleTick);
-}
-function toggleSingle() {
-    const btn = document.getElementById("single-start");
-    if (sRunning) {
-        sRunning = false; cancelAnimationFrame(sRaf);
+        return bellLoading;
+      }
+      function playTone(count) {
+        const ctx = getAudioCtx();
+        for (let i = 0; i < count; i++) {
+          const osc = ctx.createOscillator(),
+            gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = 850;
+          gain.gain.setValueAtTime(0.45, ctx.currentTime + i * 0.35);
+          gain.gain.exponentialRampToValueAtTime(
+            0.001,
+            ctx.currentTime + i * 0.35 + 0.22,
+          );
+          osc.connect(gain);
+          gain.connect(getBellOutput());
+          osc.start(ctx.currentTime + i * 0.35);
+          osc.stop(ctx.currentTime + i * 0.35 + 0.22);
+        }
+      }
+      async function playBell(count) {
+        const ctx = getAudioCtx();
+        if (ctx.state === "suspended") await ctx.resume();
+        if (!bellBuffer) await loadBell();
+        if (!bellBuffer) {
+          playTone(count);
+          return;
+        }
+        for (let i = 0; i < count; i++) {
+          const src = ctx.createBufferSource();
+          src.buffer = bellBuffer;
+          src.connect(getBellOutput());
+          src.start(ctx.currentTime + i * 0.8);
+        }
+      }
+      async function testBell() {
+        await prepareBell();
+        await playBell(1);
+      }
+
+      // ---------- mode switch ----------
+      function switchMode(mode) {
+        document
+          .getElementById("panel-timer")
+          .classList.toggle("active", mode === "timer");
+        document
+          .getElementById("panel-ai")
+          .classList.toggle("active", mode === "ai");
+        document
+          .getElementById("mode-timer")
+          .classList.toggle("active", mode === "timer");
+        document
+          .getElementById("mode-ai")
+          .classList.toggle("active", mode === "ai");
+      }
+
+      // ---------- timer engine (config loaded from /api/practice/timer-config) ----------
+      let cfg = null; // { timer_stages, bell_schedules, warning_times, overtime_times }
+      let currentStage = "main";
+      let sRunning = false,
+        sElapsed = 0,
+        sStartTs = 0,
+        sFired = new Set(),
+        sRaf = 0;
+      let fState = {
+        pro: {
+          running: false,
+          elapsed: 0,
+          startTs: 0,
+          fired: new Set(),
+          raf: 0,
+        },
+        con: {
+          running: false,
+          elapsed: 0,
+          startTs: 0,
+          fired: new Set(),
+          raf: 0,
+        },
+      };
+
+      function fmtTime(sec) {
+        const m = Math.floor(sec / 60),
+          s = Math.floor(sec % 60);
+        return m + ":" + String(s).padStart(2, "0");
+      }
+      function stageLabel(id) {
+        const found = (cfg.timer_stages || []).find((x) => x[0] === id);
+        return found ? found[1] : "";
+      }
+      function getDisplayClass(sec, stage) {
+        const w = cfg.warning_times[stage],
+          o = cfg.overtime_times[stage];
+        if (o !== null && o !== undefined && sec >= o) return "overtime";
+        if (w !== null && w !== undefined && sec >= w) return "warning";
+        return "normal";
+      }
+
+      async function reloadConfig() {
+        const fmt = document.getElementById("format-select").value;
+        const free = document.getElementById("free-minutes").value;
+        const prep = document.getElementById("closing-prep").value;
+        const url =
+          "/api/practice/timer-config?format=" +
+          encodeURIComponent(fmt) +
+          "&free_minutes=" +
+          encodeURIComponent(free) +
+          "&closing_prep_minutes=" +
+          encodeURIComponent(prep);
+        const res = await fetch(url);
+        cfg = await res.json();
+        buildStages();
+      }
+      function onFormatChange() {
+        const fmt = document.getElementById("format-select").value;
+        document.getElementById("free-field").style.display =
+          fmt === "聯中" ? "flex" : "none";
+        reloadConfig();
+      }
+
+      function buildStages() {
+        const sel = document.getElementById("stage-selector");
+        sel.innerHTML = "";
+        (cfg.timer_stages || []).forEach(([id, label], idx) => {
+          const b = document.createElement("div");
+          b.className = "stage-btn" + (idx === 0 ? " active" : "");
+          b.id = "stage-" + id;
+          b.textContent = label;
+          b.onclick = () => selectStage(id);
+          sel.appendChild(b);
+        });
+        currentStage =
+          cfg.timer_stages && cfg.timer_stages[0]
+            ? cfg.timer_stages[0][0]
+            : "main";
+        applyStageView();
+      }
+
+      function selectStage(stage) {
+        resetSingle();
+        resetFree("pro");
+        resetFree("con");
+        currentStage = stage;
+        document
+          .querySelectorAll(".stage-btn")
+          .forEach((b) => b.classList.remove("active"));
+        const el = document.getElementById("stage-" + stage);
+        if (el) el.classList.add("active");
+        applyStageView();
+      }
+      function applyStageView() {
+        if (currentStage === "free") {
+          document.getElementById("single-timer").style.display = "none";
+          document.getElementById("free-timer").style.display = "block";
+          renderFreeBells();
+        } else {
+          document.getElementById("single-timer").style.display = "block";
+          document.getElementById("free-timer").style.display = "none";
+          document.getElementById("single-label").textContent =
+            stageLabel(currentStage) + "計時";
+          renderSingleBells();
+        }
+      }
+
+      // ----- single timer -----
+      function renderSingleBells() {
+        const sched = cfg.bell_schedules[currentStage] || [];
+        document.getElementById("single-bells").innerHTML =
+          "<h4>鈴聲時間表</h4>" +
+          sched
+            .map(
+              (b, i) =>
+                '<div class="bell-item" id="sb-' +
+                i +
+                '">' +
+                b.label +
+                "</div>",
+            )
+            .join("");
+      }
+      function updateSingleDisplay() {
+        const el = document.getElementById("single-display");
+        el.textContent = fmtTime(sElapsed);
+        el.className = "sw-display " + getDisplayClass(sElapsed, currentStage);
+      }
+      function singleTick() {
+        if (!sRunning) return;
         sElapsed = (performance.now() - sStartTs) / 1000;
-        btn.textContent = "繼續"; btn.className = "btn btn-start";
-    } else {
-        prepareBell();
-        sRunning = true; sStartTs = performance.now() - sElapsed * 1000;
-        btn.textContent = "暫停"; btn.className = "btn btn-pause";
-        singleTick();
-    }
-}
-function resetSingle() {
-    sRunning = false; cancelAnimationFrame(sRaf); sElapsed = 0; sFired.clear();
-    updateSingleDisplay();
-    const btn = document.getElementById("single-start");
-    btn.textContent = "開始"; btn.className = "btn btn-start";
-    renderSingleBells();
-}
-
-// ----- free (dual) timer -----
-function renderFreeBells() {
-    const sched = cfg.bell_schedules.free || [];
-    document.getElementById("free-bells").innerHTML =
-        "<h4>鈴聲時間表（每邊）</h4>" + sched.map((b, i) =>
-            '<div class="bell-item" id="fb-pro-' + i + '">正方 ' + b.label + '</div>' +
-            '<div class="bell-item" id="fb-con-' + i + '">反方 ' + b.label + '</div>').join("");
-}
-function updateFreeDisplay(side) {
-    const s = fState[side], el = document.getElementById("free-" + side + "-display");
-    el.textContent = fmtTime(s.elapsed);
-    el.className = "sw-display " + getDisplayClass(s.elapsed, "free");
-}
-function freeTick(side) {
-    const s = fState[side];
-    if (!s.running) return;
-    s.elapsed = (performance.now() - s.startTs) / 1000;
-    updateFreeDisplay(side);
-    (cfg.bell_schedules.free || []).forEach((b, i) => {
-        if (!s.fired.has(i) && s.elapsed >= b.t) {
-            s.fired.add(i); playBell(b.rings);
-            const bel = document.getElementById("fb-" + side + "-" + i); if (bel) bel.classList.add("fired");
+        updateSingleDisplay();
+        (cfg.bell_schedules[currentStage] || []).forEach((b, i) => {
+          if (!sFired.has(i) && sElapsed >= b.t) {
+            sFired.add(i);
+            playBell(b.rings);
+            const bel = document.getElementById("sb-" + i);
+            if (bel) bel.classList.add("fired");
+          }
+        });
+        sRaf = requestAnimationFrame(singleTick);
+      }
+      function toggleSingle() {
+        const btn = document.getElementById("single-start");
+        if (sRunning) {
+          sRunning = false;
+          cancelAnimationFrame(sRaf);
+          sElapsed = (performance.now() - sStartTs) / 1000;
+          btn.textContent = "繼續";
+          btn.className = "btn btn-start";
+        } else {
+          prepareBell();
+          sRunning = true;
+          sStartTs = performance.now() - sElapsed * 1000;
+          btn.textContent = "暫停";
+          btn.className = "btn btn-pause";
+          singleTick();
         }
-    });
-    s.raf = requestAnimationFrame(() => freeTick(side));
-}
-function toggleFree(side) {
-    const s = fState[side], other = side === "pro" ? "con" : "pro";
-    const btn = document.getElementById("free-" + side + "-btn");
-    if (s.running) {
-        s.running = false; cancelAnimationFrame(s.raf);
+      }
+      function resetSingle() {
+        sRunning = false;
+        cancelAnimationFrame(sRaf);
+        sElapsed = 0;
+        sFired.clear();
+        updateSingleDisplay();
+        const btn = document.getElementById("single-start");
+        btn.textContent = "開始";
+        btn.className = "btn btn-start";
+        renderSingleBells();
+      }
+
+      // ----- free (dual) timer -----
+      function renderFreeBells() {
+        const sched = cfg.bell_schedules.free || [];
+        document.getElementById("free-bells").innerHTML =
+          "<h4>鈴聲時間表（每邊）</h4>" +
+          sched
+            .map(
+              (b, i) =>
+                '<div class="bell-item" id="fb-pro-' +
+                i +
+                '">正方 ' +
+                b.label +
+                "</div>" +
+                '<div class="bell-item" id="fb-con-' +
+                i +
+                '">反方 ' +
+                b.label +
+                "</div>",
+            )
+            .join("");
+      }
+      function updateFreeDisplay(side) {
+        const s = fState[side],
+          el = document.getElementById("free-" + side + "-display");
+        el.textContent = fmtTime(s.elapsed);
+        el.className = "sw-display " + getDisplayClass(s.elapsed, "free");
+      }
+      function freeTick(side) {
+        const s = fState[side];
+        if (!s.running) return;
         s.elapsed = (performance.now() - s.startTs) / 1000;
-        btn.textContent = "繼續"; btn.className = "btn btn-start";
-    } else {
-        const os = fState[other];
-        if (os.running) {   // 兩邊互斥：開一邊自動停另一邊
-            os.running = false; cancelAnimationFrame(os.raf);
+        updateFreeDisplay(side);
+        (cfg.bell_schedules.free || []).forEach((b, i) => {
+          if (!s.fired.has(i) && s.elapsed >= b.t) {
+            s.fired.add(i);
+            playBell(b.rings);
+            const bel = document.getElementById("fb-" + side + "-" + i);
+            if (bel) bel.classList.add("fired");
+          }
+        });
+        s.raf = requestAnimationFrame(() => freeTick(side));
+      }
+      function toggleFree(side) {
+        const s = fState[side],
+          other = side === "pro" ? "con" : "pro";
+        const btn = document.getElementById("free-" + side + "-btn");
+        if (s.running) {
+          s.running = false;
+          cancelAnimationFrame(s.raf);
+          s.elapsed = (performance.now() - s.startTs) / 1000;
+          btn.textContent = "繼續";
+          btn.className = "btn btn-start";
+        } else {
+          const os = fState[other];
+          if (os.running) {
+            // 兩邊互斥：開一邊自動停另一邊
+            os.running = false;
+            cancelAnimationFrame(os.raf);
             os.elapsed = (performance.now() - os.startTs) / 1000;
             updateFreeDisplay(other);
             const obtn = document.getElementById("free-" + other + "-btn");
-            obtn.textContent = "繼續"; obtn.className = "btn btn-start";
+            obtn.textContent = "繼續";
+            obtn.className = "btn btn-start";
+          }
+          prepareBell();
+          s.running = true;
+          s.startTs = performance.now() - s.elapsed * 1000;
+          btn.textContent = "暫停";
+          btn.className = "btn btn-pause";
+          freeTick(side);
         }
-        prepareBell();
-        s.running = true; s.startTs = performance.now() - s.elapsed * 1000;
-        btn.textContent = "暫停"; btn.className = "btn btn-pause";
-        freeTick(side);
-    }
-}
-function resetFree(side) {
-    const s = fState[side];
-    s.running = false; cancelAnimationFrame(s.raf); s.elapsed = 0; s.fired.clear();
-    updateFreeDisplay(side);
-    const btn = document.getElementById("free-" + side + "-btn");
-    btn.textContent = "開始"; btn.className = "btn btn-start";
-    (cfg.bell_schedules.free || []).forEach((b, i) => {
-        const bel = document.getElementById("fb-" + side + "-" + i); if (bel) bel.classList.remove("fired");
-    });
-}
+      }
+      function resetFree(side) {
+        const s = fState[side];
+        s.running = false;
+        cancelAnimationFrame(s.raf);
+        s.elapsed = 0;
+        s.fired.clear();
+        updateFreeDisplay(side);
+        const btn = document.getElementById("free-" + side + "-btn");
+        btn.textContent = "開始";
+        btn.className = "btn btn-start";
+        (cfg.bell_schedules.free || []).forEach((b, i) => {
+          const bel = document.getElementById("fb-" + side + "-" + i);
+          if (bel) bel.classList.remove("fired");
+        });
+      }
 
-// ---------- init ----------
-async function init() {
-    // seed format list from the API (also returns the schedule for the default format)
-    const res = await fetch("/api/practice/timer-config");
-    cfg = await res.json();
-    const sel = document.getElementById("format-select");
-    (cfg.formats || []).forEach(f => {
-        const o = document.createElement("option"); o.value = f; o.textContent = f; sel.appendChild(o);
-    });
-    sel.value = cfg.format;
-    document.getElementById("free-field").style.display = (cfg.format === "聯中") ? "flex" : "none";
-    buildStages();
-}
-init();
-</script>
-</body>
+      // ---------- init ----------
+      async function init() {
+        // seed format list from the API (also returns the schedule for the default format)
+        const res = await fetch("/api/practice/timer-config");
+        cfg = await res.json();
+        const sel = document.getElementById("format-select");
+        (cfg.formats || []).forEach((f) => {
+          const o = document.createElement("option");
+          o.value = f;
+          o.textContent = f;
+          sel.appendChild(o);
+        });
+        sel.value = cfg.format;
+        document.getElementById("free-field").style.display =
+          cfg.format === "聯中" ? "flex" : "none";
+        buildStages();
+      }
+      init();
+    </script>
+  </body>
 </html>

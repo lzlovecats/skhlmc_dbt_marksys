@@ -97,15 +97,16 @@ def _usage(data, provider, web_search=False):
 
 
 async def generate_text(config, system, user, *, api_key, audio_base64="", audio_mime="audio/webm", web_search=False):
-    if config["provider"] == "openrouter":
+    if config["provider"] in ("openrouter", "custom"):
         payload = {"model": config["model"], "messages": [
             {"role": "system", "content": system}, {"role": "user", "content": user},
         ], "temperature": 0.3 if web_search else 0.7}
-        if web_search:
+        if web_search and config["provider"] == "openrouter":
             payload["tools"] = [{"type": "openrouter:web_search",
                                  "parameters": {"search_context_size": "medium"}}]
+        endpoint = (config.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/") + "/chat/completions"
         async with httpx.AsyncClient(timeout=70) as client:
-            response = await client.post("https://openrouter.ai/api/v1/chat/completions",
+            response = await client.post(endpoint,
                 headers={"Authorization": f"Bearer {api_key}"}, json=payload)
             response.raise_for_status()
         data = response.json()

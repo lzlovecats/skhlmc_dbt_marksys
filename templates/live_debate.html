@@ -1,1591 +1,2201 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-* { box-sizing: border-box; }
-:root { --bg:#0e1117; --panel:#262730; --panel-2:#171923; --border:#3a3d46;
-    --text:#fafafa; --muted:#9aa0ab; --green:#29b46b; --blue:#4c9bff; --red:#ff5c5c; }
-body {
-    margin:0 auto; padding:clamp(12px,2.5vw,30px); max-width:1100px;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans HK","PingFang HK",Roboto,sans-serif;
-    background:var(--bg); color:var(--text);
-}
-.practice-nav { display:flex; justify-content:space-between; align-items:center; gap:14px; margin-bottom:18px; }
-.practice-nav strong { font-size:clamp(22px,2.6vw,34px); }
-.back-link { color:var(--muted); text-decoration:none; background:var(--panel-2); border:2px solid var(--border);
-    border-radius:12px; padding:12px 20px; font-size:clamp(16px,1.7vw,22px); font-weight:800; white-space:nowrap; }
-.hidden { display:none !important; }
-.live-wrap { border:1px solid var(--border); border-radius:22px; overflow:hidden; background:var(--panel); }
-.topbar {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding:clamp(18px,2.4vw,28px); border-bottom:1px solid var(--border); background:var(--panel-2);
-}
-.status-wrap { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.status-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.badge {
-    flex: 0 0 auto; min-width: 58px; text-align: center;
-    border-radius:999px; padding:6px 12px; font-size:clamp(14px,1.35vw,18px); font-weight:800;
-    background: #3f3f46; color: #f4f4f5;
-}
-.badge.ready { background: #14532d; color: #dcfce7; }
-.badge.listen { background: #1d4ed8; color: #dbeafe; }
-.badge.wait { background: #854d0e; color: #fef3c7; }
-.badge.reply { background: #7c2d12; color: #ffedd5; }
-.badge.error { background: #7f1d1d; color: #fee2e2; }
-.status { font-size:clamp(17px,1.7vw,22px); color:#e5e7eb; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.substatus { font-size:clamp(15px,1.4vw,19px); color:var(--muted); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.buttons { display: flex; gap: 8px; flex-shrink: 0; }
-button {
-    min-height:56px; border:none; border-radius:14px; padding:12px 20px; font-size:clamp(17px,1.65vw,22px);
-    font-weight:800; cursor:pointer; color:white; background:#444; font-family:inherit;
-}
-button.primary { background:var(--green); }
-button.danger { background:var(--red); }
-button.secondary { background: #52525b; }
-button:disabled { opacity: .45; cursor: not-allowed; }
-.session-panel {
-    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px;
-    padding:clamp(18px,2.4vw,28px); border-bottom:1px solid var(--border); background:var(--panel);
-}
-.talk-area { min-width: 0; }
-.talk-btn {
-    width:100%; min-height:104px; border-radius:18px;
-    font-size:clamp(25px,3vw,38px); letter-spacing:0; background:var(--blue);
-    touch-action: none; user-select: none;
-}
-.talk-btn.recording { background: #dc2626; }
-.talk-btn.waiting { background: #854d0e; }
-.talk-hint { margin-top:10px; color:var(--muted); font-size:clamp(15px,1.45vw,19px); min-height:22px; }
-.timer-box {
-    width:190px; border:1px solid var(--border); border-radius:16px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 10px; background: #111;
-}
-.timer-label { color:var(--muted); font-size:clamp(14px,1.3vw,17px); }
-.timer-value { margin-top:4px; font-size:clamp(32px,4vw,48px); font-weight:800; font-variant-numeric:tabular-nums; }
-.meter { height:12px; background:#2b2b2b; }
-.meter-fill { height: 100%; width: 0%; background: #22c55e; transition: width .08s linear; }
-.log { height:430px; overflow-y:auto; padding:clamp(18px,2.4vw,28px); background:#101010; scroll-behavior:smooth; }
-.line { margin:0 0 14px; line-height:1.65; font-size:clamp(17px,1.65vw,21px); }
-.line.pending { color: #d4d4d8; }
-.line.ai-active {
-    margin-left: -4px; margin-right: -4px; padding: 8px 10px;
-    border-left: 3px solid #f59e0b; border-radius: 6px;
-    background: #29200f; color: #fff7ed;
-}
-.who { font-weight: 800; color: #fca5a5; }
-.who.user { color: #93c5fd; }
-.who.system { color: #c4b5fd; }
-.hint {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    color:var(--muted); font-size:clamp(15px,1.4vw,18px); padding:16px 20px; border-top:1px solid var(--border);
-}
-.retry { display: none; flex-shrink: 0; }
-.retry.show { display: inline-block; }
-.feedback { display: none; flex-shrink: 0; }
-.feedback.show { display: inline-block; background: #2563eb; }
-.busy {
-    display: none; width: 10px; height: 10px; border-radius: 50%;
-    border: 2px solid #71717a; border-top-color: #facc15;
-    animation: spin .8s linear infinite; flex: 0 0 auto;
-}
-.busy.show { display: inline-block; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.mock-bar { padding:clamp(18px,2.4vw,28px); border-bottom:1px solid var(--border); background:#14161c; }
-.mock-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.mock-progress { font-size:clamp(15px,1.4vw,18px); color:#9ca3af; }
-.mock-stage { font-size:clamp(21px,2.2vw,28px); font-weight:800; color:#f4f4f5; }
-.mock-side { flex:0 0 auto; border-radius:999px; padding:6px 12px; font-size:clamp(14px,1.3vw,17px); font-weight:800; background:#3f3f46; color:#f4f4f5; }
-.mock-side.pro { background: #1d4ed8; color: #dbeafe; }
-.mock-side.con { background: #7c2d12; color: #ffedd5; }
-.mock-side.prep { background: #854d0e; color: #fef3c7; }
-.mock-side.both { background: #166534; color: #dcfce7; }
-.mock-timer { margin:12px 0; font-size:clamp(54px,8vw,86px); font-weight:800; text-align:center; font-variant-numeric:tabular-nums; color:#4caf50; }
-.mock-timer.overtime { color: #f44336; }
-.mock-btns { display: flex; gap: 8px; justify-content: center; }
-.mock-btns button { flex:1; max-width:240px; }
-.mock-note { text-align:center; font-size:clamp(15px,1.4vw,18px); color:var(--muted); margin-top:10px; }
-.mock-bar h4 { margin:0 0 8px; font-size:clamp(15px,1.4vw,18px); color:#9ca3af; }
-.bell-item { font-size:clamp(14px,1.3vw,17px); padding:3px 0; color:#6b7280; }
-.bell-item.fired { color: #4caf50; font-weight: 700; }
-@media (max-width: 560px) {
-    body { padding:max(.85rem,env(safe-area-inset-top)) .85rem calc(1rem + env(safe-area-inset-bottom)); }
-    .practice-nav { align-items:stretch; flex-direction:column; gap:.55rem; margin-bottom:.75rem; }
-    .practice-nav strong { font-size:1.4rem; }
-    .back-link { min-height:2.7rem; padding:.55rem .9rem; border-width:1px; border-radius:8px; text-align:center; font-size:16px; }
-    .live-wrap { border-radius:12px; }
-    .topbar { align-items: stretch; flex-direction: column; }
-    .buttons { width: 100%; }
-    .buttons button { flex: 1; }
-    button { min-height:2.7rem; padding:.55rem .8rem; border-radius:8px; font-size:16px; }
-    .topbar,.session-panel,.mock-bar { padding:1rem; }
-    .session-panel { position:sticky; top:0; z-index:8; grid-template-columns: 1fr; gap:.65rem; box-shadow:0 10px 24px rgb(0 0 0 / .35); }
-    .timer-box { order:-1; width:100%; min-height:3.5rem; flex-direction:row; justify-content:space-between; border-radius:8px; }
-    .timer-value { margin:0; font-size:32px; }
-    .talk-btn { min-height:72px; border-radius:10px; font-size:22px; }
-    .talk-hint { margin-top:.45rem; font-size:.9rem; }
-    .log { height:45dvh; min-height:18rem; max-height:30rem; padding:1rem; }
-    .hint { align-items: stretch; flex-direction: column; }
-    .hint button { width: 100%; }
-    .mock-btns { flex-wrap: wrap; }
-    .mock-btns button { min-width: 30%; max-width: none; }
-    .mock-timer { font-size:48px; }
-    .mock-stage { font-size:1.2rem; }
-    .status { white-space: normal; }
-    .substatus { white-space: normal; }
-}
-</style>
-</head>
-<body>
-<div class="practice-nav" id="practiceNav">
-    <strong>🤖 AI 辯論練習</strong>
-    <a class="back-link" id="liveBack" href="/practice/ai-debate">◀ 返回 AI 練習</a>
-</div>
-<div class="live-wrap">
-    <div class="topbar">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        --bg: #0e1117;
+        --panel: #262730;
+        --panel-2: #171923;
+        --border: #3a3d46;
+        --text: #fafafa;
+        --muted: #9aa0ab;
+        --green: #29b46b;
+        --blue: #4c9bff;
+        --red: #ff5c5c;
+      }
+      body {
+        margin: 0 auto;
+        padding: clamp(12px, 2.5vw, 30px);
+        max-width: 1100px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK",
+          "PingFang HK", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .practice-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 18px;
+      }
+      .practice-nav strong {
+        font-size: clamp(22px, 2.6vw, 34px);
+      }
+      .back-link {
+        color: var(--muted);
+        text-decoration: none;
+        background: var(--panel-2);
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 20px;
+        font-size: clamp(16px, 1.7vw, 22px);
+        font-weight: 800;
+        white-space: nowrap;
+      }
+      .hidden {
+        display: none !important;
+      }
+      .live-wrap {
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        overflow: hidden;
+        background: var(--panel);
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: clamp(18px, 2.4vw, 28px);
+        border-bottom: 1px solid var(--border);
+        background: var(--panel-2);
+      }
+      .status-wrap {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .badge {
+        flex: 0 0 auto;
+        min-width: 58px;
+        text-align: center;
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: clamp(14px, 1.35vw, 18px);
+        font-weight: 800;
+        background: #3f3f46;
+        color: #f4f4f5;
+      }
+      .badge.ready {
+        background: #14532d;
+        color: #dcfce7;
+      }
+      .badge.listen {
+        background: #1d4ed8;
+        color: #dbeafe;
+      }
+      .badge.wait {
+        background: #854d0e;
+        color: #fef3c7;
+      }
+      .badge.reply {
+        background: #7c2d12;
+        color: #ffedd5;
+      }
+      .badge.error {
+        background: #7f1d1d;
+        color: #fee2e2;
+      }
+      .status {
+        font-size: clamp(17px, 1.7vw, 22px);
+        color: #e5e7eb;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .substatus {
+        font-size: clamp(15px, 1.4vw, 19px);
+        color: var(--muted);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .buttons {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      button {
+        min-height: 56px;
+        border: none;
+        border-radius: 14px;
+        padding: 12px 20px;
+        font-size: clamp(17px, 1.65vw, 22px);
+        font-weight: 800;
+        cursor: pointer;
+        color: white;
+        background: #444;
+        font-family: inherit;
+      }
+      button.primary {
+        background: var(--green);
+      }
+      button.danger {
+        background: var(--red);
+      }
+      button.secondary {
+        background: #52525b;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .session-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 18px;
+        padding: clamp(18px, 2.4vw, 28px);
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      .talk-area {
+        min-width: 0;
+      }
+      .talk-btn {
+        width: 100%;
+        min-height: 104px;
+        border-radius: 18px;
+        font-size: clamp(25px, 3vw, 38px);
+        letter-spacing: 0;
+        background: var(--blue);
+        touch-action: none;
+        user-select: none;
+      }
+      .talk-btn.recording {
+        background: #dc2626;
+      }
+      .talk-btn.waiting {
+        background: #854d0e;
+      }
+      .talk-hint {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: clamp(15px, 1.45vw, 19px);
+        min-height: 22px;
+      }
+      .timer-box {
+        width: 190px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 10px;
+        background: #111;
+      }
+      .timer-label {
+        color: var(--muted);
+        font-size: clamp(14px, 1.3vw, 17px);
+      }
+      .timer-value {
+        margin-top: 4px;
+        font-size: clamp(32px, 4vw, 48px);
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+      .meter {
+        height: 12px;
+        background: #2b2b2b;
+      }
+      .meter-fill {
+        height: 100%;
+        width: 0%;
+        background: #22c55e;
+        transition: width 0.08s linear;
+      }
+      .log {
+        height: 430px;
+        overflow-y: auto;
+        padding: clamp(18px, 2.4vw, 28px);
+        background: #101010;
+        scroll-behavior: smooth;
+      }
+      .line {
+        margin: 0 0 14px;
+        line-height: 1.65;
+        font-size: clamp(17px, 1.65vw, 21px);
+      }
+      .line.pending {
+        color: #d4d4d8;
+      }
+      .line.ai-active {
+        margin-left: -4px;
+        margin-right: -4px;
+        padding: 8px 10px;
+        border-left: 3px solid #f59e0b;
+        border-radius: 6px;
+        background: #29200f;
+        color: #fff7ed;
+      }
+      .who {
+        font-weight: 800;
+        color: #fca5a5;
+      }
+      .who.user {
+        color: #93c5fd;
+      }
+      .who.system {
+        color: #c4b5fd;
+      }
+      .hint {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--muted);
+        font-size: clamp(15px, 1.4vw, 18px);
+        padding: 16px 20px;
+        border-top: 1px solid var(--border);
+      }
+      .retry {
+        display: none;
+        flex-shrink: 0;
+      }
+      .retry.show {
+        display: inline-block;
+      }
+      .feedback {
+        display: none;
+        flex-shrink: 0;
+      }
+      .feedback.show {
+        display: inline-block;
+        background: #2563eb;
+      }
+      .busy {
+        display: none;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 2px solid #71717a;
+        border-top-color: #facc15;
+        animation: spin 0.8s linear infinite;
+        flex: 0 0 auto;
+      }
+      .busy.show {
+        display: inline-block;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .mock-bar {
+        padding: clamp(18px, 2.4vw, 28px);
+        border-bottom: 1px solid var(--border);
+        background: #14161c;
+      }
+      .mock-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .mock-progress {
+        font-size: clamp(15px, 1.4vw, 18px);
+        color: #9ca3af;
+      }
+      .mock-stage {
+        font-size: clamp(21px, 2.2vw, 28px);
+        font-weight: 800;
+        color: #f4f4f5;
+      }
+      .mock-side {
+        flex: 0 0 auto;
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: clamp(14px, 1.3vw, 17px);
+        font-weight: 800;
+        background: #3f3f46;
+        color: #f4f4f5;
+      }
+      .mock-side.pro {
+        background: #1d4ed8;
+        color: #dbeafe;
+      }
+      .mock-side.con {
+        background: #7c2d12;
+        color: #ffedd5;
+      }
+      .mock-side.prep {
+        background: #854d0e;
+        color: #fef3c7;
+      }
+      .mock-side.both {
+        background: #166534;
+        color: #dcfce7;
+      }
+      .mock-timer {
+        margin: 12px 0;
+        font-size: clamp(54px, 8vw, 86px);
+        font-weight: 800;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        color: #4caf50;
+      }
+      .mock-timer.overtime {
+        color: #f44336;
+      }
+      .mock-btns {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+      }
+      .mock-btns button {
+        flex: 1;
+        max-width: 240px;
+      }
+      .mock-note {
+        text-align: center;
+        font-size: clamp(15px, 1.4vw, 18px);
+        color: var(--muted);
+        margin-top: 10px;
+      }
+      .mock-bar h4 {
+        margin: 0 0 8px;
+        font-size: clamp(15px, 1.4vw, 18px);
+        color: #9ca3af;
+      }
+      .bell-item {
+        font-size: clamp(14px, 1.3vw, 17px);
+        padding: 3px 0;
+        color: #6b7280;
+      }
+      .bell-item.fired {
+        color: #4caf50;
+        font-weight: 700;
+      }
+      @media (max-width: 560px) {
+        body {
+          padding: max(0.85rem, env(safe-area-inset-top)) 0.85rem
+            calc(1rem + env(safe-area-inset-bottom));
+        }
+        .practice-nav {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 0.55rem;
+          margin-bottom: 0.75rem;
+        }
+        .practice-nav strong {
+          font-size: 1.4rem;
+        }
+        .back-link {
+          min-height: 2.7rem;
+          padding: 0.55rem 0.9rem;
+          border-width: 1px;
+          border-radius: 8px;
+          text-align: center;
+          font-size: 16px;
+        }
+        .live-wrap {
+          border-radius: 12px;
+        }
+        .topbar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .buttons {
+          width: 100%;
+        }
+        .buttons button {
+          flex: 1;
+        }
+        button {
+          min-height: 2.7rem;
+          padding: 0.55rem 0.8rem;
+          border-radius: 8px;
+          font-size: 16px;
+        }
+        .topbar,
+        .session-panel,
+        .mock-bar {
+          padding: 1rem;
+        }
+        .session-panel {
+          position: sticky;
+          top: 0;
+          z-index: 8;
+          grid-template-columns: 1fr;
+          gap: 0.65rem;
+          box-shadow: 0 10px 24px rgb(0 0 0 / 0.35);
+        }
+        .timer-box {
+          order: -1;
+          width: 100%;
+          min-height: 3.5rem;
+          flex-direction: row;
+          justify-content: space-between;
+          border-radius: 8px;
+        }
+        .timer-value {
+          margin: 0;
+          font-size: 32px;
+        }
+        .talk-btn {
+          min-height: 72px;
+          border-radius: 10px;
+          font-size: 22px;
+        }
+        .talk-hint {
+          margin-top: 0.45rem;
+          font-size: 0.9rem;
+        }
+        .log {
+          height: 45dvh;
+          min-height: 18rem;
+          max-height: 30rem;
+          padding: 1rem;
+        }
+        .hint {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .hint button {
+          width: 100%;
+        }
+        .mock-btns {
+          flex-wrap: wrap;
+        }
+        .mock-btns button {
+          min-width: 30%;
+          max-width: none;
+        }
+        .mock-timer {
+          font-size: 48px;
+        }
+        .mock-stage {
+          font-size: 1.2rem;
+        }
+        .status {
+          white-space: normal;
+        }
+        .substatus {
+          white-space: normal;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="practice-nav" id="practiceNav">
+      <strong>🤖 AI 辯論練習</strong>
+      <a class="back-link" id="liveBack" href="/practice/ai-debate"
+        >◀ 返回 AI 練習</a
+      >
+    </div>
+    <div class="live-wrap">
+      <div class="topbar">
         <div class="status-wrap">
-            <div class="status-row">
-                <span class="badge" id="badge">未連線</span>
-                <span class="status" id="status">按「開始自由辯論」連線並允許麥克風權限。</span>
-                <span class="busy" id="busy"></span>
-            </div>
-            <div class="substatus" id="substatus">開始後按下「開始錄音」，完成發言後再按下送出交給 AI。</div>
+          <div class="status-row">
+            <span class="badge" id="badge">未連線</span>
+            <span class="status" id="status"
+              >按「開始自由辯論」連線並允許麥克風權限。</span
+            >
+            <span class="busy" id="busy"></span>
+          </div>
+          <div class="substatus" id="substatus">
+            開始後按下「開始錄音」，完成發言後再按下送出交給 AI。
+          </div>
         </div>
         <div class="buttons">
-            <button class="primary" id="startBtn">開始自由辯論</button>
-            <button class="danger" id="stopBtn" disabled>停止</button>
+          <button class="primary" id="startBtn">開始自由辯論</button>
+          <button class="danger" id="stopBtn" disabled>停止</button>
         </div>
-    </div>
-    <div class="session-panel">
+      </div>
+      <div class="session-panel">
         <div class="talk-area">
-            <button class="talk-btn" id="talkBtn" disabled>開始錄音</button>
-            <div class="talk-hint" id="talkHint">自由辯論準備好後可以開始。</div>
+          <button class="talk-btn" id="talkBtn" disabled>開始錄音</button>
+          <div class="talk-hint" id="talkHint">自由辯論準備好後可以開始。</div>
         </div>
         <div class="timer-box">
-            <div class="timer-label">已用發言時間</div>
-            <div class="timer-value" id="remaining">--:--</div>
+          <div class="timer-label">已用發言時間</div>
+          <div class="timer-value" id="remaining">--:--</div>
         </div>
-    </div>
-    <div class="meter"><div class="meter-fill" id="meter"></div></div>
-    <div class="mock-bar" id="mockBar" style="display:none;">
+      </div>
+      <div class="meter"><div class="meter-fill" id="meter"></div></div>
+      <div class="mock-bar" id="mockBar" style="display: none">
         <div class="mock-head">
-            <span class="mock-progress" id="mockProgress">第 1 / 1 段</span>
-            <span class="mock-stage" id="mockStage">環節</span>
-            <span class="mock-side" id="mockSide">—</span>
+          <span class="mock-progress" id="mockProgress">第 1 / 1 段</span>
+          <span class="mock-stage" id="mockStage">環節</span>
+          <span class="mock-side" id="mockSide">—</span>
         </div>
         <div class="mock-timer" id="mockTimer">0:00</div>
         <div class="mock-btns">
-            <button class="secondary" id="mockPrev">上一段</button>
-            <button class="secondary" id="mockToggle">暫停計時</button>
-            <button class="primary" id="mockNext">下一段</button>
+          <button class="secondary" id="mockPrev">上一段</button>
+          <button class="secondary" id="mockToggle">暫停計時</button>
+          <button class="primary" id="mockNext">下一段</button>
         </div>
-        <div class="mock-note" id="mockNote">逐段跟賽制響叮；按「下一段」進入下一環節。</div>
-        <div class="bell-schedule" id="mockBells" style="margin-top:10px; padding:10px; background:#101216; border:1px solid #262b33; border-radius:8px;"></div>
-    </div>
-    <div class="log" id="log">
-        <p class="line"><span class="who system">系統：</span>開始自由辯論後，按下藍色按鈕開始錄音，完成發言後再按下送出。</p>
-    </div>
-    <div class="hint">
-        <span id="hintText">Gemini Live API 屬 preview；如果連線失敗，請停止並重新建立自由辯論。</span>
-        <button class="secondary feedback" id="feedbackBtn">要求 AI 評價</button>
+        <div class="mock-note" id="mockNote">
+          逐段跟賽制響叮；按「下一段」進入下一環節。
+        </div>
+        <div
+          class="bell-schedule"
+          id="mockBells"
+          style="
+            margin-top: 10px;
+            padding: 10px;
+            background: #101216;
+            border: 1px solid #262b33;
+            border-radius: 8px;
+          "
+        ></div>
+      </div>
+      <div class="log" id="log">
+        <p class="line">
+          <span class="who system">系統：</span
+          >開始自由辯論後，按下藍色按鈕開始錄音，完成發言後再按下送出。
+        </p>
+      </div>
+      <div class="hint">
+        <span id="hintText"
+          >Gemini Live API 屬
+          preview；如果連線失敗，請停止並重新建立自由辯論。</span
+        >
+        <button class="secondary feedback" id="feedbackBtn">
+          要求 AI 評價
+        </button>
         <button class="secondary retry" id="retryBtn">重試本輪</button>
+      </div>
     </div>
-</div>
-<script>
-const LIVE_TOKEN = __LIVE_TOKEN__;
-const MODEL = __LIVE_MODEL__;
-const SYSTEM_PROMPT = __LIVE_PROMPT__;
-const SESSION_MINUTES = __LIVE_MINUTES__;
-const BELL_SRC = __BELL_SRC__;
-const BELL_SCHEDULE = (__BELL_SCHEDULE__ || []).slice().sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
-const BELL_VOLUME = 5.0;
-const SPEECH_SECONDS = Math.max(1, Math.round(Number(SESSION_MINUTES || 2.5) * 60));
-const SCHEDULE_END_SECONDS = BELL_SCHEDULE.length ? Number(BELL_SCHEDULE[BELL_SCHEDULE.length - 1].t || SPEECH_SECONDS) : SPEECH_SECONDS;
-const SPEECH_TIMER_SECONDS = BELL_SCHEDULE.length ? SCHEDULE_END_SECONDS : SPEECH_SECONDS;
-const MOCK_SEGMENTS = (__MOCK_SEGMENTS__ || []);
-const MOCK_MODE = MOCK_SEGMENTS.length > 0;
-const MOCK_TOKENS = (__MOCK_TOKENS__ || []);
-const MOCK_SESSION_LABELS = (__MOCK_SESSION_LABELS__ || []);
-const AI_STARTS = __AI_STARTS__;
-const LIVE_PROMPTS = (__LIVE_PROMPTS__ || {});
-const LIVE_SOURCE = new URLSearchParams(location.search).get("source") || "kiosk";
-if (LIVE_SOURCE === "coach") {
-    document.getElementById("liveBack").href = "/ai-coach";
-    document.getElementById("liveBack").textContent = "◀ 返回 AI 辯論易";
-}
-function fillTemplate(tpl, map) {
-    return String(tpl || "").replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
-}
-// 如果設定咗 relay（Render/Singapore），瀏覽器會連 relay 而唔係直連 Google，
-// 令香港等受限地區都用得。未設定時 fallback 直連 Google（本地開發用）。
-const RELAY_WS_BASE = __RELAY_WS_BASE__;
-const DIRECT_WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
-const WS_BASE = RELAY_WS_BASE || DIRECT_WS_BASE;
-// relay 模式下附上 server 簽發嘅 HMAC sig，令 relay 只服務本 app 發出嘅 token。
-const TOKEN_SIGS = (__TOKEN_SIGS__ || {});
-function buildWsUrl(token) {
-    let url = WS_BASE + "?access_token=" + encodeURIComponent(token);
-    if (RELAY_WS_BASE) {
-        const sig = TOKEN_SIGS[token] || "";
-        if (sig) url += "&sig=" + encodeURIComponent(sig);
-    }
-    return url;
-}
-
-let ws = null;
-let stream = null;
-let inputCtx = null;
-let outputCtx = null;
-let sourceNode = null;
-let processor = null;
-let playAt = 0;
-let micReady = false;
-let isRecording = false;
-let isWaiting = false;
-let manualStopping = false;
-let closeStatusLocked = false;
-let recordStartedAt = null;
-let recordTimer = null;
-let waitTimer = null;
-let speechTimer = null;
-let speechElapsed = 0;
-let speechStartedAt = 0;
-let speechRunning = false;
-let speechEnded = false;
-let firedBells = new Set();
-let userLine = null;
-let aiLine = null;
-let activeAiLine = null;
-let finalFeedbackRequested = false;
-let finalFeedbackComplete = false;
-let bellBuffer = null;
-let bellLoading = null;
-let bellCtx = null;
-let azureTtsEnabled = true;
-let azureTtsSessionDisabled = false;
-let ttsTextBuffer = "";
-let ttsQueue = [];
-let ttsPlaying = false;
-let ttsPending = 0;
-let ttsDrainResolvers = [];
-let currentTtsAudio = null;
-let currentTtsUrl = "";
-let ttsFallbackActive = false;
-let nativeAudioParts = [];
-let ttsWarningShown = false;
-let ttsReceivedText = false;
-let ttsGeneration = 0;
-
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const talkBtn = document.getElementById("talkBtn");
-const retryBtn = document.getElementById("retryBtn");
-const feedbackBtn = document.getElementById("feedbackBtn");
-const statusEl = document.getElementById("status");
-const substatusEl = document.getElementById("substatus");
-const badgeEl = document.getElementById("badge");
-const busyEl = document.getElementById("busy");
-const logEl = document.getElementById("log");
-const meterEl = document.getElementById("meter");
-const remainingEl = document.getElementById("remaining");
-const talkHintEl = document.getElementById("talkHint");
-const hintTextEl = document.getElementById("hintText");
-
-function setState(label, detail, kind, busy) {
-    badgeEl.textContent = label;
-    badgeEl.className = "badge" + (kind ? " " + kind : "");
-    statusEl.textContent = detail;
-    busyEl.className = "busy" + (busy ? " show" : "");
-}
-
-function setSubstatus(text) { substatusEl.textContent = text; }
-function setHint(text) { hintTextEl.textContent = text; }
-
-function setTalkEnabled(enabled) {
-    talkBtn.disabled = !enabled;
-    talkBtn.className = "talk-btn";
-    talkBtn.textContent = "開始錄音";
-    if (enabled) {
-        talkHintEl.textContent = "按下開始錄音，完成發言後再按下送出。亦可按 Space。";
-    } else {
-        talkHintEl.textContent = "自由辯論準備好後可以開始。";
-    }
-}
-
-function showRetry(show) {
-    retryBtn.className = "secondary retry" + (show ? " show" : "");
-}
-
-function showFeedbackButton(show) {
-    feedbackBtn.className = "secondary feedback" + (show ? " show" : "");
-}
-
-function scrollLogToBottom() {
-    requestAnimationFrame(() => {
-        const last = logEl.lastElementChild;
-        if (last) last.scrollIntoView({ block: "end" });
-        logEl.scrollTop = logEl.scrollHeight;
-    });
-}
-
-function addLine(who, text, isUser, className) {
-    if (!text) return null;
-    const p = document.createElement("p");
-    p.className = "line" + (className ? " " + className : "");
-    const span = document.createElement("span");
-    span.className = "who" + (isUser ? " user" : who === "系統" ? " system" : "");
-    span.textContent = who + "：";
-    const node = document.createTextNode(text);
-    p.appendChild(span);
-    p.appendChild(node);
-    logEl.appendChild(p);
-    scrollLogToBottom();
-    return { el: p, textNode: node };
-}
-
-function setLineText(line, text) {
-    if (!line) return;
-    line.textNode.textContent = text;
-    line.el.classList.remove("pending");
-    scrollLogToBottom();
-}
-
-function appendLineText(line, text) {
-    if (!line || !text) return;
-    const current = line.textNode.textContent;
-    if (!current || current === "正在回覆..." || current === "正在轉錄...") {
-        setLineText(line, text);
-    } else {
-        line.textNode.textContent = current + text;
-        scrollLogToBottom();
-    }
-}
-
-function setActiveAiLine(line) {
-    if (activeAiLine && activeAiLine.el) activeAiLine.el.classList.remove("ai-active");
-    activeAiLine = line || null;
-    if (activeAiLine && activeAiLine.el) activeAiLine.el.classList.add("ai-active");
-    scrollLogToBottom();
-}
-
-function clearActiveAiLine() {
-    if (activeAiLine && activeAiLine.el) activeAiLine.el.classList.remove("ai-active");
-    activeAiLine = null;
-}
-
-function formatTime(seconds) {
-    const mins = Math.max(0, Math.floor(seconds / 60));
-    const secs = Math.max(0, seconds % 60);
-    return String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
-}
-
-function getBellCtx() {
-    if (!bellCtx) bellCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (bellCtx.state === "suspended") bellCtx.resume();
-    return bellCtx;
-}
-
-async function prepareBell() {
-    const ctx = getBellCtx();
-    if (ctx.state === "suspended") await ctx.resume();
-    return ctx;
-}
-
-async function loadBell() {
-    if (!BELL_SRC) return null;
-    if (!bellLoading) {
-        bellLoading = fetch(BELL_SRC)
-            .then(resp => resp.arrayBuffer())
-            .then(arr => getBellCtx().decodeAudioData(arr))
-            .then(buffer => { bellBuffer = buffer; return buffer; })
-            .catch(() => null);
-    }
-    return bellLoading;
-}
-
-function playTone(count) {
-    const ctx = getBellCtx();
-    for (let i = 0; i < count; i++) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.8);
-        gain.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + i * 0.8 + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.8 + 0.28);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(ctx.currentTime + i * 0.8);
-        osc.stop(ctx.currentTime + i * 0.8 + 0.3);
-    }
-}
-
-async function playBell(count) {
-    const ctx = getBellCtx();
-    if (ctx.state === "suspended") await ctx.resume();
-    if (!bellBuffer) await loadBell();
-    if (!bellBuffer) {
-        playTone(count);
-        return;
-    }
-    for (let i = 0; i < count; i++) {
-        const src = ctx.createBufferSource();
-        const gain = ctx.createGain();
-        src.buffer = bellBuffer;
-        gain.gain.value = BELL_VOLUME;
-        src.connect(gain);
-        gain.connect(ctx.destination);
-        src.start(ctx.currentTime + i * 0.8);
-    }
-}
-
-function getSpeechElapsed() {
-    if (!speechRunning) return speechElapsed;
-    return speechElapsed + (Date.now() - speechStartedAt) / 1000;
-}
-
-function fireBellOnce(key, rings) {
-    if (firedBells.has(key)) return;
-    firedBells.add(key);
-    playBell(rings);
-}
-
-function updateSpeechTimer() {
-    if (MOCK_MODE) return;
-    const elapsed = Math.min(getSpeechElapsed(), SPEECH_TIMER_SECONDS);
-    remainingEl.textContent = formatTime(Math.floor(elapsed));
-    if (BELL_SCHEDULE.length) {
-        BELL_SCHEDULE.forEach((bell, index) => {
-            if (elapsed >= Number(bell.t || 0)) {
-                fireBellOnce("schedule-" + index, Number(bell.rings || 1));
-            }
-        });
-    } else {
-        if (elapsed >= 0) fireBellOnce("start", 1);
-        if (SPEECH_SECONDS > 30 && elapsed >= SPEECH_SECONDS - 30) {
-            fireBellOnce("warning", 1);
+    <script>
+      const LIVE_TOKEN = __LIVE_TOKEN__;
+      const MODEL = __LIVE_MODEL__;
+      const SYSTEM_PROMPT = __LIVE_PROMPT__;
+      const SESSION_MINUTES = __LIVE_MINUTES__;
+      const BELL_SRC = __BELL_SRC__;
+      const BELL_SCHEDULE = (__BELL_SCHEDULE__ || [])
+        .slice()
+        .sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+      const BELL_VOLUME = 5.0;
+      const SPEECH_SECONDS = Math.max(
+        1,
+        Math.round(Number(SESSION_MINUTES || 2.5) * 60),
+      );
+      const SCHEDULE_END_SECONDS = BELL_SCHEDULE.length
+        ? Number(BELL_SCHEDULE[BELL_SCHEDULE.length - 1].t || SPEECH_SECONDS)
+        : SPEECH_SECONDS;
+      const SPEECH_TIMER_SECONDS = BELL_SCHEDULE.length
+        ? SCHEDULE_END_SECONDS
+        : SPEECH_SECONDS;
+      const MOCK_SEGMENTS = __MOCK_SEGMENTS__ || [];
+      const MOCK_MODE = MOCK_SEGMENTS.length > 0;
+      const MOCK_TOKENS = __MOCK_TOKENS__ || [];
+      const MOCK_SESSION_LABELS = __MOCK_SESSION_LABELS__ || [];
+      const AI_STARTS = __AI_STARTS__;
+      const LIVE_PROMPTS = __LIVE_PROMPTS__ || {};
+      const LIVE_SOURCE =
+        new URLSearchParams(location.search).get("source") || "kiosk";
+      if (LIVE_SOURCE === "coach") {
+        document.getElementById("liveBack").href = "/ai-coach";
+        document.getElementById("liveBack").textContent = "◀ 返回 AI 辯論易";
+      }
+      function fillTemplate(tpl, map) {
+        return String(tpl || "").replace(/\{(\w+)\}/g, (m, k) =>
+          k in map ? map[k] : m,
+        );
+      }
+      // 如果設定咗 relay（Render/Singapore），瀏覽器會連 relay 而唔係直連 Google，
+      // 令香港等受限地區都用得。未設定時 fallback 直連 Google（本地開發用）。
+      const RELAY_WS_BASE = __RELAY_WS_BASE__;
+      const DIRECT_WS_BASE =
+        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
+      const WS_BASE = RELAY_WS_BASE || DIRECT_WS_BASE;
+      // relay 模式下附上 server 簽發嘅 HMAC sig，令 relay 只服務本 app 發出嘅 token。
+      const TOKEN_SIGS = __TOKEN_SIGS__ || {};
+      function buildWsUrl(token) {
+        let url = WS_BASE + "?access_token=" + encodeURIComponent(token);
+        if (RELAY_WS_BASE) {
+          const sig = TOKEN_SIGS[token] || "";
+          if (sig) url += "&sig=" + encodeURIComponent(sig);
         }
-    }
-    if (elapsed >= SPEECH_TIMER_SECONDS && !speechEnded) {
-        speechEnded = true;
-        speechElapsed = SPEECH_TIMER_SECONDS;
-        pauseSpeechTimer();
-        if (!BELL_SCHEDULE.length) fireBellOnce("end", 2);
-        prepareFinalFeedback("自由辯論發言時間已到。");
-    }
-}
+        return url;
+      }
 
-function startSpeechTimer() {
-    if (MOCK_MODE) return;
-    speechElapsed = 0;
-    speechStartedAt = Date.now();
-    speechRunning = true;
-    speechEnded = false;
-    firedBells.clear();
-    updateSpeechTimer();
-    speechTimer = setInterval(updateSpeechTimer, 250);
-}
+      let ws = null;
+      let stream = null;
+      let inputCtx = null;
+      let outputCtx = null;
+      let sourceNode = null;
+      let processor = null;
+      let playAt = 0;
+      let micReady = false;
+      let isRecording = false;
+      let isWaiting = false;
+      let manualStopping = false;
+      let closeStatusLocked = false;
+      let recordStartedAt = null;
+      let recordTimer = null;
+      let waitTimer = null;
+      let speechTimer = null;
+      let speechElapsed = 0;
+      let speechStartedAt = 0;
+      let speechRunning = false;
+      let speechEnded = false;
+      let firedBells = new Set();
+      let userLine = null;
+      let aiLine = null;
+      let activeAiLine = null;
+      let finalFeedbackRequested = false;
+      let finalFeedbackComplete = false;
+      let bellBuffer = null;
+      let bellLoading = null;
+      let bellCtx = null;
+      let azureTtsEnabled = true;
+      let azureTtsSessionDisabled = false;
+      let ttsTextBuffer = "";
+      let ttsQueue = [];
+      let ttsPlaying = false;
+      let ttsPending = 0;
+      let ttsDrainResolvers = [];
+      let currentTtsAudio = null;
+      let currentTtsUrl = "";
+      let ttsFallbackActive = false;
+      let nativeAudioParts = [];
+      let ttsWarningShown = false;
+      let ttsReceivedText = false;
+      let ttsGeneration = 0;
 
-function pauseSpeechTimer() {
-    if (MOCK_MODE) return;
-    if (speechRunning) {
-        speechElapsed = Math.min(getSpeechElapsed(), SPEECH_TIMER_SECONDS);
-    }
-    speechRunning = false;
-    updateSpeechTimer();
-}
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const talkBtn = document.getElementById("talkBtn");
+      const retryBtn = document.getElementById("retryBtn");
+      const feedbackBtn = document.getElementById("feedbackBtn");
+      const statusEl = document.getElementById("status");
+      const substatusEl = document.getElementById("substatus");
+      const badgeEl = document.getElementById("badge");
+      const busyEl = document.getElementById("busy");
+      const logEl = document.getElementById("log");
+      const meterEl = document.getElementById("meter");
+      const remainingEl = document.getElementById("remaining");
+      const talkHintEl = document.getElementById("talkHint");
+      const hintTextEl = document.getElementById("hintText");
 
-function resumeSpeechTimer() {
-    if (MOCK_MODE) return;
-    if (speechEnded || speechElapsed >= SPEECH_TIMER_SECONDS) return;
-    speechStartedAt = Date.now();
-    speechRunning = true;
-    updateSpeechTimer();
-}
+      function setState(label, detail, kind, busy) {
+        badgeEl.textContent = label;
+        badgeEl.className = "badge" + (kind ? " " + kind : "");
+        statusEl.textContent = detail;
+        busyEl.className = "busy" + (busy ? " show" : "");
+      }
 
-// ─── 完整 Mock 逐段計時 ───────────────────────────────────────
-let mockIndex = 0;
-let mockElapsed = 0;
-let mockStartTs = 0;
-let mockRunning = false;
-let mockInterval = 0;
-// 多 session 接力狀態
-let currentSessionIdx = 0;
-let switchingSession = false;
-let pendingMockSegIdx = 0;
-let sessionContextNote = "";
-let transcriptLog = [];
-const mockBar = document.getElementById("mockBar");
-const mockProgressEl = document.getElementById("mockProgress");
-const mockStageEl = document.getElementById("mockStage");
-const mockSideEl = document.getElementById("mockSide");
-const mockTimerEl = document.getElementById("mockTimer");
-const mockBellsEl = document.getElementById("mockBells");
-const mockNoteEl = document.getElementById("mockNote");
-const mockPrevBtn = document.getElementById("mockPrev");
-const mockToggleBtn = document.getElementById("mockToggle");
-const mockNextBtn = document.getElementById("mockNext");
+      function setSubstatus(text) {
+        substatusEl.textContent = text;
+      }
+      function setHint(text) {
+        hintTextEl.textContent = text;
+      }
 
-function mockSideClass(side) {
-    if (side === "正方") return "pro";
-    if (side === "反方") return "con";
-    if (side === "雙方") return "both";
-    return "prep";
-}
+      function setTalkEnabled(enabled) {
+        talkBtn.disabled = !enabled;
+        talkBtn.className = "talk-btn";
+        talkBtn.textContent = "開始錄音";
+        if (enabled) {
+          talkHintEl.textContent =
+            "按下開始錄音，完成發言後再按下送出。亦可按 Space。";
+        } else {
+          talkHintEl.textContent = "自由辯論準備好後可以開始。";
+        }
+      }
 
-function getMockElapsed() {
-    if (!mockRunning) return mockElapsed;
-    return mockElapsed + (Date.now() - mockStartTs) / 1000;
-}
+      function showRetry(show) {
+        retryBtn.className = "secondary retry" + (show ? " show" : "");
+      }
 
-function renderMockBells(seg) {
-    const sched = seg.bells || [];
-    mockBellsEl.innerHTML = "<h4>本段鈴聲</h4>" + sched.map((b, i) =>
-        '<div class="bell-item" id="mb-' + i + '">' +
-        (b.label || (formatTime(Number(b.t || 0)) + " — " + Number(b.rings || 1) + " 叮")) +
-        "</div>"
-    ).join("");
-}
+      function showFeedbackButton(show) {
+        feedbackBtn.className = "secondary feedback" + (show ? " show" : "");
+      }
 
-function updateMockToggleBtn() {
-    mockToggleBtn.textContent = mockRunning ? "暫停計時" : "繼續計時";
-}
+      function scrollLogToBottom() {
+        requestAnimationFrame(() => {
+          const last = logEl.lastElementChild;
+          if (last) last.scrollIntoView({ block: "end" });
+          logEl.scrollTop = logEl.scrollHeight;
+        });
+      }
 
-function stopMockTicking() {
-    if (mockInterval) clearInterval(mockInterval);
-    mockInterval = 0;
-}
+      function addLine(who, text, isUser, className) {
+        if (!text) return null;
+        const p = document.createElement("p");
+        p.className = "line" + (className ? " " + className : "");
+        const span = document.createElement("span");
+        span.className =
+          "who" + (isUser ? " user" : who === "系統" ? " system" : "");
+        span.textContent = who + "：";
+        const node = document.createTextNode(text);
+        p.appendChild(span);
+        p.appendChild(node);
+        logEl.appendChild(p);
+        scrollLogToBottom();
+        return { el: p, textNode: node };
+      }
 
-function updateMockTimer() {
-    const seg = MOCK_SEGMENTS[mockIndex];
-    if (!seg) return;
-    const cap = Number(seg.seconds || 0);
-    const raw = getMockElapsed();
-    const shown = cap > 0 ? Math.min(raw, cap) : raw;
-    mockTimerEl.textContent = formatTime(Math.floor(shown));
-    mockTimerEl.className = "mock-timer" + (cap > 0 && raw >= cap ? " overtime" : "");
-    (seg.bells || []).forEach((b, i) => {
-        if (raw >= Number(b.t || 0)) {
+      function setLineText(line, text) {
+        if (!line) return;
+        line.textNode.textContent = text;
+        line.el.classList.remove("pending");
+        scrollLogToBottom();
+      }
+
+      function appendLineText(line, text) {
+        if (!line || !text) return;
+        const current = line.textNode.textContent;
+        if (
+          !current ||
+          current === "正在回覆..." ||
+          current === "正在轉錄..."
+        ) {
+          setLineText(line, text);
+        } else {
+          line.textNode.textContent = current + text;
+          scrollLogToBottom();
+        }
+      }
+
+      function setActiveAiLine(line) {
+        if (activeAiLine && activeAiLine.el)
+          activeAiLine.el.classList.remove("ai-active");
+        activeAiLine = line || null;
+        if (activeAiLine && activeAiLine.el)
+          activeAiLine.el.classList.add("ai-active");
+        scrollLogToBottom();
+      }
+
+      function clearActiveAiLine() {
+        if (activeAiLine && activeAiLine.el)
+          activeAiLine.el.classList.remove("ai-active");
+        activeAiLine = null;
+      }
+
+      function formatTime(seconds) {
+        const mins = Math.max(0, Math.floor(seconds / 60));
+        const secs = Math.max(0, seconds % 60);
+        return (
+          String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0")
+        );
+      }
+
+      function getBellCtx() {
+        if (!bellCtx)
+          bellCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (bellCtx.state === "suspended") bellCtx.resume();
+        return bellCtx;
+      }
+
+      async function prepareBell() {
+        const ctx = getBellCtx();
+        if (ctx.state === "suspended") await ctx.resume();
+        return ctx;
+      }
+
+      async function loadBell() {
+        if (!BELL_SRC) return null;
+        if (!bellLoading) {
+          bellLoading = fetch(BELL_SRC)
+            .then((resp) => resp.arrayBuffer())
+            .then((arr) => getBellCtx().decodeAudioData(arr))
+            .then((buffer) => {
+              bellBuffer = buffer;
+              return buffer;
+            })
+            .catch(() => null);
+        }
+        return bellLoading;
+      }
+
+      function playTone(count) {
+        const ctx = getBellCtx();
+        for (let i = 0; i < count; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.8);
+          gain.gain.exponentialRampToValueAtTime(
+            0.4,
+            ctx.currentTime + i * 0.8 + 0.02,
+          );
+          gain.gain.exponentialRampToValueAtTime(
+            0.0001,
+            ctx.currentTime + i * 0.8 + 0.28,
+          );
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + i * 0.8);
+          osc.stop(ctx.currentTime + i * 0.8 + 0.3);
+        }
+      }
+
+      async function playBell(count) {
+        const ctx = getBellCtx();
+        if (ctx.state === "suspended") await ctx.resume();
+        if (!bellBuffer) await loadBell();
+        if (!bellBuffer) {
+          playTone(count);
+          return;
+        }
+        for (let i = 0; i < count; i++) {
+          const src = ctx.createBufferSource();
+          const gain = ctx.createGain();
+          src.buffer = bellBuffer;
+          gain.gain.value = BELL_VOLUME;
+          src.connect(gain);
+          gain.connect(ctx.destination);
+          src.start(ctx.currentTime + i * 0.8);
+        }
+      }
+
+      function getSpeechElapsed() {
+        if (!speechRunning) return speechElapsed;
+        return speechElapsed + (Date.now() - speechStartedAt) / 1000;
+      }
+
+      function fireBellOnce(key, rings) {
+        if (firedBells.has(key)) return;
+        firedBells.add(key);
+        playBell(rings);
+      }
+
+      function updateSpeechTimer() {
+        if (MOCK_MODE) return;
+        const elapsed = Math.min(getSpeechElapsed(), SPEECH_TIMER_SECONDS);
+        remainingEl.textContent = formatTime(Math.floor(elapsed));
+        if (BELL_SCHEDULE.length) {
+          BELL_SCHEDULE.forEach((bell, index) => {
+            if (elapsed >= Number(bell.t || 0)) {
+              fireBellOnce("schedule-" + index, Number(bell.rings || 1));
+            }
+          });
+        } else {
+          if (elapsed >= 0) fireBellOnce("start", 1);
+          if (SPEECH_SECONDS > 30 && elapsed >= SPEECH_SECONDS - 30) {
+            fireBellOnce("warning", 1);
+          }
+        }
+        if (elapsed >= SPEECH_TIMER_SECONDS && !speechEnded) {
+          speechEnded = true;
+          speechElapsed = SPEECH_TIMER_SECONDS;
+          pauseSpeechTimer();
+          if (!BELL_SCHEDULE.length) fireBellOnce("end", 2);
+          prepareFinalFeedback("自由辯論發言時間已到。");
+        }
+      }
+
+      function startSpeechTimer() {
+        if (MOCK_MODE) return;
+        speechElapsed = 0;
+        speechStartedAt = Date.now();
+        speechRunning = true;
+        speechEnded = false;
+        firedBells.clear();
+        updateSpeechTimer();
+        speechTimer = setInterval(updateSpeechTimer, 250);
+      }
+
+      function pauseSpeechTimer() {
+        if (MOCK_MODE) return;
+        if (speechRunning) {
+          speechElapsed = Math.min(getSpeechElapsed(), SPEECH_TIMER_SECONDS);
+        }
+        speechRunning = false;
+        updateSpeechTimer();
+      }
+
+      function resumeSpeechTimer() {
+        if (MOCK_MODE) return;
+        if (speechEnded || speechElapsed >= SPEECH_TIMER_SECONDS) return;
+        speechStartedAt = Date.now();
+        speechRunning = true;
+        updateSpeechTimer();
+      }
+
+      // ─── 完整 Mock 逐段計時 ───────────────────────────────────────
+      let mockIndex = 0;
+      let mockElapsed = 0;
+      let mockStartTs = 0;
+      let mockRunning = false;
+      let mockInterval = 0;
+      // 多 session 接力狀態
+      let currentSessionIdx = 0;
+      let switchingSession = false;
+      let pendingMockSegIdx = 0;
+      let sessionContextNote = "";
+      let transcriptLog = [];
+      const mockBar = document.getElementById("mockBar");
+      const mockProgressEl = document.getElementById("mockProgress");
+      const mockStageEl = document.getElementById("mockStage");
+      const mockSideEl = document.getElementById("mockSide");
+      const mockTimerEl = document.getElementById("mockTimer");
+      const mockBellsEl = document.getElementById("mockBells");
+      const mockNoteEl = document.getElementById("mockNote");
+      const mockPrevBtn = document.getElementById("mockPrev");
+      const mockToggleBtn = document.getElementById("mockToggle");
+      const mockNextBtn = document.getElementById("mockNext");
+
+      function mockSideClass(side) {
+        if (side === "正方") return "pro";
+        if (side === "反方") return "con";
+        if (side === "雙方") return "both";
+        return "prep";
+      }
+
+      function getMockElapsed() {
+        if (!mockRunning) return mockElapsed;
+        return mockElapsed + (Date.now() - mockStartTs) / 1000;
+      }
+
+      function renderMockBells(seg) {
+        const sched = seg.bells || [];
+        mockBellsEl.innerHTML =
+          "<h4>本段鈴聲</h4>" +
+          sched
+            .map(
+              (b, i) =>
+                '<div class="bell-item" id="mb-' +
+                i +
+                '">' +
+                (b.label ||
+                  formatTime(Number(b.t || 0)) +
+                    " — " +
+                    Number(b.rings || 1) +
+                    " 叮") +
+                "</div>",
+            )
+            .join("");
+      }
+
+      function updateMockToggleBtn() {
+        mockToggleBtn.textContent = mockRunning ? "暫停計時" : "繼續計時";
+      }
+
+      function stopMockTicking() {
+        if (mockInterval) clearInterval(mockInterval);
+        mockInterval = 0;
+      }
+
+      function updateMockTimer() {
+        const seg = MOCK_SEGMENTS[mockIndex];
+        if (!seg) return;
+        const cap = Number(seg.seconds || 0);
+        const raw = getMockElapsed();
+        const shown = cap > 0 ? Math.min(raw, cap) : raw;
+        mockTimerEl.textContent = formatTime(Math.floor(shown));
+        mockTimerEl.className =
+          "mock-timer" + (cap > 0 && raw >= cap ? " overtime" : "");
+        (seg.bells || []).forEach((b, i) => {
+          if (raw >= Number(b.t || 0)) {
             fireBellOnce("mock-" + mockIndex + "-" + i, Number(b.rings || 1));
             const el = document.getElementById("mb-" + i);
             if (el) el.classList.add("fired");
+          }
+        });
+        if (cap > 0 && raw >= cap && mockRunning) {
+          mockElapsed = cap;
+          mockRunning = false;
+          stopMockTicking();
+          updateMockToggleBtn();
+          mockNoteEl.textContent = "本段時間到，可按「下一段」進入下一環節。";
         }
-    });
-    if (cap > 0 && raw >= cap && mockRunning) {
-        mockElapsed = cap;
+      }
+
+      function mockResume() {
+        const seg = MOCK_SEGMENTS[mockIndex];
+        if (!seg) return;
+        const cap = Number(seg.seconds || 0);
+        if (cap > 0 && mockElapsed >= cap) return;
+        mockStartTs = Date.now();
+        mockRunning = true;
+        updateMockToggleBtn();
+        stopMockTicking();
+        mockInterval = setInterval(updateMockTimer, 200);
+        updateMockTimer();
+      }
+
+      function mockPause() {
+        mockElapsed = getMockElapsed();
         mockRunning = false;
         stopMockTicking();
         updateMockToggleBtn();
-        mockNoteEl.textContent = "本段時間到，可按「下一段」進入下一環節。";
-    }
-}
+        updateMockTimer();
+      }
 
-function mockResume() {
-    const seg = MOCK_SEGMENTS[mockIndex];
-    if (!seg) return;
-    const cap = Number(seg.seconds || 0);
-    if (cap > 0 && mockElapsed >= cap) return;
-    mockStartTs = Date.now();
-    mockRunning = true;
-    updateMockToggleBtn();
-    stopMockTicking();
-    mockInterval = setInterval(updateMockTimer, 200);
-    updateMockTimer();
-}
+      function mockToggleTimer() {
+        if (mockRunning) mockPause();
+        else mockResume();
+      }
 
-function mockPause() {
-    mockElapsed = getMockElapsed();
-    mockRunning = false;
-    stopMockTicking();
-    updateMockToggleBtn();
-    updateMockTimer();
-}
+      function announceSegmentToAi(seg) {
+        if (!seg) return;
+        addLine("系統", "而家輪到：" + (seg.label || "") + "。", false);
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (isRecording || isWaiting || finalFeedbackRequested) return;
+        try {
+          isWaiting = true;
+          setTalkEnabled(false);
+          setState("等待 AI", "已提示 AI 進入目前環節。", "wait", true);
+          setSubstatus(
+            "如屬 AI 段落，請聽完 AI 發言；如屬你方段落，AI 示意後會解鎖錄音。",
+          );
+          startWaitTimer();
+          const segSecs = Number(seg.seconds || 0);
+          const wordMin = Math.round((segSecs / 60) * 250);
+          const wordMax = Math.round((segSecs / 60) * 300);
+          resetAiAudioForTurn(true);
+          sendTextTurn(
+            fillTemplate(LIVE_PROMPTS.segment_announce, {
+              label: seg.label || "",
+              side: seg.side || "",
+              secs: segSecs,
+              word_min: wordMin,
+              word_max: wordMax,
+            }),
+          );
+        } catch (e) {
+          isWaiting = false;
+          clearWaitTimer();
+          setTalkEnabled(true);
+        }
+      }
 
-function mockToggleTimer() {
-    if (mockRunning) mockPause(); else mockResume();
-}
-
-function announceSegmentToAi(seg) {
-    if (!seg) return;
-    addLine("系統", "而家輪到：" + (seg.label || "") + "。", false);
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (isRecording || isWaiting || finalFeedbackRequested) return;
-    try {
-        isWaiting = true;
-        setTalkEnabled(false);
-        setState("等待 AI", "已提示 AI 進入目前環節。", "wait", true);
-        setSubstatus("如屬 AI 段落，請聽完 AI 發言；如屬你方段落，AI 示意後會解鎖錄音。");
-        startWaitTimer();
-        const segSecs = Number(seg.seconds || 0);
-        const wordMin = Math.round((segSecs / 60) * 250);
-        const wordMax = Math.round((segSecs / 60) * 300);
-        resetAiAudioForTurn(true);
-        sendTextTurn(fillTemplate(LIVE_PROMPTS.segment_announce, {
-            label: seg.label || "", side: seg.side || "", secs: segSecs,
-            word_min: wordMin, word_max: wordMax
-        }));
-    } catch (e) {
-        isWaiting = false;
-        clearWaitTimer();
-        setTalkEnabled(true);
-    }
-}
-
-function applyMockSegment(index, autostart) {
-    stopMockTicking();
-    mockIndex = Math.max(0, Math.min(index, MOCK_SEGMENTS.length - 1));
-    const seg = MOCK_SEGMENTS[mockIndex];
-    mockElapsed = 0;
-    mockRunning = false;
-    mockProgressEl.textContent = "第 " + (mockIndex + 1) + " / " + MOCK_SEGMENTS.length + " 段";
-    mockStageEl.textContent = seg.label || "";
-    mockSideEl.textContent = seg.side || "—";
-    mockSideEl.className = "mock-side " + mockSideClass(seg.side);
-    mockPrevBtn.disabled = mockIndex === 0;
-    mockNextBtn.textContent = mockIndex >= MOCK_SEGMENTS.length - 1 ? "完成 Mock" : "下一段";
-    mockNoteEl.textContent = "逐段跟賽制響叮；按「下一段」進入下一環節。";
-    renderMockBells(seg);
-    updateMockToggleBtn();
-    updateMockTimer();
-    if (autostart) mockResume();
-}
-
-function mockNext() {
-    if (mockIndex >= MOCK_SEGMENTS.length - 1) {
+      function applyMockSegment(index, autostart) {
         stopMockTicking();
+        mockIndex = Math.max(0, Math.min(index, MOCK_SEGMENTS.length - 1));
+        const seg = MOCK_SEGMENTS[mockIndex];
+        mockElapsed = 0;
         mockRunning = false;
+        mockProgressEl.textContent =
+          "第 " + (mockIndex + 1) + " / " + MOCK_SEGMENTS.length + " 段";
+        mockStageEl.textContent = seg.label || "";
+        mockSideEl.textContent = seg.side || "—";
+        mockSideEl.className = "mock-side " + mockSideClass(seg.side);
+        mockPrevBtn.disabled = mockIndex === 0;
+        mockNextBtn.textContent =
+          mockIndex >= MOCK_SEGMENTS.length - 1 ? "完成 Mock" : "下一段";
+        mockNoteEl.textContent = "逐段跟賽制響叮；按「下一段」進入下一環節。";
+        renderMockBells(seg);
+        updateMockToggleBtn();
+        updateMockTimer();
+        if (autostart) mockResume();
+      }
+
+      function mockNext() {
+        if (mockIndex >= MOCK_SEGMENTS.length - 1) {
+          stopMockTicking();
+          mockRunning = false;
+          mockNextBtn.disabled = true;
+          prepareFinalFeedback("Mock 全部環節已完成。");
+          return;
+        }
+        const nextIdx = mockIndex + 1;
+        const curSession = Number(MOCK_SEGMENTS[mockIndex].session || 0);
+        const nextSession = Number(MOCK_SEGMENTS[nextIdx].session || 0);
+        if (nextSession !== curSession && MOCK_TOKENS.length > 1) {
+          switchToSession(nextSession, nextIdx);
+        } else {
+          applyMockSegment(nextIdx, true);
+          announceSegmentToAi(MOCK_SEGMENTS[nextIdx]);
+        }
+      }
+
+      function recordTranscriptTurn() {
+        const u = userLine ? userLine.textNode.textContent : "";
+        const a = aiLine ? aiLine.textNode.textContent : "";
+        if (u && u !== "正在轉錄...") transcriptLog.push("【我方】" + u);
+        if (a && a !== "正在回覆..." && a !== "正在整理評價...")
+          transcriptLog.push("【對方/AI】" + a);
+      }
+
+      function buildTranscriptContext() {
+        const recent = transcriptLog.slice(-40);
+        let text = recent.join("\n");
+        if (text.length > 4000) text = text.slice(text.length - 4000);
+        return text;
+      }
+
+      function switchToSession(sessionIdx, segIdx) {
+        stopActiveRecording();
+        clearWaitTimer();
+        resetAiAudioForTurn(true);
+        isRecording = false;
+        isWaiting = false;
+        currentSessionIdx = sessionIdx;
+        pendingMockSegIdx = segIdx;
+        sessionContextNote = buildTranscriptContext();
+        mockRunning = false;
+        stopMockTicking();
+        setTalkEnabled(false);
         mockNextBtn.disabled = true;
-        prepareFinalFeedback("Mock 全部環節已完成。");
-        return;
-    }
-    const nextIdx = mockIndex + 1;
-    const curSession = Number(MOCK_SEGMENTS[mockIndex].session || 0);
-    const nextSession = Number(MOCK_SEGMENTS[nextIdx].session || 0);
-    if (nextSession !== curSession && MOCK_TOKENS.length > 1) {
-        switchToSession(nextSession, nextIdx);
-    } else {
-        applyMockSegment(nextIdx, true);
-        announceSegmentToAi(MOCK_SEGMENTS[nextIdx]);
-    }
-}
+        setState(
+          "連接下一節",
+          "正在連接第 " +
+            (sessionIdx + 1) +
+            " / " +
+            MOCK_TOKENS.length +
+            " 節…",
+          "wait",
+          true,
+        );
+        addLine(
+          "系統",
+          "接力連接第 " +
+            (sessionIdx + 1) +
+            " / " +
+            MOCK_TOKENS.length +
+            " 節：" +
+            (MOCK_SESSION_LABELS[sessionIdx] || "") +
+            "…",
+          false,
+        );
+        switchingSession = true;
+        if (
+          ws &&
+          (ws.readyState === WebSocket.OPEN ||
+            ws.readyState === WebSocket.CONNECTING)
+        ) {
+          try {
+            ws.close();
+          } catch (e) {
+            openSessionWs();
+          }
+        } else {
+          openSessionWs();
+        }
+      }
 
-function recordTranscriptTurn() {
-    const u = userLine ? userLine.textNode.textContent : "";
-    const a = aiLine ? aiLine.textNode.textContent : "";
-    if (u && u !== "正在轉錄...") transcriptLog.push("【我方】" + u);
-    if (a && a !== "正在回覆..." && a !== "正在整理評價...") transcriptLog.push("【對方/AI】" + a);
-}
+      function onSessionReconnected() {
+        isRecording = false;
+        isWaiting = false;
+        userLine = null;
+        aiLine = null;
+        mockNextBtn.disabled = false;
+        setState(
+          "準備好",
+          "已連接第 " + (currentSessionIdx + 1) + " 節，繼續。",
+          "ready",
+          false,
+        );
+        setSubstatus("按下開始錄音，完成發言後再按下送出。");
+        setTalkEnabled(true);
+        applyMockSegment(pendingMockSegIdx, true);
+        announceSegmentToAi(MOCK_SEGMENTS[pendingMockSegIdx]);
+      }
 
-function buildTranscriptContext() {
-    const recent = transcriptLog.slice(-40);
-    let text = recent.join("\n");
-    if (text.length > 4000) text = text.slice(text.length - 4000);
-    return text;
-}
+      function mockPrev() {
+        if (mockIndex === 0) return;
+        applyMockSegment(mockIndex - 1, false);
+      }
 
-function switchToSession(sessionIdx, segIdx) {
-    stopActiveRecording();
-    clearWaitTimer();
-    resetAiAudioForTurn(true);
-    isRecording = false;
-    isWaiting = false;
-    currentSessionIdx = sessionIdx;
-    pendingMockSegIdx = segIdx;
-    sessionContextNote = buildTranscriptContext();
-    mockRunning = false;
-    stopMockTicking();
-    setTalkEnabled(false);
-    mockNextBtn.disabled = true;
-    setState("連接下一節", "正在連接第 " + (sessionIdx + 1) + " / " + MOCK_TOKENS.length + " 節…", "wait", true);
-    addLine("系統", "接力連接第 " + (sessionIdx + 1) + " / " + MOCK_TOKENS.length + " 節：" + (MOCK_SESSION_LABELS[sessionIdx] || "") + "…", false);
-    switchingSession = true;
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        try { ws.close(); } catch (e) { openSessionWs(); }
-    } else {
-        openSessionWs();
-    }
-}
+      function startMockSequence() {
+        mockBar.style.display = "block";
+        const tb = document.querySelector(".timer-box");
+        if (tb) tb.style.display = "none";
+        applyMockSegment(0, true);
+        announceSegmentToAi(MOCK_SEGMENTS[0]);
+      }
 
-function onSessionReconnected() {
-    isRecording = false;
-    isWaiting = false;
-    userLine = null;
-    aiLine = null;
-    mockNextBtn.disabled = false;
-    setState("準備好", "已連接第 " + (currentSessionIdx + 1) + " 節，繼續。", "ready", false);
-    setSubstatus("按下開始錄音，完成發言後再按下送出。");
-    setTalkEnabled(true);
-    applyMockSegment(pendingMockSegIdx, true);
-    announceSegmentToAi(MOCK_SEGMENTS[pendingMockSegIdx]);
-}
+      function clearTimers() {
+        if (recordTimer) clearInterval(recordTimer);
+        if (waitTimer) clearTimeout(waitTimer);
+        if (speechTimer) clearInterval(speechTimer);
+        stopMockTicking();
+        recordTimer = null;
+        waitTimer = null;
+        speechTimer = null;
+        speechRunning = false;
+        mockRunning = false;
+      }
 
-function mockPrev() {
-    if (mockIndex === 0) return;
-    applyMockSegment(mockIndex - 1, false);
-}
+      function startWaitTimer() {
+        if (waitTimer) clearTimeout(waitTimer);
+        waitTimer = setTimeout(() => {
+          if (!isWaiting) return;
+          setState(
+            "等待 AI",
+            "仍在等待 Gemini 回覆，可重試本輪或停止自由辯論。",
+            "wait",
+            true,
+          );
+          setSubstatus("如果長時間沒有反應，可以重試本輪。");
+          setHint(
+            "上一輪未收到 AI 回覆；你可以重試本輪，或停止自由辯論後重新建立。",
+          );
+          showRetry(true);
+        }, 10000);
+      }
 
-function startMockSequence() {
-    mockBar.style.display = "block";
-    const tb = document.querySelector(".timer-box");
-    if (tb) tb.style.display = "none";
-    applyMockSegment(0, true);
-    announceSegmentToAi(MOCK_SEGMENTS[0]);
-}
+      function clearWaitTimer() {
+        if (waitTimer) clearTimeout(waitTimer);
+        waitTimer = null;
+      }
 
-function clearTimers() {
-    if (recordTimer) clearInterval(recordTimer);
-    if (waitTimer) clearTimeout(waitTimer);
-    if (speechTimer) clearInterval(speechTimer);
-    stopMockTicking();
-    recordTimer = null;
-    waitTimer = null;
-    speechTimer = null;
-    speechRunning = false;
-    mockRunning = false;
-}
+      function startFinalFeedbackWaitTimer() {
+        if (waitTimer) clearTimeout(waitTimer);
+        waitTimer = setTimeout(() => {
+          if (!finalFeedbackRequested || finalFeedbackComplete) return;
+          setState("等待評價", "仍在等待 AI 總結評價。", "wait", true);
+          setSubstatus("如長時間沒有回應，請停止後重新開始自由辯論。");
+        }, 10000);
+      }
 
-function startWaitTimer() {
-    if (waitTimer) clearTimeout(waitTimer);
-    waitTimer = setTimeout(() => {
-        if (!isWaiting) return;
-        setState("等待 AI", "仍在等待 Gemini 回覆，可重試本輪或停止自由辯論。", "wait", true);
-        setSubstatus("如果長時間沒有反應，可以重試本輪。");
-        setHint("上一輪未收到 AI 回覆；你可以重試本輪，或停止自由辯論後重新建立。");
-        showRetry(true);
-    }, 10000);
-}
+      function downsampleBuffer(buffer, inputRate, outputRate) {
+        if (outputRate === inputRate) return buffer;
+        const ratio = inputRate / outputRate;
+        const newLength = Math.round(buffer.length / ratio);
+        const result = new Float32Array(newLength);
+        for (let i = 0; i < newLength; i++) {
+          result[i] = buffer[Math.floor(i * ratio)] || 0;
+        }
+        return result;
+      }
 
-function clearWaitTimer() {
-    if (waitTimer) clearTimeout(waitTimer);
-    waitTimer = null;
-}
+      function floatTo16BitPCM(float32) {
+        const pcm = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        return pcm;
+      }
 
-function startFinalFeedbackWaitTimer() {
-    if (waitTimer) clearTimeout(waitTimer);
-    waitTimer = setTimeout(() => {
-        if (!finalFeedbackRequested || finalFeedbackComplete) return;
-        setState("等待評價", "仍在等待 AI 總結評價。", "wait", true);
-        setSubstatus("如長時間沒有回應，請停止後重新開始自由辯論。");
-    }, 10000);
-}
+      function bytesToBase64(bytes) {
+        let binary = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, i + chunk),
+          );
+        }
+        return btoa(binary);
+      }
 
-function downsampleBuffer(buffer, inputRate, outputRate) {
-    if (outputRate === inputRate) return buffer;
-    const ratio = inputRate / outputRate;
-    const newLength = Math.round(buffer.length / ratio);
-    const result = new Float32Array(newLength);
-    for (let i = 0; i < newLength; i++) {
-        result[i] = buffer[Math.floor(i * ratio)] || 0;
-    }
-    return result;
-}
+      function authToken() {
+        try {
+          const parentToken =
+            window.parent && window.parent.localStorage
+              ? window.parent.localStorage.getItem("committee_user")
+              : "";
+          if (parentToken) return parentToken;
+        } catch (e) {}
+        try {
+          return window.localStorage.getItem("committee_user") || "";
+        } catch (e) {
+          return "";
+        }
+      }
 
-function floatTo16BitPCM(float32) {
-    const pcm = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    return pcm;
-}
-
-function bytesToBase64(bytes) {
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-    }
-    return btoa(binary);
-}
-
-function authToken() {
-    try {
-        const parentToken = window.parent && window.parent.localStorage
-            ? window.parent.localStorage.getItem("committee_user")
-            : "";
-        if (parentToken) return parentToken;
-    } catch (e) {}
-    try { return window.localStorage.getItem("committee_user") || ""; }
-    catch (e) { return ""; }
-}
-
-function resetAiAudioForTurn(stopCurrent) {
-    ttsGeneration += 1;
-    ttsTextBuffer = "";
-    ttsQueue = [];
-    ttsPending = 0;
-    ttsPlaying = false;
-    ttsFallbackActive = false;
-    nativeAudioParts = [];
-    ttsReceivedText = false;
-    resolveTtsDrain();
-    if (stopCurrent && currentTtsAudio) {
-        try { currentTtsAudio.pause(); currentTtsAudio.src = ""; } catch (e) {}
-    }
-    if (currentTtsUrl) {
-        try { URL.revokeObjectURL(currentTtsUrl); } catch (e) {}
-    }
-    currentTtsAudio = null;
-    currentTtsUrl = "";
-    if (stopCurrent && outputCtx) playAt = outputCtx.currentTime;
-}
-
-function resolveTtsDrain() {
-    if (ttsQueue.length || ttsPending || ttsPlaying || currentTtsAudio) return;
-    const resolvers = ttsDrainResolvers.slice();
-    ttsDrainResolvers = [];
-    resolvers.forEach((resolve) => resolve());
-}
-
-function waitForTtsDrain() {
-    if (ttsFallbackActive || azureTtsSessionDisabled || !azureTtsEnabled) return Promise.resolve();
-    if (!ttsQueue.length && !ttsPending && !ttsPlaying && !currentTtsAudio) return Promise.resolve();
-    return new Promise((resolve) => ttsDrainResolvers.push(resolve));
-}
-
-function nextTtsBoundary(text) {
-    const marks = "。！？；\n";
-    for (let i = 0; i < text.length; i++) {
-        if (marks.indexOf(text[i]) >= 0) return i + 1;
-    }
-    return -1;
-}
-
-function queueAzureTtsText(text, force) {
-    if (!azureTtsEnabled || azureTtsSessionDisabled || ttsFallbackActive) return;
-    if (!text && !force) return;
-    if (text) {
-        ttsReceivedText = true;
-        ttsTextBuffer += text;
-    }
-    let boundary = nextTtsBoundary(ttsTextBuffer);
-    while (boundary > 0) {
-        const chunk = ttsTextBuffer.slice(0, boundary).trim();
-        ttsTextBuffer = ttsTextBuffer.slice(boundary);
-        if (chunk) enqueueTtsChunk(chunk);
-        boundary = nextTtsBoundary(ttsTextBuffer);
-    }
-    if (force && ttsTextBuffer.trim()) {
-        enqueueTtsChunk(ttsTextBuffer.trim());
+      function resetAiAudioForTurn(stopCurrent) {
+        ttsGeneration += 1;
         ttsTextBuffer = "";
-    }
-}
+        ttsQueue = [];
+        ttsPending = 0;
+        ttsPlaying = false;
+        ttsFallbackActive = false;
+        nativeAudioParts = [];
+        ttsReceivedText = false;
+        resolveTtsDrain();
+        if (stopCurrent && currentTtsAudio) {
+          try {
+            currentTtsAudio.pause();
+            currentTtsAudio.src = "";
+          } catch (e) {}
+        }
+        if (currentTtsUrl) {
+          try {
+            URL.revokeObjectURL(currentTtsUrl);
+          } catch (e) {}
+        }
+        currentTtsAudio = null;
+        currentTtsUrl = "";
+        if (stopCurrent && outputCtx) playAt = outputCtx.currentTime;
+      }
 
-function enqueueTtsChunk(text) {
-    if (!text) return;
-    if (text.length > 1200) {
-        for (let i = 0; i < text.length; i += 1200) {
+      function resolveTtsDrain() {
+        if (ttsQueue.length || ttsPending || ttsPlaying || currentTtsAudio)
+          return;
+        const resolvers = ttsDrainResolvers.slice();
+        ttsDrainResolvers = [];
+        resolvers.forEach((resolve) => resolve());
+      }
+
+      function waitForTtsDrain() {
+        if (ttsFallbackActive || azureTtsSessionDisabled || !azureTtsEnabled)
+          return Promise.resolve();
+        if (!ttsQueue.length && !ttsPending && !ttsPlaying && !currentTtsAudio)
+          return Promise.resolve();
+        return new Promise((resolve) => ttsDrainResolvers.push(resolve));
+      }
+
+      function nextTtsBoundary(text) {
+        const marks = "。！？；\n";
+        for (let i = 0; i < text.length; i++) {
+          if (marks.indexOf(text[i]) >= 0) return i + 1;
+        }
+        return -1;
+      }
+
+      function queueAzureTtsText(text, force) {
+        if (!azureTtsEnabled || azureTtsSessionDisabled || ttsFallbackActive)
+          return;
+        if (!text && !force) return;
+        if (text) {
+          ttsReceivedText = true;
+          ttsTextBuffer += text;
+        }
+        let boundary = nextTtsBoundary(ttsTextBuffer);
+        while (boundary > 0) {
+          const chunk = ttsTextBuffer.slice(0, boundary).trim();
+          ttsTextBuffer = ttsTextBuffer.slice(boundary);
+          if (chunk) enqueueTtsChunk(chunk);
+          boundary = nextTtsBoundary(ttsTextBuffer);
+        }
+        if (force && ttsTextBuffer.trim()) {
+          enqueueTtsChunk(ttsTextBuffer.trim());
+          ttsTextBuffer = "";
+        }
+      }
+
+      function enqueueTtsChunk(text) {
+        if (!text) return;
+        if (text.length > 1200) {
+          for (let i = 0; i < text.length; i += 1200) {
             const part = text.slice(i, i + 1200).trim();
             if (part) ttsQueue.push(part);
+          }
+          processTtsQueue();
+          return;
         }
+        ttsQueue.push(text);
         processTtsQueue();
-        return;
-    }
-    ttsQueue.push(text);
-    processTtsQueue();
-}
+      }
 
-function playNativeAudioParts() {
-    if (!nativeAudioParts.length) return;
-    const parts = nativeAudioParts.slice();
-    nativeAudioParts = [];
-    parts.forEach((part) => playPcm(part.data, part.mimeType));
-}
+      function playNativeAudioParts() {
+        if (!nativeAudioParts.length) return;
+        const parts = nativeAudioParts.slice();
+        nativeAudioParts = [];
+        parts.forEach((part) => playPcm(part.data, part.mimeType));
+      }
 
-function activateNativeTtsFallback(message) {
-    if (ttsFallbackActive) return;
-    ttsFallbackActive = true;
-    ttsQueue = [];
-    ttsPending = 0;
-    ttsTextBuffer = "";
-    if (currentTtsAudio) {
-        try { currentTtsAudio.pause(); currentTtsAudio.src = ""; } catch (e) {}
-    }
-    if (currentTtsUrl) {
-        try { URL.revokeObjectURL(currentTtsUrl); } catch (e) {}
-    }
-    currentTtsAudio = null;
-    currentTtsUrl = "";
-    if (!ttsWarningShown) {
-        ttsWarningShown = true;
-        setHint(message || "Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。");
-    }
-    playNativeAudioParts();
-    resolveTtsDrain();
-}
-
-async function processTtsQueue() {
-    if (ttsPlaying || ttsFallbackActive || azureTtsSessionDisabled || !azureTtsEnabled) return;
-    const text = ttsQueue.shift();
-    if (!text) {
+      function activateNativeTtsFallback(message) {
+        if (ttsFallbackActive) return;
+        ttsFallbackActive = true;
+        ttsQueue = [];
+        ttsPending = 0;
+        ttsTextBuffer = "";
+        if (currentTtsAudio) {
+          try {
+            currentTtsAudio.pause();
+            currentTtsAudio.src = "";
+          } catch (e) {}
+        }
+        if (currentTtsUrl) {
+          try {
+            URL.revokeObjectURL(currentTtsUrl);
+          } catch (e) {}
+        }
+        currentTtsAudio = null;
+        currentTtsUrl = "";
+        if (!ttsWarningShown) {
+          ttsWarningShown = true;
+          setHint(
+            message ||
+              "Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。",
+          );
+        }
+        playNativeAudioParts();
         resolveTtsDrain();
-        return;
-    }
-    const generation = ttsGeneration;
-    ttsPlaying = true;
-    ttsPending += 1;
-    try {
-        const token = authToken();
-        const headers = { "Content-Type": "application/json" };
-        if (token) headers.Authorization = "Bearer " + token;
-        const resp = await fetch("/api/tts/azure", {
+      }
+
+      async function processTtsQueue() {
+        if (
+          ttsPlaying ||
+          ttsFallbackActive ||
+          azureTtsSessionDisabled ||
+          !azureTtsEnabled
+        )
+          return;
+        const text = ttsQueue.shift();
+        if (!text) {
+          resolveTtsDrain();
+          return;
+        }
+        const generation = ttsGeneration;
+        ttsPlaying = true;
+        ttsPending += 1;
+        try {
+          const token = authToken();
+          const headers = { "Content-Type": "application/json" };
+          if (token) headers.Authorization = "Bearer " + token;
+          const resp = await fetch("/api/tts/azure", {
             method: "POST",
             headers,
             credentials: "same-origin",
             cache: "no-store",
-            body: JSON.stringify({ text })
-        });
-        if (!resp.ok) {
-            if (resp.status === 503 || resp.status === 401) azureTtsSessionDisabled = true;
+            body: JSON.stringify({ text }),
+          });
+          if (!resp.ok) {
+            if (resp.status === 503 || resp.status === 401)
+              azureTtsSessionDisabled = true;
             throw new Error("Azure TTS HTTP " + resp.status);
-        }
-        const blob = await resp.blob();
-        if (generation !== ttsGeneration) return;
-        await playTtsBlob(blob);
-    } catch (e) {
-        if (generation !== ttsGeneration) return;
-        console.warn("[Live] Azure TTS fallback:", e);
-        activateNativeTtsFallback("Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。");
-    } finally {
-        if (generation !== ttsGeneration) return;
-        ttsPending = Math.max(0, ttsPending - 1);
-        ttsPlaying = false;
-        if (!ttsFallbackActive && ttsQueue.length) {
+          }
+          const blob = await resp.blob();
+          if (generation !== ttsGeneration) return;
+          await playTtsBlob(blob);
+        } catch (e) {
+          if (generation !== ttsGeneration) return;
+          console.warn("[Live] Azure TTS fallback:", e);
+          activateNativeTtsFallback(
+            "Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。",
+          );
+        } finally {
+          if (generation !== ttsGeneration) return;
+          ttsPending = Math.max(0, ttsPending - 1);
+          ttsPlaying = false;
+          if (!ttsFallbackActive && ttsQueue.length) {
             processTtsQueue();
-        } else {
+          } else {
             resolveTtsDrain();
+          }
         }
-    }
-}
+      }
 
-function playTtsBlob(blob) {
-    return new Promise((resolve, reject) => {
-        if (!blob || !blob.size) {
+      function playTtsBlob(blob) {
+        return new Promise((resolve, reject) => {
+          if (!blob || !blob.size) {
             reject(new Error("Empty TTS audio"));
             return;
-        }
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        currentTtsAudio = audio;
-        currentTtsUrl = url;
-        audio.onended = () => {
+          }
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          currentTtsAudio = audio;
+          currentTtsUrl = url;
+          audio.onended = () => {
             URL.revokeObjectURL(url);
             if (currentTtsAudio === audio) currentTtsAudio = null;
             if (currentTtsUrl === url) currentTtsUrl = "";
             resolve();
-        };
-        audio.onerror = () => {
+          };
+          audio.onerror = () => {
             URL.revokeObjectURL(url);
             if (currentTtsAudio === audio) currentTtsAudio = null;
             if (currentTtsUrl === url) currentTtsUrl = "";
             reject(new Error("TTS audio playback failed"));
-        };
-        audio.play().catch((e) => {
+          };
+          audio.play().catch((e) => {
             URL.revokeObjectURL(url);
             if (currentTtsAudio === audio) currentTtsAudio = null;
             if (currentTtsUrl === url) currentTtsUrl = "";
             reject(e);
+          });
         });
-    });
-}
+      }
 
-function pcmBase64ToFloat32(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const view = new DataView(bytes.buffer);
-    const samples = new Float32Array(bytes.byteLength / 2);
-    for (let i = 0; i < samples.length; i++) {
-        samples[i] = view.getInt16(i * 2, true) / 32768;
-    }
-    return samples;
-}
+      function pcmBase64ToFloat32(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const view = new DataView(bytes.buffer);
+        const samples = new Float32Array(bytes.byteLength / 2);
+        for (let i = 0; i < samples.length; i++) {
+          samples[i] = view.getInt16(i * 2, true) / 32768;
+        }
+        return samples;
+      }
 
-function playPcm(base64, mimeType) {
-    if (!outputCtx) outputCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (outputCtx.state === "suspended") outputCtx.resume();
-    const sampleRateMatch = String(mimeType || "").match(/rate=(\d+)/);
-    const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 24000;
-    const samples = pcmBase64ToFloat32(base64);
-    const buffer = outputCtx.createBuffer(1, samples.length, sampleRate);
-    buffer.copyToChannel(samples, 0);
-    const src = outputCtx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(outputCtx.destination);
-    // A tiny queue absorbs Live/WebSocket burst jitter without adding a
-    // perceptible turn delay.  It prevents the intermittent chopped replies
-    // reported on longer Free De and Mock sessions.
-    playAt = Math.max(playAt, outputCtx.currentTime + 0.12);
-    src.start(playAt);
-    playAt += buffer.duration;
-}
+      function playPcm(base64, mimeType) {
+        if (!outputCtx)
+          outputCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (outputCtx.state === "suspended") outputCtx.resume();
+        const sampleRateMatch = String(mimeType || "").match(/rate=(\d+)/);
+        const sampleRate = sampleRateMatch
+          ? parseInt(sampleRateMatch[1], 10)
+          : 24000;
+        const samples = pcmBase64ToFloat32(base64);
+        const buffer = outputCtx.createBuffer(1, samples.length, sampleRate);
+        buffer.copyToChannel(samples, 0);
+        const src = outputCtx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(outputCtx.destination);
+        // A tiny queue absorbs Live/WebSocket burst jitter without adding a
+        // perceptible turn delay.  It prevents the intermittent chopped replies
+        // reported on longer Free De and Mock sessions.
+        playAt = Math.max(playAt, outputCtx.currentTime + 0.12);
+        src.start(playAt);
+        playAt += buffer.duration;
+      }
 
-async function startMic() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("此瀏覽器不支援麥克風錄音。");
-    }
-    stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
+      async function startMic() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("此瀏覽器不支援麥克風錄音。");
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
             channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
-        }
-    });
-    inputCtx = new (window.AudioContext || window.webkitAudioContext)();
-    await inputCtx.resume();
-    sourceNode = inputCtx.createMediaStreamSource(stream);
-    processor = inputCtx.createScriptProcessor(2048, 1, 1);
-    processor.onaudioprocess = (event) => {
-        if (!isRecording) return;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const raw = event.inputBuffer.getChannelData(0);
-        let peak = 0;
-        for (let i = 0; i < raw.length; i++) peak = Math.max(peak, Math.abs(raw[i]));
-        meterEl.style.width = Math.min(100, Math.round(peak * 150)) + "%";
-        const downsampled = downsampleBuffer(raw, inputCtx.sampleRate, 16000);
-        const pcm = floatTo16BitPCM(downsampled);
-        ws.send(JSON.stringify({
-            realtimeInput: {
+            autoGainControl: true,
+          },
+        });
+        inputCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await inputCtx.resume();
+        sourceNode = inputCtx.createMediaStreamSource(stream);
+        processor = inputCtx.createScriptProcessor(2048, 1, 1);
+        processor.onaudioprocess = (event) => {
+          if (!isRecording) return;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          const raw = event.inputBuffer.getChannelData(0);
+          let peak = 0;
+          for (let i = 0; i < raw.length; i++)
+            peak = Math.max(peak, Math.abs(raw[i]));
+          meterEl.style.width = Math.min(100, Math.round(peak * 150)) + "%";
+          const downsampled = downsampleBuffer(raw, inputCtx.sampleRate, 16000);
+          const pcm = floatTo16BitPCM(downsampled);
+          ws.send(
+            JSON.stringify({
+              realtimeInput: {
                 audio: {
-                    data: bytesToBase64(new Uint8Array(pcm.buffer)),
-                    mimeType: "audio/pcm;rate=16000"
-                }
-            }
-        }));
-    };
-    sourceNode.connect(processor);
-    // Keep the processing graph alive without routing the mic to speakers.
-    // Direct monitoring creates feedback and can cause mobile audio sessions
-    // to be interrupted during Free De / Mock.
-    const silentGain = inputCtx.createGain();
-    silentGain.gain.value = 0;
-    processor.connect(silentGain);
-    silentGain.connect(inputCtx.destination);
-}
+                  data: bytesToBase64(new Uint8Array(pcm.buffer)),
+                  mimeType: "audio/pcm;rate=16000",
+                },
+              },
+            }),
+          );
+        };
+        sourceNode.connect(processor);
+        // Keep the processing graph alive without routing the mic to speakers.
+        // Direct monitoring creates feedback and can cause mobile audio sessions
+        // to be interrupted during Free De / Mock.
+        const silentGain = inputCtx.createGain();
+        silentGain.gain.value = 0;
+        processor.connect(silentGain);
+        silentGain.connect(inputCtx.destination);
+      }
 
-function sendSetup() {
-    ws.send(JSON.stringify({
-        setup: {
-            model: "models/" + MODEL,
-            generationConfig: {
+      function sendSetup() {
+        ws.send(
+          JSON.stringify({
+            setup: {
+              model: "models/" + MODEL,
+              generationConfig: {
                 responseModalities: ["AUDIO"],
                 speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: "Kore" }
-                    }
-                }
+                  voiceConfig: {
+                    prebuiltVoiceConfig: { voiceName: "Kore" },
+                  },
+                },
+              },
+              systemInstruction: {
+                parts: [{ text: buildSystemInstruction() }],
+              },
+              realtimeInputConfig: {
+                automaticActivityDetection: { disabled: true },
+              },
+              inputAudioTranscription: {},
+              outputAudioTranscription: {},
             },
-            systemInstruction: { parts: [{ text: buildSystemInstruction() }] },
-            realtimeInputConfig: {
-                automaticActivityDetection: { disabled: true }
-            },
-            inputAudioTranscription: {},
-            outputAudioTranscription: {}
+          }),
+        );
+      }
+
+      function buildSystemInstruction() {
+        if (MOCK_MODE && sessionContextNote) {
+          return (
+            SYSTEM_PROMPT +
+            "\n\n## 之前環節摘要（你要記住並延續，唔好當作新對話）\n" +
+            sessionContextNote
+          );
         }
-    }));
-}
+        return SYSTEM_PROMPT;
+      }
 
-function buildSystemInstruction() {
-    if (MOCK_MODE && sessionContextNote) {
-        return SYSTEM_PROMPT + "\n\n## 之前環節摘要（你要記住並延續，唔好當作新對話）\n" + sessionContextNote;
-    }
-    return SYSTEM_PROMPT;
-}
-
-async function prepareMicAfterSetup() {
-    if (micReady) return;
-    setState("連線中", "已連線，正在啟動麥克風...", "wait", true);
-    setSubstatus("請允許瀏覽器使用麥克風。");
-    try {
-        await startMic();
-        micReady = true;
-        if (MOCK_MODE) {
+      async function prepareMicAfterSetup() {
+        if (micReady) return;
+        setState("連線中", "已連線，正在啟動麥克風...", "wait", true);
+        setSubstatus("請允許瀏覽器使用麥克風。");
+        try {
+          await startMic();
+          micReady = true;
+          if (MOCK_MODE) {
             setState("準備好", "Mock 已準備好。", "ready", false);
             setSubstatus("按下開始錄音，完成發言後再按下送出。");
             setTalkEnabled(true);
-            addLine("系統", "Mock 已開始。按下開始錄音，完成發言後再按下送出交給 AI。", false);
+            addLine(
+              "系統",
+              "Mock 已開始。按下開始錄音，完成發言後再按下送出交給 AI。",
+              false,
+            );
             startMockSequence();
-        } else {
+          } else {
             startSpeechTimer();
-            addLine("系統", "自由辯論已開始。按下開始錄音，完成發言後再按下送出交給 AI。", false);
+            addLine(
+              "系統",
+              "自由辯論已開始。按下開始錄音，完成發言後再按下送出交給 AI。",
+              false,
+            );
             if (AI_STARTS) {
-                try {
-                    isWaiting = true;
-                    setTalkEnabled(false);
-                    setState("等待 AI", "AI 先發言，請聽完再回應。", "wait", true);
-                    setSubstatus("AI 會先代表正方開局。");
-                    resetAiAudioForTurn(true);
-                    sendTextTurn(LIVE_PROMPTS.ai_opening_reverse);
-                    startWaitTimer();
-                } catch (e) {
-                    isWaiting = false;
-                    clearWaitTimer();
-                    setState("準備好", "AI 未能自動開局，輪到你先發言。", "ready", false);
-                    setSubstatus("按下開始錄音，完成發言後再按下送出。");
-                    setTalkEnabled(true);
-                }
-            } else {
-                setState("準備好", "自由辯論已準備好，輪到你發言。", "ready", false);
+              try {
+                isWaiting = true;
+                setTalkEnabled(false);
+                setState("等待 AI", "AI 先發言，請聽完再回應。", "wait", true);
+                setSubstatus("AI 會先代表正方開局。");
+                resetAiAudioForTurn(true);
+                sendTextTurn(LIVE_PROMPTS.ai_opening_reverse);
+                startWaitTimer();
+              } catch (e) {
+                isWaiting = false;
+                clearWaitTimer();
+                setState(
+                  "準備好",
+                  "AI 未能自動開局，輪到你先發言。",
+                  "ready",
+                  false,
+                );
                 setSubstatus("按下開始錄音，完成發言後再按下送出。");
                 setTalkEnabled(true);
+              }
+            } else {
+              setState(
+                "準備好",
+                "自由辯論已準備好，輪到你發言。",
+                "ready",
+                false,
+              );
+              setSubstatus("按下開始錄音，完成發言後再按下送出。");
+              setTalkEnabled(true);
             }
+          }
+        } catch (e) {
+          setState("錯誤", "無法取得麥克風權限：" + e.message, "error", false);
+          setSubstatus("請檢查瀏覽器權限，然後重新開始自由辯論。");
+          closeStatusLocked = true;
+          cleanupMedia(true);
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+          setTalkEnabled(false);
+          showRetry(false);
         }
-    } catch (e) {
-        setState("錯誤", "無法取得麥克風權限：" + e.message, "error", false);
-        setSubstatus("請檢查瀏覽器權限，然後重新開始自由辯論。");
-        closeStatusLocked = true;
-        cleanupMedia(true);
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
+      }
+
+      async function startLive() {
+        if (!window.WebSocket) {
+          setState("錯誤", "此瀏覽器不支援 WebSocket。", "error", false);
+          return;
+        }
+        if (!window.AudioContext && !window.webkitAudioContext) {
+          setState("錯誤", "此瀏覽器不支援音訊播放。", "error", false);
+          return;
+        }
+        manualStopping = false;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
         setTalkEnabled(false);
         showRetry(false);
-    }
-}
+        setState("連線中", "正在連接 Gemini Live...", "wait", true);
+        setSubstatus("連線完成後會要求麥克風權限。");
+        outputCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await outputCtx.resume();
+        await prepareBell();
+        currentSessionIdx = 0;
+        openSessionWs();
+      }
 
-async function startLive() {
-    if (!window.WebSocket) {
-        setState("錯誤", "此瀏覽器不支援 WebSocket。", "error", false);
-        return;
-    }
-    if (!window.AudioContext && !window.webkitAudioContext) {
-        setState("錯誤", "此瀏覽器不支援音訊播放。", "error", false);
-        return;
-    }
-    manualStopping = false;
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    setTalkEnabled(false);
-    showRetry(false);
-    setState("連線中", "正在連接 Gemini Live...", "wait", true);
-    setSubstatus("連線完成後會要求麥克風權限。");
-    outputCtx = new (window.AudioContext || window.webkitAudioContext)();
-    await outputCtx.resume();
-    await prepareBell();
-    currentSessionIdx = 0;
-    openSessionWs();
-}
+      function currentToken() {
+        if (MOCK_MODE && MOCK_TOKENS.length)
+          return MOCK_TOKENS[
+            Math.min(currentSessionIdx, MOCK_TOKENS.length - 1)
+          ];
+        return LIVE_TOKEN;
+      }
 
-function currentToken() {
-    if (MOCK_MODE && MOCK_TOKENS.length) return MOCK_TOKENS[Math.min(currentSessionIdx, MOCK_TOKENS.length - 1)];
-    return LIVE_TOKEN;
-}
-
-function openSessionWs() {
-    ws = new WebSocket(buildWsUrl(currentToken()));
-    ws.onopen = () => {
-        sendSetup();
-        setState("連線中", "已連線，等待 Gemini Live 設定...", "wait", true);
-    };
-    ws.onmessage = async (event) => {
-        let data = event.data;
-        if (data instanceof Blob) data = await data.text();
-        if (data instanceof ArrayBuffer) data = new TextDecoder().decode(data);
-        let msg = null;
-        try {
+      function openSessionWs() {
+        ws = new WebSocket(buildWsUrl(currentToken()));
+        ws.onopen = () => {
+          sendSetup();
+          setState("連線中", "已連線，等待 Gemini Live 設定...", "wait", true);
+        };
+        ws.onmessage = async (event) => {
+          let data = event.data;
+          if (data instanceof Blob) data = await data.text();
+          if (data instanceof ArrayBuffer)
+            data = new TextDecoder().decode(data);
+          let msg = null;
+          try {
             msg = JSON.parse(data);
-        } catch (e) {
+          } catch (e) {
             console.error("[Live] JSON parse error:", e, data);
             return;
-        }
-        if (msg.setupComplete) {
+          }
+          if (msg.setupComplete) {
             if (MOCK_MODE && micReady) {
-                onSessionReconnected();
+              onSessionReconnected();
             } else {
-                prepareMicAfterSetup();
+              prepareMicAfterSetup();
             }
-        }
-        const sc = msg.serverContent;
-        if (!sc) return;
-        if (sc.inputTranscription && sc.inputTranscription.text) {
-            if (!userLine) userLine = addLine("你", "正在轉錄...", true, "pending");
+          }
+          const sc = msg.serverContent;
+          if (!sc) return;
+          if (sc.inputTranscription && sc.inputTranscription.text) {
+            if (!userLine)
+              userLine = addLine("你", "正在轉錄...", true, "pending");
             appendLineText(userLine, sc.inputTranscription.text);
-        }
-        if (sc.interrupted) playAt = outputCtx ? outputCtx.currentTime : 0;
-        if (sc.outputTranscription && sc.outputTranscription.text) {
+          }
+          if (sc.interrupted) playAt = outputCtx ? outputCtx.currentTime : 0;
+          if (sc.outputTranscription && sc.outputTranscription.text) {
             beginAiResponse();
             appendLineText(aiLine, sc.outputTranscription.text);
             queueAzureTtsText(sc.outputTranscription.text, false);
-        }
-        if (sc.modelTurn && sc.modelTurn.parts) {
+          }
+          if (sc.modelTurn && sc.modelTurn.parts) {
             beginAiResponse();
             sc.modelTurn.parts.forEach((part) => {
-                if (part.inlineData && part.inlineData.data) {
-                    if (azureTtsEnabled && !azureTtsSessionDisabled && !ttsFallbackActive) {
-                        nativeAudioParts.push({ data: part.inlineData.data, mimeType: part.inlineData.mimeType });
-                    } else {
-                        playPcm(part.inlineData.data, part.inlineData.mimeType);
-                    }
+              if (part.inlineData && part.inlineData.data) {
+                if (
+                  azureTtsEnabled &&
+                  !azureTtsSessionDisabled &&
+                  !ttsFallbackActive
+                ) {
+                  nativeAudioParts.push({
+                    data: part.inlineData.data,
+                    mimeType: part.inlineData.mimeType,
+                  });
+                } else {
+                  playPcm(part.inlineData.data, part.inlineData.mimeType);
                 }
-                if (part.text) appendLineText(aiLine, part.text);
+              }
+              if (part.text) appendLineText(aiLine, part.text);
             });
-        }
-        if (sc.generationComplete) {
+          }
+          if (sc.generationComplete) {
             isWaiting = false;
             pauseSpeechTimer();
             clearWaitTimer();
             showRetry(false);
             setState("AI 回覆中", "AI 已生成回覆，正在播放。", "reply", true);
-        }
-        if (sc.turnComplete) {
+          }
+          if (sc.turnComplete) {
             queueAzureTtsText("", true);
-            if (azureTtsEnabled && !ttsReceivedText && nativeAudioParts.length) {
-                activateNativeTtsFallback("未收到可用嘅 AI 文字轉錄，今輪會改用 Gemini Live 原生聲音。");
+            if (
+              azureTtsEnabled &&
+              !ttsReceivedText &&
+              nativeAudioParts.length
+            ) {
+              activateNativeTtsFallback(
+                "未收到可用嘅 AI 文字轉錄，今輪會改用 Gemini Live 原生聲音。",
+              );
             }
             if (MOCK_MODE) recordTranscriptTurn();
             clearWaitTimer();
             showRetry(false);
             finishTurnAfterPlayback();
-        }
-    };
-    ws.onerror = (ev) => {
-        console.error("WS error:", ev);
-        if (switchingSession) return;
-        setState("錯誤", "Gemini Live 連線發生錯誤。請檢查網絡後重新開始。", "error", false);
-        setSubstatus("如果已經完成發言但沒有回應，請停止後重新開始自由辯論。");
-    };
-    ws.onclose = (ev) => {
-        if (switchingSession) {
+          }
+        };
+        ws.onerror = (ev) => {
+          console.error("WS error:", ev);
+          if (switchingSession) return;
+          setState(
+            "錯誤",
+            "Gemini Live 連線發生錯誤。請檢查網絡後重新開始。",
+            "error",
+            false,
+          );
+          setSubstatus(
+            "如果已經完成發言但沒有回應，請停止後重新開始自由辯論。",
+          );
+        };
+        ws.onclose = (ev) => {
+          if (switchingSession) {
             switchingSession = false;
             openSessionWs();
             return;
-        }
-        const message = formatCloseMessage(ev);
-        if (closeStatusLocked) {
+          }
+          const message = formatCloseMessage(ev);
+          if (closeStatusLocked) {
             closeStatusLocked = false;
             cleanupMedia(false);
             return;
-        }
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        setTalkEnabled(false);
-        showRetry(false);
-        if (manualStopping) {
+          }
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+          setTalkEnabled(false);
+          showRetry(false);
+          if (manualStopping) {
             setState("完成", "自由辯論已停止。", "", false);
             setSubstatus("如要繼續，請重新開始自由辯論。");
-        } else {
+          } else {
             setState("錯誤", message, "error", false);
             setSubstatus("請重新開始自由辯論。");
+          }
+          cleanupMedia(false);
+        };
+      }
+
+      function formatCloseMessage(ev) {
+        const reason = ev.reason || "";
+        const lower = reason.toLowerCase();
+        if (
+          lower.includes("location") ||
+          lower.includes("not supported") ||
+          lower.includes("unsupported")
+        ) {
+          return "Gemini Live 暫時未能連線（地區限制）。系統應已經 relay 轉駁，請稍後重新開始；若持續失敗請聯絡開發者。";
         }
-        cleanupMedia(false);
-    };
-}
+        if (lower.includes("token") || ev.code === 1008) {
+          return "Live token 可能已過期或無效，請重新開始自由辯論。";
+        }
+        if (ev.code === 1006) {
+          return "Live 連線中斷，請檢查網絡後重新開始；若持續失敗請聯絡開發者。";
+        }
+        return (
+          "自由辯論已結束（code " +
+          ev.code +
+          (reason ? "：" + reason : "") +
+          "）。"
+        );
+      }
 
-function formatCloseMessage(ev) {
-    const reason = ev.reason || "";
-    const lower = reason.toLowerCase();
-    if (lower.includes("location") || lower.includes("not supported") || lower.includes("unsupported")) {
-        return "Gemini Live 暫時未能連線（地區限制）。系統應已經 relay 轉駁，請稍後重新開始；若持續失敗請聯絡開發者。";
-    }
-    if (lower.includes("token") || ev.code === 1008) {
-        return "Live token 可能已過期或無效，請重新開始自由辯論。";
-    }
-    if (ev.code === 1006) {
-        return "Live 連線中斷，請檢查網絡後重新開始；若持續失敗請聯絡開發者。";
-    }
-    return "自由辯論已結束（code " + ev.code + (reason ? "：" + reason : "") + "）。";
-}
+      function beginTurn() {
+        if (!micReady || isRecording || isWaiting) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          setState(
+            "錯誤",
+            "Live 連線未開啟，請重新開始自由辯論。",
+            "error",
+            false,
+          );
+          return;
+        }
+        if (inputCtx && inputCtx.state === "suspended") inputCtx.resume();
+        if (outputCtx && outputCtx.state === "suspended") outputCtx.resume();
+        resetAiAudioForTurn(true);
+        ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+        isRecording = true;
+        userLine = null;
+        aiLine = null;
+        recordStartedAt = Date.now();
+        talkBtn.className = "talk-btn recording";
+        talkBtn.textContent = "完成並送出";
+        setState("正在聽", "正在收音，完成發言後按下送出。", "listen", false);
+        setSubstatus("請保持一句短發言，適合自由辯論節奏。");
+        talkHintEl.textContent = "錄音中 00:00｜按下送出";
+        recordTimer = setInterval(() => {
+          const seconds = Math.floor((Date.now() - recordStartedAt) / 1000);
+          talkHintEl.textContent =
+            "錄音中 " + formatTime(seconds) + "｜按下送出";
+        }, 200);
+      }
 
-function beginTurn() {
-    if (!micReady || isRecording || isWaiting) return;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        setState("錯誤", "Live 連線未開啟，請重新開始自由辯論。", "error", false);
-        return;
-    }
-    if (inputCtx && inputCtx.state === "suspended") inputCtx.resume();
-    if (outputCtx && outputCtx.state === "suspended") outputCtx.resume();
-    resetAiAudioForTurn(true);
-    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-    isRecording = true;
-    userLine = null;
-    aiLine = null;
-    recordStartedAt = Date.now();
-    talkBtn.className = "talk-btn recording";
-    talkBtn.textContent = "完成並送出";
-    setState("正在聽", "正在收音，完成發言後按下送出。", "listen", false);
-    setSubstatus("請保持一句短發言，適合自由辯論節奏。");
-    talkHintEl.textContent = "錄音中 00:00｜按下送出";
-    recordTimer = setInterval(() => {
-        const seconds = Math.floor((Date.now() - recordStartedAt) / 1000);
-        talkHintEl.textContent = "錄音中 " + formatTime(seconds) + "｜按下送出";
-    }, 200);
-}
-
-function endTurn() {
-    if (!isRecording) return;
-    isRecording = false;
-    if (recordTimer) clearInterval(recordTimer);
-    recordTimer = null;
-    meterEl.style.width = "0%";
-    isWaiting = true;
-    pauseSpeechTimer();
-    talkBtn.disabled = true;
-    talkBtn.className = "talk-btn waiting";
-    talkBtn.textContent = "等待 AI...";
-    talkHintEl.textContent = "已送出，等待 AI 回覆。";
-    setState("等待 AI", "已送出，等待 Gemini 轉錄及回覆。", "wait", true);
-    setSubstatus("收到 AI 回覆後會自動輪到你。");
-    if (!userLine) userLine = addLine("你", "正在轉錄...", true, "pending");
-    try {
-        if (ws && ws.readyState === WebSocket.OPEN) {
+      function endTurn() {
+        if (!isRecording) return;
+        isRecording = false;
+        if (recordTimer) clearInterval(recordTimer);
+        recordTimer = null;
+        meterEl.style.width = "0%";
+        isWaiting = true;
+        pauseSpeechTimer();
+        talkBtn.disabled = true;
+        talkBtn.className = "talk-btn waiting";
+        talkBtn.textContent = "等待 AI...";
+        talkHintEl.textContent = "已送出，等待 AI 回覆。";
+        setState("等待 AI", "已送出，等待 Gemini 轉錄及回覆。", "wait", true);
+        setSubstatus("收到 AI 回覆後會自動輪到你。");
+        if (!userLine) userLine = addLine("你", "正在轉錄...", true, "pending");
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+          }
+        } catch (e) {
+          setState("錯誤", "送出音訊失敗：" + e.message, "error", false);
+          isWaiting = false;
+          setTalkEnabled(true);
+          resumeSpeechTimer();
+          return;
         }
-    } catch (e) {
-        setState("錯誤", "送出音訊失敗：" + e.message, "error", false);
-        isWaiting = false;
-        setTalkEnabled(true);
-        resumeSpeechTimer();
-        return;
-    }
-    startWaitTimer();
-}
+        startWaitTimer();
+      }
 
-function toggleTurn() {
-    if (talkBtn.disabled) return;
-    if (isRecording) {
-        endTurn();
-    } else {
-        beginTurn();
-    }
-}
+      function toggleTurn() {
+        if (talkBtn.disabled) return;
+        if (isRecording) {
+          endTurn();
+        } else {
+          beginTurn();
+        }
+      }
 
-function sendTextTurn(text) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        throw new Error("Live 連線未開啟。");
-    }
-    ws.send(JSON.stringify({
-        realtimeInput: { text }
-    }));
-}
+      function sendTextTurn(text) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          throw new Error("Live 連線未開啟。");
+        }
+        ws.send(
+          JSON.stringify({
+            realtimeInput: { text },
+          }),
+        );
+      }
 
-function stopActiveRecording() {
-    if (!isRecording) return;
-    isRecording = false;
-    if (recordTimer) clearInterval(recordTimer);
-    recordTimer = null;
-    meterEl.style.width = "0%";
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-    }
-}
+      function stopActiveRecording() {
+        if (!isRecording) return;
+        isRecording = false;
+        if (recordTimer) clearInterval(recordTimer);
+        recordTimer = null;
+        meterEl.style.width = "0%";
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+        }
+      }
 
-function prepareFinalFeedback(reason) {
-    if (finalFeedbackRequested || finalFeedbackComplete) return;
-    stopMockTicking();
-    mockRunning = false;
-    pauseSpeechTimer();
-    showRetry(false);
-    setTalkEnabled(false);
-    showFeedbackButton(true);
-    stopActiveRecording();
-    resetAiAudioForTurn(true);
-    isWaiting = false;
-    isRecording = false;
-    talkBtn.textContent = "等待評價";
-    talkHintEl.textContent = "請按「要求 AI 評價」取得總結評語。";
-    setState("等待評價", reason + " 請按「要求 AI 評價」。", "wait", false);
-    setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
-    setHint("自由辯論已停止；如要完成練習，請先要求 AI 評價。");
-    addLine("系統", reason + " 請按「要求 AI 評價」取得總結評語。", false);
-}
-
-function buildFeedbackPrompt() {
-    if (MOCK_MODE) {
-        let p = LIVE_PROMPTS.feedback_mock || "";
-        const ctx = buildTranscriptContext();
-        if (ctx) p += (LIVE_PROMPTS.feedback_mock_context_header || "\n") + ctx;
-        return p;
-    }
-    return LIVE_PROMPTS.feedback_free || "";
-}
-
-function requestFinalFeedback() {
-    if (finalFeedbackRequested) return;
-    finalFeedbackRequested = true;
-    finalFeedbackComplete = false;
-    pauseSpeechTimer();
-    showRetry(false);
-    showFeedbackButton(false);
-    setTalkEnabled(false);
-    talkBtn.textContent = "等待評價";
-    talkHintEl.textContent = "自由辯論時間已到，正在等待 AI 總結評價。";
-    setState("總結評價", "正在請 AI 給予評價。", "reply", true);
-    setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
-    setHint("正在等待 AI 總結評價。");
-    addLine("系統", "正在請 AI 給予總結評價。", false);
-    aiLine = addLine("AI", "正在整理評價...", false, "pending");
-
-    try {
+      function prepareFinalFeedback(reason) {
+        if (finalFeedbackRequested || finalFeedbackComplete) return;
+        stopMockTicking();
+        mockRunning = false;
+        pauseSpeechTimer();
+        showRetry(false);
+        setTalkEnabled(false);
+        showFeedbackButton(true);
         stopActiveRecording();
         resetAiAudioForTurn(true);
-        sendTextTurn(buildFeedbackPrompt());
-        startFinalFeedbackWaitTimer();
-    } catch (e) {
-        setState("錯誤", "未能要求 AI 給予評價：" + e.message, "error", false);
-        setSubstatus("請停止後重新開始自由辯論。");
-    }
-}
+        isWaiting = false;
+        isRecording = false;
+        talkBtn.textContent = "等待評價";
+        talkHintEl.textContent = "請按「要求 AI 評價」取得總結評語。";
+        setState("等待評價", reason + " 請按「要求 AI 評價」。", "wait", false);
+        setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
+        setHint("自由辯論已停止；如要完成練習，請先要求 AI 評價。");
+        addLine("系統", reason + " 請按「要求 AI 評價」取得總結評語。", false);
+      }
 
-function beginAiResponse() {
-    isWaiting = false;
-    pauseSpeechTimer();
-    clearWaitTimer();
-    showRetry(false);
-    setState("AI 回覆中", "AI 正在回覆。", "reply", true);
-    setSubstatus("請聽完 AI 回覆，再開始下一輪。");
-    talkBtn.disabled = true;
-    talkBtn.className = "talk-btn waiting";
-    talkBtn.textContent = "AI 回覆中...";
-    talkHintEl.textContent = "AI 回覆完成後會自動解鎖。";
-    if (!aiLine) aiLine = addLine("AI", "正在回覆...", false, "pending");
-    setActiveAiLine(aiLine);
-}
+      function buildFeedbackPrompt() {
+        if (MOCK_MODE) {
+          let p = LIVE_PROMPTS.feedback_mock || "";
+          const ctx = buildTranscriptContext();
+          if (ctx)
+            p += (LIVE_PROMPTS.feedback_mock_context_header || "\n") + ctx;
+          return p;
+        }
+        return LIVE_PROMPTS.feedback_free || "";
+      }
 
-async function waitForAiPlayback() {
-    await waitForTtsDrain();
-    const delay = outputCtx && playAt > outputCtx.currentTime
-        ? Math.ceil((playAt - outputCtx.currentTime) * 1000) + 200
-        : 200;
-    return new Promise((resolve) => setTimeout(resolve, delay));
-}
+      function requestFinalFeedback() {
+        if (finalFeedbackRequested) return;
+        finalFeedbackRequested = true;
+        finalFeedbackComplete = false;
+        pauseSpeechTimer();
+        showRetry(false);
+        showFeedbackButton(false);
+        setTalkEnabled(false);
+        talkBtn.textContent = "等待評價";
+        talkHintEl.textContent = "自由辯論時間已到，正在等待 AI 總結評價。";
+        setState("總結評價", "正在請 AI 給予評價。", "reply", true);
+        setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
+        setHint("正在等待 AI 總結評價。");
+        addLine("系統", "正在請 AI 給予總結評價。", false);
+        aiLine = addLine("AI", "正在整理評價...", false, "pending");
 
-function finishTurnAfterPlayback() {
-    waitForAiPlayback().then(() => {
-        return new Promise((resolve) => setTimeout(resolve, 200));
-    }).then(() => {
-        if (!micReady || !ws || ws.readyState !== WebSocket.OPEN) return;
-        if (finalFeedbackRequested) {
-            finalFeedbackComplete = true;
-            clearWaitTimer();
+        try {
+          stopActiveRecording();
+          resetAiAudioForTurn(true);
+          sendTextTurn(buildFeedbackPrompt());
+          startFinalFeedbackWaitTimer();
+        } catch (e) {
+          setState(
+            "錯誤",
+            "未能要求 AI 給予評價：" + e.message,
+            "error",
+            false,
+          );
+          setSubstatus("請停止後重新開始自由辯論。");
+        }
+      }
+
+      function beginAiResponse() {
+        isWaiting = false;
+        pauseSpeechTimer();
+        clearWaitTimer();
+        showRetry(false);
+        setState("AI 回覆中", "AI 正在回覆。", "reply", true);
+        setSubstatus("請聽完 AI 回覆，再開始下一輪。");
+        talkBtn.disabled = true;
+        talkBtn.className = "talk-btn waiting";
+        talkBtn.textContent = "AI 回覆中...";
+        talkHintEl.textContent = "AI 回覆完成後會自動解鎖。";
+        if (!aiLine) aiLine = addLine("AI", "正在回覆...", false, "pending");
+        setActiveAiLine(aiLine);
+      }
+
+      async function waitForAiPlayback() {
+        await waitForTtsDrain();
+        const delay =
+          outputCtx && playAt > outputCtx.currentTime
+            ? Math.ceil((playAt - outputCtx.currentTime) * 1000) + 200
+            : 200;
+        return new Promise((resolve) => setTimeout(resolve, delay));
+      }
+
+      function finishTurnAfterPlayback() {
+        waitForAiPlayback()
+          .then(() => {
+            return new Promise((resolve) => setTimeout(resolve, 200));
+          })
+          .then(() => {
+            if (!micReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if (finalFeedbackRequested) {
+              finalFeedbackComplete = true;
+              clearWaitTimer();
+              isWaiting = false;
+              isRecording = false;
+              userLine = null;
+              aiLine = null;
+              clearActiveAiLine();
+              setState("評價完成", "AI 已完成總結評價。", "ready", false);
+              setSubstatus("如要重新練習，請結束後重新開始自由辯論。");
+              setHint("AI 評價已完成。");
+              setTalkEnabled(false);
+              talkBtn.textContent = "評價完成";
+              talkHintEl.textContent = "自由辯論已完成。";
+              return;
+            }
             isWaiting = false;
             isRecording = false;
             userLine = null;
             aiLine = null;
             clearActiveAiLine();
-            setState("評價完成", "AI 已完成總結評價。", "ready", false);
-            setSubstatus("如要重新練習，請結束後重新開始自由辯論。");
-            setHint("AI 評價已完成。");
-            setTalkEnabled(false);
-            talkBtn.textContent = "評價完成";
-            talkHintEl.textContent = "自由辯論已完成。";
-            return;
-        }
-        isWaiting = false;
+            setState("準備好", "輪到你。", "ready", false);
+            setSubstatus("按下開始錄音，完成發言後再按下送出。");
+            setTalkEnabled(true);
+            resumeSpeechTimer();
+          });
+      }
+
+      function cleanupMedia(closeSocket) {
+        clearTimers();
         isRecording = false;
-        userLine = null;
-        aiLine = null;
-        clearActiveAiLine();
-        setState("準備好", "輪到你。", "ready", false);
-        setSubstatus("按下開始錄音，完成發言後再按下送出。");
-        setTalkEnabled(true);
-        resumeSpeechTimer();
-    });
-}
-
-function cleanupMedia(closeSocket) {
-    clearTimers();
-    isRecording = false;
-    isWaiting = false;
-    micReady = false;
-    recordStartedAt = null;
-    meterEl.style.width = "0%";
-    resetAiAudioForTurn(true);
-    try { if (processor) processor.disconnect(); } catch (e) {}
-    try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
-    try { if (stream) stream.getTracks().forEach((track) => track.stop()); } catch (e) {}
-    try { if (inputCtx) inputCtx.close(); } catch (e) {}
-    try { if (outputCtx) outputCtx.close(); } catch (e) {}
-    processor = null;
-    sourceNode = null;
-    stream = null;
-    inputCtx = null;
-    outputCtx = null;
-    playAt = 0;
-    speechElapsed = 0;
-    speechStartedAt = 0;
-    speechRunning = false;
-    speechEnded = false;
-    finalFeedbackRequested = false;
-    finalFeedbackComplete = false;
-    clearActiveAiLine();
-    firedBells.clear();
-    currentSessionIdx = 0;
-    switchingSession = false;
-    pendingMockSegIdx = 0;
-    sessionContextNote = "";
-    transcriptLog = [];
-    remainingEl.textContent = "--:--";
-    if (closeSocket && ws) {
+        isWaiting = false;
+        micReady = false;
+        recordStartedAt = null;
+        meterEl.style.width = "0%";
+        resetAiAudioForTurn(true);
         try {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
-                ws.close();
-            } else if (ws.readyState === WebSocket.CONNECTING) {
-                ws.close();
-            }
+          if (processor) processor.disconnect();
         } catch (e) {}
-    }
-}
+        try {
+          if (sourceNode) sourceNode.disconnect();
+        } catch (e) {}
+        try {
+          if (stream) stream.getTracks().forEach((track) => track.stop());
+        } catch (e) {}
+        try {
+          if (inputCtx) inputCtx.close();
+        } catch (e) {}
+        try {
+          if (outputCtx) outputCtx.close();
+        } catch (e) {}
+        processor = null;
+        sourceNode = null;
+        stream = null;
+        inputCtx = null;
+        outputCtx = null;
+        playAt = 0;
+        speechElapsed = 0;
+        speechStartedAt = 0;
+        speechRunning = false;
+        speechEnded = false;
+        finalFeedbackRequested = false;
+        finalFeedbackComplete = false;
+        clearActiveAiLine();
+        firedBells.clear();
+        currentSessionIdx = 0;
+        switchingSession = false;
+        pendingMockSegIdx = 0;
+        sessionContextNote = "";
+        transcriptLog = [];
+        remainingEl.textContent = "--:--";
+        if (closeSocket && ws) {
+          try {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({ realtimeInput: { audioStreamEnd: true } }),
+              );
+              ws.close();
+            } else if (ws.readyState === WebSocket.CONNECTING) {
+              ws.close();
+            }
+          } catch (e) {}
+        }
+      }
 
-function stopLive(markManual, finalText) {
-    manualStopping = Boolean(markManual);
-    cleanupMedia(true);
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    setTalkEnabled(false);
-    showRetry(false);
-    showFeedbackButton(false);
-    if (finalText) {
-        setState("完成", finalText, "", false);
-        setSubstatus("如要繼續，請重新開始自由辯論。");
-    }
-}
+      function stopLive(markManual, finalText) {
+        manualStopping = Boolean(markManual);
+        cleanupMedia(true);
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        setTalkEnabled(false);
+        showRetry(false);
+        showFeedbackButton(false);
+        if (finalText) {
+          setState("完成", finalText, "", false);
+          setSubstatus("如要繼續，請重新開始自由辯論。");
+        }
+      }
 
-try {
-    startBtn.addEventListener("click", () => {
-        startLive().catch(e => {
+      try {
+        startBtn.addEventListener("click", () => {
+          startLive().catch((e) => {
             console.error("[Live] startLive error:", e);
             setState("錯誤", "啟動失敗：" + e.message, "error", false);
             startBtn.disabled = false;
             stopBtn.disabled = true;
+          });
         });
-    });
-    stopBtn.addEventListener("click", () => prepareFinalFeedback("自由辯論已停止。"));
-    feedbackBtn.addEventListener("click", () => requestFinalFeedback());
-    if (MOCK_MODE) {
-        mockPrevBtn.addEventListener("click", () => mockPrev());
-        mockToggleBtn.addEventListener("click", () => mockToggleTimer());
-        mockNextBtn.addEventListener("click", () => mockNext());
-    }
-    retryBtn.addEventListener("click", () => {
-        isWaiting = false;
-        clearWaitTimer();
-        resetAiAudioForTurn(true);
-        showRetry(false);
-        addLine("系統", "上一輪未收到 AI 回覆，可以再次發言。", false);
-        setState("準備好", "輪到你。", "ready", false);
-        setSubstatus("按下開始錄音，完成發言後再按下送出。");
-        setTalkEnabled(true);
-        resumeSpeechTimer();
-    });
-    talkBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        // Keyboard-synthesized clicks (detail 0) are handled by the keydown
-        // listener below; only act on real pointer clicks here to avoid double toggle.
-        if (e.detail === 0) return;
-        toggleTurn();
-    });
-    talkBtn.addEventListener("contextmenu", (e) => e.preventDefault());
-    document.addEventListener("keydown", (e) => {
-        if (e.code !== "Space" || e.repeat || talkBtn.disabled) return;
-        e.preventDefault();
-        toggleTurn();
-    });
-} catch (e) {
-    console.error("[Live] init error:", e);
-    setState("錯誤", "初始化失敗：" + e.message, "error", false);
-}
-</script>
-</body>
+        stopBtn.addEventListener("click", () =>
+          prepareFinalFeedback("自由辯論已停止。"),
+        );
+        feedbackBtn.addEventListener("click", () => requestFinalFeedback());
+        if (MOCK_MODE) {
+          mockPrevBtn.addEventListener("click", () => mockPrev());
+          mockToggleBtn.addEventListener("click", () => mockToggleTimer());
+          mockNextBtn.addEventListener("click", () => mockNext());
+        }
+        retryBtn.addEventListener("click", () => {
+          isWaiting = false;
+          clearWaitTimer();
+          resetAiAudioForTurn(true);
+          showRetry(false);
+          addLine("系統", "上一輪未收到 AI 回覆，可以再次發言。", false);
+          setState("準備好", "輪到你。", "ready", false);
+          setSubstatus("按下開始錄音，完成發言後再按下送出。");
+          setTalkEnabled(true);
+          resumeSpeechTimer();
+        });
+        talkBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          // Keyboard-synthesized clicks (detail 0) are handled by the keydown
+          // listener below; only act on real pointer clicks here to avoid double toggle.
+          if (e.detail === 0) return;
+          toggleTurn();
+        });
+        talkBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+        document.addEventListener("keydown", (e) => {
+          if (e.code !== "Space" || e.repeat || talkBtn.disabled) return;
+          e.preventDefault();
+          toggleTurn();
+        });
+      } catch (e) {
+        console.error("[Live] init error:", e);
+        setState("錯誤", "初始化失敗：" + e.message, "error", false);
+      }
+    </script>
+  </body>
 </html>

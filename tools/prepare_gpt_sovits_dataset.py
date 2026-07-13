@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import platform
 import re
@@ -34,6 +36,49 @@ def _slug(value: str) -> str:
 
 def _clean_text(value: str) -> str:
     return " ".join((value or "").replace("|", " ").split())
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _split_for(group_key: str) -> str:
+    bucket = int(hashlib.sha256(group_key.encode("utf-8")).hexdigest()[:8], 16) % 10
+    return "test" if bucket == 0 else "validation" if bucket == 1 else "train"
+
+
+def _normalize_audio(source: Path, target: Path) -> dict[str, object]:
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise RuntimeError("ffmpeg and ffprobe are required for deterministic audio normalization")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(source), "-vn", "-ac", "1", "-ar", "32000", "-c:a", "pcm_s16le",
+        "-af", "loudnorm=I=-23:TP=-2:LRA=7", str(target),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed for {source.name}: {result.stderr.strip()[:300]}")
+    probe = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries",
+        "format=duration:stream=codec_name,sample_rate,channels,sample_fmt", "-of", "json", str(target),
+    ], capture_output=True, text=True, check=False)
+    if probe.returncode != 0:
+        raise RuntimeError(f"ffprobe failed for {target.name}: {probe.stderr.strip()[:300]}")
+    data = json.loads(probe.stdout or "{}")
+    stream = (data.get("streams") or [{}])[0]
+    return {
+        "duration_seconds": round(float((data.get("format") or {}).get("duration") or 0), 3),
+        "sample_rate_hz": int(stream.get("sample_rate") or 0),
+        "channels": int(stream.get("channels") or 0),
+        "sample_format": stream.get("sample_fmt") or "",
+        "codec": stream.get("codec_name") or "",
+        "sha256": _sha256(target),
+    }
 
 
 def _run_quiet(cmd: list[str]) -> str:
@@ -278,6 +323,7 @@ def prepare_dataset(args: argparse.Namespace) -> int:
 
     list_path = output_dir / args.list_name if args.list_name else output_dir / f"{experiment}.list"
     note_path = output_dir / f"{experiment}_webui_fields.txt"
+    normalized_dir = output_dir / "normalized_audio"
 
     kept = 0
     missing_audio = 0
@@ -285,6 +331,8 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     transcript_mismatch = 0
     total_seconds = 0.0
 
+    manifest_items = []
+    split_lines = {name: [] for name in ("train", "validation", "test")}
     with list_path.open("w", encoding="utf-8") as out:
         for row in rows:
             row_speaker = (row.get("speaker_user_id") or "").strip()
@@ -305,12 +353,23 @@ def prepare_dataset(args: argparse.Namespace) -> int:
             if transcript and transcript != text:
                 transcript_mismatch += 1
 
-            try:
-                total_seconds += float(row.get("duration_seconds") or 0)
-            except ValueError:
-                pass
-
-            out.write(f"{audio_path}|{speaker}|{language}|{text}\n")
+            normalized_path = normalized_dir / f"{int(row.get('id') or kept + 1):06d}.wav"
+            quality = _normalize_audio(audio_path, normalized_path)
+            total_seconds += float(quality["duration_seconds"])
+            group_key = _clean_text(row.get("manuscript_id") or row.get("script_id") or row.get("id") or str(kept))
+            split_name = _split_for(group_key)
+            line = f"{normalized_path}|{speaker}|{language}|{text}\n"
+            out.write(line)
+            split_lines[split_name].append(line)
+            manifest_items.append({
+                "id": str(row.get("id") or ""), "speaker_user_id": speaker,
+                "script_id": row.get("script_id") or "", "manuscript_id": row.get("manuscript_id") or "",
+                "prompt_text": text, "raw_file": str(audio_path.relative_to(output_dir)),
+                "raw_sha256": _sha256(audio_path),
+                "normalized_file": str(normalized_path.relative_to(output_dir)),
+                "split": split_name, "quality": quality,
+                "transcript_matches_prompt": not transcript or transcript == text,
+            })
             kept += 1
 
     if kept == 0:
@@ -320,6 +379,29 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     hardware = _hardware_info()
     params = _recommended_params(hardware, total_minutes)
     _write_webui_note(note_path, experiment, list_path, output_dir, language, hardware, params)
+    for split_name, lines in split_lines.items():
+        (output_dir / f"{experiment}_{split_name}.list").write_text("".join(lines), encoding="utf-8")
+    stable_manifest = {
+        "format_version": 1, "experiment": experiment, "speaker_user_id": speaker,
+        "language": language, "normalization": {
+            "sample_rate_hz": 32000, "channels": 1, "codec": "pcm_s16le",
+            "loudness": "EBU R128 I=-23 LUFS TP=-2 dB LRA=7",
+        }, "items": manifest_items,
+    }
+    manifest_bytes = json.dumps(stable_manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    stable_manifest["manifest_sha256"] = manifest_sha
+    (output_dir / "snapshot_manifest.json").write_text(
+        json.dumps(stable_manifest, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    quality_report = {
+        "rows": kept, "total_minutes": round(total_minutes, 3),
+        "splits": {name: len(lines) for name, lines in split_lines.items()},
+        "transcript_mismatches": transcript_mismatch,
+        "missing_audio": missing_audio, "empty_text": empty_text,
+        "format_checks": {"sample_rate_hz": 32000, "channels": 1, "codec": "pcm_s16le"},
+    }
+    (output_dir / "quality_report.json").write_text(
+        json.dumps(quality_report, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
 
     print("Prepared GPT-SoVITS dataset")
     print(f"  extracted dir: {output_dir}")
@@ -330,6 +412,8 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     print(f"  WebUI note:    {note_path}")
     print(f"  rows written:  {kept}")
     print(f"  total audio:   {total_minutes:.1f} minutes")
+    print(f"  manifest SHA:  {manifest_sha}")
+    print(f"  splits:        {quality_report['splits']}")
     if transcript_mismatch:
         print(f"  note:          {transcript_mismatch} ASR transcript(s) differ from prompt_text; prompt_text was used")
     if missing_audio:

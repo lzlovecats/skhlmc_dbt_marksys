@@ -1,10 +1,533 @@
 <!doctype html>
-<html lang="zh-HK"><head><meta charset="utf-8"><title>比賽圖片回顧</title><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#0e1117"><link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/app-icon-180.png"><link rel="stylesheet" href="/shared/app-shell.css"><style>
-:root{color-scheme:dark;--bg:#0e1117;--card:#262730;--surface:#171923;--text:#fafafa;--muted:#9aa0ab;--border:#3a3d46;--accent:#4c9bff;--ok:#8ee6b4;--warn:#ffd27d;--err:#ffb4b4}*{box-sizing:border-box}body{margin:0;padding:max(1rem,env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif;font-size:16px;line-height:1.5}main{width:min(100%,84rem);margin:auto}h1{font-size:2rem;line-height:1.25;margin:0 0 .7rem}h2{font-size:1.25rem;line-height:1.3;margin:0 0 .55rem}.back{display:inline-flex;color:#4c9bff;text-decoration:none;margin-bottom:.6rem}.back:hover{text-decoration:underline}.caption{color:var(--muted);font-size:.9rem}.card,details{border:1px solid var(--border);border-radius:8px;background:var(--card);padding:1rem;margin:1rem 0}summary{cursor:pointer;font-weight:600}ul{margin:.65rem 0 0;padding-left:1.35rem}li{margin:.25rem 0}label{display:block;font-weight:600;margin:.8rem 0 .28rem}input,textarea,select{width:100%;min-height:2.45rem;padding:.55rem .7rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font:inherit}textarea{resize:vertical}input:focus,textarea:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}button{min-height:2.6rem;border:1px solid var(--border);border-radius:8px;padding:.5rem .85rem;background:var(--surface);color:var(--text);font:inherit;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}.notice{border:1px solid var(--border);border-radius:8px;padding:.75rem .9rem;background:var(--surface);margin:.8rem 0}.ok{border-color:#357a52;color:var(--ok)}.warn{border-color:#927126;color:var(--warn)}.err{border-color:#a14646;color:var(--err)}.hidden{display:none!important}.grid3{display:grid;grid-template-columns:2fr 2fr 1fr;gap:1rem}.thumbs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.8rem}.standard{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}.photo{min-width:0}.photo img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:var(--surface);border:1px solid var(--border);border-radius:6px}.standard .photo img{aspect-ratio:4/3}.photo-title{overflow-wrap:anywhere;font-size:.9rem;margin-top:.35rem}.photo-meta{color:var(--muted);font-size:.8rem}.photo details{border:0;background:none;padding:0;margin:.35rem 0}.photo details summary{font-size:.9rem}.login{max-width:36rem}.toast{position:fixed;top:1rem;right:1rem;z-index:10;background:#000;color:white;border:1px solid #555;border-radius:8px;padding:.7rem .9rem}@media(max-width:800px){h1{font-size:1.65rem}.grid3{grid-template-columns:1fr}.thumbs{grid-template-columns:repeat(2,minmax(0,1fr))}.standard{grid-template-columns:1fr}}
-</style></head><body><main>
-<a class="back" href="/">← 返回主頁</a><h1>比賽圖片回顧</h1><details class="guide"><summary>ℹ️ 首次使用指南</summary><ul><li>所有內部委員會成員都可以上載及查看每場賽事的精華圖片。</li><li>上載時可選擇「比賽片段」已有的場次；未能歸類的圖片可放入「其他相片」。</li></ul></details><div id="loading" class="notice">載入中…</div>
-<section id="login" class="card login hidden"><h2>內部委員會成員登入</h2><button id="retryLogin" type="button">🔄 用已儲存的登入資料登入</button><div id="loginMessage"></div><form id="loginForm"><label for="loginUser">用戶名稱</label><input id="loginUser" autocomplete="username"><label for="loginPassword">密碼</label><input id="loginPassword" type="password" autocomplete="current-password"><button class="primary" type="submit">登入</button></form></section>
-<section id="app" class="hidden"><section class="card"><h2>上載精華圖片</h2><form id="uploadForm"><label for="album">所屬場次</label><select id="album"></select><label for="photoDate">相片日期（可留空）</label><input id="photoDate" type="date"><label for="photoTitle">圖片標題（可留空）</label><input id="photoTitle"><label for="caption">圖片說明（可留空）</label><textarea id="caption" rows="4"></textarea><label for="files">選擇圖片</label><input id="files" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple><div id="uploadMessage"></div><button class="primary" type="submit">上載圖片</button></form></section><hr style="border:0;border-top:1px solid var(--border);margin:2rem 0 1.3rem"><h2>圖片回顧</h2><div id="empty" class="notice hidden">目前未有已上載的比賽圖片。</div><section id="galleryApp" class="hidden"><div class="grid3"><div><label for="filter">場次篩選</label><select id="filter"></select></div><div><label for="sort">排序</label><select id="sort"><option>相片日期（新至舊）</option><option>相片日期（舊至新）</option><option>上載時間（新至舊）</option><option>上載時間（舊至新）</option></select></div><div><label for="view">顯示（僅適用於電腦版）</label><select id="view"><option>縮圖牆</option><option>標準</option></select></div></div><label for="search">搜尋</label><input id="search" placeholder="輸入場次、標題、說明或上載者"><div id="count" class="caption"></div><div id="noResults" class="notice hidden">沒有符合條件的圖片。請調整搜尋關鍵字或篩選條件後再試。</div><div id="gallery"></div></section></section>
-</main><div id="toast" class="toast hidden"></div><script>
-(()=>{"use strict";const $=id=>document.getElementById(id);let state=null;const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;","\"":"&quot;","'":"&#39;"}[c]));const notice=(id,k,t)=>$(id).innerHTML=t?`<div class="notice ${k}">${esc(t)}</div>`:"";function toast(t){$("toast").textContent=t;$("toast").classList.remove("hidden");setTimeout(()=>$("toast").classList.add("hidden"),2800)}function filtered(){let rows=[...state.photos],filter=$("filter").value,term=$("search").value.trim().toLocaleLowerCase();if(filter!=="全部")rows=rows.filter(p=>p.album_label===filter);if(term)rows=rows.filter(p=>[p.album_label,p.photo_date,p.photo_title,p.caption,p.uploaded_by,p.file_name].join(" ").toLocaleLowerCase().includes(term));const sort=$("sort").value;rows.sort((a,b)=>{const dateA=a.photo_date||"",dateB=b.photo_date||"",createdA=a.created_at||"",createdB=b.created_at||"";if(sort==="相片日期（舊至新）")return dateA.localeCompare(dateB)||createdB.localeCompare(createdA);if(sort==="上載時間（新至舊）")return createdB.localeCompare(createdA);if(sort==="上載時間（舊至新）")return createdA.localeCompare(createdB);return dateB.localeCompare(dateA)||createdB.localeCompare(createdA)});return rows}function render(){ $("loading").classList.add("hidden");$("login").classList.add("hidden");$("app").classList.remove("hidden");$("album").innerHTML=state.albums.map(a=>`<option value="${esc(a.label)}" data-video="${a.video_id??""}">${esc(a.label)}</option>`).join("");const filters=["全部",...new Set(state.photos.map(p=>p.album_label).filter(Boolean).sort())];const prior=$("filter").value;$("filter").innerHTML=filters.map(x=>`<option ${x===prior?"selected":""}>${esc(x)}</option>`).join("");$("empty").classList.toggle("hidden",state.photos.length>0);$("galleryApp").classList.toggle("hidden",!state.photos.length);renderGallery()}function renderGallery(){if(!state.photos.length)return;const rows=filtered(),compact=$("view").value==="縮圖牆";$("count").textContent=`共 ${rows.length} 張圖片`;$("noResults").classList.toggle("hidden",rows.length>0);const gallery=$("gallery");gallery.className=compact?"thumbs":"standard";gallery.innerHTML=rows.map(p=>{const title=p.photo_title||p.file_name||`match-photo-${p.id}.jpg`,date=p.photo_date?` ｜ ${p.photo_date}`:"",image=`/api/match-photos/image/${p.id}`;return `<article class="photo"><img src="${image}" alt="${esc(title)}"><div class="photo-title">${esc(compact&&title.length>18?title.slice(0,18)+"...":title)}</div>${compact&&p.photo_date?`<div class="photo-meta">${esc(p.photo_date)}</div>`:""}${compact?`<details><summary>詳情</summary><div>${esc(title)}</div><div class="photo-meta">${esc(p.album_label)}${esc(date)} ｜ ${esc(p.created_at)} ｜ ${esc(p.uploaded_by)}</div>${p.caption?`<p>${esc(p.caption)}</p>`:""}<a href="${image}?download=1">下載原圖</a></details>`:`<div class="photo-meta">${esc(p.album_label)}${esc(date)} ｜ ${esc(p.created_at)} ｜ ${esc(p.uploaded_by)}</div>${p.caption?`<p>${esc(p.caption)}</p>`:""}<details><summary>下載</summary><a href="${image}?download=1">下載原圖</a></details>`}</article>`}).join("")}async function load(){try{const r=await fetch("/api/match-photos/data",{credentials:"same-origin"});if(r.status===401){$("loading").classList.add("hidden");$("login").classList.remove("hidden");return}const d=await r.json();if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);state=d;render()}catch(e){$("loading").textContent=`連線錯誤: ${e.message}`}}function filePayload(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error("未能讀取圖片。"));reader.onload=()=>resolve({file_name:file.name,mime_type:file.type||"image/jpeg",image_base64:String(reader.result).split(",",2)[1]||""});reader.readAsDataURL(file)})}$("retryLogin").addEventListener("click",load);$("loginForm").addEventListener("submit",async e=>{e.preventDefault();try{const r=await fetch("/api/committee/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({user_id:$("loginUser").value.trim(),password:$("loginPassword").value})}),d=await r.json();if(!r.ok)throw new Error(d.detail||"登入失敗");await load()}catch(x){notice("loginMessage","err",x.message)}});$("uploadForm").addEventListener("submit",async e=>{e.preventDefault();const files=[...$("files").files];if(!files.length){notice("uploadMessage","warn","請先選擇圖片。");return}try{const o=$("album").selectedOptions[0],payload={album_label:$("album").value,match_video_id:o.dataset.video?Number(o.dataset.video):null,photo_date:$("photoDate").value,photo_title:$("photoTitle").value,caption:$("caption").value,files:await Promise.all(files.map(filePayload))},r=await fetch("/api/match-photos/upload",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}),d=await r.json();if(!r.ok||!d.ok){notice("uploadMessage","warn",d.detail||d.message);return}e.target.reset();toast("☑️ "+d.message);await load()}catch(error){notice("uploadMessage","err",error.message)}});["filter","sort","view"].forEach(id=>$(id).addEventListener("change",renderGallery));$("search").addEventListener("input",renderGallery);load();})();
-</script><script src="/shared/vote-ui.js"></script><script src="/shared/server-tables.js"></script></body></html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <title>比賽圖片回顧</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/app-icon-180.png" />
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0e1117;
+        --card: #262730;
+        --surface: #171923;
+        --text: #fafafa;
+        --muted: #9aa0ab;
+        --border: #3a3d46;
+        --accent: #4c9bff;
+        --ok: #8ee6b4;
+        --warn: #ffd27d;
+        --err: #ffb4b4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: max(1rem, env(safe-area-inset-top)) 1rem
+          calc(2rem + env(safe-area-inset-bottom));
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          system-ui,
+          -apple-system,
+          "PingFang HK",
+          "Noto Sans CJK HK",
+          sans-serif;
+        font-size: 16px;
+        line-height: 1.5;
+      }
+      main {
+        width: min(100%, 84rem);
+        margin: auto;
+      }
+      h1 {
+        font-size: 2rem;
+        line-height: 1.25;
+        margin: 0 0 0.7rem;
+      }
+      h2 {
+        font-size: 1.25rem;
+        line-height: 1.3;
+        margin: 0 0 0.55rem;
+      }
+      .back {
+        display: inline-flex;
+        color: #4c9bff;
+        text-decoration: none;
+        margin-bottom: 0.6rem;
+      }
+      .back:hover {
+        text-decoration: underline;
+      }
+      .caption {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .card,
+      details {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card);
+        padding: 1rem;
+        margin: 1rem 0;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      ul {
+        margin: 0.65rem 0 0;
+        padding-left: 1.35rem;
+      }
+      li {
+        margin: 0.25rem 0;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin: 0.8rem 0 0.28rem;
+      }
+      input,
+      textarea,
+      select {
+        width: 100%;
+        min-height: 2.45rem;
+        padding: 0.55rem 0.7rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        font: inherit;
+      }
+      textarea {
+        resize: vertical;
+      }
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+      button {
+        min-height: 2.6rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.5rem 0.85rem;
+        background: var(--surface);
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 700;
+      }
+      .notice {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem;
+        background: var(--surface);
+        margin: 0.8rem 0;
+      }
+      .ok {
+        border-color: #357a52;
+        color: var(--ok);
+      }
+      .warn {
+        border-color: #927126;
+        color: var(--warn);
+      }
+      .err {
+        border-color: #a14646;
+        color: var(--err);
+      }
+      .hidden {
+        display: none !important;
+      }
+      .grid3 {
+        display: grid;
+        grid-template-columns: 2fr 2fr 1fr;
+        gap: 1rem;
+      }
+      .thumbs {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 0.8rem;
+      }
+      .standard {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .photo {
+        min-width: 0;
+      }
+      .photo img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1/1;
+        object-fit: cover;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
+      .standard .photo img {
+        aspect-ratio: 4/3;
+      }
+      .photo-title {
+        overflow-wrap: anywhere;
+        font-size: 0.9rem;
+        margin-top: 0.35rem;
+      }
+      .photo-meta {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      .photo details {
+        border: 0;
+        background: none;
+        padding: 0;
+        margin: 0.35rem 0;
+      }
+      .photo details summary {
+        font-size: 0.9rem;
+      }
+      .login {
+        max-width: 36rem;
+      }
+      .toast {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        z-index: 10;
+        background: #000;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 8px;
+        padding: 0.7rem 0.9rem;
+      }
+      @media (max-width: 800px) {
+        h1 {
+          font-size: 1.65rem;
+        }
+        .grid3 {
+          grid-template-columns: 1fr;
+        }
+        .thumbs {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .standard {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back" href="/">← 返回主頁</a>
+      <h1>比賽圖片回顧</h1>
+      <details class="guide">
+        <summary>ℹ️ 首次使用指南</summary>
+        <ul>
+          <li>所有內部委員會成員都可以上載及查看每場賽事的精華圖片。</li>
+          <li>
+            上載時可選擇「比賽片段」已有的場次；未能歸類的圖片可放入「其他相片」。
+          </li>
+        </ul>
+      </details>
+      <div id="loading" class="notice">載入中…</div>
+      <section id="login" class="card login hidden">
+        <h2>內部委員會成員登入</h2>
+        <button id="retryLogin" type="button">🔄 用已儲存的登入資料登入</button>
+        <div id="loginMessage"></div>
+        <form id="loginForm">
+          <label for="loginUser">用戶名稱</label
+          ><input id="loginUser" autocomplete="username" /><label
+            for="loginPassword"
+            >密碼</label
+          ><input
+            id="loginPassword"
+            type="password"
+            autocomplete="current-password"
+          /><button class="primary" type="submit">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <section class="card">
+          <h2>上載精華圖片</h2>
+          <form id="uploadForm">
+            <label for="album">所屬場次</label
+            ><select id="album"></select
+            ><label for="photoDate">相片日期（可留空）</label
+            ><input id="photoDate" type="date" /><label for="photoTitle"
+              >圖片標題（可留空）</label
+            ><input id="photoTitle" /><label for="caption"
+              >圖片說明（可留空）</label
+            ><textarea id="caption" rows="4"></textarea
+            ><label for="files">選擇圖片</label
+            ><input
+              id="files"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+              multiple
+            />
+            <div id="uploadMessage"></div>
+            <button class="primary" type="submit">上載圖片</button>
+          </form>
+        </section>
+        <hr
+          style="
+            border: 0;
+            border-top: 1px solid var(--border);
+            margin: 2rem 0 1.3rem;
+          "
+        />
+        <h2>圖片回顧</h2>
+        <div id="empty" class="notice hidden">目前未有已上載的比賽圖片。</div>
+        <section id="galleryApp" class="hidden">
+          <div class="grid3">
+            <div>
+              <label for="filter">場次篩選</label
+              ><select id="filter"></select>
+            </div>
+            <div>
+              <label for="sort">排序</label
+              ><select id="sort">
+                <option>相片日期（新至舊）</option>
+                <option>相片日期（舊至新）</option>
+                <option>上載時間（新至舊）</option>
+                <option>上載時間（舊至新）</option>
+              </select>
+            </div>
+            <div>
+              <label for="view">顯示（僅適用於電腦版）</label
+              ><select id="view">
+                <option>縮圖牆</option>
+                <option>標準</option>
+              </select>
+            </div>
+          </div>
+          <label for="search">搜尋</label
+          ><input id="search" placeholder="輸入場次、標題、說明或上載者" />
+          <div id="count" class="caption"></div>
+          <div id="noResults" class="notice hidden">
+            沒有符合條件的圖片。請調整搜尋關鍵字或篩選條件後再試。
+          </div>
+          <div id="gallery"></div>
+        </section>
+      </section>
+    </main>
+    <div id="toast" class="toast hidden"></div>
+    <script>
+      (() => {
+        "use strict";
+        const $ = (id) => document.getElementById(id);
+        let state = null;
+        const esc = (v) =>
+          String(v ?? "").replace(
+            /[&<>"']/g,
+            (c) =>
+              ({ "&": "&amp;", "<": "&lt;", '"': "&quot;", "'": "&#39;" })[c],
+          );
+        const notice = (id, k, t) =>
+          ($(id).innerHTML = t
+            ? `<div class="notice ${k}">${esc(t)}</div>`
+            : "");
+        function toast(t) {
+          $("toast").textContent = t;
+          $("toast").classList.remove("hidden");
+          setTimeout(() => $("toast").classList.add("hidden"), 2800);
+        }
+        function filtered() {
+          let rows = [...state.photos],
+            filter = $("filter").value,
+            term = $("search").value.trim().toLocaleLowerCase();
+          if (filter !== "全部")
+            rows = rows.filter((p) => p.album_label === filter);
+          if (term)
+            rows = rows.filter((p) =>
+              [
+                p.album_label,
+                p.photo_date,
+                p.photo_title,
+                p.caption,
+                p.uploaded_by,
+                p.file_name,
+              ]
+                .join(" ")
+                .toLocaleLowerCase()
+                .includes(term),
+            );
+          const sort = $("sort").value;
+          rows.sort((a, b) => {
+            const dateA = a.photo_date || "",
+              dateB = b.photo_date || "",
+              createdA = a.created_at || "",
+              createdB = b.created_at || "";
+            if (sort === "相片日期（舊至新）")
+              return (
+                dateA.localeCompare(dateB) || createdB.localeCompare(createdA)
+              );
+            if (sort === "上載時間（新至舊）")
+              return createdB.localeCompare(createdA);
+            if (sort === "上載時間（舊至新）")
+              return createdA.localeCompare(createdB);
+            return (
+              dateB.localeCompare(dateA) || createdB.localeCompare(createdA)
+            );
+          });
+          return rows;
+        }
+        function render() {
+          $("loading").classList.add("hidden");
+          $("login").classList.add("hidden");
+          $("app").classList.remove("hidden");
+          $("album").innerHTML = state.albums
+            .map(
+              (a) =>
+                `<option value="${esc(a.label)}" data-video="${a.video_id ?? ""}">${esc(a.label)}</option>`,
+            )
+            .join("");
+          const filters = [
+            "全部",
+            ...new Set(
+              state.photos
+                .map((p) => p.album_label)
+                .filter(Boolean)
+                .sort(),
+            ),
+          ];
+          const prior = $("filter").value;
+          $("filter").innerHTML = filters
+            .map(
+              (x) =>
+                `<option ${x === prior ? "selected" : ""}>${esc(x)}</option>`,
+            )
+            .join("");
+          $("empty").classList.toggle("hidden", state.photos.length > 0);
+          $("galleryApp").classList.toggle("hidden", !state.photos.length);
+          renderGallery();
+        }
+        function renderGallery() {
+          if (!state.photos.length) return;
+          const rows = filtered(),
+            compact = $("view").value === "縮圖牆";
+          $("count").textContent = `共 ${rows.length} 張圖片`;
+          $("noResults").classList.toggle("hidden", rows.length > 0);
+          const gallery = $("gallery");
+          gallery.className = compact ? "thumbs" : "standard";
+          gallery.innerHTML = rows
+            .map((p) => {
+              const title =
+                  p.photo_title || p.file_name || `match-photo-${p.id}.jpg`,
+                date = p.photo_date ? ` ｜ ${p.photo_date}` : "",
+                image = `/api/match-photos/image/${p.id}`;
+              return `<article class="photo"><img src="${image}" alt="${esc(title)}"><div class="photo-title">${esc(compact && title.length > 18 ? title.slice(0, 18) + "..." : title)}</div>${compact && p.photo_date ? `<div class="photo-meta">${esc(p.photo_date)}</div>` : ""}${compact ? `<details><summary>詳情</summary><div>${esc(title)}</div><div class="photo-meta">${esc(p.album_label)}${esc(date)} ｜ ${esc(p.created_at)} ｜ ${esc(p.uploaded_by)}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<a href="${image}?download=1">下載原圖</a></details>` : `<div class="photo-meta">${esc(p.album_label)}${esc(date)} ｜ ${esc(p.created_at)} ｜ ${esc(p.uploaded_by)}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<details><summary>下載</summary><a href="${image}?download=1">下載原圖</a></details>`}</article>`;
+            })
+            .join("");
+        }
+        async function load() {
+          try {
+            const r = await fetch("/api/match-photos/data", {
+              credentials: "same-origin",
+            });
+            if (r.status === 401) {
+              $("loading").classList.add("hidden");
+              $("login").classList.remove("hidden");
+              return;
+            }
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+            state = d;
+            render();
+          } catch (e) {
+            $("loading").textContent = `連線錯誤: ${e.message}`;
+          }
+        }
+        function filePayload(file) {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error("未能讀取圖片。"));
+            reader.onload = () =>
+              resolve({
+                file_name: file.name,
+                mime_type: file.type || "image/jpeg",
+                image_base64: String(reader.result).split(",", 2)[1] || "",
+              });
+            reader.readAsDataURL(file);
+          });
+        }
+        $("retryLogin").addEventListener("click", load);
+        $("loginForm").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          try {
+            const r = await fetch("/api/committee/login", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  user_id: $("loginUser").value.trim(),
+                  password: $("loginPassword").value,
+                }),
+              }),
+              d = await r.json();
+            if (!r.ok) throw new Error(d.detail || "登入失敗");
+            await load();
+          } catch (x) {
+            notice("loginMessage", "err", x.message);
+          }
+        });
+        $("uploadForm").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const files = [...$("files").files];
+          if (!files.length) {
+            notice("uploadMessage", "warn", "請先選擇圖片。");
+            return;
+          }
+          try {
+            const o = $("album").selectedOptions[0],
+              payload = {
+                album_label: $("album").value,
+                match_video_id: o.dataset.video
+                  ? Number(o.dataset.video)
+                  : null,
+                photo_date: $("photoDate").value,
+                photo_title: $("photoTitle").value,
+                caption: $("caption").value,
+                files: await Promise.all(files.map(filePayload)),
+              },
+              r = await fetch("/api/match-photos/upload", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              }),
+              d = await r.json();
+            if (!r.ok || !d.ok) {
+              notice("uploadMessage", "warn", d.detail || d.message);
+              return;
+            }
+            e.target.reset();
+            toast("☑️ " + d.message);
+            await load();
+          } catch (error) {
+            notice("uploadMessage", "err", error.message);
+          }
+        });
+        ["filter", "sort", "view"].forEach((id) =>
+          $(id).addEventListener("change", renderGallery),
+        );
+        $("search").addEventListener("input", renderGallery);
+        load();
+      })();
+    </script>
+    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/server-tables.js"></script>
+  </body>
+</html>

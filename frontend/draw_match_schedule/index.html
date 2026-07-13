@@ -1,65 +1,423 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-    <meta charset="utf-8">
+  <head>
+    <meta charset="utf-8" />
     <title>抽取賽程</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#111827">
-    <link rel="stylesheet" href="/shared/vote-ui.css">
-    <link rel="stylesheet" href="/shared/app-shell.css"><style>
-        main { width: min(100%, 84rem); margin: 0 auto; }
-        h1 { margin: 0 0 .45rem; font-size: 2rem; } h2 { margin: 0 0 .7rem; font-size: 1.25rem; } h3 { margin: 0 0 .5rem; font-size: 1rem; }
-        .intro, .caption { color: var(--muted); } .card { margin-bottom: 1rem; } .notice { margin: .8rem 0; }
-        .login { width: min(100%, 48rem); margin: 3rem auto; } .login form { display: grid; gap: .85rem; } .login label { margin: 0; } .login button { width: 100%; margin-top: .25rem; }
-        textarea { min-height: 12rem; resize: vertical; } .field { margin-bottom: .8rem; } .field label { margin-bottom: .3rem; }
-        .app-actions { display: flex; justify-content: flex-end; margin-bottom: .75rem; }
-        .controls { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; } .controls button { flex: 1 1 12rem; }
-        .actions { display: flex; flex-wrap: wrap; gap: .65rem; margin: 1rem 0; } .actions button { flex: 1 1 12rem; }
-        .metrics { display: grid; grid-template-columns: 12rem 1fr; gap: 1rem; align-items: start; }
-        .metric { border: 1px solid var(--border); border-radius: 8px; padding: .8rem; background: var(--surface); } .metric .value { font-size: 1.8rem; font-weight: 700; }
-        .team-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .5rem; } .team { padding: .55rem .65rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow-wrap: anywhere; }
-        .round { margin-top: 1.15rem; } .match-block { margin: .5rem 0 .8rem; } .match { display: grid; grid-template-columns: 1fr 2.5rem 1fr; align-items: center; gap: .5rem; border: 1px solid var(--border); border-radius: 8px; padding: .75rem; background: var(--surface); }
-        .match-caption { margin: .3rem 0 0; color: var(--muted); font-size: .85rem; }
-        .match .vs { color: var(--muted); text-align: center; font-weight: 700; } .match .right { text-align: right; } .round-note { color: var(--warn); margin: .5rem 0; }
-        .table-wrap { overflow-x: auto; } table { width: 100%; min-width: 720px; border-collapse: collapse; } th, td { padding: .55rem .65rem; border: 1px solid var(--border); text-align: left; vertical-align: top; } th { color: var(--muted); background: var(--surface); }
-        .hidden { display: none !important; } @media (max-width: 620px) { h1 { font-size: 1.65rem; } .metrics { grid-template-columns: 1fr; } .app-actions button { width: 100%; } }
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111827" />
+    <link rel="stylesheet" href="/shared/vote-ui.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <style>
+      main {
+        width: min(100%, 84rem);
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 0.45rem;
+        font-size: 2rem;
+      }
+      h2 {
+        margin: 0 0 0.7rem;
+        font-size: 1.25rem;
+      }
+      h3 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+      .intro,
+      .caption {
+        color: var(--muted);
+      }
+      .card {
+        margin-bottom: 1rem;
+      }
+      .notice {
+        margin: 0.8rem 0;
+      }
+      .login {
+        width: min(100%, 48rem);
+        margin: 3rem auto;
+      }
+      .login form {
+        display: grid;
+        gap: 0.85rem;
+      }
+      .login label {
+        margin: 0;
+      }
+      .login button {
+        width: 100%;
+        margin-top: 0.25rem;
+      }
+      textarea {
+        min-height: 12rem;
+        resize: vertical;
+      }
+      .field {
+        margin-bottom: 0.8rem;
+      }
+      .field label {
+        margin-bottom: 0.3rem;
+      }
+      .app-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 0.75rem;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin-top: 1rem;
+      }
+      .controls button {
+        flex: 1 1 12rem;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin: 1rem 0;
+      }
+      .actions button {
+        flex: 1 1 12rem;
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: 12rem 1fr;
+        gap: 1rem;
+        align-items: start;
+      }
+      .metric {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.8rem;
+        background: var(--surface);
+      }
+      .metric .value {
+        font-size: 1.8rem;
+        font-weight: 700;
+      }
+      .team-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+        gap: 0.5rem;
+      }
+      .team {
+        padding: 0.55rem 0.65rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        overflow-wrap: anywhere;
+      }
+      .round {
+        margin-top: 1.15rem;
+      }
+      .match-block {
+        margin: 0.5rem 0 0.8rem;
+      }
+      .match {
+        display: grid;
+        grid-template-columns: 1fr 2.5rem 1fr;
+        align-items: center;
+        gap: 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.75rem;
+        background: var(--surface);
+      }
+      .match-caption {
+        margin: 0.3rem 0 0;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .match .vs {
+        color: var(--muted);
+        text-align: center;
+        font-weight: 700;
+      }
+      .match .right {
+        text-align: right;
+      }
+      .round-note {
+        color: var(--warn);
+        margin: 0.5rem 0;
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        min-width: 720px;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 0.55rem 0.65rem;
+        border: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        background: var(--surface);
+      }
+      .hidden {
+        display: none !important;
+      }
+      @media (max-width: 620px) {
+        h1 {
+          font-size: 1.65rem;
+        }
+        .metrics {
+          grid-template-columns: 1fr;
+        }
+        .app-actions button {
+          width: 100%;
+        }
+      }
     </style>
-</head>
-<body>
-<main>
-    <a class="back-link" href="/">← 返回主頁</a>
-    <h1>抽取賽程</h1>
-    <p class="intro">輸入參賽隊伍後隨機抽取正賽、負方賽及決賽賽程。</p>
-    <details class="guide"><summary>ℹ️ 首次使用指南</summary><ul><li>使用賽會人員密碼登入後，每行輸入一隊參賽隊伍名稱，再按「抽取賽程」。</li><li>如隊伍名單有變更，舊抽籤結果會自動失效，請重新抽取。</li><li>此頁面提供賽程預覽與總表，方便稍後抄錄到「比賽場次管理」。</li></ul></details>
-    <div id="loading" class="notice">載入中…</div>
-    <section id="login" class="card login hidden"><h2>賽會人員登入</h2><p class="intro">請輸入賽會人員密碼以抽取賽程。</p><form id="loginForm"><label for="password">請輸入賽會人員密碼</label><input id="password" type="password" autocomplete="current-password" required><div id="loginMsg"></div><button class="primary" type="submit">登入</button></form></section>
-    <section id="app" class="hidden">
-        <div class="app-actions"><button id="logout" type="button">登出</button></div>
-        <section class="card"><h2>輸入參賽隊伍</h2><div class="field"><label for="teams">每行輸入一隊隊伍名稱</label><textarea id="teams" placeholder="例如：&#10;思若秋澄&#10;請你食薯餅&#10;預設名稱一"></textarea></div><div id="count" class="caption"></div><div id="inputMsg"></div><div class="controls"><button id="draw" class="primary" type="button">🎲 抽取賽程</button></div></section>
-        <section id="result" class="hidden"><div class="actions"><button id="redraw" type="button">🔄 重新抽取</button><button id="clear" type="button">🧹 清空結果</button></div><div id="resultContent"></div></section>
-    </section>
-</main>
-<div id="toast" class="toast"></div><div id="busy" class="busy-overlay"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
-<script src="/shared/vote-ui.js"></script>
-<script>
-(() => {
-    const $ = id => document.getElementById(id); let result = null, snapshotTeams = null, invalidated = false;
-    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
-    const busy = on => VoteUI.setBusy($("busy"), on); const notice = (id, text, kind = "") => { $(id).innerHTML = text ? `<div class="notice ${kind}">${esc(text)}</div>` : ""; };
-    const teams = () => $("teams").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const sameTeams = (left, right) => JSON.stringify(left) === JSON.stringify(right);
-    const updateCount = () => { const current = teams(); if (result && !sameTeams(current, snapshotTeams)) { result = null; snapshotTeams = null; invalidated = true; $("result").classList.add("hidden"); } $("count").textContent = `目前已輸入 ${current.length} 隊隊伍。`; notice("inputMsg", invalidated ? "隊伍名單已變更，請重新抽籤。" : "", "warn"); };
-    async function request(url, body) { const response = await fetch(url, {method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); const data = await response.json(); if (!response.ok) throw new Error(data.detail || data.message || "操作失敗。"); return data; }
-    function match(pair) { return `<div class="match-block"><div class="match"><strong>${esc(pair.left)}</strong><span class="vs">vs</span><strong class="right">${esc(pair.right)}</strong></div>${pair.match_no ? `<p class="match-caption">場次 ${esc(pair.match_no)}</p>` : ""}</div>`; }
-    function rounds(rounds, byes) { return rounds.map(round => { const bye = byes[round.round] || round.bye; return `<div class="round"><h3>${esc(round.title)}</h3>${round.note ? `<p class="round-note">${esc(round.note)}</p>` : ""}${round.pairs.map(match).join("")}${bye ? `<p class="round-note">輪空：${esc(bye)}（直接晉級下一輪）</p>` : ""}</div>`; }).join(""); }
-    function render(data) { const byes = Object.fromEntries(data.main_byes.map(item => [item.round, item.team])); const rows = data.summary_rows.map(row => `<tr>${["階段","輪次","場次","正方／甲方","反方／乙方","備註"].map(key => `<td>${esc(row[key])}</td>`).join("")}</tr>`).join(""); $("resultContent").innerHTML = `<section class="card"><h2>本次抽籤隊伍快照</h2><div class="metrics"><div class="metric"><div class="caption">參賽隊伍總數</div><div class="value">${data.teams.length}</div></div><div class="team-list">${data.teams.map(team => `<div class="team">${esc(team)}</div>`).join("")}</div></div></section><section class="card"><h2>正賽</h2>${data.direct_final ? '<p class="caption">本次只有 2 隊隊伍，毋須進行正賽及負方賽，直接進入決賽。</p>' : rounds(data.main_rounds, byes)}</section><section class="card"><h2>負方賽</h2>${data.direct_final ? '<p class="caption">本次只有 2 隊隊伍，毋須進行負方賽。</p>' : rounds(data.loser_rounds, {})}</section><section class="card"><h2>決賽</h2>${match(data.final_match)}</section><section class="card"><h2>賽程總表</h2><p class="caption">以下為預覽結果，方便人工抄錄到「比賽場次管理」頁面。</p><div class="table-wrap"><table><thead><tr><th>階段</th><th>輪次</th><th>場次</th><th>正方／甲方</th><th>反方／乙方</th><th>備註</th></tr></thead><tbody>${rows}</tbody></table></div><div class="controls"><button id="download" class="primary" type="button">匯出賽程總表 CSV</button></div></section>`; $("download").onclick = download; }
-    function download() { const header = ["階段","輪次","場次","正方／甲方","反方／乙方","備註"]; const csv = [header, ...result.summary_rows.map(row => header.map(key => row[key] ?? ""))].map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(",")).join("\n"); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob(["\ufeff" + csv], {type:"text/csv;charset=utf-8"})); link.download = "draw_schedule.csv"; link.click(); URL.revokeObjectURL(link.href); }
-    async function draw() { busy(true); try { const data = await request("/api/schedule/draw", {teams_text: $("teams").value}); if (!data.ok) throw new Error(data.message); result = data.result; snapshotTeams = teams(); invalidated = false; notice("inputMsg", ""); $("result").classList.remove("hidden"); render(result); VoteUI.toast($("toast"), "✅ 賽程已抽取"); } catch (error) { notice("inputMsg", error.message, "warn"); } finally { busy(false); } }
-    async function load() { try { const response = await fetch("/api/schedule/auth", {credentials:"same-origin"}); if (response.status === 401) { $("loading").classList.add("hidden"); $("login").classList.remove("hidden"); return; } if (!response.ok) throw new Error("載入失敗。"); $("loading").classList.add("hidden"); $("app").classList.remove("hidden"); updateCount(); } catch (error) { $("loading").textContent = error.message; } }
-    $("teams").addEventListener("input", updateCount); $("draw").onclick = draw; $("redraw").onclick = draw; $("clear").onclick = () => { result = null; snapshotTeams = null; invalidated = false; $("result").classList.add("hidden"); notice("inputMsg", ""); };
-    $("loginForm").addEventListener("submit", event => { event.preventDefault(); busy(true); request("/api/registration-admin/login", {password:$("password").value}).then(load).catch(error => notice("loginMsg", error.message, "warn")).finally(() => busy(false)); }); load();
-    $("logout").addEventListener("click", async () => { await request("/api/registration-admin/logout", {}); location.reload(); });
-})();
-</script>
-</body>
+  </head>
+  <body>
+    <main>
+      <a class="back-link" href="/">← 返回主頁</a>
+      <h1>抽取賽程</h1>
+      <p class="intro">輸入參賽隊伍後隨機抽取正賽、負方賽及決賽賽程。</p>
+      <details class="guide">
+        <summary>ℹ️ 首次使用指南</summary>
+        <ul>
+          <li>
+            使用賽會人員密碼登入後，每行輸入一隊參賽隊伍名稱，再按「抽取賽程」。
+          </li>
+          <li>如隊伍名單有變更，舊抽籤結果會自動失效，請重新抽取。</li>
+          <li>此頁面提供賽程預覽與總表，方便稍後抄錄到「比賽場次管理」。</li>
+        </ul>
+      </details>
+      <div id="loading" class="notice">載入中…</div>
+      <section id="login" class="card login hidden">
+        <h2>賽會人員登入</h2>
+        <p class="intro">請輸入賽會人員密碼以抽取賽程。</p>
+        <form id="loginForm">
+          <label for="password">請輸入賽會人員密碼</label
+          ><input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+          <div id="loginMsg"></div>
+          <button class="primary" type="submit">登入</button>
+        </form>
+      </section>
+      <section id="app" class="hidden">
+        <div class="app-actions">
+          <button id="logout" type="button">登出</button>
+        </div>
+        <section class="card">
+          <h2>輸入參賽隊伍</h2>
+          <div class="field">
+            <label for="teams">每行輸入一隊隊伍名稱</label
+            ><textarea
+              id="teams"
+              placeholder="例如：&#10;思若秋澄&#10;請你食薯餅&#10;預設名稱一"
+            ></textarea>
+          </div>
+          <div id="count" class="caption"></div>
+          <div id="inputMsg"></div>
+          <div class="controls">
+            <button id="draw" class="primary" type="button">🎲 抽取賽程</button>
+          </div>
+        </section>
+        <section id="result" class="hidden">
+          <div class="actions">
+            <button id="redraw" type="button">🔄 重新抽取</button
+            ><button id="clear" type="button">🧹 清空結果</button>
+          </div>
+          <div id="resultContent"></div>
+        </section>
+      </section>
+    </main>
+    <div id="toast" class="toast"></div>
+    <div id="busy" class="busy-overlay">
+      <div class="busy-pill"><span class="spinner"></span>處理中…</div>
+    </div>
+    <script src="/shared/vote-ui.js"></script>
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        let result = null,
+          snapshotTeams = null,
+          invalidated = false;
+        const esc = (value) =>
+          String(value ?? "").replace(
+            /[&<>"']/g,
+            (char) =>
+              ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+              })[char],
+          );
+        const busy = (on) => VoteUI.setBusy($("busy"), on);
+        const notice = (id, text, kind = "") => {
+          $(id).innerHTML = text
+            ? `<div class="notice ${kind}">${esc(text)}</div>`
+            : "";
+        };
+        const teams = () =>
+          $("teams")
+            .value.split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+        const sameTeams = (left, right) =>
+          JSON.stringify(left) === JSON.stringify(right);
+        const updateCount = () => {
+          const current = teams();
+          if (result && !sameTeams(current, snapshotTeams)) {
+            result = null;
+            snapshotTeams = null;
+            invalidated = true;
+            $("result").classList.add("hidden");
+          }
+          $("count").textContent = `目前已輸入 ${current.length} 隊隊伍。`;
+          notice(
+            "inputMsg",
+            invalidated ? "隊伍名單已變更，請重新抽籤。" : "",
+            "warn",
+          );
+        };
+        async function request(url, body) {
+          const response = await fetch(url, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await response.json();
+          if (!response.ok)
+            throw new Error(data.detail || data.message || "操作失敗。");
+          return data;
+        }
+        function match(pair) {
+          return `<div class="match-block"><div class="match"><strong>${esc(pair.left)}</strong><span class="vs">vs</span><strong class="right">${esc(pair.right)}</strong></div>${pair.match_no ? `<p class="match-caption">場次 ${esc(pair.match_no)}</p>` : ""}</div>`;
+        }
+        function rounds(rounds, byes) {
+          return rounds
+            .map((round) => {
+              const bye = byes[round.round] || round.bye;
+              return `<div class="round"><h3>${esc(round.title)}</h3>${round.note ? `<p class="round-note">${esc(round.note)}</p>` : ""}${round.pairs.map(match).join("")}${bye ? `<p class="round-note">輪空：${esc(bye)}（直接晉級下一輪）</p>` : ""}</div>`;
+            })
+            .join("");
+        }
+        function render(data) {
+          const byes = Object.fromEntries(
+            data.main_byes.map((item) => [item.round, item.team]),
+          );
+          const rows = data.summary_rows
+            .map(
+              (row) =>
+                `<tr>${["階段", "輪次", "場次", "正方／甲方", "反方／乙方", "備註"].map((key) => `<td>${esc(row[key])}</td>`).join("")}</tr>`,
+            )
+            .join("");
+          $("resultContent").innerHTML =
+            `<section class="card"><h2>本次抽籤隊伍快照</h2><div class="metrics"><div class="metric"><div class="caption">參賽隊伍總數</div><div class="value">${data.teams.length}</div></div><div class="team-list">${data.teams.map((team) => `<div class="team">${esc(team)}</div>`).join("")}</div></div></section><section class="card"><h2>正賽</h2>${data.direct_final ? '<p class="caption">本次只有 2 隊隊伍，毋須進行正賽及負方賽，直接進入決賽。</p>' : rounds(data.main_rounds, byes)}</section><section class="card"><h2>負方賽</h2>${data.direct_final ? '<p class="caption">本次只有 2 隊隊伍，毋須進行負方賽。</p>' : rounds(data.loser_rounds, {})}</section><section class="card"><h2>決賽</h2>${match(data.final_match)}</section><section class="card"><h2>賽程總表</h2><p class="caption">以下為預覽結果，方便人工抄錄到「比賽場次管理」頁面。</p><div class="table-wrap"><table><thead><tr><th>階段</th><th>輪次</th><th>場次</th><th>正方／甲方</th><th>反方／乙方</th><th>備註</th></tr></thead><tbody>${rows}</tbody></table></div><div class="controls"><button id="download" class="primary" type="button">匯出賽程總表 CSV</button></div></section>`;
+          $("download").onclick = download;
+        }
+        function download() {
+          const header = [
+            "階段",
+            "輪次",
+            "場次",
+            "正方／甲方",
+            "反方／乙方",
+            "備註",
+          ];
+          const csv = [
+            header,
+            ...result.summary_rows.map((row) =>
+              header.map((key) => row[key] ?? ""),
+            ),
+          ]
+            .map((row) =>
+              row
+                .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+                .join(","),
+            )
+            .join("\n");
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(
+            new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }),
+          );
+          link.download = "draw_schedule.csv";
+          link.click();
+          URL.revokeObjectURL(link.href);
+        }
+        async function draw() {
+          busy(true);
+          try {
+            const data = await request("/api/schedule/draw", {
+              teams_text: $("teams").value,
+            });
+            if (!data.ok) throw new Error(data.message);
+            result = data.result;
+            snapshotTeams = teams();
+            invalidated = false;
+            notice("inputMsg", "");
+            $("result").classList.remove("hidden");
+            render(result);
+            VoteUI.toast($("toast"), "✅ 賽程已抽取");
+          } catch (error) {
+            notice("inputMsg", error.message, "warn");
+          } finally {
+            busy(false);
+          }
+        }
+        async function load() {
+          try {
+            const response = await fetch("/api/schedule/auth", {
+              credentials: "same-origin",
+            });
+            if (response.status === 401) {
+              $("loading").classList.add("hidden");
+              $("login").classList.remove("hidden");
+              return;
+            }
+            if (!response.ok) throw new Error("載入失敗。");
+            $("loading").classList.add("hidden");
+            $("app").classList.remove("hidden");
+            updateCount();
+          } catch (error) {
+            $("loading").textContent = error.message;
+          }
+        }
+        $("teams").addEventListener("input", updateCount);
+        $("draw").onclick = draw;
+        $("redraw").onclick = draw;
+        $("clear").onclick = () => {
+          result = null;
+          snapshotTeams = null;
+          invalidated = false;
+          $("result").classList.add("hidden");
+          notice("inputMsg", "");
+        };
+        $("loginForm").addEventListener("submit", (event) => {
+          event.preventDefault();
+          busy(true);
+          request("/api/registration-admin/login", {
+            password: $("password").value,
+          })
+            .then(load)
+            .catch((error) => notice("loginMsg", error.message, "warn"))
+            .finally(() => busy(false));
+        });
+        load();
+        $("logout").addEventListener("click", async () => {
+          await request("/api/registration-admin/logout", {});
+          location.reload();
+        });
+      })();
+    </script>
+  </body>
 </html>

@@ -10,6 +10,7 @@ import secrets
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from core.auth_logic import hash_password, verify_password
 from schema import CREATE_BUG_REPORTS, TABLE_ACCOUNTS, TABLE_BUG_REPORTS, TABLE_PUSH_SUBSCRIPTIONS
@@ -115,8 +116,10 @@ def dev_data(request:Request):
     _require(request,"developer"); db=_db(); db.execute(CREATE_BUG_REPORTS)
     bugs=[]; accounts=[]
     configs={k:_config(db,k) or "" for k in ("maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")}
+    account_rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id")
+    account_options=[str(value).strip() for value in account_rows.get("user_id",[]) if str(value).strip()]
     subs=[]
-    return {"version":APP_VERSION,"bugs":bugs,"accounts":accounts,"configs":configs,"subscriptions":subs}
+    return {"version":APP_VERSION,"bugs":bugs,"accounts":accounts,"account_options":account_options,"configs":configs,"subscriptions":subs}
 
 @router.get("/developer/collection/{kind}")
 def dev_collection(kind:str,request:Request,page:int=1):
@@ -171,8 +174,26 @@ def delete_account(uid:str,request:Request): _require(request,"developer"); _db(
 @router.post("/developer/settings")
 def developer_settings(body:JsonSettings,request:Request):
     _require(request,"developer"); db=_db(); allowed={"maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model"}
+    account_list_keys={"tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers"}
+    cleaned={}
     for key,value in body.values.items():
         if key not in allowed: raise HTTPException(400,f"不允許的設定：{key}")
-        if key=="lateness_fund_managers" and (not isinstance(value,list) or not any(str(item).strip() for item in value)): raise HTTPException(400,"至少保留一位遲到基金管理員")
-        _set(db,key,json.dumps(value,ensure_ascii=False) if isinstance(value,(dict,list)) else str(value))
+        if key in account_list_keys:
+            if not isinstance(value,list): raise HTTPException(400,f"{key} 必須是帳戶清單")
+            value=list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        cleaned[key]=value
+    if "lateness_fund_managers" in cleaned and not cleaned["lateness_fund_managers"]:
+        raise HTTPException(400,"至少保留一位遲到基金管理員")
+    if "tts_recording_reviewers" in cleaned and not cleaned["tts_recording_reviewers"]:
+        raise HTTPException(400,"至少保留一位 AI 訓練管理員")
+    requested={user for key,value in cleaned.items() if key in account_list_keys for user in value}
+    if requested:
+        rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE")
+        valid={str(value).strip() for value in rows.get("user_id",[]) if str(value).strip()}
+        invalid=sorted(requested-valid)
+        if invalid: raise HTTPException(400,"帳戶不存在或已停用："+"、".join(invalid))
+    with db.transaction() as conn:
+        for key,value in cleaned.items():
+            stored=json.dumps(value,ensure_ascii=False) if isinstance(value,(dict,list)) else str(value)
+            conn.execute(text("INSERT INTO system_config(key,value,updated_at) VALUES(:key,:value,:now) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at"),{"key":key,"value":stored,"now":_now()})
     return {"ok":True}
