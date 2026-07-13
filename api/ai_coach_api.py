@@ -421,6 +421,7 @@ async def run(body: CoachRequest, request: Request):
             if rag: user += "\n\n" + rag
         except Exception:
             pass
+    model_label = body.model_label
     try:
         result, actual = await _generate(config, system, user, body, user_id)
     except HTTPException as exc:
@@ -428,10 +429,11 @@ async def run(body: CoachRequest, request: Request):
             fallback = AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
             result, actual = await _generate(fallback, system, user, body, user_id)
             config = fallback
+            model_label = DEFAULT_AI_MODEL
         else:
             _usage(db, user_id, body.feature, body.model_label, config, False, exc.detail)
             raise
-    _usage(db, user_id, body.feature, body.model_label, config, True,
+    _usage(db, user_id, body.feature, model_label, config, True,
            actual=actual, has_audio=bool(body.audio_base64))
     return {"ok": True, "markdown": result}
 
@@ -442,8 +444,10 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     if quota_error: raise HTTPException(429,quota_error)
     prepare_error=_reserve_prepare_live(db,user_id)
     if prepare_error: raise HTTPException(429,prepare_error)
+    model_label=body.model_label
     if not config.get("supports_web_search"):
         config=AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
+        model_label=DEFAULT_AI_MODEL
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"
     system,user=_message(CoachRequest(feature="web_research",model_label=body.model_label,topic=body.topic,research_need=need))
     try:
@@ -455,7 +459,7 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     actual = None
     try:brief,actual=await _generate(config,system,user,CoachRequest(feature="web_research",model_label=body.model_label,topic=body.topic,research_need=need))
     except Exception:brief=""
-    _usage(__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db(),user_id,"web_research",body.model_label,config,bool(brief),actual=actual)
+    _usage(__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db(),user_id,"web_research",model_label,config,bool(brief),actual=actual)
     key=secrets.token_urlsafe(18);now=datetime.now()
     db.execute(f"DELETE FROM {_LIVE_BRIEF_TABLE} WHERE expires_at<:now", {"now": now.isoformat(sep=" ",timespec="seconds")})
     db.execute(f"INSERT INTO {_LIVE_BRIEF_TABLE}(brief_id,user_id,brief,expires_at,created_at) VALUES(:key,:user,:brief,:expires,:created)",{"key":key,"user":user_id,"brief":brief[:LIVE_BRIEF_MAX_CHARS],"expires":(now+timedelta(minutes=LIVE_BRIEF_TTL_MINUTES)).isoformat(sep=" ",timespec="seconds"),"created":now.isoformat(sep=" ",timespec="seconds")});return {"ok":True,"brief_id":key,"research_ready":bool(brief)}
