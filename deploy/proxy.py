@@ -35,6 +35,7 @@ from schema import (
     CREATE_VIDEO_PROGRESS,
     CREATE_VIDEO_VIEWS,
     MEDIA_R2_STARTUP_MIGRATIONS,
+    RUNTIME_OWNED_STARTUP_DDL,
     TABLE_AI_FUND_USAGE_LOGS,
     TABLE_BANDWIDTH_USAGE_LOGS,
     TABLE_PRACTICE_DAILY_USAGE,
@@ -349,6 +350,8 @@ def run_safe_startup_migrations():
                 config_result["unknown"],
             )
         for ddl in MEDIA_R2_STARTUP_MIGRATIONS:
+            conn.execute(text(ddl))
+        for ddl in RUNTIME_OWNED_STARTUP_DDL:
             conn.execute(text(ddl))
 
 
@@ -1207,23 +1210,12 @@ async def video_progress(request: Request):
 # Competition-day projector (big-screen display + operator control)
 #
 # These routes are backed by projector_state plus read-only match/debater data.
-# The compatibility DDL runs once per engine; P1 moves ownership to migrations.
+# Schema ownership lives in schema.py and compatibility creation runs at startup.
 # The projector intentionally shows no timer: timing stays on the chairperson's
 # own device.
 # ---------------------------------------------------------------------------
 
 PROJECTOR_DEFAULT_DISPLAY = "main"
-
-CREATE_PROJECTOR_STATE = """
-CREATE TABLE IF NOT EXISTS projector_state (
-    display_key   TEXT PRIMARY KEY,
-    match_id      TEXT,
-    debate_format TEXT,
-    seg_index     INTEGER DEFAULT 0,
-    visible       BOOLEAN DEFAULT TRUE,
-    updated_at    TIMESTAMP
-);
-"""
 
 # segment-id prefix -> debater position (1 主辯, 2 一副, 3 二副, 4 結辯).
 # Only these single-speaker turns map to a named debater; prep / free-debate /
@@ -1249,16 +1241,11 @@ def _active_side(seg_side: str):
     return None  # 雙方 / 準備 — no single active side
 
 
-def _ensure_projector_table(conn):
-    _run_proxy_ddl_once(conn, "projector", (CREATE_PROJECTOR_STATE,))
-
-
 def _resolve_projector_state(engine, display_key):
     """Turn the stored row into ready-to-render display JSON (motion, team
     names, current speaking role/name). All resolution happens here so the
     display page can stay dumb and just poll."""
     with engine.begin() as conn:
-        _ensure_projector_table(conn)
         row = conn.execute(
             text("SELECT match_id, debate_format, seg_index, visible "
                  "FROM projector_state WHERE display_key = :k"),
@@ -1386,7 +1373,6 @@ async def projector_set_state(request: Request):
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     with engine.begin() as conn:
-        _ensure_projector_table(conn)
         current = conn.execute(
             text("SELECT match_id, debate_format, seg_index, visible "
                  "FROM projector_state WHERE display_key = :k"),

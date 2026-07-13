@@ -8,7 +8,6 @@ import base64
 import math
 import os
 import secrets
-import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -21,6 +20,7 @@ from prompts import (
     WEB_RESEARCH_SYSTEM_PROMPT, build_fact_check_user_prompt, build_strategy_prompt,
     build_strategy_user_prompt, build_web_research_user_prompt,
 )
+from schema import TABLE_AI_COACH_LIVE_BRIEFS
 from system_limits import (
     AI_COACH_CONCURRENCY, AI_COACH_MATCH_LIMIT, AI_COACH_MAX_AUDIO_BYTES,
     AI_COACH_MAX_AUDIO_SECONDS, AI_COACH_TOPIC_LIMIT, GEMINI_RELAY_MAX_BYTES,
@@ -32,13 +32,11 @@ from system_limits import (
 )
 
 router = APIRouter(prefix="/api/ai-coach", tags=["ai-coach"])
-_LIVE_BRIEF_TABLE = "ai_coach_live_briefs"
+_LIVE_BRIEF_TABLE = TABLE_AI_COACH_LIVE_BRIEFS
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
 MAX_COACH_AUDIO_BYTES = AI_COACH_MAX_AUDIO_BYTES
 AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
-_LIVE_BRIEF_SCHEMA_LOCK = threading.Lock()
-_LIVE_BRIEF_READY_ENGINES = set()
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 
 
@@ -62,26 +60,6 @@ class LivePrepareRequest(BaseModel):
     mode: str = Field(default="free", max_length=20)
     model_label: str = Field(default=DEFAULT_AI_MODEL, max_length=120)
 
-def _ensure_live_briefs(db):
-    engine = getattr(db, "_engine", None)
-    if engine is not None and engine in _LIVE_BRIEF_READY_ENGINES:
-        return
-    with _LIVE_BRIEF_SCHEMA_LOCK:
-        if engine is not None and engine in _LIVE_BRIEF_READY_ENGINES:
-            return
-        db.execute(f"""CREATE TABLE IF NOT EXISTS {_LIVE_BRIEF_TABLE} (
-            brief_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, brief TEXT NOT NULL,
-            expires_at TEXT NOT NULL, created_at TEXT NOT NULL
-        )""")
-        db.execute("""CREATE TABLE IF NOT EXISTS ai_coach_prepare_usage (
-            id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, created_at TIMESTAMP NOT NULL
-        )""")
-        db.execute("""CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
-            ON ai_coach_prepare_usage(user_id, created_at DESC)""")
-        if engine is not None:
-            _LIVE_BRIEF_READY_ENGINES.add(engine)
-
-
 def _reserve_prepare_live(db, user_id: str) -> str | None:
     """Atomically cap repeated pre-live research before provider tokens burn."""
     now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
@@ -90,7 +68,6 @@ def _reserve_prepare_live(db, user_id: str) -> str | None:
     now_utc = now_hk.astimezone(timezone.utc).replace(tzinfo=None)
     hour_utc = hour_start.astimezone(timezone.utc).replace(tzinfo=None)
     day_utc = day_start.astimezone(timezone.utc).replace(tzinfo=None)
-    _ensure_live_briefs(db)
     with db.transaction() as conn:
         from sqlalchemy import text
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('ai_coach_prepare_live_quota'))"))
@@ -115,7 +92,7 @@ def _reserve_prepare_live(db, user_id: str) -> str | None:
 
 def consume_live_brief(brief_id, user_id):
     from deploy.proxy import get_vote_db
-    db = get_vote_db(); _ensure_live_briefs(db)
+    db = get_vote_db()
     key = str(brief_id or "")
     rows = db.query(
         f"SELECT brief,user_id,expires_at FROM {_LIVE_BRIEF_TABLE} WHERE brief_id=:brief_id",
@@ -452,7 +429,6 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     try:brief,actual=await _generate(config,system,user,CoachRequest(feature="web_research",model_label=body.model_label,topic=body.topic,research_need=need))
     except Exception:brief=""
     _usage(__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db(),user_id,"web_research",body.model_label,config,bool(brief),actual=actual)
-    _ensure_live_briefs(db)
     key=secrets.token_urlsafe(18);now=datetime.now()
     db.execute(f"DELETE FROM {_LIVE_BRIEF_TABLE} WHERE expires_at<:now", {"now": now.isoformat(sep=" ",timespec="seconds")})
     db.execute(f"INSERT INTO {_LIVE_BRIEF_TABLE}(brief_id,user_id,brief,expires_at,created_at) VALUES(:key,:user,:brief,:expires,:created)",{"key":key,"user":user_id,"brief":brief[:LIVE_BRIEF_MAX_CHARS],"expires":(now+timedelta(minutes=LIVE_BRIEF_TTL_MINUTES)).isoformat(sep=" ",timespec="seconds"),"created":now.isoformat(sep=" ",timespec="seconds")});return {"ok":True,"brief_id":key,"research_ready":bool(brief)}

@@ -54,6 +54,9 @@ TABLE_BUG_REPORTS = "bug_reports"
 TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
 TABLE_BANDWIDTH_USAGE_LOGS = "bandwidth_usage_logs"
 TABLE_R2_UPLOAD_INTENTS = "r2_upload_intents"
+TABLE_PROJECTOR_STATE = "projector_state"
+TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
+TABLE_AI_COACH_PREPARE_USAGE = "ai_coach_prepare_usage"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
@@ -599,6 +602,50 @@ CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
         ON DELETE CASCADE
 );
 """
+
+# Short-lived runtime state. These definitions intentionally match the
+# production-compatible tables that used to be created inside request paths.
+# Type/FK changes wait for the versioned P1 baseline instead of being guessed.
+CREATE_PROJECTOR_STATE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_STATE} (
+    display_key   TEXT PRIMARY KEY,
+    match_id      TEXT,
+    debate_format TEXT,
+    seg_index     INTEGER DEFAULT 0,
+    visible       BOOLEAN DEFAULT TRUE,
+    updated_at    TIMESTAMP
+);
+"""
+
+CREATE_AI_COACH_LIVE_BRIEFS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_LIVE_BRIEFS} (
+    brief_id   TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    brief      TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+CREATE_AI_COACH_PREPARE_USAGE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_PREPARE_USAGE} (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+"""
+
+CREATE_AI_COACH_PREPARE_USAGE_INDEX = f"""
+CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
+    ON {TABLE_AI_COACH_PREPARE_USAGE}(user_id, created_at DESC);
+"""
+
+RUNTIME_OWNED_STARTUP_DDL = (
+    CREATE_PROJECTOR_STATE,
+    CREATE_AI_COACH_LIVE_BRIEFS,
+    CREATE_AI_COACH_PREPARE_USAGE,
+    CREATE_AI_COACH_PREPARE_USAGE_INDEX,
+)
 
 # Table: TTS_SCRIPTS
 # Recording script bank, editable by TTS recording admins. Seeded from the
@@ -1246,6 +1293,10 @@ ALL_SCHEMAS = [
     CREATE_PRACTICE_DAILY_USAGE,       # → accounts
     CREATE_BANDWIDTH_USAGE_LOGS,        # → accounts
     CREATE_R2_UPLOAD_INTENTS,           # → accounts
+    CREATE_PROJECTOR_STATE,             # short-lived projector state
+    CREATE_AI_COACH_LIVE_BRIEFS,        # short-lived AI coach state
+    CREATE_AI_COACH_PREPARE_USAGE,      # AI coach quota ledger
+    CREATE_AI_COACH_PREPARE_USAGE_INDEX,
     CREATE_APP_CONFIG,                  # typed runtime configuration
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
