@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core import r2_storage
-from deploy.proxy import _get_db_engine
+from core.db_runtime import get_db_engine as _get_db_engine
 from system_limits import (
     R2_FINALIZER_BATCH_SIZE,
     R2_OBJECT_CACHE_MAX_AGE_SECONDS,

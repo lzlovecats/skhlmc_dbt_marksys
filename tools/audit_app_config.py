@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core.config_store import config_spec
-from deploy.proxy import _get_db_engine
+from core.db_runtime import get_db_engine as _get_db_engine
 
 
 def build_report(legacy_keys: list[str], typed_rows: list[dict]) -> dict:

@@ -6,7 +6,7 @@
 
 | 工作線 | 現況 | 下一個可執行動作 |
 |---|---|---|
-| Repo/runtime簡化 | HTML + FastAPI已完全接管；舊 Streamlit runtime已清理 | 繼續按 domain拆細 `deploy/proxy.py`，不用再保留雙軌相容 |
+| Repo/runtime簡化 | HTML + FastAPI已接管；舊Streamlit已清理；DB engine/pool已搬到輕量`core/db_runtime.py` | 繼續按bounded domain拆細`deploy/proxy.py`，不用再保留雙軌相容 |
 | Typed settings | `app_config` schema、registry、legacy fallback及統一secret loader已落地 | 部署後核對 key數／secret分類，rotate舊 credential，再移除 `system_config` bridge |
 | R2 media | 新讀寫已是 R2-only；production舊 BYTEA仍約121.8 MB | Browser抽樣播放 → finalizer dry-run/HEAD verify → 獲批准後drop legacy columns |
 | Versioned DB migrations | `schema.py`仍是bootstrap + retrofit混合 | 建立production baseline及migration runner，才清重複indexes/FKs |

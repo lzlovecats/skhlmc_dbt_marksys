@@ -23,7 +23,7 @@ import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import text
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.websockets import WebSocketDisconnect
 
@@ -48,7 +48,8 @@ from core.config_store import (
     migrate_legacy_config,
     set_configs_on_connection,
 )
-from core.runtime_secrets import get_database_url, get_secret
+from core.db_runtime import RuntimeDb, dispose_db_engine, get_db_engine
+from core.runtime_secrets import get_secret
 from debate_timing import (  # pure helpers, no side effects
     get_full_mock_sequence,
     split_mock_into_sessions,
@@ -87,8 +88,7 @@ from system_limits import (
     BANDWIDTH_LOG_RETENTION_DAYS, BANDWIDTH_STOP_LIVE_BYTES,
     BANDWIDTH_WARN_BYTES, CACHE_HTML_MAX_AGE_SECONDS, CACHE_HTML_STALE_SECONDS,
     CACHE_MANIFEST_MAX_AGE_SECONDS, CACHE_SHARED_MAX_AGE_SECONDS,
-    CACHE_SHARED_STALE_SECONDS, CACHE_STATIC_MAX_AGE_SECONDS, DB_MAX_OVERFLOW,
-    DB_POOL_RECYCLE, DB_POOL_SIZE, DB_POOL_TIMEOUT, GEMINI_RELAY_MAX_BYTES,
+    CACHE_SHARED_STALE_SECONDS, CACHE_STATIC_MAX_AGE_SECONDS, GEMINI_RELAY_MAX_BYTES,
     GEMINI_RELAY_MAX_SECONDS, GEMINI_RELAY_MIN_SECONDS,
     GEMINI_RELAY_SIGNATURE_TTL_SECONDS, GEMINI_WS_MAX_SIZE,
     GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE, LIVE_FREE_MAX_MINUTES,
@@ -122,8 +122,11 @@ CACHE_SHARED = f"public, max-age={CACHE_SHARED_MAX_AGE_SECONDS}, stale-while-rev
 
 @asynccontextmanager
 async def _lifespan(_app):
-    run_safe_startup_migrations()
-    yield
+    try:
+        run_safe_startup_migrations()
+        yield
+    finally:
+        dispose_db_engine()
 
 
 app = FastAPI(lifespan=_lifespan)
@@ -260,7 +263,6 @@ app.include_router(ai_coach_router)
 app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 logger = logging.getLogger("skh_proxy")
-_db_engine = None
 _DDL_LOCK = threading.Lock()
 _DDL_READY_ENGINES = set()
 
@@ -292,10 +294,6 @@ def _binary_cache_headers(cache_control):
     return {"Cache-Control": cache_control, "Content-Encoding": "identity"}
 
 
-def _get_db_url():
-    return get_database_url()
-
-
 def _get_proxy_secret(key: str, default: str = "") -> str:
     return get_secret(key, default)
 
@@ -311,28 +309,8 @@ def _get_vapid():
 
 
 def _get_db_engine():
-    global _db_engine
-    if _db_engine is None:
-        db_url = _get_db_url()
-        if not db_url:
-            return None
-        _db_engine = create_engine(
-            db_url,
-            pool_pre_ping=True,
-            pool_size=DB_POOL_SIZE,
-            max_overflow=DB_MAX_OVERFLOW,
-            pool_timeout=DB_POOL_TIMEOUT,
-            pool_recycle=DB_POOL_RECYCLE,
-        )
-
-        @event.listens_for(_db_engine, "connect")
-        def _set_search_path(dbapi_connection, connection_record):
-            cursor = dbapi_connection.cursor()
-            try:
-                cursor.execute("SET search_path TO public, extensions")
-            finally:
-                cursor.close()
-    return _db_engine
+    """Compatibility wrapper for API code and existing test patch points."""
+    return get_db_engine()
 
 
 def run_safe_startup_migrations():
@@ -355,43 +333,12 @@ def run_safe_startup_migrations():
             conn.execute(text(ddl))
 
 
-class _ProxyDb:
-    """Small SQLAlchemy adapter used by the domain modules.
-
-    Search path (public, extensions) is set by the engine connect listener.
-    """
-
-    def __init__(self, engine):
-        self._engine = engine
-
-    def query(self, sql_str, params=None):
-        import pandas as pd
-        with self._engine.connect() as conn:
-            result = conn.execute(text(sql_str), params or {})
-            rows = result.fetchall()
-            columns = list(result.keys())
-        return pd.DataFrame(rows, columns=columns)
-
-    def execute(self, sql_str, params=None):
-        with self._engine.begin() as conn:
-            conn.execute(text(sql_str), params or {})
-
-    def execute_count(self, sql_str, params=None):
-        with self._engine.begin() as conn:
-            result = conn.execute(text(sql_str), params or {})
-            return result.rowcount
-
-    def transaction(self):
-        """Yield one database transaction for an atomic domain operation."""
-        return self._engine.begin()
-
-
 def get_vote_db():
     """The DB executor passed to ``core.vote_logic`` from the API handlers."""
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    return _ProxyDb(engine)
+    return RuntimeDb(engine)
 
 
 def _verify_committee_token(token: str):

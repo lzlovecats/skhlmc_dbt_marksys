@@ -22,7 +22,7 @@ from sqlalchemy import text
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from deploy.proxy import _get_db_engine
+from core.db_runtime import get_db_engine as _get_db_engine
 
 
 FORMAT_VERSION = 1

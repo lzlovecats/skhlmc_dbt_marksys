@@ -22,7 +22,7 @@ from PIL import Image
 from sqlalchemy import text
 
 from core import r2_storage
-from deploy.proxy import _get_db_engine
+from core.db_runtime import get_db_engine as _get_db_engine
 
 
 PHOTO_DDL = (

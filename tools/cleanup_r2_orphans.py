@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from core import r2_storage
-from deploy.proxy import get_vote_db
+from core.db_runtime import get_runtime_db
 from schema import CREATE_R2_UPLOAD_INTENTS
 from system_limits import R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT, R2_ORPHAN_MIN_AGE_HOURS
 
@@ -59,7 +59,10 @@ def main() -> int:
     if not r2_storage.configured():
         print("R2 is not configured.", file=sys.stderr)
         return 2
-    db = get_vote_db()
+    db = get_runtime_db()
+    if db is None:
+        print("Database is not configured.", file=sys.stderr)
+        return 2
     referenced = _referenced_keys(db)
     pending_intents = _issued_intents_by_key(db)
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
