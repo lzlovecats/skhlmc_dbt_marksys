@@ -7,7 +7,7 @@ server so the browser never receives either.
 import base64
 import math
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
@@ -76,8 +76,8 @@ def record_live_usage(user_id, feature, duration_minutes):
     from deploy.proxy import get_vote_db
     config={"provider":"gemini","input_price_per_million":0,"output_price_per_million":0}
     try:
-        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":now_hk})
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":now_utc})
     except Exception: pass
 
 
@@ -290,7 +290,8 @@ def data(request: Request):
             "session_count": len(split_mock_into_sessions(segments)),
             "total_minutes": full_mock_total_seconds(segments) / 60,
         }
-    return {"models":models,"default_model":DEFAULT_AI_MODEL,"topics":[dict(x) for x in topics.to_dict("records")],"matches":[dict(x) for x in matches.to_dict("records")],"formats":{name:get_debate_timer_config(name) for name in DEBATE_FORMATS},"mock_formats":mock_formats,"fund":{"balance_hkd":float(balance.iloc[0]["balance"] or 0),"low_balance_hkd":float(low.iloc[0]["value"] or 100) if not low.empty else 100},"azure_tts":bool(_get_proxy_secret("AZURE_SPEECH_KEY") and _get_proxy_secret("AZURE_SPEECH_REGION"))}
+    from deploy.proxy import bandwidth_budget_status
+    return {"models":models,"default_model":DEFAULT_AI_MODEL,"topics":[dict(x) for x in topics.to_dict("records")],"matches":[dict(x) for x in matches.to_dict("records")],"formats":{name:get_debate_timer_config(name) for name in DEBATE_FORMATS},"mock_formats":mock_formats,"fund":{"balance_hkd":float(balance.iloc[0]["balance"] or 0),"low_balance_hkd":float(low.iloc[0]["value"] or 100) if not low.empty else 100},"azure_tts":bool(_get_proxy_secret("AZURE_SPEECH_KEY") and _get_proxy_secret("AZURE_SPEECH_REGION")),"bandwidth_budget":bandwidth_budget_status(notify=True)}
 
 
 @router.get("/mock-plan")
@@ -316,7 +317,9 @@ def mock_plan(request: Request):
 @router.post("/run")
 async def run(body: CoachRequest, request: Request):
     user_id = _context(request)
-    from deploy.proxy import get_vote_db, _get_proxy_secret
+    from deploy.proxy import get_vote_db, _get_proxy_secret, _bandwidth_essential_gate_error
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error: raise HTTPException(429, budget_error)
     db = get_vote_db()
     config = _config(body.model_label, db)
     key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")

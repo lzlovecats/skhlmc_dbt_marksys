@@ -50,6 +50,8 @@ def data(request: Request):
         raise HTTPException(503, "Cloudflare R2 尚未完成設定，相片功能已暫停。")
     result = logic.photo_data(db=db)
     result["storage"] = "r2"
+    from deploy.proxy import bandwidth_budget_status
+    result["bandwidth_budget"] = bandwidth_budget_status(notify=True)
     return result
 
 @router.get("/photos")
@@ -101,7 +103,7 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
     if not secret:
         raise HTTPException(503, "系統簽署設定不可用。")
     claim = {
-        "kind": "photo", "user": str(user_id), "file_name": body.file_name[:240],
+        "kind": "photo", "intent_id": object_id, "user": str(user_id), "file_name": body.file_name[:240],
         "mime_type": body.mime_type, "byte_size": body.byte_size,
         "thumbnail_byte_size": body.thumbnail_byte_size, "sha256": body.sha256.lower(),
         "thumbnail_sha256": body.thumbnail_sha256.lower(), "width": body.width,
@@ -109,15 +111,28 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
         "thumbnail_r2_key": thumbnail_key,
     }
     token = r2_storage.sign_upload_claim(claim, secret, expires=600)
+    reserved, scope = r2_storage.reserve_upload_intent(
+        _db, intent_id=object_id, user_id=str(user_id), media_kind="photo",
+        object_keys=[original_key, thumbnail_key],
+        declared_bytes=body.byte_size + body.thumbnail_byte_size,
+        user_daily_limit=PHOTO_DAILY_USER_LIMIT,
+        global_monthly_limit=PHOTO_MONTHLY_GLOBAL_LIMIT,
+    )
+    if not reserved:
+        message = (
+            f"你今日申請的圖片上載次數已達{PHOTO_DAILY_USER_LIMIT}次，請翌日再試。"
+            if scope == "user_daily" else "本月全系統圖片上載申請已達上限。"
+        )
+        raise HTTPException(429, message)
     return {
         "upload_token": token,
         "original": {
-            "url": r2_storage.presign_put(original_key, body.mime_type, body.sha256),
+            "url": r2_storage.presign_put(original_key, body.mime_type, body.sha256, body.byte_size),
             "key": original_key,
             "headers": {"x-amz-meta-sha256": body.sha256.lower()},
         },
         "thumbnail": {
-            "url": r2_storage.presign_put(thumbnail_key, body.mime_type, body.thumbnail_sha256),
+            "url": r2_storage.presign_put(thumbnail_key, body.mime_type, body.thumbnail_sha256, body.thumbnail_byte_size),
             "key": thumbnail_key,
             "headers": {"x-amz-meta-sha256": body.thumbnail_sha256.lower()},
         },
@@ -163,6 +178,10 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
             original = r2_storage.head(claim["r2_key"])
             thumbnail = r2_storage.head(claim["thumbnail_r2_key"])
         except Exception as exc:
+            for key in (claim.get("r2_key"), claim.get("thumbnail_r2_key")):
+                if key:
+                    try: r2_storage.delete(key)
+                    except Exception: pass
             raise HTTPException(400, "R2 未能確認圖片已完成上載。") from exc
         original_sha = str((original.get("Metadata") or {}).get("sha256") or "")
         thumb_sha = str((thumbnail.get("Metadata") or {}).get("sha256") or "")
@@ -174,12 +193,18 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
             or original_sha != claim["sha256"]
             or thumb_sha != claim["thumbnail_sha256"]
         ):
+            for key in (claim["r2_key"], claim["thumbnail_r2_key"]):
+                try: r2_storage.delete(key)
+                except Exception: pass
             raise HTTPException(400, "R2 圖片大小或雜湊驗證失敗。")
         files.append(claim)
-    return logic.register_r2_photos(
+    result = logic.register_r2_photos(
         user_id, body.album_label, body.match_video_id, body.photo_date,
         body.photo_title, body.caption, files, db=db,
     )
+    for claim in files:
+        r2_storage.complete_upload_intent(db, str(claim.get("intent_id") or ""))
+    return result
 
 
 @router.get("/image/{photo_id}")

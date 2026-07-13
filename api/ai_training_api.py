@@ -44,6 +44,8 @@ ADMIN_RECORDING_PAGE_SIZE = 5
 SUPPORTED_AUDIO_MIMES = {"audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"}
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(2 * 1024 * 1024)))
 MAX_AUDIO_MB = max(1, MAX_AUDIO_BYTES // (1024 * 1024))
+TTS_UPLOAD_INTENTS_PER_USER_DAY = int(os.getenv("TTS_UPLOAD_INTENTS_PER_USER_DAY", "30"))
+TTS_UPLOAD_INTENTS_GLOBAL_MONTH = int(os.getenv("TTS_UPLOAD_INTENTS_GLOBAL_MONTH", "1000"))
 TTS_REVIEW_SEMAPHORE = asyncio.Semaphore(max(1, int(os.getenv("TTS_REVIEW_CONCURRENCY", "2"))))
 
 # Kept here (rather than in the browser) so every fresh database is usable.
@@ -75,8 +77,8 @@ class RecordingBody(BaseModel):
     mime_type: str = "audio/webm"
     duration_seconds: int = 0
     manual_review: bool = False
-    ai_review: dict | None = None
     r2_upload_token: str = ""
+    review_token: str = ""
 
 
 class RecordingUploadIntentBody(BaseModel):
@@ -289,6 +291,9 @@ def _verified_r2_audio_claim(body, user):
     """Verify one short-lived upload claim and its R2 object without DB binary fallback."""
     from core import r2_storage
     from deploy.proxy import _get_relay_cookie_secret
+    review_secret = _get_relay_cookie_secret()
+    if not review_secret:
+        raise HTTPException(503, "錄音驗證服務暫時不可用")
 
     if not r2_storage.configured():
         raise HTTPException(503, "Cloudflare R2 尚未完成設定，錄音功能已暫停")
@@ -313,6 +318,10 @@ def _verified_r2_audio_claim(body, user):
         or int(remote.get("ContentLength") or 0) != int(claim["byte_size"])
         or remote_sha != claim["sha256"] or remote_mime != claim["mime_type"]
     ):
+        try:
+            r2_storage.delete(claim["r2_key"])
+        except Exception:
+            pass
         raise HTTPException(400, "R2 錄音格式、大小或雜湊驗證失敗")
     return claim
 
@@ -400,7 +409,8 @@ def data(request: Request):
     try: rd_plan = plan_path.read_text(encoding="utf-8").strip()
     except OSError: rd_plan = "研發計劃書暫時未能讀取。"
     from core import r2_storage
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured()}
+    from deploy.proxy import bandwidth_budget_status
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True)}
     if admin:
         result["recordings"] = []; result["submissions"] = []
     return result
@@ -518,18 +528,31 @@ def recording_upload_intent(body: RecordingUploadIntentBody, request: Request):
         raise HTTPException(409, "此句已有待審核或已接受錄音，請勿重複提交")
     safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", str(user))[:48] or "member"
     ext = _audio_ext(mime)
-    key = f"audio/tts/{safe_user}/{uuid.uuid4().hex}.{ext}"
+    intent_id = uuid.uuid4().hex
+    key = f"audio/tts/{safe_user}/{intent_id}.{ext}"
     secret = _get_relay_cookie_secret()
     if not secret:
         raise HTTPException(503, "系統簽署設定不可用。")
     token = r2_storage.sign_upload_claim({
-        "kind": "tts", "user": str(user), "script_id": body.script_id,
+        "kind": "tts", "intent_id": intent_id, "user": str(user), "script_id": body.script_id,
         "mime_type": mime, "byte_size": body.byte_size,
         "sha256": body.sha256.lower(), "r2_key": key,
     }, secret, expires=600)
+    reserved, scope = r2_storage.reserve_upload_intent(
+        db, intent_id=intent_id, user_id=str(user), media_kind="tts",
+        object_keys=[key], declared_bytes=body.byte_size,
+        user_daily_limit=TTS_UPLOAD_INTENTS_PER_USER_DAY,
+        global_monthly_limit=TTS_UPLOAD_INTENTS_GLOBAL_MONTH,
+    )
+    if not reserved:
+        message = (
+            "你今日申請的錄音上載次數已達上限，請翌日再試。"
+            if scope == "user_daily" else "本月全系統錄音上載申請已達上限。"
+        )
+        raise HTTPException(429, message)
     return {
         "upload_token": token,
-        "url": r2_storage.presign_put(key, mime, body.sha256),
+        "url": r2_storage.presign_put(key, mime, body.sha256, body.byte_size),
         "headers": {
             "Content-Type": mime,
             "Cache-Control": "private, max-age=86400",
@@ -592,22 +615,32 @@ def recording(body: RecordingBody, request: Request):
     if not duplicate.empty:
         raise HTTPException(409, "此句已有待審核或已接受錄音，請勿重複提交")
     from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
     claim = _verified_r2_audio_claim(body, user)
     mime = claim["mime_type"]
     r2_key = claim["r2_key"]
-    probe = (body.ai_review or {}).get("probe") or {}
-    if not probe:
-        audio = r2_storage.download_bytes(r2_key)
-        probe = _probe_audio(audio, mime, body.duration_seconds)
+    # Always derive technical metadata from the verified object. Never trust a
+    # browser-supplied probe, duration, transcript or provider verdict.
+    audio = r2_storage.download_bytes(r2_key)
+    probe = _probe_audio(audio, mime, body.duration_seconds)
     size_bytes = int(claim["byte_size"])
     audio_sha = claim["sha256"]
-    review = body.ai_review or {}
-    provider_review = review.get("review") if isinstance(review.get("review"), dict) else {}
-    if not body.manual_review and not (
-        review.get("ok") is True and review.get("status") == "passed"
-        and provider_review.get("passed") is True and provider_review.get("matches_prompt") is True
-    ):
-        raise HTTPException(400, "錄音未通過 AI 音質及稿件一致性檢查")
+    trusted_review = {"manual_review": True}
+    if not body.manual_review:
+        signed_review = r2_storage.verify_upload_claim(
+            body.review_token or "", review_secret
+        )
+        if (
+            not signed_review or signed_review.get("kind") != "tts_review"
+            or signed_review.get("user") != str(user)
+            or signed_review.get("script_id") != body.script_id
+            or signed_review.get("r2_key") != r2_key
+            or signed_review.get("sha256") != audio_sha
+            or signed_review.get("passed") is not True
+            or signed_review.get("matches_prompt") is not True
+        ):
+            raise HTTPException(400, "錄音未通過已簽署的AI音質及稿件一致性檢查")
+        trusted_review = signed_review.get("review") if isinstance(signed_review.get("review"), dict) else {}
     review_status = "error" if body.manual_review else "passed"
     db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_RECORDINGS}
                    (speaker_user_id,script_id,prompt_text,r2_key,mime_type,file_ext,size_bytes,
@@ -619,8 +652,9 @@ def recording(body: RecordingBody, request: Request):
                 "r2_key":r2_key or None,"mime":mime,"ext":_audio_ext(mime),"size":size_bytes,"duration":int(body.duration_seconds),
                 "sha":audio_sha,"measured":probe.get("duration"),"sample_rate":probe.get("sample_rate"),
                 "channels":probe.get("channels"),"detected":probe.get("format"),"review_status":review_status,
-                "review_json":json.dumps(body.ai_review or {},ensure_ascii=False),
-                "transcript":str((body.ai_review or {}).get("transcript") or ""),"now":datetime.now()})
+                "review_json":json.dumps(trusted_review,ensure_ascii=False),
+                "transcript":str(trusted_review.get("transcript") or ""),"now":datetime.now()})
+    r2_storage.complete_upload_intent(db, str(claim.get("intent_id") or ""))
     return {"ok":True, "message":"錄音已提交，等待人工審核。"}
 
 
@@ -632,6 +666,9 @@ async def recording_quality_check(body: RecordingBody, request: Request):
     format, duration and byte-size safeguards.
     """
     user, db = _ctx(request)
+    from deploy.proxy import _bandwidth_essential_gate_error
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error: raise HTTPException(429, budget_error)
     if user not in _users(db, ALLOWED_KEY): raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
     consent = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user": user, "version": CONSENT_VERSION})
     if consent.empty: raise HTTPException(400, "請先確認錄音同意")
@@ -679,8 +716,20 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         and review.get("noise_level") in ("low", "medium") and not bool(review.get("clipping"))
     )
     review["passed"] = bool(passed)
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+    review_secret = _get_relay_cookie_secret()
+    if not review_secret:
+        raise HTTPException(503, "錄音驗證服務暫時不可用")
+    review_token = r2_storage.sign_upload_claim({
+        "kind": "tts_review", "user": str(user), "script_id": body.script_id,
+        "r2_key": claim["r2_key"], "sha256": claim["sha256"],
+        "passed": bool(passed), "matches_prompt": bool(review.get("matches_prompt")),
+        "review": review,
+    }, review_secret, expires=900)
     return {"ok": passed, "status": "passed" if passed else "failed", "problems": review.get("problems") or [],
             "transcript": review.get("transcript") or "", "review": review, "probe": probe,
+            "review_token": review_token,
             "message": review.get("note") or ("AI 音質檢查通過。" if passed else "AI 音質檢查未通過。")}
 
 

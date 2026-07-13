@@ -116,6 +116,7 @@
             <div class="split">
               <section class="card">
                 <h2>錄音提交</h2>
+                <p class="caption">每段錄音須為 1–60 秒及不超過 2MB；檔案會直接上載至 Cloudflare R2，不會經 Render 傳送。</p>
                 <label
                   >錄音模式<select id="scriptType">
                     <option value="short">短句練習</option>
@@ -263,6 +264,15 @@
           <p class="caption">
             集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。
           </p>
+          <details open>
+            <summary>📊 AI 訓練容量及匯出限制</summary>
+            <p id="trainingBandwidthUsage" class="caption">正在讀取本月系統用量…</p>
+            <ul>
+              <li>每段錄音限 1–60 秒及 2MB；每人每日最多申請三十個錄音上載連結，全系統每月最多一千個；技術資料會由伺服器重新檢測，並須通過已簽署的 AI 預檢或人工覆核。</li>
+              <li>錄音檔案及管理員下載均使用 R2 直連。系統不再建立經 Render 傳送的 ZIP，以免再次消耗 Render RAM 及 outbound bandwidth；管理員可取得一小時有效的 R2 下載清單。</li>
+              <li>達 3.5GB 時停止新的 Gemini Live／聯機房間；達 4.0GB 時暫停非必要 AI 處理，但 R2 錄音、JSON 清單及管理功能維持運作。</li>
+            </ul>
+          </details>
           <section class="card">
             <h2>AI訓練 Readiness</h2>
             <div id="readinessSummary" class="caption">載入中…</div>

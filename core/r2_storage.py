@@ -14,8 +14,12 @@ import hmac
 import json
 import os
 import time
+import datetime as dt
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import text
 
 import tomllib
 
@@ -87,9 +91,13 @@ def _params(key: str) -> dict:
     return {"Bucket": settings()["bucket"], "Key": key}
 
 
-def presign_put(key: str, mime_type: str, sha256: str, expires: int = 300) -> str:
+def presign_put(key: str, mime_type: str, sha256: str, byte_size: int, expires: int = 300) -> str:
+    size = int(byte_size)
+    if size <= 0:
+        raise ValueError("byte_size must be positive")
     params = {
         **_params(key),
+        "ContentLength": size,
         "ContentType": mime_type,
         "CacheControl": "private, max-age=86400",
         "Metadata": {"sha256": sha256},
@@ -138,6 +146,54 @@ def download_bytes(key: str) -> bytes:
 
 def delete(key: str) -> None:
     client().delete_object(**_params(key))
+
+
+def reserve_upload_intent(
+    db, *, intent_id: str, user_id: str, media_kind: str, object_keys: list[str],
+    declared_bytes: int, user_daily_limit: int, global_monthly_limit: int,
+) -> tuple[bool, str]:
+    """Persistently cap issued PUT URLs, including uploads never finalized."""
+    from schema import CREATE_R2_UPLOAD_INTENTS, TABLE_R2_UPLOAD_INTENTS
+
+    now_hk = dt.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    day_hk = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_hk = day_hk.replace(day=1)
+    now_utc = now_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    day_utc = day_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    month_utc = month_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    with db.transaction() as session:
+        session.execute(text(CREATE_R2_UPLOAD_INTENTS))
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_quota'))"))
+        user_count = int(session.execute(text(f"""SELECT COUNT(*)
+            FROM {TABLE_R2_UPLOAD_INTENTS}
+            WHERE user_id=:user AND media_kind=:kind AND created_at>=:start"""), {
+            "user": user_id, "kind": media_kind, "start": day_utc,
+        }).scalar() or 0)
+        if user_count >= int(user_daily_limit):
+            return False, "user_daily"
+        global_count = int(session.execute(text(f"""SELECT COUNT(*)
+            FROM {TABLE_R2_UPLOAD_INTENTS}
+            WHERE media_kind=:kind AND created_at>=:start"""), {
+            "kind": media_kind, "start": month_utc,
+        }).scalar() or 0)
+        if global_count >= int(global_monthly_limit):
+            return False, "global_monthly"
+        session.execute(text(f"""INSERT INTO {TABLE_R2_UPLOAD_INTENTS}
+            (intent_id,user_id,media_kind,object_keys,declared_bytes,status,created_at)
+            VALUES(:id,:user,:kind,:keys,:bytes,'issued',:now)"""), {
+            "id": intent_id, "user": user_id, "kind": media_kind,
+            "keys": json.dumps(object_keys, separators=(",", ":")),
+            "bytes": int(declared_bytes), "now": now_utc,
+        })
+    return True, ""
+
+
+def complete_upload_intent(db, intent_id: str) -> None:
+    from schema import TABLE_R2_UPLOAD_INTENTS
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    db.execute(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+        SET status='completed',completed_at=:now
+        WHERE intent_id=:id AND status='issued'""", {"id": intent_id, "now": now})
 
 
 def _b64url(data: bytes) -> str:

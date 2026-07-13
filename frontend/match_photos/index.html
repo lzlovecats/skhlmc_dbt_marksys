@@ -241,6 +241,15 @@
           </li>
         </ul>
       </details>
+      <details>
+        <summary>📊 相片容量及上載限額</summary>
+        <p id="photoBandwidthUsage" class="caption">登入後顯示本月系統用量。</p>
+        <ul>
+          <li>每次最多上載五張；每名委員每日最多二十張；全系統每月最多五百張。</li>
+          <li>每張原圖最多 2MB、最長邊 2,000px；縮圖最多 300KB、最長邊 480px。圖片會由瀏覽器直接上載至 Cloudflare R2。</li>
+          <li>上載連結會綁定檔案大小及雜湊值；未完成登記或驗證失敗的檔案會被清理，以免佔用儲存空間。</li>
+        </ul>
+      </details>
       <div id="loading" class="notice">載入中…</div>
       <section id="login" class="card login hidden">
         <h2>內部委員會成員登入</h2>
@@ -277,6 +286,7 @@
               accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
             />
+            <p class="caption">每次最多五張；每張原圖最多 2MB，系統會建立不超過 300KB 的縮圖。</p>
             <div id="uploadMessage"></div>
             <button class="primary" type="submit">上載圖片</button>
           </form>
@@ -388,6 +398,8 @@
           $("loading").classList.add("hidden");
           $("login").classList.add("hidden");
           $("app").classList.remove("hidden");
+          const budget = state.bandwidth_budget || {};
+          $("photoBandwidthUsage").textContent = `本月系統已記錄約 ${(Number(budget.total_bytes || 0) / 1e9).toFixed(2)}GB；目前保護階段：${budget.stage || 0}。`;
           $("album").innerHTML = state.albums
             .map(
               (a) =>

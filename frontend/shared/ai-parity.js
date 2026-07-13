@@ -462,6 +462,9 @@
   async function boot() {
     try {
       meta = await api("/api/ai-coach/data");
+      const budget = meta.bandwidth_budget || {};
+      const usedGb = Number(budget.total_bytes || 0) / 1e9;
+      $("bandwidthUsage").textContent = `本月系統已記錄約 ${usedGb.toFixed(2)}GB；目前保護階段：${budget.stage || 0}。`;
       $("globalModel").innerHTML = meta.models.map(model => `<option value="${esc(model.label)}" ${model.label === meta.default_model ? "selected" : ""}>${esc(model.selection_label ? `${model.label}（${model.selection_label}）` : model.label)}</option>`).join("");
       document.querySelectorAll("[data-topic-source]").forEach(topicSource);
       $("login").classList.add("hidden");

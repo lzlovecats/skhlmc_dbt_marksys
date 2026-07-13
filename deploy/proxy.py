@@ -27,11 +27,15 @@ from starlette.websockets import WebSocketDisconnect
 
 from schema import (
     CREATE_AI_FUND_USAGE_LOGS,
+    CREATE_BANDWIDTH_USAGE_LOGS,
     CREATE_PRACTICE_DAILY_USAGE,
     CREATE_PUSH_SUBSCRIPTIONS,
+    CREATE_SYSTEM_CONFIG,
     CREATE_VIDEO_PROGRESS,
     CREATE_VIDEO_VIEWS,
+    MEDIA_R2_STARTUP_MIGRATIONS,
     TABLE_AI_FUND_USAGE_LOGS,
+    TABLE_BANDWIDTH_USAGE_LOGS,
     TABLE_PRACTICE_DAILY_USAGE,
     TABLE_PUSH_SUBSCRIPTIONS,
     TABLE_VIDEO_PROGRESS,
@@ -80,6 +84,17 @@ CACHE_STATIC = "public, max-age=31536000, immutable"
 
 app = FastAPI()
 MAX_HTTP_BODY_BYTES = int(os.getenv("MAX_HTTP_BODY_BYTES", str(5 * 1024 * 1024)))
+ESSENTIAL_ONLY_BLOCKED_PATHS = {
+    "/api/ai-coach/run",
+    "/api/ai-training/llm",
+    "/api/ai-training/recordings/quality-check",
+    "/api/ai-training/coverage/ai",
+    "/api/ai-training/regenerate-suggestions",
+    "/api/ai-training/rag/reindex",
+    "/api/tts/azure",
+    "/api/vote/ai-review",
+    "/api/vote/analysis/ai",
+}
 
 
 @app.middleware("http")
@@ -93,6 +108,16 @@ async def reject_oversized_http_bodies(request: Request, call_next):
         return JSONResponse(
             {"detail": "Request body exceeds the 5MB server limit"}, status_code=413
         )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def enforce_essential_only_budget(request: Request, call_next):
+    """At 4GB, block provider calls while retaining pages, JSON, R2 and admin."""
+    if request.url.path in ESSENTIAL_ONLY_BLOCKED_PATHS:
+        budget_error = _bandwidth_essential_gate_error()
+        if budget_error:
+            return JSONResponse({"detail": budget_error}, status_code=429)
     return await call_next(request)
 
 
@@ -214,6 +239,18 @@ def _get_db_engine():
             finally:
                 cursor.close()
     return _db_engine
+
+
+@app.on_event("startup")
+def run_safe_startup_migrations():
+    """Apply only the R2 compatibility DDL required before media endpoints run."""
+    engine = _get_db_engine()
+    if engine is None:
+        logger.warning("Skipping startup migrations: database is not configured")
+        return
+    with engine.begin() as conn:
+        for ddl in MEDIA_R2_STARTUP_MIGRATIONS:
+            conn.execute(text(ddl))
 
 
 class _ProxyDb:
@@ -858,6 +895,9 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
 @app.post("/api/tts/azure")
 async def azure_tts(request: Request):
     _require_committee_user(request)
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error:
+        raise HTTPException(status_code=429, detail=budget_error)
 
     try:
         payload = await request.json()
@@ -1452,7 +1492,10 @@ _practice_live_hits: dict = {}
 _PRACTICE_LIVE_MAX_PER_HOUR = 30
 _PRACTICE_LIVE_MIN_GAP_SEC = 3
 SOLO_FREE_MONTHLY_LIMIT = int(os.getenv("SOLO_FREE_MONTHLY_LIMIT", "20"))
-SOLO_MOCK_MONTHLY_LIMIT = int(os.getenv("SOLO_MOCK_MONTHLY_LIMIT", "4"))
+SOLO_MOCK_MONTHLY_LIMIT = int(os.getenv("SOLO_MOCK_MONTHLY_LIMIT", "10"))
+BANDWIDTH_WARN_BYTES = int(os.getenv("BANDWIDTH_WARN_BYTES", "3000000000"))
+BANDWIDTH_STOP_LIVE_BYTES = int(os.getenv("BANDWIDTH_STOP_LIVE_BYTES", "3500000000"))
+BANDWIDTH_ESSENTIAL_ONLY_BYTES = int(os.getenv("BANDWIDTH_ESSENTIAL_ONLY_BYTES", "4000000000"))
 
 SOLO_LIMIT_MESSAGE = (
     "由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，"
@@ -1463,6 +1506,116 @@ GLOBAL_LIVE_LIMIT_MESSAGE = (
     "由於本月全系統的網絡傳輸量預算有限，Gemini Live練習名額已用完。"
     "為確保一般系統功能維持正常，請於下月再試或聯絡系統管理員。"
 )
+BANDWIDTH_STOP_MESSAGE = (
+    "由於本月全系統網絡傳輸量已達3.5GB預算上限，系統已停止建立新的Gemini Live"
+    "練習及聯機房間。一般功能、R2媒體及管理功能維持正常。"
+)
+BANDWIDTH_ESSENTIAL_MESSAGE = (
+    "由於本月全系統網絡傳輸量已達4.0GB保護上限，本功能暫停使用。"
+    "目前只保留一般HTML、JSON、R2媒體及管理功能。"
+)
+
+
+def _bandwidth_month_context():
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    start_hk = now_hk.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return (
+        now_hk.strftime("%Y-%m"),
+        start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+    )
+
+
+def bandwidth_budget_status(*, notify: bool = False) -> dict:
+    """Return tracked high-bandwidth egress plus an optional Render baseline."""
+    engine = _get_db_engine()
+    period, start_utc = _bandwidth_month_context()
+    tracked = 0
+    if engine is not None:
+        with engine.begin() as conn:
+            conn.execute(text(CREATE_BANDWIDTH_USAGE_LOGS))
+            tracked = int(conn.execute(text(f"""SELECT COALESCE(SUM(bytes_out),0)
+                FROM {TABLE_BANDWIDTH_USAGE_LOGS} WHERE created_at>=:start"""),
+                {"start": start_utc}).scalar() or 0)
+    baseline = max(0, int(_get_proxy_secret("BANDWIDTH_MONTH_BASE_BYTES", "0") or 0))
+    total = baseline + tracked
+    stage = 4 if total >= BANDWIDTH_ESSENTIAL_ONLY_BYTES else 3.5 if total >= BANDWIDTH_STOP_LIVE_BYTES else 3 if total >= BANDWIDTH_WARN_BYTES else 0
+    status = {
+        "period": period, "baseline_bytes": baseline, "tracked_bytes": tracked,
+        "total_bytes": total, "stage": stage,
+        "warn_bytes": BANDWIDTH_WARN_BYTES,
+        "stop_live_bytes": BANDWIDTH_STOP_LIVE_BYTES,
+        "essential_only_bytes": BANDWIDTH_ESSENTIAL_ONLY_BYTES,
+    }
+    if notify:
+        _send_bandwidth_warning_once(status)
+    return status
+
+
+def _send_bandwidth_warning_once(status: dict) -> None:
+    if status["total_bytes"] < BANDWIDTH_WARN_BYTES:
+        return
+    engine = _get_db_engine()
+    if engine is None:
+        return
+    marker = f"bandwidth_3gb_push_sent:{status['period']}"
+    claimed = False
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
+    with engine.begin() as conn:
+        conn.execute(text(CREATE_SYSTEM_CONFIG))
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('bandwidth_3gb_push'))"))
+        exists = conn.execute(text("SELECT 1 FROM system_config WHERE key=:key"), {"key": marker}).fetchone()
+        if not exists:
+            conn.execute(text("""INSERT INTO system_config(key,value,updated_at)
+                VALUES(:key,:value,:now)"""), {
+                "key": marker, "value": str(status["total_bytes"]), "now": now,
+            })
+            conn.execute(text("""INSERT INTO system_config(key,value,updated_at)
+                VALUES('bandwidth_developer_warning',:value,:now)
+                ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at"""), {
+                "value": json.dumps(status, ensure_ascii=False), "now": now,
+            })
+            claimed = True
+    if not claimed:
+        return
+    logger.warning("Monthly bandwidth warning reached: %s", status)
+    try:
+        from core.push import notify_committee
+        notify_committee(
+            get_vote_db(), _get_vapid(), "⚠️ 系統網絡傳輸量提示",
+            "本月全系統網絡傳輸量已達3.0GB。為控制營運預算，達3.5GB後將停止新的Gemini Live及聯機房間。",
+            tag=f"bandwidth-warning-{status['period']}", url="/",
+        )
+    except Exception:
+        logger.exception("Failed to send committee bandwidth warning")
+
+
+def record_bandwidth_usage(source: str, byte_count: int, user_id: str = "", details: str = "") -> None:
+    count = max(0, int(byte_count or 0))
+    if not count:
+        return
+    engine = _get_db_engine()
+    if engine is None:
+        return
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        conn.execute(text(CREATE_BANDWIDTH_USAGE_LOGS))
+        conn.execute(text(f"""INSERT INTO {TABLE_BANDWIDTH_USAGE_LOGS}
+            (source,user_id,bytes_out,details,created_at)
+            VALUES(:source,:user,:bytes,:details,:now)"""), {
+            "source": str(source)[:80], "user": user_id or None,
+            "bytes": count, "details": str(details or "")[:500], "now": now,
+        })
+    _send_bandwidth_warning_once(bandwidth_budget_status())
+
+
+def _bandwidth_live_gate_error() -> str | None:
+    status = bandwidth_budget_status(notify=True)
+    return BANDWIDTH_STOP_MESSAGE if status["total_bytes"] >= BANDWIDTH_STOP_LIVE_BYTES else None
+
+
+def _bandwidth_essential_gate_error() -> str | None:
+    status = bandwidth_budget_status(notify=True)
+    return BANDWIDTH_ESSENTIAL_MESSAGE if status["total_bytes"] >= BANDWIDTH_ESSENTIAL_ONLY_BYTES else None
 
 
 def _practice_live_rate_check(user_id: str):
@@ -1478,19 +1631,35 @@ def _practice_live_rate_check(user_id: str):
     return None
 
 
+def _solo_quota_boundaries(now_hk: datetime.datetime, is_mock: bool):
+    """Return UTC-naive user and month boundaries for HKT calendar quotas."""
+    month_start_hk = now_hk.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    user_start_hk = (
+        (now_hk - datetime.timedelta(days=now_hk.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        if is_mock else now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    return (
+        user_start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+        month_start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+    )
+
+
 def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     """Enforce persistent per-user and global quotas before minting Live tokens."""
+    budget_error = _bandwidth_live_gate_error()
+    if budget_error:
+        return budget_error
     engine = _get_db_engine()
     if engine is None:
         return "Database is not configured"
-    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
     is_mock = mode == "mock"
     feature = "full_mock_live" if is_mock else "free_debate_live"
-    user_start = (
-        (now - datetime.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-        if is_mock else now.replace(hour=0, minute=0, second=0, microsecond=0)
-    )
+    # created_at is stored as UTC-naive. Convert Hong Kong calendar boundaries
+    # to UTC before comparing so midnight/week/month edges cannot bypass quota.
+    user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
     global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
     with engine.begin() as conn:
         conn.execute(text(CREATE_AI_FUND_USAGE_LOGS))
@@ -1664,7 +1833,7 @@ async def appliance_ai_debate_live(request: Request):
             live_minutes = float(q.get("minutes") or 5)
         except (TypeError, ValueError):
             live_minutes = 5.0
-        live_minutes = min(5.0, max(0.5, live_minutes))
+        live_minutes = min(10.0, max(0.5, live_minutes))
     else:
         live_minutes = 2.5
 
@@ -1726,6 +1895,9 @@ async def gemini_live_relay(websocket: WebSocket):
     # Google。
     if not _verify_relay_signature(token, sig):
         await websocket.close(code=1008)
+        return
+    if _bandwidth_live_gate_error():
+        await websocket.close(code=1008, reason="本月網絡傳輸量已達Live保護上限")
         return
 
     await websocket.accept()
@@ -1790,9 +1962,14 @@ async def gemini_live_relay(websocket: WebSocket):
             for task in done:
                 task.result()
         except WebSocketDisconnect:
-            return
+            pass
         except Exception as e:
             logger.exception("Gemini Live relay failed: %s", e)
+
+    await asyncio.to_thread(
+        record_bandwidth_usage, "solo_gemini_relay", relayed_bytes, "",
+        f"close_code={backend.close_code or 0}",
+    )
 
     # 把 Google 嘅 close code / reason 傳返畀瀏覽器，令前端 formatCloseMessage
     # 對 token 過期(1008)等情況嘅提示照樣有效。1005/1006 唔可以明文送出，改用
@@ -1848,8 +2025,8 @@ PRACTICE_DAILY_LIMIT_MESSAGE = (
     "每位委員每日只可進行一次聯機自由辯論及一次聯機完整模擬練習。"
     "你今日已使用此類別的練習限額，請於翌日再試。"
 )
-MULTIPLAYER_FREE_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_FREE_MONTHLY_ROOMS", "10"))
-MULTIPLAYER_MOCK_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_MOCK_MONTHLY_ROOMS", "3"))
+MULTIPLAYER_FREE_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_FREE_MONTHLY_ROOMS", "20"))
+MULTIPLAYER_MOCK_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_MOCK_MONTHLY_ROOMS", "10"))
 
 
 def _practice_kind(structure: str) -> str:
@@ -1869,6 +2046,18 @@ def _reserve_practice_daily_slot(user_id: str, structure: str, room_code: str) -
     kind = _practice_kind(structure)
     with engine.begin() as conn:
         conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('practice_room_monthly_quota'))"))
+        room_exists = bool(conn.execute(text(f"SELECT 1 FROM {TABLE_PRACTICE_DAILY_USAGE} WHERE room_code=:room LIMIT 1"), {"room": room_code}).fetchone())
+        if not room_exists:
+            month_start = usage_date.replace(day=1)
+            limit = MULTIPLAYER_MOCK_MONTHLY_ROOMS if structure == "mock" else MULTIPLAYER_FREE_MONTHLY_ROOMS
+            room_count = int(conn.execute(text(f"""SELECT COUNT(DISTINCT room_code)
+                FROM {TABLE_PRACTICE_DAILY_USAGE}
+                WHERE practice_kind=:kind AND usage_date>=:start"""), {
+                "kind": kind, "start": month_start,
+            }).scalar() or 0)
+            if room_count >= limit:
+                return False
         conn.execute(text(f"""INSERT INTO {TABLE_PRACTICE_DAILY_USAGE}
             (user_id,practice_kind,usage_date,room_code,created_at)
             VALUES(:user,:kind,:day,:room,:now)
@@ -1882,6 +2071,20 @@ def _reserve_practice_daily_slot(user_id: str, structure: str, room_code: str) -
             "user": user_id, "kind": kind, "day": usage_date,
         }).scalar()
     return str(existing or "") == str(room_code)
+
+
+def _release_practice_daily_slot(user_id: str, structure: str, room_code: str) -> None:
+    """Release only this creator's provisional slot after room setup fails."""
+    engine = _get_db_engine()
+    if engine is None:
+        return
+    usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    with engine.begin() as conn:
+        conn.execute(text(f"""DELETE FROM {TABLE_PRACTICE_DAILY_USAGE}
+            WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day AND room_code=:room"""), {
+            "user": user_id, "kind": _practice_kind(structure),
+            "day": usage_date, "room": room_code,
+        })
 
 
 def _practice_daily_slot_available(user_id: str, structure: str) -> bool:
@@ -2005,6 +2208,11 @@ class Room:
         self.gemini_ws = None
         self.gemini_task = None
         self.tick_task = None
+        # Approximate Render egress for this room.  We count successful
+        # websocket fan-out plus payloads sent from Render to Gemini, then write
+        # one aggregate row when the room ends or is garbage-collected.
+        self.bandwidth_bytes = 0
+        self.bandwidth_recorded = False
         # Server-side TTS: when on, the pump synthesizes the AI's transcript via
         # _synthesize_tts and broadcasts one audio blob to the whole room (synced,
         # one call/turn), keeping Gemini native audio as fallback. Set at gemini start.
@@ -2103,6 +2311,16 @@ class Room:
         }
 
 
+def _record_room_bandwidth_once(room):
+    if room.bandwidth_recorded:
+        return
+    room.bandwidth_recorded = True
+    record_bandwidth_usage(
+        f"multiplayer_{room.structure}", room.bandwidth_bytes,
+        room.created_by, f"room={room.code};mode={room.mode}",
+    )
+
+
 def _gc_rooms():
     now = _now_ms()
     for code in list(ROOMS.keys()):
@@ -2110,6 +2328,7 @@ def _gc_rooms():
         if room is None:
             continue
         if now - room.created_at > ROOM_MAX_AGE_MS:
+            _record_room_bandwidth_once(room)
             ROOMS.pop(code, None)
             continue
         if any(m.connected for m in room.members.values()):
@@ -2118,6 +2337,7 @@ def _gc_rooms():
             if room.empty_since is None:
                 room.empty_since = now
             elif now - room.empty_since > ROOM_EMPTY_GRACE_MS:
+                _record_room_bandwidth_once(room)
                 ROOMS.pop(code, None)
 
 
@@ -2135,11 +2355,20 @@ async def _room_broadcast(room, msg, exclude=None):
             # A stalled mobile client must not block audio fan-out to everyone
             # else.  The next reconnect rehydrates room state and transcript.
             await asyncio.wait_for(member.ws.send_text(text), timeout=1.0)
+            room.bandwidth_bytes += len(text.encode("utf-8"))
         except Exception:
             member.connected = False
 
     if recipients:
         await asyncio.gather(*(send(member) for member in recipients))
+
+
+async def _room_gemini_send(room, gws, payload):
+    encoded = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
+    await gws.send(encoded)
+    room.bandwidth_bytes += (
+        len(encoded) if isinstance(encoded, bytes) else len(encoded.encode("utf-8"))
+    )
 
 
 async def _room_tick(room):
@@ -2313,7 +2542,7 @@ async def _room_start_gemini_if_needed(room):
         }
     }
     try:
-        await gws.send(json.dumps(setup))
+        await _room_gemini_send(room, gws, setup)
     except Exception as e:
         logger.exception("room Gemini setup failed (%s): %s", room.code, e)
     room.gemini_task = asyncio.create_task(_room_gemini_pump(room, gws))
@@ -2502,10 +2731,10 @@ async def _room_forward_audio_to_gemini(room, member, data, mime):
     if gws is None or not data:
         return
     try:
-        await gws.send(json.dumps({
+        await _room_gemini_send(room, gws, {
             "realtimeInput": {"audio": {"data": data,
                                         "mimeType": mime or "audio/pcm;rate=16000"}}
-        }))
+        })
     except Exception:
         pass
 
@@ -2558,10 +2787,10 @@ async def _room_cue_ai_segment(room, seg):
         "word_max": word_max,
     }) + ctx
     try:
-        await gws.send(json.dumps({"clientContent": {
+        await _room_gemini_send(room, gws, {"clientContent": {
             "turns": [{"role": "user", "parts": [{"text": cue}]}],
             "turnComplete": True,
-        }}))
+        }})
         await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
                                      "speaking": True})
     except Exception:
@@ -2685,7 +2914,9 @@ async def _room_handle_turn(room, member, speaking):
     if room.mode == "B" and room.is_open_free_segment() and room.gemini_ws is not None:
         try:
             key = "activityStart" if speaking else "activityEnd"
-            await room.gemini_ws.send(json.dumps({"realtimeInput": {key: {}}}))
+            await _room_gemini_send(
+                room, room.gemini_ws, {"realtimeInput": {key: {}}},
+            )
         except Exception:
             pass
     # Mock structure: after a human finishes a 雙方 (free-debate) turn, cue the AI
@@ -2713,6 +2944,11 @@ async def _room_handle_transcript(room, member, msg):
 
 
 async def _room_request_judgement(room):
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error:
+        room.judgement = budget_error
+        await _room_broadcast(room, {"type": "judgement", "text": budget_error})
+        return
     if not room.transcript:
         result = "暫時未有逐字稿，AI 評判未能判定哪一方勝出。請先完成發言，或使用支援語音轉文字的瀏覽器。"
         room.judgement = result
@@ -2864,6 +3100,7 @@ async def _room_handle_message(room, member, msg):
             room.tick_task.cancel()
         await _room_close_gemini(room)
         await _room_broadcast(room, {"type": "ended"})
+        await asyncio.to_thread(_record_room_bandwidth_once, room)
         return
 
     if mtype in ("turn_begin", "turn_end"):
@@ -2922,6 +3159,9 @@ async def _room_handle_message(room, member, msg):
 @app.post("/api/room/create")
 async def room_create(request: Request):
     user_id = _require_committee_user(request)
+    budget_error = _bandwidth_live_gate_error()
+    if budget_error:
+        raise HTTPException(status_code=429, detail=budget_error)
     _gc_rooms()
     if _active_room_count() >= MAX_ROOMS:
         raise HTTPException(status_code=429, detail="太多練習房，請稍後再試")
@@ -2953,6 +3193,10 @@ async def room_create(request: Request):
         free_minutes = float(payload.get("free_minutes") or 2.5)
     except Exception:
         free_minutes = 2.5
+    # The browser is not authoritative over practice duration.  Without this
+    # clamp a crafted room-create request could keep a Free De room running far
+    # beyond the advertised ten-minute cap and consume the monthly budget.
+    free_minutes = min(10.0, max(0.5, free_minutes))
     if mode == "A":
         capacity = 2
     elif structure == "mock":
@@ -2972,6 +3216,10 @@ async def room_create(request: Request):
     if code is None:
         raise HTTPException(status_code=503, detail="未能產生房間代碼，請再試。")
 
+    # Reserve before minting Gemini tokens. Concurrent create requests can no
+    # longer both spend tokens and only discover the quota conflict afterwards.
+    if not _reserve_practice_daily_slot(user_id, structure, code):
+        raise HTTPException(status_code=429, detail=PRACTICE_DAILY_LIMIT_MESSAGE)
     room = Room(code, mode, user_id, debate_format, topic, structure, free_minutes, capacity)
     if mode == "A":
         side = payload.get("side")
@@ -3012,6 +3260,7 @@ async def room_create(request: Request):
                         duration, start_delay_minutes=planned_elapsed_minutes
                     )
                     if not token:
+                        _release_practice_daily_slot(user_id, structure, code)
                         raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
                     tokens.append(token)
                     planned_elapsed_minutes += session_minutes
@@ -3024,14 +3273,13 @@ async def room_create(request: Request):
             else:
                 token, mint_error = _mint_gemini_live_token(14, start_delay_minutes=30)
                 if not token:
+                    _release_practice_daily_slot(user_id, structure, code)
                     raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
                 tokens = [token]
                 session_labels = []
             room.gemini = {"tokens": tokens, "sigs": {}, "prompt": prompt,
                            "model": FREE_DEBATE_LIVE_MODEL,
                            "session_labels": session_labels}
-    if not _reserve_practice_daily_slot(user_id, structure, code):
-        raise HTTPException(status_code=429, detail=PRACTICE_DAILY_LIMIT_MESSAGE)
     ROOMS[code] = room
     return {"ok": True, "code": code, "mode": mode}
 

@@ -52,6 +52,8 @@ TABLE_LATENESS_FUND_EXPENSES = "lateness_fund_expenses"
 TABLE_LATENESS_FUND_PERIODS = "lateness_fund_periods"
 TABLE_BUG_REPORTS = "bug_reports"
 TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
+TABLE_BANDWIDTH_USAGE_LOGS = "bandwidth_usage_logs"
+TABLE_R2_UPLOAD_INTENTS = "r2_upload_intents"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
@@ -564,6 +566,36 @@ CREATE TABLE IF NOT EXISTS {TABLE_PRACTICE_DAILY_USAGE} (
     created_at    TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (user_id, practice_kind, usage_date),
     CONSTRAINT fk_practice_daily_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+CREATE_BANDWIDTH_USAGE_LOGS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_BANDWIDTH_USAGE_LOGS} (
+    id          BIGSERIAL PRIMARY KEY,
+    source      TEXT NOT NULL,
+    user_id     TEXT,
+    bytes_out   BIGINT NOT NULL CHECK (bytes_out >= 0),
+    details     TEXT,
+    created_at  TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT fk_bandwidth_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+CREATE_R2_UPLOAD_INTENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
+    intent_id       TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    media_kind      TEXT NOT NULL,
+    object_keys     TEXT NOT NULL,
+    declared_bytes  BIGINT NOT NULL CHECK (declared_bytes > 0),
+    status          TEXT NOT NULL DEFAULT 'issued',
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMP,
+    CONSTRAINT fk_r2_upload_intent_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
 );
@@ -1097,6 +1129,10 @@ CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bandwidth_usage_created
+    ON {TABLE_BANDWIDTH_USAGE_LOGS}(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_r2_upload_intents_quota
+    ON {TABLE_R2_UPLOAD_INTENTS}(media_kind, user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
     ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active
@@ -1183,6 +1219,8 @@ ALL_SCHEMAS = [
     CREATE_LATENESS_FUND_PERIODS,     # no deps
     CREATE_BUG_REPORTS,               # → accounts
     CREATE_PRACTICE_DAILY_USAGE,       # → accounts
+    CREATE_BANDWIDTH_USAGE_LOGS,        # → accounts
+    CREATE_R2_UPLOAD_INTENTS,           # → accounts
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
@@ -1201,7 +1239,25 @@ ALL_SCHEMAS = [
 # (regardless of its name — old DBs use the auto-generated `*_fkey` name, newer
 # ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
 # that deleting/removing a topic also clears its removal-vote row and ballots.
+MEDIA_R2_STARTUP_MIGRATIONS = [
+    f"""DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema=current_schema() AND table_name='{TABLE_MATCH_PHOTOS}'
+                   AND column_name='image_data') THEN
+            ALTER TABLE {TABLE_MATCH_PHOTOS} ALTER COLUMN image_data DROP NOT NULL;
+        END IF;
+    END $$""",
+    f"""DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema=current_schema() AND table_name='{TABLE_TTS_VOICE_RECORDINGS}'
+                   AND column_name='audio_data') THEN
+            ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ALTER COLUMN audio_data DROP NOT NULL;
+        END IF;
+    END $$""",
+]
+
 MIGRATIONS = [
+    *MEDIA_R2_STARTUP_MIGRATIONS,
     f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
     f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS thumbnail_r2_key TEXT",
     f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS byte_size INTEGER",
