@@ -52,7 +52,6 @@ _CREATE_INDEX = re.compile(
 _RUNTIME_DDL_FILE_ALLOWLIST = {
     "api/ai_training_api.py",
     "core/config_store.py",
-    "core/r2_storage.py",
     "deploy/proxy.py",
 }
 _RUNTIME_DDL_REFERENCE_ALLOWLIST = {
@@ -63,22 +62,13 @@ _RUNTIME_DDL_REFERENCE_ALLOWLIST = {
     "CREATE_AI_MODEL_VERSIONS",
     "CREATE_AI_TRAINING_AUDIT",
     "CREATE_APP_CONFIG",
-    "CREATE_BANDWIDTH_USAGE_LOGS",
-    "CREATE_PRACTICE_DAILY_USAGE",
-    "CREATE_R2_UPLOAD_INTENTS",
     "CREATE_RAG_CHUNKS",
     "CREATE_RAG_DOCUMENTS",
-    "MEDIA_R2_STARTUP_MIGRATIONS",
-    "RUNTIME_OWNED_STARTUP_DDL",
 }
 _RUNTIME_DDL_DIRECT_ALLOWLIST = {"ALTER TABLE"}
-_RUNTIME_DDL_INDIRECT_ALLOWLIST = {
-    "ALTER TABLE",
-    "CREATE INDEX",
-    "CREATE TABLE",
-}
-_RUNTIME_INDEX_ALLOWLIST = {"idx_ai_coach_prepare_usage_user_created"}
-_RUNTIME_DDL_SITE_BUDGET = 21
+_RUNTIME_DDL_INDIRECT_ALLOWLIST: set[str] = set()
+_RUNTIME_INDEX_ALLOWLIST: set[str] = set()
+_RUNTIME_DDL_SITE_BUDGET = 12
 _NON_COLUMN_PREFIXES = {
     "CHECK",
     "CONSTRAINT",
@@ -171,10 +161,6 @@ def declared_inventory() -> dict:
         for name, value in vars(bootstrap_schema).items()
         if name.startswith("CREATE_") and isinstance(value, str)
     ]
-    ddl_values.extend(
-        value for value in getattr(bootstrap_schema, "MIGRATIONS", [])
-        if isinstance(value, str)
-    )
     for ddl in ddl_values:
         for table, names in _table_columns(ddl).items():
             tables.add(table)

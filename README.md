@@ -38,7 +38,7 @@ deploy/proxy.py ── app組裝／static／Live rooms ───────┘
 - `api/`：HTTP payload、權限、pagination及response。
 - `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
 - `deploy/proxy.py`：FastAPI app、靜態路由、WebSocket relay/rooms及process runtime。
-- `schema.py`：新環境bootstrap及凍結中的歷史retrofit；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理。
+- `schema.py`：只供新、空database bootstrap；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理，runtime不再執行舊式retrofit清單。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
 詳細domain/table地圖、production database audit及架構債見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。未完成的RLS、自家TTS、自家LLM、migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。

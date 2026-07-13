@@ -15,8 +15,7 @@ from schema import (
     CREATE_PRACTICE_DAILY_USAGE,
     CREATE_R2_UPLOAD_INTENTS,
     CREATE_TTS_VOICE_RECORDINGS,
-    MIGRATIONS,
-    MEDIA_R2_STARTUP_MIGRATIONS,
+    init_db,
 )
 
 
@@ -84,15 +83,13 @@ class MediaSchemaTests(unittest.TestCase):
         weekly, _ = proxy._solo_quota_boundaries(now, True)
         self.assertEqual(weekly, datetime.datetime(2026, 6, 28, 16, 0))
 
-    def test_automatic_migrations_drop_legacy_not_null_only_if_columns_exist(self):
-        migrations = "\n".join(MIGRATIONS)
-        self.assertIn("column_name='image_data'", migrations)
-        self.assertIn("ALTER COLUMN image_data DROP NOT NULL", migrations)
-        self.assertIn("column_name='audio_data'", migrations)
-        self.assertIn("ALTER COLUMN audio_data DROP NOT NULL", migrations)
-        self.assertEqual(MIGRATIONS[:2], MEDIA_R2_STARTUP_MIGRATIONS)
+    def test_bootstrap_and_startup_do_not_run_legacy_retrofits(self):
         startup = inspect.getsource(proxy.run_safe_startup_migrations)
-        self.assertIn("MEDIA_R2_STARTUP_MIGRATIONS", startup)
+        bootstrap = inspect.getsource(init_db)
+        self.assertNotIn("MEDIA_R2_STARTUP_MIGRATIONS", startup)
+        self.assertNotIn("run_migrations", bootstrap)
+        self.assertNotIn("ALTER COLUMN image_data", startup + bootstrap)
+        self.assertNotIn("ALTER COLUMN audio_data", startup + bootstrap)
 
     def test_bandwidth_ledger_and_thresholds_are_present(self):
         self.assertIn("bytes_out", CREATE_BANDWIDTH_USAGE_LOGS)

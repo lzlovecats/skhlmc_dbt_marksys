@@ -31,6 +31,21 @@ _MIGRATION_FILE = re.compile(
     r"(?P<version>\d{8}_\d{4})_(?P<name>[a-z][a-z0-9_]*)"
     r"\.(?P<direction>up|down)\.sql"
 )
+_CREATE_TABLE_STATEMENT = re.compile(
+    r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_$]*)\.)?"
+    r"(?P<table>[A-Za-z_][A-Za-z0-9_$]*)\b",
+    re.IGNORECASE,
+)
+_REVOKE_TABLE_STATEMENT = re.compile(
+    r"\bREVOKE\s+ALL\s+PRIVILEGES\s+ON\s+TABLE\s+"
+    r"(?P<tables>.*?)\s+FROM\s+(?P<roles>[^;]+);",
+    re.IGNORECASE | re.DOTALL,
+)
+_BROWSER_ROLES = {"public", "anon", "authenticated"}
+_LEGACY_PRIVILEGE_COMPANIONS = {
+    "20260713_0001": "20260713_0002",
+}
 _BASELINE_FIELDS = {
     "version",
     "name",
@@ -288,6 +303,53 @@ def validate_catalog(
                 f"migration {migration.version} must be newer than baseline {baseline.version}"
             )
         seen.add(migration.version)
+    by_version = {migration.version: migration for migration in migrations}
+    for migration in migrations:
+        created = created_table_names(migration.up_sql)
+        if not created:
+            continue
+        policy_sql = migration.up_sql
+        companion_version = _LEGACY_PRIVILEGE_COMPANIONS.get(migration.version)
+        if companion_version:
+            companion = by_version.get(companion_version)
+            if companion is None:
+                raise ValueError(
+                    f"migration {migration.version} is missing browser-privilege "
+                    f"companion {companion_version}"
+                )
+            policy_sql += "\n" + companion.up_sql
+        revoked = browser_privilege_revokes(policy_sql)
+        missing = sorted(created - revoked)
+        if missing:
+            raise ValueError(
+                f"migration {migration.version} creates tables without explicit "
+                f"PUBLIC/anon/authenticated revoke: {', '.join(missing)}"
+            )
+
+
+def created_table_names(sql: str) -> set[str]:
+    """Return unquoted table names created by a migration."""
+    return {
+        match.group("table")
+        for match in _CREATE_TABLE_STATEMENT.finditer(sql)
+    }
+
+
+def browser_privilege_revokes(sql: str) -> set[str]:
+    """Return tables whose Supabase browser-role grants are fully revoked."""
+    revoked = set()
+    for match in _REVOKE_TABLE_STATEMENT.finditer(sql):
+        roles = {
+            role.strip().strip('"').lower()
+            for role in match.group("roles").split(",")
+        }
+        if not _BROWSER_ROLES.issubset(roles):
+            continue
+        for raw_table in match.group("tables").split(","):
+            table = raw_table.strip().strip('"').rsplit(".", 1)[-1].strip('"')
+            if _IDENTIFIER.fullmatch(table):
+                revoked.add(table)
+    return revoked
 
 
 def expected_records(

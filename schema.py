@@ -631,7 +631,10 @@ CREATE_AI_COACH_PREPARE_USAGE = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_PREPARE_USAGE} (
     id         BIGSERIAL PRIMARY KEY,
     user_id    TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL,
+    CONSTRAINT fk_ai_coach_prepare_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
 );
 """
 
@@ -639,13 +642,6 @@ CREATE_AI_COACH_PREPARE_USAGE_INDEX = f"""
 CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
     ON {TABLE_AI_COACH_PREPARE_USAGE}(user_id, created_at DESC);
 """
-
-RUNTIME_OWNED_STARTUP_DDL = (
-    CREATE_PROJECTOR_STATE,
-    CREATE_AI_COACH_LIVE_BRIEFS,
-    CREATE_AI_COACH_PREPARE_USAGE,
-    CREATE_AI_COACH_PREPARE_USAGE_INDEX,
-)
 
 # Table: TTS_SCRIPTS
 # Recording script bank, editable by TTS recording admins. Seeded from the
@@ -1304,116 +1300,9 @@ ALL_SCHEMAS = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────
-# Idempotent migrations
-# ─────────────────────────────────────────────────────────────
-# `CREATE TABLE IF NOT EXISTS` cannot retrofit constraint changes onto tables
-# that already exist, so older databases keep whatever constraints they were
-# first created with. These migrations bring existing databases up to date.
-# Each statement must be safe to run repeatedly.
-#
-# Historical compatibility statements remain here until P1 replaces this list
-# with versioned migrations. New changes must not be appended to this list.
-MEDIA_R2_STARTUP_MIGRATIONS = [
-    f"""DO $$ BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_schema=current_schema() AND table_name='{TABLE_MATCH_PHOTOS}'
-                   AND column_name='image_data') THEN
-            ALTER TABLE {TABLE_MATCH_PHOTOS} ALTER COLUMN image_data DROP NOT NULL;
-        END IF;
-    END $$""",
-    f"""DO $$ BEGIN
-        IF EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_schema=current_schema() AND table_name='{TABLE_TTS_VOICE_RECORDINGS}'
-                   AND column_name='audio_data') THEN
-            ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ALTER COLUMN audio_data DROP NOT NULL;
-        END IF;
-    END $$""",
-]
-
-MIGRATIONS = [
-    *MEDIA_R2_STARTUP_MIGRATIONS,
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS thumbnail_r2_key TEXT",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS byte_size INTEGER",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS sha256 TEXT",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS width INTEGER",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS height INTEGER",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS voice_cloning_confirmed BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS cloud_processing_confirmed BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS guardian_confirmed BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS is_minor BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS audio_sha256 TEXT",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS measured_duration_seconds NUMERIC",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS channel_count INTEGER",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS detected_format TEXT",
-    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS script_type TEXT DEFAULT 'short'",
-    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_id TEXT",
-    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_title TEXT",
-    f"""
-    CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
-        ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order)
-    """,
-    f"CREATE INDEX IF NOT EXISTS idx_snapshot_items_source ON {TABLE_AI_DATASET_SNAPSHOT_ITEMS}(source_table, source_id)",
-    f"CREATE INDEX IF NOT EXISTS idx_models_type_status ON {TABLE_AI_MODEL_VERSIONS}(model_type, status)",
-    f"CREATE INDEX IF NOT EXISTS idx_rag_documents_status ON {TABLE_RAG_DOCUMENTS}(status, data_type)",
-    f"CREATE INDEX IF NOT EXISTS idx_rag_chunks_document ON {TABLE_RAG_CHUNKS}(document_id, chunk_index)",
-    "CREATE EXTENSION IF NOT EXISTS vector",
-    f"ALTER TABLE {TABLE_RAG_CHUNKS} ADD COLUMN IF NOT EXISTS embedding vector(768)",
-    f"""
-    DO $$
-    DECLARE cname text;
-    BEGIN
-        SELECT conname INTO cname
-        FROM pg_constraint
-        WHERE conrelid = '{TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}'::regclass
-          AND contype = 'f'
-          AND confrelid = '{TABLE_TOPIC_REMOVAL_VOTES}'::regclass;
-        IF cname IS NOT NULL THEN
-            EXECUTE format('ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} DROP CONSTRAINT %I', cname);
-        END IF;
-        ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
-            ADD CONSTRAINT fk_topic_removal_vote_ballots_topic
-            FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPIC_REMOVAL_VOTES}(topic_text) ON DELETE CASCADE;
-    END $$;
-    """,
-]
-
-
-def run_migrations(conn) -> list[str]:
-    """Run each idempotent migration in its own transaction.
-
-    A failure in one migration is isolated (rolled back and logged) so it does
-    not block the others. Returns a per-statement result log.
-    """
-    results = []
-    uses_session = hasattr(conn, "session")
-    for ddl in MIGRATIONS:
-        label = " ".join(ddl.split())[:70]
-        try:
-            if uses_session:
-                with conn.session as s:
-                    s.execute(text(ddl))
-                    s.commit()
-            else:
-                conn.execute(text(ddl))
-                conn.commit()
-            results.append(f"OK: {label}")
-        except Exception as e:
-            if not uses_session:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            results.append(f"ERR: {label} -> {e}")
-    return results
-
-
 def init_db(conn) -> None:
     """
-    Create all tables if they do not already exist, then run migrations.
+    Bootstrap all current tables for a new, empty database.
 
     Parameters
     ----------
@@ -1437,6 +1326,3 @@ def init_db(conn) -> None:
         for ddl in ALL_SCHEMAS:
             conn.execute(text(ddl))
         conn.commit()
-
-    # Retrofit constraint changes onto pre-existing tables.
-    run_migrations(conn)

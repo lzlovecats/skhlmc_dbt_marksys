@@ -88,11 +88,9 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
             {
                 "api/ai_training_api.py",
                 "core/config_store.py",
-                "core/r2_storage.py",
-                "deploy/proxy.py",
             },
         )
-        self.assertEqual(len(sites), 21)
+        self.assertEqual(len(sites), 12)
         self.assertEqual(
             set(inventory["references"]),
             reconciliation._RUNTIME_DDL_REFERENCE_ALLOWLIST,
@@ -101,10 +99,7 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
             set(inventory["direct_statements"]),
             {"ALTER TABLE"},
         )
-        self.assertEqual(
-            set(inventory["indirect_statements"]),
-            {"ALTER TABLE", "CREATE INDEX", "CREATE TABLE"},
-        )
+        self.assertEqual(inventory["indirect_statements"], {})
         self.assertEqual(
             inventory["policy_violations"],
             {
@@ -117,10 +112,7 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
             },
         )
         self.assertFalse(any(site.startswith("core/db_migrations.py:") for site in sites))
-        self.assertEqual(
-            set(inventory["indexes"]),
-            {"idx_ai_coach_prepare_usage_user_created"},
-        )
+        self.assertEqual(inventory["indexes"], {})
 
 
 if __name__ == "__main__":

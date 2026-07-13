@@ -9,7 +9,6 @@ from schema import (
     CREATE_AI_COACH_PREPARE_USAGE,
     CREATE_AI_COACH_PREPARE_USAGE_INDEX,
     CREATE_PROJECTOR_STATE,
-    RUNTIME_OWNED_STARTUP_DDL,
 )
 
 
@@ -22,7 +21,6 @@ class RuntimeSchemaOwnershipTests(unittest.TestCase):
             CREATE_AI_COACH_PREPARE_USAGE_INDEX,
         ):
             self.assertIn(ddl, ALL_SCHEMAS)
-            self.assertIn(ddl, RUNTIME_OWNED_STARTUP_DDL)
 
     def test_ai_coach_requests_do_not_run_schema_ddl(self):
         source = inspect.getsource(ai_coach_api)
@@ -39,9 +37,10 @@ class RuntimeSchemaOwnershipTests(unittest.TestCase):
             self.assertNotIn("CREATE TABLE", source)
             self.assertNotIn("_ensure_projector_table", source)
 
-    def test_startup_owns_compatibility_creation(self):
+    def test_startup_does_not_recreate_migration_owned_runtime_tables(self):
         startup = inspect.getsource(proxy.run_safe_startup_migrations)
-        self.assertIn("RUNTIME_OWNED_STARTUP_DDL", startup)
+        self.assertNotIn("RUNTIME_OWNED_STARTUP_DDL", startup)
+        self.assertNotIn("CREATE_AI_COACH_PREPARE_USAGE", startup)
 
 
 if __name__ == "__main__":

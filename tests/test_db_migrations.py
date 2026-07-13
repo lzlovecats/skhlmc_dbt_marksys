@@ -35,6 +35,48 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
         self.assertEqual(baseline.source_table_count, 42)
         self.assertEqual(len(baseline.source_schema_checksum), 64)
         self.assertTrue(all(item.version > baseline.version for item in migrations))
+        self.assertEqual(
+            [(item.version, item.name) for item in migrations],
+            [
+                ("20260713_0001", "provision_resource_guards"),
+                ("20260713_0002", "lock_resource_guard_privileges"),
+            ],
+        )
+
+    def test_resource_guard_migration_is_strict_additive_and_paired(self):
+        _baseline, migrations = manager.load_catalog()
+        migration = migrations[0]
+        for table in (
+            "practice_daily_usage",
+            "bandwidth_usage_logs",
+            "r2_upload_intents",
+            "ai_coach_prepare_usage",
+        ):
+            self.assertIn(f"CREATE TABLE {table}", migration.up_sql)
+            self.assertIn(f"DROP TABLE {table}", migration.down_sql)
+        for index in (
+            "idx_bandwidth_usage_created",
+            "idx_r2_upload_intents_quota",
+            "idx_ai_coach_prepare_usage_user_created",
+        ):
+            self.assertIn(f"CREATE INDEX {index}", migration.up_sql)
+        self.assertNotIn("IF NOT EXISTS", migration.up_sql)
+        self.assertNotIn("DROP ", migration.up_sql)
+        self.assertNotIn("CASCADE", migration.down_sql)
+        self.assertIn("fk_ai_coach_prepare_usage_user", migration.up_sql)
+
+    def test_resource_guard_browser_privileges_are_explicitly_revoked(self):
+        _baseline, migrations = manager.load_catalog()
+        migration = migrations[1]
+        self.assertEqual(migration.name, "lock_resource_guard_privileges")
+        for role in ("PUBLIC", "anon", "authenticated"):
+            self.assertIn(role, migration.up_sql)
+        for object_kind in ("TABLE", "SEQUENCE"):
+            self.assertIn(
+                f"REVOKE ALL PRIVILEGES ON {object_kind}",
+                migration.up_sql,
+            )
+        self.assertNotIn("TO PUBLIC", migration.down_sql)
 
     def test_discovers_paired_migration_and_hashes_both_directions(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -110,6 +152,32 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "duplicate migration version"):
             db_migrations.validate_catalog(baseline, [migration])
+
+    def test_catalog_rejects_new_table_without_browser_role_revoke(self):
+        with tempfile.TemporaryDirectory() as folder:
+            baseline = db_migrations.load_baseline_manifest(
+                write_manifest(Path(folder))
+            )
+        migration = db_migrations.Migration(
+            version="20260714_0001",
+            name="unsafe_table",
+            up_sql="CREATE TABLE unsafe_table (id integer);",
+            down_sql="DROP TABLE unsafe_table;",
+            checksum="b" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "without explicit"):
+            db_migrations.validate_catalog(baseline, [migration])
+
+    def test_browser_role_revoke_parser_requires_all_roles(self):
+        sql = """
+        REVOKE ALL PRIVILEGES ON TABLE public.safe_table
+        FROM PUBLIC, anon, authenticated;
+        REVOKE ALL PRIVILEGES ON TABLE partial_table FROM anon;
+        """
+        self.assertEqual(
+            db_migrations.browser_privilege_revokes(sql),
+            {"safe_table"},
+        )
 
 
 class DatabaseMigrationHistoryTests(unittest.TestCase):

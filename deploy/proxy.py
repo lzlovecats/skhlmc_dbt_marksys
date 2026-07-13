@@ -28,10 +28,6 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from schema import (
-    CREATE_BANDWIDTH_USAGE_LOGS,
-    CREATE_PRACTICE_DAILY_USAGE,
-    MEDIA_R2_STARTUP_MIGRATIONS,
-    RUNTIME_OWNED_STARTUP_DDL,
     TABLE_AI_FUND_USAGE_LOGS,
     TABLE_BANDWIDTH_USAGE_LOGS,
     TABLE_PRACTICE_DAILY_USAGE,
@@ -305,10 +301,6 @@ def run_safe_startup_migrations():
                 "removing system_config",
                 config_result["unknown"],
             )
-        for ddl in MEDIA_R2_STARTUP_MIGRATIONS:
-            conn.execute(text(ddl))
-        for ddl in RUNTIME_OWNED_STARTUP_DDL:
-            conn.execute(text(ddl))
 
 
 def get_vote_db():
@@ -1615,7 +1607,6 @@ def bandwidth_budget_status(*, notify: bool = False) -> dict:
     tracked = 0
     if engine is not None:
         with engine.begin() as conn:
-            conn.execute(text(CREATE_BANDWIDTH_USAGE_LOGS))
             tracked = int(conn.execute(text(f"""SELECT COALESCE(SUM(bytes_out),0)
                 FROM {TABLE_BANDWIDTH_USAGE_LOGS} WHERE created_at>=:start"""),
                 {"start": start_utc}).scalar() or 0)
@@ -1718,7 +1709,6 @@ def record_bandwidth_usage(
     details = str(details or "")[:500]
     aggregate_key = str(aggregate_key or "")[:400]
     with engine.begin() as conn:
-        conn.execute(text(CREATE_BANDWIDTH_USAGE_LOGS))
         params = {
             "source": source, "user": user, "insert_user": user or None,
             "bytes": count, "details": details, "now": now,
@@ -2345,7 +2335,6 @@ def _reserve_room_practice_slots(user_ids, structure: str, room_code: str) -> bo
     usage_date = now_hk.date()
     kind = _practice_kind(structure)
     with engine.begin() as conn:
-        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('practice_room_monthly_quota'))"))
         conn.execute(text(f"DELETE FROM {TABLE_PRACTICE_DAILY_USAGE} WHERE usage_date<:month_start"),
                      {"month_start": usage_date.replace(day=1)})
@@ -2406,7 +2395,6 @@ def _practice_daily_slot_available(user_id: str, structure: str) -> bool:
         raise HTTPException(status_code=503, detail="Database is not configured")
     usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
     with engine.begin() as conn:
-        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
         used = conn.execute(text(f"""SELECT 1 FROM {TABLE_PRACTICE_DAILY_USAGE}
             WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day"""), {
             "user": user_id, "kind": _practice_kind(structure), "day": usage_date,
@@ -2422,7 +2410,6 @@ def _practice_monthly_room_available(structure: str) -> bool:
     month_start = today.replace(day=1)
     limit = MULTIPLAYER_MOCK_MONTHLY_ROOMS if structure == "mock" else MULTIPLAYER_FREE_MONTHLY_ROOMS
     with engine.begin() as conn:
-        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
         used = int(conn.execute(text(f"""SELECT COUNT(DISTINCT room_code)
             FROM {TABLE_PRACTICE_DAILY_USAGE}
             WHERE practice_kind=:kind AND usage_date>=:start"""), {

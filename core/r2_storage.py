@@ -219,8 +219,7 @@ def bucket_usage_bytes() -> int:
 
 
 def _intent_declared_bytes(db) -> int:
-    from schema import CREATE_R2_UPLOAD_INTENTS, TABLE_R2_UPLOAD_INTENTS
-    db.execute(CREATE_R2_UPLOAD_INTENTS)
+    from schema import TABLE_R2_UPLOAD_INTENTS
     rows = db.query(f"""SELECT COALESCE(SUM(declared_bytes),0) AS total
         FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")
     return int(rows.iloc[0]["total"] or 0) if not rows.empty else 0
@@ -281,7 +280,7 @@ def reserve_upload_intent(
     storage_stop_bytes: int = R2_STORAGE_STOP_BYTES,
 ) -> tuple[bool, str]:
     """Persistently cap issued PUT URLs, including uploads never finalized."""
-    from schema import CREATE_R2_UPLOAD_INTENTS, TABLE_R2_UPLOAD_INTENTS
+    from schema import TABLE_R2_UPLOAD_INTENTS
 
     now_hk = dt.datetime.now(ZoneInfo("Asia/Hong_Kong"))
     day_hk = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -290,7 +289,6 @@ def reserve_upload_intent(
     day_utc = day_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
     month_utc = month_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
     with db.transaction() as session:
-        session.execute(text(CREATE_R2_UPLOAD_INTENTS))
         session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_quota'))"))
         session.execute(text(f"""DELETE FROM {TABLE_R2_UPLOAD_INTENTS}
             WHERE status IN ('completed','orphan_deleted') AND completed_at<:cutoff"""),
