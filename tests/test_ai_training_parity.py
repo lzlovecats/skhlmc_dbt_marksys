@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from api.ai_training_api import (
     DEFAULT_SCRIPT_BANK,
+    _has_active_voice_consent,
     _require_rag_vector_schema,
     _segments,
 )
@@ -103,3 +104,25 @@ def test_rag_vector_schema_is_read_only_and_fails_closed():
     api = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
     assert "CREATE EXTENSION IF NOT EXISTS vector" not in api
     assert "ADD COLUMN IF NOT EXISTS embedding" not in api
+
+
+def test_active_voice_consent_requires_all_explicit_confirmations():
+    class Db:
+        def __init__(self, active):
+            self.active = active
+            self.sql = ""
+
+        def query(self, sql, params=None):
+            self.sql = sql
+            return pd.DataFrame([{"ok": 1}]) if self.active else pd.DataFrame()
+
+    ready = Db(True)
+    assert _has_active_voice_consent(ready, "member") is True
+    for marker in (
+        "voice_cloning_confirmed=TRUE",
+        "cloud_processing_confirmed=TRUE",
+        "is_minor=FALSE OR guardian_confirmed=TRUE",
+        "withdrawn_at IS NULL",
+    ):
+        assert marker in ready.sql
+    assert _has_active_voice_consent(Db(False), "member") is False

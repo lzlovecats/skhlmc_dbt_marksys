@@ -252,17 +252,6 @@ def _initialize_training_schema(db):
                 {"id":case["case_id"],"task":case["task_type"],"title":case["title"],
                  "input":_json_param(case["input"]),"rubric":_json_param(case["rubric"]),
                  "reference":case.get("reference_text")})
-    for ddl in (
-        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS voice_cloning_confirmed BOOLEAN DEFAULT FALSE",
-        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS cloud_processing_confirmed BOOLEAN DEFAULT FALSE",
-        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS is_minor BOOLEAN DEFAULT FALSE",
-        f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS guardian_confirmed BOOLEAN DEFAULT FALSE",
-        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS measured_duration_seconds NUMERIC",
-        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER",
-        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS channel_count INTEGER",
-        f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS detected_format TEXT",
-    ):
-        db.execute(ddl)
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_TTS_SCRIPTS}")
     if count.empty or int(count.iloc[0]["n"] or 0) == 0:
         for order, (script_id, category, value) in enumerate(DEFAULT_SCRIPT_BANK):
@@ -279,6 +268,19 @@ def _users(db, key):
 
 
 def _is_admin(db, user): return user in _users(db, REVIEWERS_KEY)
+
+
+def _has_active_voice_consent(db, user) -> bool:
+    consent = db.query(
+        f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} "
+        "WHERE user_id=:user AND consent_version=:version "
+        "AND withdrawn_at IS NULL "
+        "AND voice_cloning_confirmed=TRUE "
+        "AND cloud_processing_confirmed=TRUE "
+        "AND (is_minor=FALSE OR guardian_confirmed=TRUE) LIMIT 1",
+        {"user": user, "version": CONSENT_VERSION},
+    )
+    return not consent.empty
 
 
 def _rows(frame):
@@ -500,7 +502,7 @@ def _log_ai(user, db, feature, success, response_data=None, error=""):
 def data(request: Request):
     user, db = _ctx(request)
     allowed, admin = user in _users(db, ALLOWED_KEY), _is_admin(db, user)
-    consent = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user": user, "version": CONSENT_VERSION})
+    consented = _has_active_voice_consent(db, user)
     scripts = _rows(db.query(f"SELECT script_id AS id,category,text,is_active,sort_order,COALESCE(script_type,'short') AS script_type,manuscript_id,manuscript_title FROM {TABLE_TTS_SCRIPTS} WHERE is_active=TRUE ORDER BY category,sort_order,script_id LIMIT :inventory_limit", {"inventory_limit": AI_TRAINING_INVENTORY_LIMIT}))
     lexicon = []
     # Recorder selection only needs one status per script; full history is paged below.
@@ -509,7 +511,7 @@ def data(request: Request):
     rd_plan = _load_ai_roadmap()
     from core import r2_storage
     from deploy.proxy import bandwidth_budget_status
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": not consent.empty, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
     result["limits"] = {
         "max_audio_bytes": MAX_AUDIO_BYTES,
         "max_duration_seconds": TTS_MAX_DURATION_SECONDS,
@@ -609,12 +611,7 @@ def recording_upload_intent(body: RecordingUploadIntentBody, request: Request):
     if storage_budget["blocked"]:
         stop_gb = storage_budget["stop_bytes"] / 1_000_000_000
         raise HTTPException(429, f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新錄音上載。")
-    consent = db.query(
-        f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user "
-        "AND consent_version=:version AND withdrawn_at IS NULL",
-        {"user": user, "version": CONSENT_VERSION},
-    )
-    if consent.empty:
+    if not _has_active_voice_consent(db, user):
         raise HTTPException(400, "請先確認錄音同意")
     mime = (body.mime_type or "").split(";", 1)[0].lower()
     if mime not in SUPPORTED_AUDIO_MIMES:
@@ -715,8 +712,7 @@ def withdraw(request: Request):
 def recording(body: RecordingBody, request: Request):
     user, db = _ctx(request)
     if user not in _users(db, ALLOWED_KEY): raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
-    active = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user":user,"version":CONSENT_VERSION})
-    if active.empty: raise HTTPException(400, "請先確認錄音同意")
+    if not _has_active_voice_consent(db, user): raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id":body.script_id})
     if script.empty: raise HTTPException(404, "錄音句子不存在或已停用")
     duplicate = db.query(
@@ -807,8 +803,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
     budget_error = _bandwidth_essential_gate_error()
     if budget_error: raise HTTPException(429, budget_error)
     if user not in _users(db, ALLOWED_KEY): raise HTTPException(403, "你未獲加入 TTS 錄音收集名單")
-    consent = db.query(f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user": user, "version": CONSENT_VERSION})
-    if consent.empty: raise HTTPException(400, "請先確認錄音同意")
+    if not _has_active_voice_consent(db, user): raise HTTPException(400, "請先確認錄音同意")
     script = db.query(f"SELECT text FROM {TABLE_TTS_SCRIPTS} WHERE script_id=:id AND is_active=TRUE", {"id": body.script_id})
     if script.empty: raise HTTPException(404, "錄音句子不存在或已停用")
     duplicate = db.query(

@@ -511,10 +511,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_CONSENTS} (
     consent_text     TEXT        NOT NULL,
     consented_at     TIMESTAMP   DEFAULT NOW(),
     withdrawn_at     TIMESTAMP,
-    voice_cloning_confirmed BOOLEAN DEFAULT FALSE,
-    cloud_processing_confirmed BOOLEAN DEFAULT FALSE,
-    is_minor         BOOLEAN DEFAULT FALSE,
-    guardian_confirmed BOOLEAN DEFAULT FALSE,
+    voice_cloning_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    cloud_processing_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    is_minor         BOOLEAN NOT NULL DEFAULT FALSE,
+    guardian_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (user_id, consent_version),
     CONSTRAINT fk_tts_voice_consents_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)

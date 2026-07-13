@@ -40,6 +40,7 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
             [
                 ("20260713_0001", "provision_resource_guards"),
                 ("20260713_0002", "lock_resource_guard_privileges"),
+                ("20260713_0003", "add_tts_consent_metadata"),
             ],
         )
 
@@ -77,6 +78,31 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
                 migration.up_sql,
             )
         self.assertNotIn("TO PUBLIC", migration.down_sql)
+
+    def test_tts_consent_metadata_migration_is_privacy_safe_and_additive(self):
+        _baseline, migrations = manager.load_catalog()
+        migration = migrations[2]
+        self.assertEqual(migration.name, "add_tts_consent_metadata")
+        for column in (
+            "voice_cloning_confirmed",
+            "cloud_processing_confirmed",
+            "is_minor",
+            "guardian_confirmed",
+        ):
+            self.assertIn(
+                f"ADD COLUMN {column} BOOLEAN NOT NULL DEFAULT FALSE",
+                migration.up_sql,
+            )
+            self.assertIn(f"DROP COLUMN {column}", migration.down_sql)
+        for column in (
+            "measured_duration_seconds",
+            "sample_rate_hz",
+            "channel_count",
+            "detected_format",
+        ):
+            self.assertIn(f"ADD COLUMN {column}", migration.up_sql)
+            self.assertIn(f"DROP COLUMN {column}", migration.down_sql)
+        self.assertNotIn("UPDATE ", migration.up_sql)
 
     def test_discovers_paired_migration_and_hashes_both_directions(self):
         with tempfile.TemporaryDirectory() as folder:

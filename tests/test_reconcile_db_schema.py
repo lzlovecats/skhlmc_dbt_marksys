@@ -90,15 +90,12 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
                 "core/config_store.py",
             },
         )
-        self.assertEqual(len(sites), 12)
+        self.assertEqual(len(sites), 4)
         self.assertEqual(
             set(inventory["references"]),
             reconciliation._RUNTIME_DDL_REFERENCE_ALLOWLIST,
         )
-        self.assertEqual(
-            set(inventory["direct_statements"]),
-            {"ALTER TABLE"},
-        )
+        self.assertEqual(inventory["direct_statements"], {})
         self.assertEqual(inventory["indirect_statements"], {})
         self.assertEqual(
             inventory["policy_violations"],
