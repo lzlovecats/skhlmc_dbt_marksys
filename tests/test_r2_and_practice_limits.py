@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from api import ai_training_api
+from api import ai_coach_api, ai_training_api
 from core import r2_storage
 from deploy import proxy
 from schema import (
@@ -104,6 +104,39 @@ class MediaSchemaTests(unittest.TestCase):
             "/api/ai-training/rag/reindex", "/api/vote/ai-review",
         ):
             self.assertIn(path, proxy.ESSENTIAL_ONLY_BLOCKED_PATHS)
+        self.assertEqual(proxy.BANDWIDTH_CHECKPOINT_SECONDS, 30)
+
+    def test_bandwidth_baseline_snapshot_does_not_double_count(self):
+        class Scalar:
+            def scalar(self):
+                return 900
+
+        class Connection:
+            def execute(self, *_args, **_kwargs):
+                return Scalar()
+
+        class Begin:
+            def __enter__(self):
+                return Connection()
+            def __exit__(self, *_args):
+                return False
+
+        class Engine:
+            def begin(self):
+                return Begin()
+
+        values = {
+            "BANDWIDTH_MONTH_BASE_BYTES": "2000",
+            "BANDWIDTH_BASELINE_AS_OF": "2026-07-13T12:00:00+08:00",
+            "BANDWIDTH_BASELINE_TRACKED_BYTES": "700",
+        }
+        with patch("deploy.proxy._get_db_engine", return_value=Engine()), \
+             patch("deploy.proxy._bandwidth_month_context", return_value=("2026-07", datetime.datetime(2026, 6, 30, 16))), \
+             patch("deploy.proxy._get_proxy_secret", side_effect=lambda key, default="": values.get(key, default)):
+            status = proxy.bandwidth_budget_status()
+        self.assertEqual(status["tracked_after_baseline_bytes"], 200)
+        self.assertEqual(status["total_bytes"], 2200)
+        self.assertTrue(status["baseline_snapshot_ready"])
 
     def test_r2_intents_are_persisted_and_capped_even_without_completion(self):
         self.assertIn("declared_bytes", CREATE_R2_UPLOAD_INTENTS)
@@ -112,6 +145,10 @@ class MediaSchemaTests(unittest.TestCase):
         self.assertIn("pg_advisory_xact_lock", source)
         self.assertIn("user_daily_limit", source)
         self.assertIn("global_monthly_limit", source)
+        self.assertIn("storage_global", source)
+        self.assertEqual(r2_storage.R2_STORAGE_WARN_BYTES, 7_000_000_000)
+        self.assertEqual(r2_storage.R2_STORAGE_STOP_BYTES, 8_000_000_000)
+        self.assertIn("pending/", inspect.getsource(r2_storage.promote))
 
     def test_recording_metadata_and_review_are_server_authoritative(self):
         source = inspect.getsource(ai_training_api.recording)
@@ -119,22 +156,98 @@ class MediaSchemaTests(unittest.TestCase):
         self.assertIn("_probe_audio", source)
         self.assertIn("verify_upload_claim", source)
         self.assertNotIn("body.ai_review", source)
+        self.assertIn("review_secret = _get_relay_cookie_secret()", source)
+        self.assertIn("r2_storage.promote", source)
 
-    def test_room_quota_is_reserved_before_token_mint_and_failures_release_it(self):
-        source = inspect.getsource(proxy.room_create)
-        self.assertLess(source.index("_reserve_practice_daily_slot"), source.index("_mint_gemini_live_token"))
-        self.assertIn("_release_practice_daily_slot", source)
-        self.assertIn("min(10.0, max(0.5, free_minutes))", source)
+    def test_room_quota_and_tokens_wait_until_precheck_succeeds(self):
+        creation = inspect.getsource(proxy.room_create)
+        activation = inspect.getsource(proxy._room_start_active)
+        precheck = inspect.getsource(proxy._room_handle_precheck_result)
+        self.assertNotIn("_reserve_room_practice_slots", creation)
+        self.assertNotIn("_mint_gemini_live_token", creation)
+        self.assertIn("_room_start_active", precheck)
+        self.assertLess(
+            activation.index("_reserve_room_practice_slots"),
+            activation.index("_room_mint_gemini_tokens"),
+        )
+        self.assertIn("_release_room_practice_slots", activation)
+        self.assertIn("min(float(LIVE_FREE_MAX_MINUTES), max(0.5, free_minutes))", creation)
+
+    def test_relay_claim_binds_member_type_and_server_deadline(self):
+        with patch("deploy.proxy._get_relay_cookie_secret", return_value="secret"), \
+             patch("deploy.proxy.time.time", return_value=1000):
+            signed = proxy._sign_relay_token("token", "member", "solo_free", 600, "practice")
+            claim = proxy._verify_relay_signature("token", signed)
+        self.assertEqual(claim["user_id"], "member")
+        self.assertEqual(claim["practice_kind"], "solo_free")
+        self.assertEqual(claim["max_seconds"], 600)
+        with patch("deploy.proxy._get_relay_cookie_secret", return_value="secret"):
+            self.assertIsNone(proxy._verify_relay_signature("other-token", signed))
+
+    def test_coach_and_tts_have_separate_concurrency_caps(self):
+        self.assertEqual(ai_coach_api.AI_COACH_CONCURRENCY, 3)
+        self.assertEqual(ai_training_api.TTS_REVIEW_CONCURRENCY, 2)
+        prepare = inspect.getsource(ai_coach_api._reserve_prepare_live)
+        self.assertIn("hour_utc", prepare)
+        self.assertIn("day_utc", prepare)
 
     def test_every_limited_media_and_practice_page_explains_the_limits(self):
         root = pathlib.Path(__file__).resolve().parents[1]
         coach = (root / "frontend/ai_coach/index.html").read_text(encoding="utf-8")
         training = (root / "frontend/ai_training/index.html").read_text(encoding="utf-8")
         photos = (root / "frontend/match_photos/index.html").read_text(encoding="utf-8")
-        self.assertIn("每月二十次", coach)
-        self.assertIn("每月十個房間", coach)
-        self.assertIn("每人每日最多申請三十個", training)
-        self.assertIn("每名委員每日最多二十張", photos)
+        self.assertIn("全系統每月quota", coach)
+        self.assertIn("伺服器集中限制", coach)
+        self.assertIn("伺服器集中設定", training)
+        self.assertIn('id="photoLimitSummary"', photos)
+
+
+class RequestBodyLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chunked_body_is_rejected_by_actual_bytes(self):
+        inner_called = False
+
+        async def inner(_scope, _receive, _send):
+            nonlocal inner_called
+            inner_called = True
+
+        messages = iter([
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"def", "more_body": False},
+        ])
+        sent = []
+
+        async def receive():
+            return next(messages)
+
+        async def send(message):
+            sent.append(message)
+
+        limiter = proxy.RequestBodyLimitMiddleware(inner, max_bytes=5)
+        await limiter({"type": "http", "headers": []}, receive, send)
+        self.assertFalse(inner_called)
+        self.assertEqual(sent[0]["status"], 413)
+
+    async def test_body_at_limit_is_replayed_to_application(self):
+        replayed = []
+
+        async def inner(_scope, receive, _send):
+            replayed.append(await receive())
+            replayed.append(await receive())
+
+        messages = iter([
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"de", "more_body": False},
+        ])
+
+        async def receive():
+            return next(messages)
+
+        async def send(_message):
+            pass
+
+        limiter = proxy.RequestBodyLimitMiddleware(inner, max_bytes=5)
+        await limiter({"type": "http", "headers": []}, receive, send)
+        self.assertEqual(b"".join(message["body"] for message in replayed), b"abcde")
 
 
 if __name__ == "__main__":

@@ -245,8 +245,8 @@
         <summary>📊 相片容量及上載限額</summary>
         <p id="photoBandwidthUsage" class="caption">登入後顯示本月系統用量。</p>
         <ul>
-          <li>每次最多上載五張；每名委員每日最多二十張；全系統每月最多五百張。</li>
-          <li>每張原圖最多 2MB、最長邊 2,000px；縮圖最多 300KB、最長邊 480px。圖片會由瀏覽器直接上載至 Cloudflare R2。</li>
+          <li id="photoLimitSummary">登入後按伺服器設定顯示相片上載限額。</li>
+          <li id="photoSizeSummary">圖片會由瀏覽器按伺服器設定壓縮，再直接上載至 Cloudflare R2。</li>
           <li>上載連結會綁定檔案大小及雜湊值；未完成登記或驗證失敗的檔案會被清理，以免佔用儲存空間。</li>
         </ul>
       </details>
@@ -286,7 +286,7 @@
               accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
             />
-            <p class="caption">每次最多五張；每張原圖最多 2MB，系統會建立不超過 300KB 的縮圖。</p>
+            <p id="photoUploadCaption" class="caption">登入後顯示實際上載限額。</p>
             <div id="uploadMessage"></div>
             <button class="primary" type="submit">上載圖片</button>
           </form>
@@ -399,7 +399,17 @@
           $("login").classList.add("hidden");
           $("app").classList.remove("hidden");
           const budget = state.bandwidth_budget || {};
-          $("photoBandwidthUsage").textContent = `本月系統已記錄約 ${(Number(budget.total_bytes || 0) / 1e9).toFixed(2)}GB；目前保護階段：${budget.stage || 0}。`;
+          const storage = state.storage_budget || {};
+          const limits = state.limits || {};
+          const storageStop = Number(storage.stop_bytes || 0) / 1e9;
+          const storageWarn = Number(storage.warn_bytes || 0) / 1e9;
+          const fmtLimit = value => value.toFixed(2).replace(/\.00$/, "").replace(/0$/, "");
+          $("photoBandwidthUsage").textContent = `本月系統已記錄約 ${(Number(budget.total_bytes || 0) / 1e9).toFixed(2)}GB；目前保護階段：${budget.stage || 0}。R2 約 ${(Number(storage.total_bytes || 0) / 1e9).toFixed(2)}GB / ${storageStop ? fmtLimit(storageStop) + "GB" : "未設定"}${storage.warning ? `，已進入${fmtLimit(storageWarn)}GB警告區` : ""}。`;
+          const maxMb = Number(limits.photo_max_bytes || 0) / 1024 / 1024;
+          const thumbKb = Number(limits.thumbnail_max_bytes || 0) / 1024;
+          $("photoLimitSummary").textContent = `每次最多上載 ${limits.batch_max_items} 張；每名委員每日最多 ${limits.daily_user_limit} 張；全系統每月最多 ${limits.monthly_global_limit} 張。`;
+          $("photoSizeSummary").textContent = `每張原圖最多 ${fmtLimit(maxMb)}MB、最長邊 ${limits.photo_max_dimension}px；縮圖最多 ${fmtLimit(thumbKb)}KB、最長邊 ${limits.thumbnail_max_dimension}px。圖片會由瀏覽器直接上載至 Cloudflare R2。`;
+          $("photoUploadCaption").textContent = `每次最多 ${limits.batch_max_items} 張；每張原圖最多 ${fmtLimit(maxMb)}MB，系統會建立不超過 ${fmtLimit(thumbKb)}KB 的縮圖。`;
           $("album").innerHTML = state.albums
             .map(
               (a) =>
@@ -518,14 +528,21 @@
               height,
             };
           };
-          let original = await render(2000, 0.8);
-          if (original.blob.size > 2 * 1024 * 1024)
-            original = await render(1600, 0.68);
-          if (original.blob.size > 2 * 1024 * 1024) {
+          const limits = state.limits;
+          let original = await render(limits.photo_max_dimension, 0.8);
+          if (original.blob.size > limits.photo_max_bytes)
+            original = await render(Math.max(1, Math.round(limits.photo_max_dimension * 0.8)), 0.68);
+          if (original.blob.size > limits.photo_max_bytes) {
             bitmap.close?.();
-            throw new Error(`${file.name} 壓縮後仍超過 2MB。`);
+            throw new Error(`${file.name} 壓縮後仍超過 ${(limits.photo_max_bytes / 1024 / 1024).toFixed(2)}MB。`);
           }
-          const thumbnail = await render(480, 0.72);
+          let thumbnail = await render(limits.thumbnail_max_dimension, 0.72);
+          if (thumbnail.blob.size > limits.thumbnail_max_bytes)
+            thumbnail = await render(Math.max(1, Math.round(limits.thumbnail_max_dimension * 0.8)), 0.55);
+          if (thumbnail.blob.size > limits.thumbnail_max_bytes) {
+            bitmap.close?.();
+            throw new Error(`${file.name} 縮圖壓縮後仍超過 ${(limits.thumbnail_max_bytes / 1024).toFixed(0)}KB。`);
+          }
           bitmap.close?.();
           return {
             original,
@@ -540,7 +557,6 @@
             method: "PUT",
             headers: {
               "Content-Type": mimeType,
-              "Cache-Control": "private, max-age=86400",
               "x-amz-meta-sha256": sha,
               ...(target.headers || {}),
             },
@@ -622,11 +638,11 @@
             notice("uploadMessage", "warn", "請先選擇圖片。");
             return;
           }
-          if (files.length > 5) {
+          if (files.length > state.limits.batch_max_items) {
             notice(
               "uploadMessage",
               "warn",
-              "每次最多只可上載五張圖片。",
+              `每次最多只可上載 ${state.limits.batch_max_items} 張圖片。`,
             );
             return;
           }

@@ -10,11 +10,13 @@ imported here — the dependency is one-directional (auth → functions), so the
 is no circular import.
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import secrets
 import datetime
+import time
 from http.cookies import SimpleCookie
 from zoneinfo import ZoneInfo
 
@@ -168,13 +170,30 @@ def _verify_cookie(cookie_value: str) -> str | None:
     return None
 
 
-def sign_relay_token(token: str) -> str:
-    """簽發 Gemini Live ephemeral token，畀 /gemini-live relay 驗證。
-
-    Relay（proxy.py）同 app 共用 DB 入面嘅 cookie_secret，令 relay 只服務由本 app
-    發出嘅 token，防止外人白嫖 Render relay 消耗連線／頻寬。"""
+def sign_relay_token(
+    token: str, user_id: str, practice_kind: str, max_seconds: int,
+    practice_id: str,
+) -> str:
+    """簽發帶身份、練習類型及server deadline嘅Gemini relay claim。"""
+    if practice_kind not in ("solo_free", "solo_mock"):
+        raise ValueError("invalid relay practice kind")
     secret = _get_cookie_secret()
-    return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+    payload = {
+        "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+        "user_id": str(user_id),
+        "practice_kind": practice_kind,
+        "practice_id": str(practice_id),
+        "max_seconds": max(30, min(int(max_seconds), 30 * 60)),
+        "exp": int(time.time()) + 2 * 60 * 60,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).rstrip(b"=").decode("ascii")
+    signature = hmac.new(
+        secret.encode(), encoded.encode("ascii"), hashlib.sha256,
+    ).digest()
+    signed = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{encoded}.{signed}"
 
 
 def committee_bearer_token(user_id: str) -> str:

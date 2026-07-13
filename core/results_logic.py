@@ -1,9 +1,11 @@
 """Streamlit-free read model for the organiser results page."""
 
+import os
 import pandas as pd
 
 from core.vote_logic import _resolve_db
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORES
+from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
 RANK_COLUMNS = ("pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m")
 ROLE_KEYS = {
@@ -31,12 +33,22 @@ def _scores(match_id=None, db=None):
     if match_id is not None:
         sql += " WHERE s.match_id = :match_id"
         params["match_id"] = match_id
+        sql += " ORDER BY s.judge_name LIMIT :score_limit"
+        params["score_limit"] = JUDGE_MAX_PER_MATCH
+    else:
+        sql += " ORDER BY s.match_id,s.judge_name LIMIT :score_limit"
+        params["score_limit"] = MATCH_INVENTORY_LIMIT * JUDGE_MAX_PER_MATCH
     scores = db.query(sql, params)
     if scores.empty:
         return scores
     detail_sql = f"SELECT match_id, judge_name, side, position, debater_score FROM {TABLE_DEBATER_SCORES}"
     if match_id is not None:
         detail_sql += " WHERE match_id = :match_id"
+        detail_sql += " ORDER BY judge_name,side,position LIMIT :detail_limit"
+        params["detail_limit"] = JUDGE_MAX_PER_MATCH * 8
+    else:
+        detail_sql += " ORDER BY match_id,judge_name,side,position LIMIT :detail_limit"
+        params["detail_limit"] = MATCH_INVENTORY_LIMIT * JUDGE_MAX_PER_MATCH * 8
     details = db.query(detail_sql, params)
     if not details.empty:
         details["column"] = details["side"].astype(str) + details["position"].astype(str) + "_m"
@@ -126,13 +138,15 @@ def _anomalies(scores):
 
 def results_data(selected_match_id=None, db=None):
     db = _resolve_db(db)
-    scores = _scores(db=db)
-    if scores is None or scores.empty:
+    match_rows = db.query(f"""SELECT DISTINCT match_id FROM {TABLE_SCORES}
+        ORDER BY match_id LIMIT :limit""", {"limit": MATCH_INVENTORY_LIMIT})
+    if match_rows.empty:
         return {"matches": [], "selected_match_id": None, "has_scores": False}
-    scores["match_id"] = scores["match_id"].astype(str)
-    matches = scores["match_id"].drop_duplicates().tolist()
+    matches = match_rows["match_id"].astype(str).tolist()
     selected = str(selected_match_id) if selected_match_id in matches else matches[0]
-    match_scores = scores[scores["match_id"] == selected].copy()
+    match_scores = _scores(selected, db=db)
+    if match_scores.empty:
+        return {"matches": matches, "selected_match_id": selected, "has_scores": False}
     pro_votes = int((match_scores["pro_total_score"] > match_scores["con_total_score"]).sum())
     con_votes = int((match_scores["con_total_score"] > match_scores["pro_total_score"]).sum())
     draws = int((match_scores["pro_total_score"] == match_scores["con_total_score"]).sum())

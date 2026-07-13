@@ -315,7 +315,7 @@ def build_vote_bank_analysis_prompt(bank_summary: str, topic_lines: list[str]) -
 請分析呢個辯題庫嘅整體狀況，並俾出未來方向同即時可做嘅建議。"""
 
 
-VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT = """你是聖呂中辯的投票數據分析員。請使用粵語書面語，根據所有歷史投票數據，分析整體委員會投票傾向及各委員偏好。
+VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT = """你是聖呂中辯的投票數據分析員。請使用粵語書面語，根據系統提供的近期有界投票樣本，分析整體委員會投票傾向及各委員偏好。
 
 請涵蓋以下幾方面，用小標題分段、重點可用列點：
 1. 整體委員會取向：通過率、反對率、罷免取向、參與情況；

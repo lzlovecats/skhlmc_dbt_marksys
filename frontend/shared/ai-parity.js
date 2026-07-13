@@ -294,11 +294,12 @@
         const duration = (Date.now() - activeRecorder.startedAt) / 1000;
         stream.getTracks().forEach(track => track.stop());
         recorder = null;
-        if (duration < 1 || duration > 60 || blob.size > 2 * 1024 * 1024) {
+        const limits = meta.resource_limits || {};
+        if (duration < 1 || duration > limits.audio_max_seconds || blob.size > limits.audio_max_bytes) {
           audioBase64 = "";
           $("record").textContent = "重新錄音";
           $("recordState").textContent = "錄音無效";
-          toast("⚠️ 錄音必須為1–60秒並且不超過2MB。");
+          toast(`⚠️ 錄音必須為1–${limits.audio_max_seconds}秒並且不超過${(limits.audio_max_bytes / 1024 / 1024).toFixed(2)}MB。`);
           return;
         }
         audioMime = activeRecorder.mimeType || "audio/webm";
@@ -464,7 +465,8 @@
       meta = await api("/api/ai-coach/data");
       const budget = meta.bandwidth_budget || {};
       const usedGb = Number(budget.total_bytes || 0) / 1e9;
-      $("bandwidthUsage").textContent = `本月系統已記錄約 ${usedGb.toFixed(2)}GB；目前保護階段：${budget.stage || 0}。`;
+      const fmtLimit = bytes => (Number(bytes || 0) / 1e9).toFixed(2).replace(/\.00$/, "").replace(/0$/, "");
+      $("bandwidthUsage").textContent = `本月系統已記錄約 ${usedGb.toFixed(2)}GB；警告／停止Live／必要功能門檻為 ${fmtLimit(budget.warn_bytes)}／${fmtLimit(budget.stop_live_bytes)}／${fmtLimit(budget.essential_only_bytes)}GB；目前保護階段：${budget.stage || 0}。`;
       $("globalModel").innerHTML = meta.models.map(model => `<option value="${esc(model.label)}" ${model.label === meta.default_model ? "selected" : ""}>${esc(model.selection_label ? `${model.label}（${model.selection_label}）` : model.label)}</option>`).join("");
       document.querySelectorAll("[data-topic-source]").forEach(topicSource);
       $("login").classList.add("hidden");

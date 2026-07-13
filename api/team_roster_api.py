@@ -1,14 +1,14 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/team-roster", tags=["team-roster"])
 
 class RosterBody(BaseModel):
-    team_name: str = ""
-    debater_1: str = ""
-    debater_2: str = ""
-    debater_3: str = ""
-    debater_4: str = ""
+    team_name: str = Field(default="", max_length=100)
+    debater_1: str = Field(default="", max_length=80)
+    debater_2: str = Field(default="", max_length=80)
+    debater_3: str = Field(default="", max_length=80)
+    debater_4: str = Field(default="", max_length=80)
 
 def _db():
     from deploy.proxy import get_vote_db

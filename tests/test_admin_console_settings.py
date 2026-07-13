@@ -1,9 +1,11 @@
 import json
 import hashlib
 import hmac
+import datetime
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import HTTPException
@@ -47,6 +49,13 @@ class SettingsDb:
 
     def transaction(self):
         return Transaction(self.executed)
+
+
+class EmptyConfigSettingsDb(SettingsDb):
+    def query(self, sql, params=None):
+        if "FROM system_config" in sql:
+            return pd.DataFrame()
+        return super().query(sql, params)
 
 
 class AccessDb:
@@ -125,6 +134,55 @@ class DeveloperSettingsTests(unittest.TestCase):
         self.assertNotIn("data-delete", html)
         self.assertIn("停用帳戶", html)
         self.assertIn("重新啟用", html)
+
+    def test_maintenance_controls_include_editable_deadline(self):
+        developer_html = (ROOT / "frontend" / "dev_settings" / "index.html").read_text(encoding="utf-8")
+        home_html = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
+        maintenance_card = home_html.split('<section id="maintenance"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="maintenanceDeadline" type="datetime-local"', developer_html)
+        self.assertIn('id="saveMaintDeadline"', developer_html)
+        self.assertIn('href="/dev-settings"', maintenance_card)
+        self.assertNotIn("2026年4月3日", home_html)
+
+    def test_maintenance_deadline_is_saved_with_mode(self):
+        db = SettingsDb()
+        deadline = (
+            datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+            + datetime.timedelta(hours=2)
+        ).strftime("%Y-%m-%dT%H:%M")
+        body = JsonSettings(values={
+            "maintenance_mode": "true",
+            "maintenance_deadline": deadline,
+        })
+        with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
+            self.assertEqual(developer_settings(body, object()), {"ok": True})
+        stored = {row["key"]: row["value"] for row in db.executed}
+        self.assertEqual(stored["maintenance_mode"], "true")
+        self.assertEqual(stored["maintenance_deadline"], deadline)
+
+    def test_maintenance_mode_requires_a_deadline(self):
+        db = EmptyConfigSettingsDb()
+        body = JsonSettings(values={"maintenance_mode": "true"})
+        with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
+            with self.assertRaises(HTTPException) as caught:
+                developer_settings(body, object())
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("預期完成時間", caught.exception.detail)
+        self.assertEqual(db.executed, [])
+
+    def test_past_maintenance_deadline_is_rejected(self):
+        db = SettingsDb()
+        deadline = (
+            datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+            - datetime.timedelta(minutes=1)
+        ).strftime("%Y-%m-%dT%H:%M")
+        body = JsonSettings(values={"maintenance_deadline": deadline})
+        with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
+            with self.assertRaises(HTTPException) as caught:
+                developer_settings(body, object())
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("必須在未來", caught.exception.detail)
+        self.assertEqual(db.executed, [])
 
     def test_role_lists_are_deduplicated_before_atomic_save(self):
         db = SettingsDb()

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 
 import httpx
+from system_limits import RAG_FALLBACK_CANDIDATE_LIMIT, RAG_PROVIDER_TIMEOUT_SECONDS
 
 
 EMBEDDING_MODEL = "gemini-embedding-2"
@@ -22,7 +24,7 @@ async def _embed(text_value: str, api_key: str) -> list[float]:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{EMBEDDING_MODEL}:embedContent"
     payload = {"content": {"parts": [{"text": text_value[:8000]}]},
                "outputDimensionality": EMBEDDING_DIMENSION}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=RAG_PROVIDER_TIMEOUT_SECONDS) as client:
         response = await client.post(url, params={"key": api_key}, json=payload)
         response.raise_for_status()
     values = ((response.json().get("embedding") or {}).get("values") or [])
@@ -64,8 +66,10 @@ async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
           JOIN llm_training_submissions s ON s.id=d.submission_id
           WHERE d.status='active' AND s.status='accepted' AND s.anonymized=TRUE
             AND s.permission_confirmed=TRUE AND c.embedding_model=:model
-            AND c.embedding_version=:version""",
-          {"model": EMBEDDING_MODEL, "version": EMBEDDING_VERSION})
+            AND c.embedding_version=:version
+          ORDER BY c.created_at DESC LIMIT :candidate_limit""",
+          {"model": EMBEDDING_MODEL, "version": EMBEDDING_VERSION,
+           "candidate_limit": RAG_FALLBACK_CANDIDATE_LIMIT})
         candidates = []
         for row in rows.to_dict("records"):
             raw = row.get("embedding_json")

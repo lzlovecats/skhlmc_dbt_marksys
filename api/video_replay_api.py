@@ -2,30 +2,30 @@
 
 from fastapi import APIRouter, Request
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/video-replay", tags=["video-replay"])
 
 
 class VoteBody(BaseModel):
     video_id: int
-    vote_choice: str
+    vote_choice: str = Field(max_length=20)
 
 
 class CommentBody(BaseModel):
     video_id: int
-    comment_text: str
+    comment_text: str = Field(min_length=1, max_length=1000)
 
 
 class ChapterItem(BaseModel):
-    chapter_label: str
+    chapter_label: str = Field(max_length=80)
     enabled: bool
-    time_text: str = ""
+    time_text: str = Field(default="", max_length=20)
 
 
 class ChaptersBody(BaseModel):
     video_id: int
-    chapters: list[ChapterItem]
+    chapters: list[ChapterItem] = Field(max_length=30)
 
 
 def _context(request: Request):

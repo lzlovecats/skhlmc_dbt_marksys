@@ -24,6 +24,7 @@ around the proxy's own SQLAlchemy engine for the streamlit-free API process.
 import json
 import hashlib
 import math
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -36,6 +37,11 @@ from schema import (
     TABLE_TOPIC_REMOVAL_VOTES,
     TABLE_TOPIC_REMOVAL_VOTE_BALLOTS,
 )
+from system_limits import (
+    COMMENT_HISTORY_LIMIT, COMMENT_MAX_PER_MOTION, TOPIC_BANK_MAX,
+    VOTE_ANALYSIS_MOTION_LIMIT,
+)
+
 
 
 def _resolve_db(db):
@@ -196,11 +202,13 @@ def ballot_switch_agree(table, topic, user_id, db=None):
 def check_category_would_exceed(category, db=None):
     """Check if adding one more topic of this category would push it past 20% of the bank."""
     db = _resolve_db(db)
-    all_topics_df = db.query(f"SELECT category FROM {TABLE_TOPICS}")
-    if all_topics_df.empty:
+    counts = db.query(f"""SELECT COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE category=:category) AS category_count FROM {TABLE_TOPICS}""",
+        {"category": category})
+    if counts.empty or int(counts.iloc[0]["total"] or 0) == 0:
         return False, 0.0, 0, 0
-    total = len(all_topics_df)
-    cat_count = int((all_topics_df["category"] == category).sum())
+    total = int(counts.iloc[0]["total"] or 0)
+    cat_count = int(counts.iloc[0]["category_count"] or 0)
     new_ratio = (cat_count + 1) / (total + 1)
     return new_ratio > 0.2, new_ratio, cat_count, total
 
@@ -210,9 +218,11 @@ def check_category_would_exceed(category, db=None):
 # ─────────────────────────────────────────────────────────────
 def get_comment_counts(motion_type, db=None):
     db = _resolve_db(db)
+    motion_table = TABLE_TOPIC_VOTES if motion_type == "topic_vote" else TABLE_TOPIC_REMOVAL_VOTES
     df = db.query(
-        f"SELECT motion_key, COUNT(*) AS cnt FROM {TABLE_MOTION_COMMENTS} "
-        "WHERE motion_type = :type GROUP BY motion_key",
+        f"""SELECT c.motion_key,COUNT(*) AS cnt FROM {TABLE_MOTION_COMMENTS} c
+        JOIN {motion_table} m ON m.topic_text=c.motion_key AND m.status='pending'
+        WHERE c.motion_type=:type GROUP BY c.motion_key""",
         {"type": motion_type},
     )
     if df.empty:
@@ -221,12 +231,15 @@ def get_comment_counts(motion_type, db=None):
 
 
 def fetch_comments(motion_type, motion_key, db=None):
-    """Discussion comments for one motion, oldest first."""
+    """Latest bounded discussion comments for one motion, displayed oldest first."""
     db = _resolve_db(db)
     df = db.query(
-        f"SELECT user_id, comment_text, created_at FROM {TABLE_MOTION_COMMENTS} "
-        "WHERE motion_type = :type AND motion_key = :key ORDER BY created_at ASC",
-        {"type": motion_type, "key": motion_key},
+        f"""SELECT user_id,comment_text,created_at FROM (
+            SELECT user_id,comment_text,created_at FROM {TABLE_MOTION_COMMENTS}
+            WHERE motion_type=:type AND motion_key=:key
+            ORDER BY created_at DESC LIMIT :limit
+        ) recent ORDER BY created_at ASC""",
+        {"type": motion_type, "key": motion_key, "limit": COMMENT_HISTORY_LIMIT},
     )
     if df.empty:
         return []
@@ -243,6 +256,12 @@ def fetch_comments(motion_type, motion_key, db=None):
 
 def insert_comment(motion_type, motion_key, user_id, text, db=None):
     db = _resolve_db(db)
+    count = db.query(
+        f"SELECT COUNT(*) AS n FROM {TABLE_MOTION_COMMENTS} WHERE motion_type=:type AND motion_key=:key",
+        {"type": motion_type, "key": motion_key},
+    )
+    if not count.empty and int(count.iloc[0]["n"] or 0) >= COMMENT_MAX_PER_MOTION:
+        raise ValueError(f"每項議案最多保留 {COMMENT_MAX_PER_MOTION} 則留言。")
     hk_now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
     db.execute(
         f"INSERT INTO {TABLE_MOTION_COMMENTS} (motion_type, motion_key, user_id, comment_text, created_at) "
@@ -264,8 +283,14 @@ def ensure_ai_comment_account(db=None):
     )
 
 
-def fetch_vote_data(db=None):
+def fetch_vote_data(db=None, resolved_limit=None):
     db = _resolve_db(db)
+    where = ""
+    params = {}
+    if resolved_limit is not None:
+        # Direct HTML renders resolved history through fetch_vote_history(); it
+        # does not need every old motion name on each refresh.
+        where = "WHERE status='pending'"
     df = db.query(
         f"""
         SELECT
@@ -278,8 +303,9 @@ def fetch_vote_data(db=None):
             category,
             difficulty
         FROM {TABLE_TOPIC_VOTES}
+        {where}
         ORDER BY created_at DESC
-        """
+        """, params
     )
     df = df.fillna("")
 
@@ -440,7 +466,8 @@ def count_ballots(table, topic, db=None):
 def list_bank_topics(db=None):
     """All topics currently in the bank (topic_text, category, difficulty)."""
     db = _resolve_db(db)
-    df = db.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS} ORDER BY topic_text")
+    df = db.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS} ORDER BY topic_text LIMIT :limit",
+                  {"limit": TOPIC_BANK_MAX})
     return [] if df.empty else df.fillna("").to_dict("records")
 
 
@@ -478,11 +505,13 @@ def category_current_ratio(category, db=None):
     Matches vote.py's proposal-time imbalance check (cat_count / total, not the
     +1 projection used by check_category_would_exceed during voting)."""
     db = _resolve_db(db)
-    df = db.query(f"SELECT category FROM {TABLE_TOPICS}")
-    total = len(df)
+    df = db.query(f"""SELECT COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE category=:category) AS category_count FROM {TABLE_TOPICS}""",
+        {"category": category})
+    total = int(df.iloc[0]["total"] or 0) if not df.empty else 0
     if total == 0:
         return 0.0, 0, 0
-    cat_count = int((df["category"] == category).sum())
+    cat_count = int(df.iloc[0]["category_count"] or 0)
     return cat_count / total, cat_count, total
 
 
@@ -591,41 +620,32 @@ def fetch_vote_history(limit=20, db=None):
     return rows
 
 
-def fetch_vote_history_analysis_data(db=None):
-    """Raw combined motion/ballot rows used by the AI analysis visual bars."""
+def fetch_vote_history_analysis_data(db=None, motion_limit=VOTE_ANALYSIS_MOTION_LIMIT):
+    """Bounded recent motion/ballot rows used by charts and AI analysis."""
     db = _resolve_db(db)
     return db.query(
         f"""
-        SELECT
-            '辯題投票' AS motion_type,
-            tv.topic_text,
-            tv.status,
-            tv.proposer_user_id,
-            tv.category,
-            tv.difficulty,
-            tv.created_at,
-            b.user_id,
-            b.vote_choice,
-            b.against_reasons
-        FROM {TABLE_TOPIC_VOTES} tv
-        LEFT JOIN {TABLE_TOPIC_VOTE_BALLOTS} b ON b.topic_text = tv.topic_text
-        UNION ALL
-        SELECT
-            '罷免投票' AS motion_type,
-            rv.topic_text,
-            rv.status,
-            rv.proposer_user_id,
-            t.category,
-            t.difficulty,
-            rv.created_at,
-            b.user_id,
-            b.vote_choice,
-            NULL AS against_reasons
-        FROM {TABLE_TOPIC_REMOVAL_VOTES} rv
-        LEFT JOIN {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b ON b.topic_text = rv.topic_text
-        LEFT JOIN {TABLE_TOPICS} t ON t.topic_text = rv.topic_text
-        ORDER BY created_at DESC
-        """
+        WITH recent AS (
+            SELECT '辯題投票' AS motion_type,tv.topic_text,tv.status,tv.proposer_user_id,
+                   tv.category,tv.difficulty,tv.created_at
+            FROM {TABLE_TOPIC_VOTES} tv
+            UNION ALL
+            SELECT '罷免投票' AS motion_type,rv.topic_text,rv.status,rv.proposer_user_id,
+                   t.category,t.difficulty,rv.created_at
+            FROM {TABLE_TOPIC_REMOVAL_VOTES} rv
+            LEFT JOIN {TABLE_TOPICS} t ON t.topic_text=rv.topic_text
+            ORDER BY created_at DESC LIMIT :motion_limit
+        )
+        SELECT r.motion_type,r.topic_text,r.status,r.proposer_user_id,r.category,r.difficulty,
+               r.created_at,COALESCE(tb.user_id,rb.user_id) AS user_id,
+               COALESCE(tb.vote_choice,rb.vote_choice) AS vote_choice,tb.against_reasons
+        FROM recent r
+        LEFT JOIN {TABLE_TOPIC_VOTE_BALLOTS} tb
+          ON r.motion_type='辯題投票' AND tb.topic_text=r.topic_text
+        LEFT JOIN {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} rb
+          ON r.motion_type='罷免投票' AND rb.topic_text=r.topic_text
+        ORDER BY r.created_at DESC
+        """, {"motion_limit": max(1, int(motion_limit))}
     )
 
 

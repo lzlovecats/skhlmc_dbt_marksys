@@ -1,27 +1,27 @@
 """Organiser-authenticated JSON endpoints for registration management."""
 
 from fastapi import APIRouter, HTTPException, Request, Response
-import csv, io
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
+from api.resource_limits import EXPORT_MAX_ROWS, csv_response, require_row_limit
 
 router = APIRouter(prefix="/api/registration-admin", tags=["registration-admin"])
 COOKIE_NAME = "registration_admin"
 
 
 class LoginBody(BaseModel):
-    password: str
+    password: str = Field(max_length=512)
 
 
 class SettingsBody(BaseModel):
     competition_edition: int
-    registration_start: str
-    registration_end: str
+    registration_start: str = Field(max_length=40)
+    registration_end: str = Field(max_length=40)
 
 
 class StatusBody(BaseModel):
     registration_id: int
-    status: str
+    status: str = Field(max_length=40)
 
 
 def _db():
@@ -105,12 +105,14 @@ def export_records(request: Request, edition: int, status: str = "全部", searc
     from core.registration_logic import _record_payload
     from schema import TABLE_COMPETITION_REGISTRATIONS
     _require_admin(request); db=_db(); where,params=_record_filters(edition,status,search)
-    frame=db.query(f"SELECT id,competition_edition,team_name,main_debater_name,first_deputy_name,second_deputy_name,closing_debater_name,contact_name,contact_class,contact_phone,status,submitted_at,updated_at FROM {TABLE_COMPETITION_REGISTRATIONS} {where} ORDER BY submitted_at DESC,id DESC",params)
+    params["export_limit"] = EXPORT_MAX_ROWS + 1
+    frame=db.query(f"SELECT id,competition_edition,team_name,main_debater_name,first_deputy_name,second_deputy_name,closing_debater_name,contact_name,contact_class,contact_phone,status,submitted_at,updated_at FROM {TABLE_COMPETITION_REGISTRATIONS} {where} ORDER BY submitted_at DESC,id DESC LIMIT :export_limit",params)
+    require_row_limit(frame, label="報名紀錄匯出")
     columns=[("id","編號"),("competition_edition","屆數"),("team_name","隊名"),("main_debater_name","主辯"),("first_deputy_name","一副"),("second_deputy_name","二副"),("closing_debater_name","結辯"),("contact_name","聯絡人"),("contact_class","班別"),("contact_phone","聯絡電話"),("status_label","狀態"),("submitted_at","提交時間"),("updated_at","更新時間")]
-    output=io.StringIO(); writer=csv.writer(output); writer.writerow([x[1] for x in columns])
+    export_rows=[]
     for _,row in frame.iterrows():
-        item=_record_payload(row); writer.writerow([item.get(key,"") for key,_ in columns])
-    return Response(content="\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":f'attachment; filename="competition_registrations_{edition}.csv"'})
+        item=_record_payload(row); export_rows.append([item.get(key,"") for key,_ in columns])
+    return csv_response(f"competition_registrations_{edition}.csv",[x[1] for x in columns],export_rows)
 
 
 @router.post("/settings")

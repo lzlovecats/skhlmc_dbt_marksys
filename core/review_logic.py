@@ -1,6 +1,7 @@
 """Read-only review model for finalised judge score sheets."""
 
 import pandas as pd
+import os
 
 from core.auth_logic import verify_password
 from core.judging_logic import _deserialize, normalize_judge_name
@@ -8,12 +9,15 @@ from core.results_logic import _best_debaters, _scores
 from core.vote_logic import _resolve_db
 from scoring import FREE_DEBATE_CRITERIA, FREE_DEBATE_MAX, SPEECH_CRITERIA, speech_col, free_debate_col
 from schema import TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
+from system_limits import MATCH_INVENTORY_LIMIT
+
 
 
 def available_matches(db=None):
     db = _resolve_db(db)
     rows = db.query(f"""SELECT DISTINCT m.match_id, m.review_password_hash, m.match_date, m.match_time, m.topic_text
-        FROM {TABLE_MATCHES} m INNER JOIN {TABLE_SCORES} s ON m.match_id=s.match_id ORDER BY m.match_id""")
+        FROM {TABLE_MATCHES} m INNER JOIN {TABLE_SCORES} s ON m.match_id=s.match_id
+        ORDER BY m.match_id LIMIT :limit""", {"limit": MATCH_INVENTORY_LIMIT})
     return [{"match_id": str(row["match_id"]), "is_open": bool(str(row.get("review_password_hash") or "").strip() not in {"", "nan", "None"})} for _, row in rows.iterrows()]
 
 

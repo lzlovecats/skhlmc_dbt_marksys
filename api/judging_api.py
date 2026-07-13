@@ -5,32 +5,32 @@ requested match with that signed scope before passing data to the domain layer.
 """
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/judging", tags=["judging"])
 COOKIE_NAME = "judging_match"
 
 
 class LoginBody(BaseModel):
-    match_id: str
-    password: str
+    match_id: str = Field(max_length=200)
+    password: str = Field(max_length=512)
 
 
 class DraftBody(BaseModel):
-    judge_name: str
-    side: str
+    judge_name: str = Field(max_length=100)
+    side: str = Field(max_length=10)
     score_data: dict
 
 
 class FinalBody(BaseModel):
-    judge_name: str
+    judge_name: str = Field(max_length=100)
     pro_data: dict
     con_data: dict
 
 
 class RankingsBody(BaseModel):
-    judge_name: str
-    rankings: list[dict]
+    judge_name: str = Field(max_length=100)
+    rankings: list[dict] = Field(max_length=8)
 
 
 def _db():

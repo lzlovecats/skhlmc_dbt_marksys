@@ -1,11 +1,16 @@
 """Streamlit-free validation and persistence for committee bug reports."""
 
 import re
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from core.vote_logic import _resolve_db
 from schema import CREATE_BUG_REPORTS, TABLE_BUG_REPORTS
+from system_limits import (
+    BUG_REPORT_MAX_PER_USER_DAY, BUG_REPORT_MAX_TOTAL,
+    BUG_REPORT_RATE_WINDOW_HOURS, BUG_REPORT_RECENT_LIMIT,
+)
 
 
 STATUS_LABELS = {
@@ -74,6 +79,17 @@ def submit_report(user_id, affected_page, device_info, reproduction_steps, expec
     errors = validate_report(affected_page, reproduction_steps, expected_result, actual_result)
     if errors:
         return {"ok": False, "errors": errors}
+    cutoff = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None) - timedelta(
+        hours=BUG_REPORT_RATE_WINDOW_HOURS
+    )
+    counts = db.query(f"""SELECT COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE reporter_user_id=:uid AND created_at>=:cutoff) AS user_day
+        FROM {TABLE_BUG_REPORTS}""", {"uid": user_id, "cutoff": cutoff})
+    if not counts.empty:
+        if int(counts.iloc[0]["total"] or 0) >= BUG_REPORT_MAX_TOTAL:
+            return {"ok": False, "errors": ["問題回報已達保護上限，請聯絡開發者整理舊紀錄。"]}
+        if int(counts.iloc[0]["user_day"] or 0) >= BUG_REPORT_MAX_PER_USER_DAY:
+            return {"ok": False, "errors": ["你今日提交的問題回報已達上限，請翌日再試。"]}
     now = datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S")
     db.execute(
         f"""
@@ -84,9 +100,9 @@ def submit_report(user_id, affected_page, device_info, reproduction_steps, expec
             (:uid, :page, :device, :steps, :expected, :actual, :notes, 'open', :now, :now)
         """,
         {
-            "uid": user_id, "page": affected_page, "device": (device_info or "").strip(),
-            "steps": reproduction_steps, "expected": expected_result, "actual": actual_result,
-            "notes": (extra_notes or "").strip(), "now": now,
+            "uid": user_id, "page": affected_page[:120], "device": (device_info or "").strip()[:1000],
+            "steps": reproduction_steps[:5000], "expected": expected_result[:3000], "actual": actual_result[:5000],
+            "notes": (extra_notes or "").strip()[:3000], "now": now,
         },
     )
     return {"ok": True, "errors": []}
@@ -109,9 +125,9 @@ def reports_for_user(user_id, db=None):
         FROM {TABLE_BUG_REPORTS}
         WHERE reporter_user_id = :uid
         ORDER BY created_at DESC
-        LIMIT 30
+        LIMIT :limit
         """,
-        {"uid": user_id},
+        {"uid": user_id, "limit": BUG_REPORT_RECENT_LIMIT},
     )
     items = []
     for _, row in reports.iterrows():

@@ -198,13 +198,17 @@ class MigrationParityRegressionTests(unittest.TestCase):
         for marker in ("preservePage=false", "target._voteServerSpec?.page", "loadRecordings(resetPage=false)", '"adminLlm"'):
             self.assertIn(marker, app)
         self.assertIn('loadRecordings(true)', app)
-        self.assertIn('4.1.2-r2-only', html)
+        self.assertIn('/ai-training/app.js?v=__APP_VERSION__', html)
+        proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
+        self.assertIn('html.replace("__APP_VERSION__", APP_VERSION)', proxy)
 
     def test_home_displays_release_version(self):
         home = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
-        version = (ROOT / "version.py").read_text(encoding="utf-8")
-        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.1.2）", home)
-        self.assertIn('APP_VERSION = "4.1.2"', version)
+        logic = (ROOT / "core" / "home_logic.py").read_text(encoding="utf-8")
+        self.assertIn('id="systemVersion"', home)
+        self.assertIn('data.version || "未知"', home)
+        self.assertIn('from version import APP_VERSION', logic)
+        self.assertIn('"version": APP_VERSION', logic)
 
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
@@ -225,7 +229,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
         proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
         self.assertIn('@router.post("/prepare-live")', api)
         self.assertIn('consume_live_brief', proxy)
-        self.assertIn('record_live_usage', proxy)
+        self.assertIn('_reserve_solo_live_slot', proxy)
+        self.assertIn('The quota is consumed only after', proxy)
         self.assertIn('research_brief=research_brief', proxy)
         self.assertIn('_LIVE_BRIEF_TABLE', api)
         self.assertNotIn('_LIVE_BRIEFS = {}', api)
@@ -256,8 +261,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('meta = await api("/api/ai-coach/data")', browser)
         self.assertIn('$("mockForm").addEventListener("submit"', browser)
         self.assertIn('brief_id: data.brief_id', browser)
-        self.assertIn("duration < 1 || duration > 60", browser)
-        self.assertIn("blob.size > 2 * 1024 * 1024", browser)
+        self.assertIn("duration > limits.audio_max_seconds", browser)
+        self.assertIn("blob.size > limits.audio_max_bytes", browser)
         self.assertIn("bytes.subarray(index, index + 32768)", browser)
         self.assertNotIn("String.fromCharCode(...new Uint8Array", browser)
         self.assertLess(html.index('data-pane="fact"'), html.index('data-pane="research"'))
@@ -337,8 +342,11 @@ class StaticArchitectureTests(unittest.TestCase):
     def test_streamlit_is_not_started_in_production(self):
         start = (ROOT / "deploy" / "start.sh").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertNotIn("streamlit run", start)
         self.assertNotIn("streamlit>=", requirements.lower())
+        pages = re.findall(r'st\.Page\(["\']([^"\']+)', main)
+        self.assertEqual(pages, ["legacy_streamlit/html_migration_notice.py"])
 
 
 if __name__ == "__main__":

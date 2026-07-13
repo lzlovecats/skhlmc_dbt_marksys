@@ -328,7 +328,7 @@
   <body>
     <main>
       <h1>聖呂中辯電子賽務系統</h1>
-      <div class="caption">請根據你的身份選擇對應功能（系統版本：4.1.2）</div>
+      <div class="caption">請根據你的身份選擇對應功能（系統版本：<span id="systemVersion">載入中</span>）</div>
       <section id="installAssistant" class="card" hidden>
         <div class="install-kicker">手機版捷徑</div>
         <div class="install-title">將系統加到手機主畫面</div>
@@ -355,6 +355,9 @@
         <p>目前系統正在進行更新，所有功能暫停開放。</p>
         <p id="maintenanceDeadline"></p>
         <div class="caption">所有功能現已暫停使用，請稍後再試。</div>
+        <div class="link-list">
+          <a class="action" href="/dev-settings">🔧 開發者設定</a>
+        </div>
       </section>
       <section id="content" hidden>
         <section id="registration" class="card" hidden>
@@ -538,9 +541,12 @@
         }
         function renderHome(data) {
           $("loading").hidden = true;
+          $("systemVersion").textContent = data.version || "未知";
           if (data.maintenance_mode) {
             $("maintenanceDeadline").textContent =
-              `預計於 ${data.maintenance_deadline} 或之前完成。`;
+              data.maintenance_deadline
+                ? `預計於 ${data.maintenance_deadline} 或之前完成。`
+                : "預計完成時間尚未設定。";
             $("maintenance").hidden = false;
             return;
           }

@@ -15,11 +15,12 @@ from schema import (
     TABLE_TOPICS,
     TABLE_TOPIC_VOTES,
 )
+from system_limits import HOME_ACTIVE_MEMBER_WINDOW_HOURS
 from core.vote_logic import _resolve_db
+from version import APP_VERSION
 
 
 HKT = ZoneInfo("Asia/Hong_Kong")
-MAINTENANCE_DEADLINE_TEXT = "2026年4月3日 23:59（香港時間）"
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 
 MANUAL_ROLE_SECTIONS = {
@@ -47,6 +48,19 @@ def is_maintenance_mode(db=None):
     except Exception:
         return False
     return value is not None and str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+def format_maintenance_deadline(value):
+    """Format the developer-configured naive Hong Kong time for public display."""
+    if not value:
+        return ""
+    try:
+        deadline = dt.datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    if deadline.tzinfo is not None:
+        deadline = deadline.astimezone(HKT).replace(tzinfo=None)
+    return f"{deadline.year}年{deadline.month}月{deadline.day}日 {deadline:%H:%M}（香港時間）"
 
 
 def get_registration_status(db=None):
@@ -91,8 +105,11 @@ def get_registration_status(db=None):
 def home_data(db=None):
     db = _resolve_db(db)
     return {
+        "version": APP_VERSION,
         "maintenance_mode": is_maintenance_mode(db),
-        "maintenance_deadline": MAINTENANCE_DEADLINE_TEXT,
+        "maintenance_deadline": format_maintenance_deadline(
+            _get_config(db, "maintenance_deadline")
+        ),
         "registration": get_registration_status(db),
     }
 
@@ -143,9 +160,12 @@ def run_status_checks(db=None):
         results["errors"].append(f"辯題投票查詢失敗: {exc}")
 
     try:
+        cutoff = dt.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None) - dt.timedelta(
+            hours=HOME_ACTIVE_MEMBER_WINDOW_HOURS
+        )
         data = db.query(
             f"SELECT COUNT(*) AS cnt FROM {TABLE_LOGIN_RECORDS} "
-            "WHERE logged_in_at >= NOW() - INTERVAL '24 hours'"
+            "WHERE logged_in_at >= :cutoff", {"cutoff": cutoff}
         )
         results["logins_24h"] = int(data.iloc[0]["cnt"]) if not data.empty else 0
     except Exception as exc:

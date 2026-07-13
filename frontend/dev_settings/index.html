@@ -183,7 +183,11 @@
             <h2>維護模式</h2>
             <p class="caption">開啟後除本頁外，所有頁面均會顯示維護中訊息。</p>
             <p id="maintState"></p>
-            <button id="toggleMaint" class="primary"></button>
+            <label>預期完成時間（香港時間）<input id="maintenanceDeadline" type="datetime-local" /></label>
+            <div class="actions">
+              <button id="saveMaintDeadline">儲存預期完成時間</button>
+              <button id="toggleMaint" class="primary"></button>
+            </div>
           </section>
           <section class="card">
             <h2>臨時開放提案</h2>
@@ -511,6 +515,13 @@
           $("maintState").textContent =
             "目前維護模式：" + (on ? "開啟" : "關閉");
           $("toggleMaint").textContent = on ? "關閉維護模式" : "開啟維護模式";
+          if (c.maintenance_deadline) {
+            $("maintenanceDeadline").value = String(c.maintenance_deadline).slice(0, 16);
+          } else if (!$("maintenanceDeadline").value) {
+            const deadline = new Date(Date.now() + 4 * 60 * 60 * 1000);
+            deadline.setMinutes(deadline.getMinutes() - deadline.getTimezoneOffset());
+            $("maintenanceDeadline").value = deadline.toISOString().slice(0, 16);
+          }
           const bypasses = parseBypasses(c.bypass_active_check_until);
           $("activeBypasses").innerHTML =
             Object.entries(bypasses)
@@ -631,8 +642,26 @@
             "AI Provider 設定已更新。",
           );
         };
+        $("saveMaintDeadline").onclick = () => {
+          if (!$("maintenanceDeadline").value)
+            return toast("⚠️ 請輸入預期完成時間。");
+          mutate(
+            "/api/developer/settings",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                values: {
+                  maintenance_deadline: $("maintenanceDeadline").value,
+                },
+              }),
+            },
+            "預期完成時間已更新。",
+          );
+        };
         $("toggleMaint").onclick = async () => {
           const turningOn = $("toggleMaint").textContent.startsWith("開啟");
+          if (turningOn && !$("maintenanceDeadline").value)
+            return toast("⚠️ 請先輸入預期完成時間。");
           if (!(await askAction(
             turningOn ? "開啟維護模式？" : "關閉維護模式？",
             turningOn
@@ -646,6 +675,9 @@
               body: JSON.stringify({
                 values: {
                   maintenance_mode: turningOn ? "true" : "false",
+                  ...(turningOn
+                    ? { maintenance_deadline: $("maintenanceDeadline").value }
+                    : {}),
                 },
               }),
             },

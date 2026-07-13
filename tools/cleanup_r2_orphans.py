@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 
@@ -13,14 +14,15 @@ sys.path.insert(0, str(ROOT))
 
 from core import r2_storage
 from deploy.proxy import get_vote_db
+from schema import CREATE_R2_UPLOAD_INTENTS
+from system_limits import R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT, R2_ORPHAN_MIN_AGE_HOURS
 
 
 CONFIRMATION = "DELETE-R2-ORPHANS"
-PREFIXES = ("photos/original/", "photos/thumb/", "audio/tts/")
+PREFIXES = ("pending/", "photos/original/", "photos/thumb/", "audio/tts/")
 
 
-def _referenced_keys() -> set[str]:
-    db = get_vote_db()
+def _referenced_keys(db) -> set[str]:
     photos = db.query("SELECT r2_key,thumbnail_r2_key FROM match_photos")
     audio = db.query("SELECT r2_key FROM tts_voice_recordings")
     keys: set[str] = set()
@@ -30,17 +32,36 @@ def _referenced_keys() -> set[str]:
     return keys
 
 
+def _issued_intents_by_key(db) -> dict[str, str]:
+    db.execute(CREATE_R2_UPLOAD_INTENTS)
+    rows = db.query("SELECT intent_id,object_keys FROM r2_upload_intents WHERE status='issued'")
+    result: dict[str, str] = {}
+    for _, row in rows.iterrows():
+        try:
+            keys = json.loads(str(row["object_keys"] or "[]"))
+        except Exception:
+            keys = []
+        for key in keys:
+            if str(key).startswith("pending/"):
+                result[str(key)] = str(row["intent_id"])
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--older-than-hours", type=int, default=48)
+    parser.add_argument("--older-than-hours", type=int, default=R2_ORPHAN_MIN_AGE_HOURS)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args()
     if not r2_storage.configured():
         print("R2 is not configured.", file=sys.stderr)
         return 2
-    referenced = _referenced_keys()
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=max(24, args.older_than_hours))
+    db = get_vote_db()
+    referenced = _referenced_keys(db)
+    pending_intents = _issued_intents_by_key(db)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+        hours=max(R2_ORPHAN_MIN_AGE_HOURS, args.older_than_hours)
+    )
     orphans = []
     s3 = r2_storage.client()
     bucket = r2_storage.settings()["bucket"]
@@ -55,7 +76,7 @@ def main() -> int:
     total = sum(size for _, size in orphans)
     print(f"orphans={len(orphans)} bytes={total} cutoff={cutoff.isoformat()}")
     if not args.apply:
-        for key, size in orphans[:100]:
+        for key, size in orphans[:R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT]:
             print(f"dry-run {size:>10} {key}")
         return 0
     if args.confirm != CONFIRMATION:
@@ -63,6 +84,9 @@ def main() -> int:
         return 2
     for key, _size in orphans:
         r2_storage.delete(key)
+        intent_id = pending_intents.get(key)
+        if intent_id:
+            r2_storage.mark_upload_intent_deleted(db, intent_id)
         print(f"deleted {key}")
     return 0
 

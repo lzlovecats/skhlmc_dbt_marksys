@@ -33,6 +33,8 @@ class RegistrationDb:
     def query(self, sql, params=None):
         if "competition_registration_settings" in sql and "SELECT" in sql:
             return self.settings.copy()
+        if "COUNT(*) AS n FROM competition_registrations" in sql:
+            return pd.DataFrame([{"n": 0}])
         if "SELECT 1 FROM competition_registrations" in sql:
             return pd.DataFrame()
         raise AssertionError(sql)

@@ -1,13 +1,13 @@
 """Organiser-only endpoint for the in-memory tournament bracket draw."""
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/schedule", tags=["schedule"])
 
 
 class DrawBody(BaseModel):
-    teams_text: str = ""
+    teams_text: str = Field(default="", max_length=20_000)
 
 
 def _require_admin(request: Request):

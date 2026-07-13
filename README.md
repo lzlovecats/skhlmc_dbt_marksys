@@ -2,7 +2,8 @@
 
 > 聖呂中辯電子分紙系統
 
-Current release candidate: **4.1.2** — R2-only media、用量配額及Render資源保護。
+Current release version以[`version.py`](version.py)為唯一來源；本release集中管理
+bandwidth、RAM、storage及全系統資源限制。
 
 一個為校園辯論比賽而設計的全功能電子評分與管理平台，涵蓋辯題徵集投票、場次管理、隊伍自助提交名單、評判電子分紙、比賽片段重溫及成績統計。
 
@@ -267,11 +268,15 @@ The relay only serves tokens minted by this app: each ephemeral token is HMAC-si
 
 `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` 用於 PWA Web Push 通知；如未設定，辯題投票頁仍可正常使用，但不會啟用背景推送通知。
 
-`R2_*` 用於private Cloudflare R2相片及TTS錄音。4.1.2為R2-only：browser以
+`R2_*` 用於private Cloudflare R2相片及TTS錄音。本release延續R2-only：browser以
 短期presigned URL直接上載／下載binary，Render及Supabase只處理metadata；
 未設定R2時媒體功能會暫停，不會fallback到Supabase BYTEA。
 部署及舊資料遷移步驟見 [R2 media migration runbook](docs/R2_MEDIA_MIGRATION_RUNBOOK.md)，
-服務月費及 quota 見 [services, costs and limits](docs/SERVICES_COSTS_AND_LIMITS.md)。
+所有營運限額的唯一程式碼來源及部署生效步驟見
+[system limits](docs/SYSTEM_LIMITS.md)，服務月費及架構盤點見
+[services, costs and limits](docs/SERVICES_COSTS_AND_LIMITS.md)。
+Cloudflare custom domain及靜態資源cache見
+[edge cache runbook](docs/CLOUDFLARE_EDGE_CACHE_RUNBOOK.md)。
 
 **3. 初始化系統密碼 / Seed initial passwords**
 

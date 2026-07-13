@@ -8,32 +8,37 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
+from system_limits import (
+    PHOTO_BATCH_MAX_ITEMS, PHOTO_DAILY_USER_LIMIT, PHOTO_MAX_BYTES,
+    PHOTO_MAX_DIMENSION, PHOTO_MONTHLY_GLOBAL_LIMIT,
+    PHOTO_THUMBNAIL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_DIMENSION,
+    R2_MEDIA_LINK_TTL_SECONDS,
+    R2_OBJECT_CACHE_MAX_AGE_SECONDS, R2_UPLOAD_CLAIM_TTL_SECONDS,
+)
 
 router = APIRouter(prefix="/api/match-photos", tags=["match-photos"])
-PHOTO_DAILY_USER_LIMIT = int(os.getenv("PHOTO_DAILY_USER_LIMIT", "20"))
-PHOTO_MONTHLY_GLOBAL_LIMIT = int(os.getenv("PHOTO_MONTHLY_GLOBAL_LIMIT", "500"))
 
 
 class PhotoUploadIntentBody(BaseModel):
-    file_name: str
-    mime_type: str = "image/webp"
-    byte_size: int
-    thumbnail_byte_size: int
-    sha256: str
-    thumbnail_sha256: str
-    width: int
-    height: int
+    file_name: str = Field(max_length=240)
+    mime_type: str = Field(default="image/webp", max_length=80)
+    byte_size: int = Field(gt=0, le=PHOTO_MAX_BYTES)
+    thumbnail_byte_size: int = Field(gt=0, le=PHOTO_THUMBNAIL_MAX_BYTES)
+    sha256: str = Field(min_length=64, max_length=64)
+    thumbnail_sha256: str = Field(min_length=64, max_length=64)
+    width: int = Field(gt=0, le=PHOTO_MAX_DIMENSION)
+    height: int = Field(gt=0, le=PHOTO_MAX_DIMENSION)
 
 
 class PhotoCompleteBody(BaseModel):
-    album_label: str
+    album_label: str = Field(min_length=1, max_length=200)
     match_video_id: int | None = None
-    photo_date: str = ""
-    photo_title: str = ""
-    caption: str = ""
-    upload_tokens: list[str]
+    photo_date: str = Field(default="", max_length=20)
+    photo_title: str = Field(default="", max_length=300)
+    caption: str = Field(default="", max_length=2000)
+    upload_tokens: list[str] = Field(min_length=1, max_length=PHOTO_BATCH_MAX_ITEMS)
 
 
 def _context(request: Request):
@@ -50,6 +55,17 @@ def data(request: Request):
         raise HTTPException(503, "Cloudflare R2 尚未完成設定，相片功能已暫停。")
     result = logic.photo_data(db=db)
     result["storage"] = "r2"
+    result["storage_budget"] = r2_storage.storage_budget_status(db, refresh=True)
+    result["limits"] = {
+        "batch_max_items": PHOTO_BATCH_MAX_ITEMS,
+        "daily_user_limit": PHOTO_DAILY_USER_LIMIT,
+        "monthly_global_limit": PHOTO_MONTHLY_GLOBAL_LIMIT,
+        "photo_max_bytes": PHOTO_MAX_BYTES,
+        "photo_max_dimension": PHOTO_MAX_DIMENSION,
+        "thumbnail_max_bytes": PHOTO_THUMBNAIL_MAX_BYTES,
+        "thumbnail_max_dimension": PHOTO_THUMBNAIL_MAX_DIMENSION,
+        "r2_object_cache_max_age_seconds": R2_OBJECT_CACHE_MAX_AGE_SECONDS,
+    }
     from deploy.proxy import bandwidth_budget_status
     result["bandwidth_budget"] = bandwidth_budget_status(notify=True)
     return result
@@ -59,6 +75,8 @@ def photos(request: Request, page: int = 1, album: str = "全部", search: str =
     from core import media_logic as logic
     from schema import TABLE_MATCH_PHOTOS
     _user, db = _context(request); logic.ensure_match_photos_table(db); page,_,offset=bounds(page)
+    album = str(album or "")[:200]
+    search = str(search or "")[:100]
     clauses=[];params={}
     if album!="全部": clauses.append("album_label=:album");params["album"]=album
     if search.strip(): clauses.append("LOWER(COALESCE(album_label,'')||' '||COALESCE(photo_title,'')||' '||COALESCE(caption,'')||' '||COALESCE(uploaded_by,'')||' '||COALESCE(file_name,'')) LIKE :search");params["search"]="%"+search.strip().lower()+"%"
@@ -82,14 +100,18 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
     user_id, _db = _context(request)
     if not r2_storage.configured():
         raise HTTPException(503, "Cloudflare R2 尚未完成設定。")
+    storage_budget = r2_storage.storage_budget_status(_db, refresh=True)
+    if storage_budget["blocked"]:
+        stop_gb = storage_budget["stop_bytes"] / 1_000_000_000
+        raise HTTPException(429, f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新相片上載。")
     if body.mime_type not in {"image/webp", "image/jpeg", "image/png"}:
         raise HTTPException(400, "圖片格式只支援 JPEG、PNG 或 WebP。")
-    if not 1_000 <= body.byte_size <= 2 * 1024 * 1024:
-        raise HTTPException(400, "每張圖片壓縮後不可超過 2MB。")
-    if not 500 <= body.thumbnail_byte_size <= 300 * 1024:
-        raise HTTPException(400, "圖片縮圖不可超過 300KB。")
-    if not 1 <= body.width <= 2000 or not 1 <= body.height <= 2000:
-        raise HTTPException(400, "圖片最長邊不可超過 2000px。")
+    if not 1_000 <= body.byte_size <= PHOTO_MAX_BYTES:
+        raise HTTPException(400, f"每張圖片壓縮後不可超過 {PHOTO_MAX_BYTES // (1024 * 1024)}MB。")
+    if not 500 <= body.thumbnail_byte_size <= PHOTO_THUMBNAIL_MAX_BYTES:
+        raise HTTPException(400, f"圖片縮圖不可超過 {PHOTO_THUMBNAIL_MAX_BYTES // 1024}KB。")
+    if not 1 <= body.width <= PHOTO_MAX_DIMENSION or not 1 <= body.height <= PHOTO_MAX_DIMENSION:
+        raise HTTPException(400, f"圖片最長邊不可超過 {PHOTO_MAX_DIMENSION}px。")
     if not re.fullmatch(r"[0-9a-f]{64}", body.sha256.lower()) or not re.fullmatch(
         r"[0-9a-f]{64}", body.thumbnail_sha256.lower()
     ):
@@ -99,6 +121,8 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
     ext = "webp" if body.mime_type == "image/webp" else "jpg" if body.mime_type == "image/jpeg" else "png"
     original_key = f"photos/original/{safe_user}/{object_id}.{ext}"
     thumbnail_key = f"photos/thumb/{safe_user}/{object_id}.{ext}"
+    pending_original_key = f"pending/{original_key}"
+    pending_thumbnail_key = f"pending/{thumbnail_key}"
     secret = _get_relay_cookie_secret()
     if not secret:
         raise HTTPException(503, "系統簽署設定不可用。")
@@ -108,18 +132,20 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
         "thumbnail_byte_size": body.thumbnail_byte_size, "sha256": body.sha256.lower(),
         "thumbnail_sha256": body.thumbnail_sha256.lower(), "width": body.width,
         "height": body.height, "r2_key": original_key,
-        "thumbnail_r2_key": thumbnail_key,
+        "thumbnail_r2_key": thumbnail_key, "pending_r2_key": pending_original_key,
+        "pending_thumbnail_r2_key": pending_thumbnail_key,
     }
-    token = r2_storage.sign_upload_claim(claim, secret, expires=600)
+    token = r2_storage.sign_upload_claim(claim, secret, expires=R2_UPLOAD_CLAIM_TTL_SECONDS)
     reserved, scope = r2_storage.reserve_upload_intent(
         _db, intent_id=object_id, user_id=str(user_id), media_kind="photo",
-        object_keys=[original_key, thumbnail_key],
+        object_keys=[pending_original_key, pending_thumbnail_key],
         declared_bytes=body.byte_size + body.thumbnail_byte_size,
         user_daily_limit=PHOTO_DAILY_USER_LIMIT,
         global_monthly_limit=PHOTO_MONTHLY_GLOBAL_LIMIT,
     )
     if not reserved:
-        message = (
+        stop_gb = storage_budget["stop_bytes"] / 1_000_000_000
+        message = f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新相片上載。" if scope == "storage_global" else (
             f"你今日申請的圖片上載次數已達{PHOTO_DAILY_USER_LIMIT}次，請翌日再試。"
             if scope == "user_daily" else "本月全系統圖片上載申請已達上限。"
         )
@@ -127,18 +153,24 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
     return {
         "upload_token": token,
         "original": {
-            "url": r2_storage.presign_put(original_key, body.mime_type, body.sha256, body.byte_size),
-            "key": original_key,
-            "headers": {"x-amz-meta-sha256": body.sha256.lower()},
+            "url": r2_storage.presign_put(pending_original_key, body.mime_type, body.sha256, body.byte_size),
+            "key": pending_original_key,
+            "headers": {
+                "Cache-Control": f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}",
+                "x-amz-meta-sha256": body.sha256.lower(),
+            },
         },
         "thumbnail": {
-            "url": r2_storage.presign_put(thumbnail_key, body.mime_type, body.thumbnail_sha256, body.thumbnail_byte_size),
-            "key": thumbnail_key,
-            "headers": {"x-amz-meta-sha256": body.thumbnail_sha256.lower()},
+            "url": r2_storage.presign_put(pending_thumbnail_key, body.mime_type, body.thumbnail_sha256, body.thumbnail_byte_size),
+            "key": pending_thumbnail_key,
+            "headers": {
+                "Cache-Control": f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}",
+                "x-amz-meta-sha256": body.thumbnail_sha256.lower(),
+            },
         },
         "required_headers": {
             "Content-Type": body.mime_type,
-            "Cache-Control": "private, max-age=86400",
+            "Cache-Control": f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}",
         },
     }
 
@@ -150,10 +182,17 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
     from deploy.proxy import _get_relay_cookie_secret
 
     user_id, db = _context(request)
-    if not body.upload_tokens or len(body.upload_tokens) > 5:
-        raise HTTPException(400, "每次必須上載一至五張圖片。")
+    if not body.upload_tokens or len(body.upload_tokens) > PHOTO_BATCH_MAX_ITEMS:
+        raise HTTPException(400, f"每次必須上載一至{PHOTO_BATCH_MAX_ITEMS}張圖片。")
+    if any(len(token) > 20_000 for token in body.upload_tokens):
+        raise HTTPException(400, "圖片上載憑證格式無效。")
     logic.ensure_match_photos_table(db)
     now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+    if body.photo_date:
+        try:
+            datetime.strptime(body.photo_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(400, "相片日期格式無效。") from exc
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = day_start.replace(day=1)
     usage = db.query("""SELECT
@@ -170,18 +209,39 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
         raise HTTPException(429, "本月全系統相片上載限額已用完，請於下月再試。")
     secret = _get_relay_cookie_secret()
     files = []
-    for token in body.upload_tokens:
-        claim = r2_storage.verify_upload_claim(token, secret or "")
-        if not claim or claim.get("kind") != "photo" or claim.get("user") != str(user_id):
-            raise HTTPException(400, "圖片上載憑證無效或已過期。")
-        try:
-            original = r2_storage.head(claim["r2_key"])
-            thumbnail = r2_storage.head(claim["thumbnail_r2_key"])
-        except Exception as exc:
-            for key in (claim.get("r2_key"), claim.get("thumbnail_r2_key")):
+    seen_intents = set()
+
+    def discard_claims(items, *, include_final=False, mark_deleted=True):
+        for item in items:
+            keys = [item.get("pending_r2_key"), item.get("pending_thumbnail_r2_key")]
+            if include_final:
+                keys.extend((item.get("r2_key"), item.get("thumbnail_r2_key")))
+            for key in keys:
                 if key:
                     try: r2_storage.delete(key)
                     except Exception: pass
+            if mark_deleted:
+                try: r2_storage.mark_upload_intent_deleted(db, str(item.get("intent_id") or ""))
+                except Exception: pass
+
+    for token in body.upload_tokens:
+        claim = r2_storage.verify_upload_claim(token, secret or "")
+        if not claim or claim.get("kind") != "photo" or claim.get("user") != str(user_id):
+            discard_claims(files)
+            raise HTTPException(400, "圖片上載憑證無效或已過期。")
+        intent_id = str(claim.get("intent_id") or "")
+        if not intent_id or intent_id in seen_intents:
+            discard_claims(files)
+            raise HTTPException(400, "圖片上載憑證重複或缺少intent。")
+        seen_intents.add(intent_id)
+        try:
+            original = r2_storage.head(claim["pending_r2_key"])
+            thumbnail = r2_storage.head(claim["pending_thumbnail_r2_key"])
+        except Exception as exc:
+            discard_claims(files)
+            # A missing pending object can be a replay of an already completed
+            # claim. Never remove its final object or alter its completed intent.
+            discard_claims([claim], mark_deleted=False)
             raise HTTPException(400, "R2 未能確認圖片已完成上載。") from exc
         original_sha = str((original.get("Metadata") or {}).get("sha256") or "")
         thumb_sha = str((thumbnail.get("Metadata") or {}).get("sha256") or "")
@@ -193,17 +253,31 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
             or original_sha != claim["sha256"]
             or thumb_sha != claim["thumbnail_sha256"]
         ):
-            for key in (claim["r2_key"], claim["thumbnail_r2_key"]):
-                try: r2_storage.delete(key)
-                except Exception: pass
+            discard_claims([*files, claim])
             raise HTTPException(400, "R2 圖片大小或雜湊驗證失敗。")
         files.append(claim)
-    result = logic.register_r2_photos(
-        user_id, body.album_label, body.match_video_id, body.photo_date,
-        body.photo_title, body.caption, files, db=db,
-    )
-    for claim in files:
-        r2_storage.complete_upload_intent(db, str(claim.get("intent_id") or ""))
+
+    def discard_batch():
+        discard_claims(files, include_final=True)
+
+    try:
+        for claim in files:
+            r2_storage.promote(claim["pending_r2_key"], claim["r2_key"])
+            r2_storage.promote(claim["pending_thumbnail_r2_key"], claim["thumbnail_r2_key"])
+    except Exception as exc:
+        discard_batch()
+        raise HTTPException(502, "R2圖片由暫存區轉入正式儲存失敗。") from exc
+    try:
+        result = logic.register_r2_photos(
+            user_id, body.album_label, body.match_video_id, body.photo_date,
+            body.photo_title, body.caption, files, db=db,
+        )
+    except Exception as exc:
+        discard_batch()
+        raise HTTPException(502, "圖片metadata未能以交易方式寫入，已清理本批R2檔案。") from exc
+    if not result.get("ok"):
+        discard_batch()
+        raise HTTPException(400, result.get("message") or "圖片metadata不正確。")
     return result
 
 
@@ -222,5 +296,5 @@ def image(photo_id: int, request: Request, download: bool = False, thumbnail: bo
         raise HTTPException(409, "相片尚未完成R2遷移。")
     return RedirectResponse(r2_storage.presign_get(
         r2_key, mime_type=media["mime_type"], file_name=media["file_name"],
-        download=download, expires=1800,
+        download=download, expires=R2_MEDIA_LINK_TTL_SECONDS,
     ), status_code=307, headers={"Cache-Control": "private, no-store"})

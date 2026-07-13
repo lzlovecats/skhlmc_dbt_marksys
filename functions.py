@@ -70,10 +70,9 @@ from schema import (
 # DB primitives now live in db.py. Re-exported here so existing
 # `from functions import get_connection, execute_query, ...` keeps working.
 from db import get_connection, execute_query, query_params, execute_query_count
+from system_limits import COMMITTEE_COOKIE_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
-
-MAINTENANCE_DEADLINE_TEXT = "2026年4月3日 23:59（香港時間）"
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -784,7 +783,7 @@ def update_committee_login_time(user_id: str):
 def disable_dormant_committee_accounts():
     if not ensure_account_lifecycle_columns():
         return
-    cutoff = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None) - datetime.timedelta(days=180)
+    cutoff = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None) - datetime.timedelta(days=COMMITTEE_COOKIE_MAX_AGE_DAYS)
     execute_query(
         f"""
         UPDATE {TABLE_ACCOUNTS} a
@@ -1427,11 +1426,25 @@ def is_bypass_active_check(user_id: str = None) -> bool:
 
 
 def render_maintenance_notice():
+    deadline_text = ""
+    raw_deadline = get_system_config("maintenance_deadline")
+    if raw_deadline:
+        try:
+            deadline = datetime.datetime.fromisoformat(str(raw_deadline).strip())
+            if deadline.tzinfo is not None:
+                deadline = deadline.astimezone(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+            deadline_text = f"{deadline.year}年{deadline.month}月{deadline.day}日 {deadline:%H:%M}（香港時間）"
+        except (TypeError, ValueError):
+            pass
     with st.container(border=True):
         st.warning("系統維護中")
         st.write("目前系統正在進行更新，所有功能暫停開放。")
-        st.write(f"預計於 **{MAINTENANCE_DEADLINE_TEXT}** 或之前完成。")
+        if deadline_text:
+            st.write(f"預計於 **{deadline_text}** 或之前完成。")
+        else:
+            st.write("預計完成時間尚未設定。")
         st.caption("所有功能現已暫停使用，請稍後再試。")
+        st.page_link("legacy_streamlit/dev_settings.py", label="🔧 開發者設定")
 
 
 def extract_markdown_section(content, heading_level, target_heading):
@@ -1582,7 +1595,7 @@ def hash_password(plain: str) -> str:
 
 
 def return_expire_day():
-    return datetime.datetime.now() + datetime.timedelta(days=180)
+    return datetime.datetime.now() + datetime.timedelta(days=COMMITTEE_COOKIE_MAX_AGE_DAYS)
 
 
 _ACTIVITY_VIEW_SQL = f"""

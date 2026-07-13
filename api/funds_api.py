@@ -1,27 +1,28 @@
 """Committee-authenticated endpoints for the HTML fund ledgers."""
 
-import csv
-import io
-from urllib.parse import quote
-
 import httpx
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
+from api.resource_limits import EXPORT_MAX_ROWS, csv_response, require_row_limit
+from system_limits import OPENROUTER_CREDIT_TIMEOUT_SECONDS
 
 router = APIRouter(prefix="/api", tags=["funds"])
+AI_TX_COLUMNS = """id,transaction_type,status,provider,amount_hkd,
+    LEFT(COALESCE(payment_method,''),200) payment_method,
+    LEFT(COALESCE(reference_no,''),200) reference_no,
+    LEFT(COALESCE(note,''),2000) note,created_by,created_at,
+    confirmed_by,confirmed_at,rejected_by,rejected_at,
+    LEFT(COALESCE(status_note,''),2000) status_note"""
+AI_USAGE_COLUMNS = """id,user_id,feature,model_label,provider,estimated_cost_usd,
+    estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,
+    status,LEFT(COALESCE(error_message,''),1000) error_message,created_at"""
 
 
 def _csv_response(filename, headers, rows):
-    stream = io.StringIO()
-    writer = csv.writer(stream)
-    writer.writerow(headers)
-    writer.writerows(rows)
-    encoded = ("\ufeff" + stream.getvalue()).encode("utf-8")
-    return Response(encoded, media_type="text/csv; charset=utf-8", headers={
-        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
-    })
+    require_row_limit(rows, label="基金紀錄匯出")
+    return csv_response(filename, headers, rows)
 
 
 def _context(request):
@@ -38,17 +39,17 @@ def _lateness_context(request, manager=False):
 
 
 class LatenessRecord(BaseModel):
-    late_date: str
-    member_user_id: str
-    late_minutes: int
+    late_date: str = Field(max_length=10)
+    member_user_id: str = Field(max_length=200)
+    late_minutes: int = Field(gt=0, le=1440)
     paid_amount: float = 0
-    note: str = ""
+    note: str = Field(default="", max_length=2000)
 
 
 class LatenessExpense(BaseModel):
-    expense_date: str
+    expense_date: str = Field(max_length=10)
     amount: float
-    note: str = ""
+    note: str = Field(default="", max_length=2000)
 
 
 class AmountBody(BaseModel):
@@ -60,8 +61,8 @@ class PaidBody(BaseModel):
 
 
 class LatenessNotifyBody(BaseModel):
-    target: str = "outstanding"
-    message: str = ""
+    target: str = Field(default="outstanding", max_length=20)
+    message: str = Field(default="", max_length=2000)
 
 
 @router.get("/lateness-fund/data")
@@ -203,11 +204,11 @@ def lateness_records_csv(request:Request,year:int):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_RECORDS
     _,db=_lateness_context(request);start,end=logic.fiscal_range(year)
-    rows=db.query(f"""WITH ranked AS (SELECT id,late_date,member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,note,created_by,created_at,updated_at,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end) SELECT *,late_no*late_minutes penalty_amount,paid_amount-(late_no*late_minutes) record_balance FROM ranked ORDER BY late_date DESC,id DESC""",{"start":start.isoformat(),"end":end.isoformat()})
-    output=io.StringIO();writer=csv.writer(output);writer.writerow(["ID","日期","帳戶","遲到分鐘","本年度第幾次","應繳罰款","已繳金額","本次結餘","備註","記錄人","記錄時間","更新時間"])
-    for _,row in rows.iterrows(): writer.writerow([row["id"],_display_date(row["late_date"]),row["member_user_id"],row["late_minutes"],row["late_no"],_hkd(row["penalty_amount"]),_hkd(row["paid_amount"]),_hkd(row["record_balance"]),row.get("note") or "",row.get("created_by") or "",row.get("created_at") or "",row.get("updated_at") or ""])
+    rows=db.query(f"""WITH ranked AS (SELECT id,late_date,member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,LEFT(COALESCE(note,''),2000) note,created_by,created_at,updated_at,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end) SELECT *,late_no*late_minutes penalty_amount,paid_amount-(late_no*late_minutes) record_balance FROM ranked ORDER BY late_date DESC,id DESC LIMIT :export_limit""",{"start":start.isoformat(),"end":end.isoformat(),"export_limit":EXPORT_MAX_ROWS+1})
+    require_row_limit(rows, label="遲到紀錄匯出")
+    export_rows=[[row["id"],_display_date(row["late_date"]),row["member_user_id"],row["late_minutes"],row["late_no"],_hkd(row["penalty_amount"]),_hkd(row["paid_amount"]),_hkd(row["record_balance"]),row.get("note") or "",row.get("created_by") or "",row.get("created_at") or "",row.get("updated_at") or ""] for _,row in rows.iterrows()]
     filename=f"遲到罰款基金_遲到紀錄_{logic.fiscal_label(year)}.csv"
-    return Response(content="\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":f"attachment; filename*=UTF-8''{quote(filename)}"})
+    return csv_response(filename,["ID","日期","帳戶","遲到分鐘","本年度第幾次","應繳罰款","已繳金額","本次結餘","備註","記錄人","記錄時間","更新時間"],export_rows)
 
 
 @router.get("/lateness-fund/export/expenses.csv")
@@ -215,11 +216,11 @@ def lateness_expenses_csv(request:Request,year:int):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_EXPENSES
     _,db=_lateness_context(request);start,end=logic.fiscal_range(year)
-    rows=db.query(f"SELECT id,expense_date,amount_hkd,note,created_by,created_at FROM {TABLE_LATENESS_FUND_EXPENSES} WHERE expense_date BETWEEN :start AND :end ORDER BY expense_date DESC,id DESC",{"start":start.isoformat(),"end":end.isoformat()})
-    output=io.StringIO();writer=csv.writer(output);writer.writerow(["ID","支出日期","支出金額","備註","記錄人","記錄時間"])
-    for _,row in rows.iterrows(): writer.writerow([row["id"],_display_date(row["expense_date"]),_hkd(row["amount_hkd"]),row.get("note") or "",row.get("created_by") or "",row.get("created_at") or ""])
+    rows=db.query(f"SELECT id,expense_date,amount_hkd,LEFT(COALESCE(note,''),2000) note,created_by,created_at FROM {TABLE_LATENESS_FUND_EXPENSES} WHERE expense_date BETWEEN :start AND :end ORDER BY expense_date DESC,id DESC LIMIT :export_limit",{"start":start.isoformat(),"end":end.isoformat(),"export_limit":EXPORT_MAX_ROWS+1})
+    require_row_limit(rows, label="支出紀錄匯出")
+    export_rows=[[row["id"],_display_date(row["expense_date"]),_hkd(row["amount_hkd"]),row.get("note") or "",row.get("created_by") or "",row.get("created_at") or ""] for _,row in rows.iterrows()]
     filename=f"遲到罰款基金_支出紀錄_{logic.fiscal_label(year)}.csv"
-    return Response(content="\ufeff"+output.getvalue(),media_type="text/csv; charset=utf-8",headers={"Content-Disposition":f"attachment; filename*=UTF-8''{quote(filename)}"})
+    return csv_response(filename,["ID","支出日期","支出金額","備註","記錄人","記錄時間"],export_rows)
 
 
 @router.post("/lateness-fund/notify/{year}")
@@ -241,24 +242,24 @@ def lateness_notify(year:int,body:LatenessNotifyBody,request:Request):
 
 
 class AiTransaction(BaseModel):
-    transaction_type: str
+    transaction_type: str = Field(max_length=40)
     amount: float
-    provider: str = "general"
-    payment_method: str = ""
-    reference_no: str = ""
-    note: str = ""
+    provider: str = Field(default="general", max_length=80)
+    payment_method: str = Field(default="", max_length=200)
+    reference_no: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=2000)
 
 
 class StatusBody(BaseModel):
-    status: str
-    note: str = ""
+    status: str = Field(max_length=40)
+    note: str = Field(default="", max_length=2000)
 
 
 class AdminBody(BaseModel):
-    kind: str
+    kind: str = Field(max_length=80)
     target_hkd: float | None = None
     low_balance_hkd: float | None = None
-    payment_instruction: str = ""
+    payment_instruction: str = Field(default="", max_length=4000)
     balance_usd: float | None = None
 
 
@@ -279,7 +280,7 @@ def ai_transactions(request: Request, page: int = 1, status: str | None = None, 
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     page, _, offset = bounds(page); params["limit"] = PAGE_SIZE; params["offset"] = offset
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_AI_FUND_TRANSACTIONS} {where}", params)
-    rows = db.query(f"SELECT * FROM {TABLE_AI_FUND_TRANSACTIONS} {where} ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset", params)
+    rows = db.query(f"SELECT {AI_TX_COLUMNS} FROM {TABLE_AI_FUND_TRANSACTIONS} {where} ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset", params)
     return payload(logic._rows(rows), page, total)
 
 
@@ -291,7 +292,7 @@ def ai_usage(request: Request, page: int = 1):
     where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
     page, _, offset = bounds(page); params["limit"] = PAGE_SIZE; params["offset"] = offset
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_AI_FUND_USAGE_LOGS} {where}", params)
-    rows = db.query(f"SELECT * FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset", params)
+    rows = db.query(f"SELECT {AI_USAGE_COLUMNS} FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset", params)
     return payload(logic._rows(rows), page, total)
 
 
@@ -299,9 +300,10 @@ def ai_usage(request: Request, page: int = 1):
 def ai_usage_summary(request: Request, page: int = 1):
     from core import funds_logic as logic
     user, db = _context(request); treasurer = logic.ai_data(user, db=db)["is_treasurer"]
-    rows = logic.ai_usage_summary(user, treasurer, db=db)
-    page, _, offset = bounds(page); total = len(rows)
-    return payload(logic._rows(rows.iloc[offset:offset + PAGE_SIZE]), page, total)
+    page, _, offset = bounds(page)
+    total = logic.ai_usage_summary_count(user, treasurer, db=db)
+    rows = logic.ai_usage_summary(user, treasurer, db=db, limit=PAGE_SIZE, offset=offset)
+    return payload(logic._rows(rows), page, total)
 
 
 def _ai_export_context(request):
@@ -315,7 +317,9 @@ def ai_transactions_csv(request: Request):
     from schema import TABLE_AI_FUND_TRANSACTIONS
     user, db, treasurer, logic = _ai_export_context(request)
     where, params = ("", {}) if treasurer else ("WHERE created_by=:user", {"user": user})
-    rows = db.query(f"SELECT * FROM {TABLE_AI_FUND_TRANSACTIONS} {where} ORDER BY created_at DESC,id DESC", params)
+    params["export_limit"] = EXPORT_MAX_ROWS + 1
+    rows = db.query(f"SELECT {AI_TX_COLUMNS} FROM {TABLE_AI_FUND_TRANSACTIONS} {where} ORDER BY created_at DESC,id DESC LIMIT :export_limit", params)
+    require_row_limit(rows, label="AI基金交易匯出")
     labels = logic.AI_TRANSACTION_LABELS; providers = logic.AI_PROVIDER_LABELS
     statuses = {"pending":"待確認","confirmed":"已確認","rejected":"已拒絕"}
     return _csv_response("ai基金交易紀錄.csv",
@@ -328,7 +332,9 @@ def ai_usage_csv(request: Request):
     from schema import TABLE_AI_FUND_USAGE_LOGS
     user, db, treasurer, logic = _ai_export_context(request)
     where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
-    rows = db.query(f"SELECT * FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC", params)
+    params["export_limit"] = EXPORT_MAX_ROWS + 1
+    rows = db.query(f"SELECT {AI_USAGE_COLUMNS} FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC LIMIT :export_limit", params)
+    require_row_limit(rows, label="AI用量匯出")
     statuses = {"success":"成功","failed":"失敗"}
     return _csv_response("ai用量估算紀錄.csv",
         ["編號","用戶","功能","模型","Provider","估算成本(USD)","估算成本(HKD)","Input tokens","Output tokens","Audio tokens","搜尋次數","成本來源","狀態","錯誤訊息","時間"],
@@ -338,7 +344,8 @@ def ai_usage_csv(request: Request):
 @router.get("/ai-fund/export/usage-summary.csv")
 def ai_usage_summary_csv(request: Request):
     user, db, treasurer, logic = _ai_export_context(request)
-    rows = logic._rows(logic.ai_usage_summary(user, treasurer, db=db))
+    rows = logic._rows(logic.ai_usage_summary(user, treasurer, db=db, limit=EXPORT_MAX_ROWS+1))
+    require_row_limit(rows, label="AI用量統計匯出")
     return _csv_response("ai用量統計.csv", ["月份","用戶","Provider","功能","模型","使用次數","估算成本(HKD)"],
         [[r.get("month"),r.get("user_id"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),r.get("uses"),r.get("estimated_cost_hkd")] for r in rows])
 
@@ -352,7 +359,7 @@ async def openrouter_credit(request: Request):
     if not key:
         return {"ok": False, "message": "未設定 OPENROUTER_MANAGEMENT_KEY，未能讀取 OpenRouter credits。"}
     try:
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=OPENROUTER_CREDIT_TIMEOUT_SECONDS) as client:
             response = await client.get("https://openrouter.ai/api/v1/credits", headers={"Authorization": f"Bearer {key}"})
             response.raise_for_status(); payload = response.json()
         item = payload.get("data") or {}

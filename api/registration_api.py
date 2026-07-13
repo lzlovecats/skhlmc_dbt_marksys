@@ -1,21 +1,21 @@
 """Public JSON endpoints for competition registration."""
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/registration", tags=["registration"])
 
 
 class RegistrationBody(BaseModel):
     competition_edition: int
-    team_name: str
-    main_debater_name: str
-    first_deputy_name: str
-    second_deputy_name: str
-    closing_debater_name: str
-    contact_name: str
-    contact_class: str
-    contact_phone: str
+    team_name: str = Field(min_length=1, max_length=100)
+    main_debater_name: str = Field(min_length=1, max_length=80)
+    first_deputy_name: str = Field(min_length=1, max_length=80)
+    second_deputy_name: str = Field(min_length=1, max_length=80)
+    closing_debater_name: str = Field(min_length=1, max_length=80)
+    contact_name: str = Field(min_length=1, max_length=80)
+    contact_class: str = Field(min_length=1, max_length=40)
+    contact_phone: str = Field(min_length=8, max_length=20)
 
 
 def _db():

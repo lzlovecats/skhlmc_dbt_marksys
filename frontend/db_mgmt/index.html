@@ -241,7 +241,9 @@
               d.kind === "select"
                 ? "<h2>查詢完成，共 " +
                   d.rows.length +
-                  " 行</h2>" +
+                  " 行" +
+                  (d.truncated ? "（結果已按伺服器資源上限截斷）" : "") +
+                  "</h2>" +
                   table(d.rows)
                 : "<h2>執行完成</h2><p>影響 " + d.count + " 行。</p>";
             toast("✅ 已執行。");

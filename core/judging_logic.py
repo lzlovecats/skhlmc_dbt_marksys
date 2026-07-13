@@ -6,6 +6,7 @@ the eight individual debater scores either all persist or none do.
 
 import datetime as dt
 import json
+import os
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -15,6 +16,7 @@ from core.auth_logic import verify_password
 from core.vote_logic import _resolve_db
 from scoring import COHERENCE_MAX, FREE_DEBATE_CRITERIA, FREE_DEBATE_MAX, GRAND_TOTAL, SPEECH_CRITERIA, SPEECH_TOTAL_MAX, free_debate_col, speech_col
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
+from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
 HKT = ZoneInfo("Asia/Hong_Kong")
 SIDES = ("正方", "反方")
@@ -25,7 +27,7 @@ ROLES = ("主辯", "一副", "二副", "結辯")
 def normalize_judge_name(name):
     raw = str(name or "").replace("\u3000", " ").strip()
     raw = " ".join(raw.split())
-    return "".join(char.lower() if "A" <= char <= "Z" else char for char in raw)
+    return "".join(char.lower() if "A" <= char <= "Z" else char for char in raw)[:100]
 
 
 def _json_ready(value):
@@ -53,8 +55,10 @@ def _has(value):
 
 def matches_for_judging(db=None):
     db = _resolve_db(db)
-    matches = db.query(f"SELECT match_id, topic_text, pro_team, con_team, access_code_hash FROM {TABLE_MATCHES} ORDER BY match_id")
-    debaters = db.query(f"SELECT match_id, side, position, debater_name FROM {TABLE_DEBATERS}")
+    matches = db.query(f"SELECT match_id, topic_text, pro_team, con_team, access_code_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
+    debaters = db.query(f"""SELECT match_id,side,position,debater_name FROM {TABLE_DEBATERS}
+        WHERE match_id IN (SELECT match_id FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit)""",
+        {"limit": MATCH_INVENTORY_LIMIT})
     data = []
     for _, row in matches.iterrows():
         record = {
@@ -85,7 +89,7 @@ def verify_match_access(match_id, password, db=None):
 def has_final_submission(match_id, judge_name, db=None):
     db = _resolve_db(db)
     rows = db.query(
-        f"SELECT 1 FROM {TABLE_SCORES} WHERE match_id = :match_id AND judge_name = :judge_name",
+        f"SELECT 1 FROM {TABLE_SCORES} WHERE match_id = :match_id AND judge_name = :judge_name LIMIT 1",
         {"match_id": match_id, "judge_name": normalize_judge_name(judge_name)},
     )
     return not rows.empty
@@ -134,7 +138,10 @@ def normalise_side_data(side, score_data):
         raise ValueError("評分表資料不完整。")
     clean_speech, individual_scores = [], []
     for index, row in enumerate(speech_rows):
-        clean = {"辯位": str(row.get("辯位") or ROLES[index]), "姓名": str(row.get("姓名") or "")}
+        clean = {
+            "辯位": str(row.get("辯位") or ROLES[index])[:10],
+            "姓名": str(row.get("姓名") or "")[:80],
+        }
         score = 0
         for criterion in SPEECH_CRITERIA:
             column = speech_col(criterion)
@@ -153,27 +160,35 @@ def normalise_side_data(side, score_data):
     coherence = _number(data.get("coherence", 0), "內容連貫", 0, COHERENCE_MAX)
     speech_total = sum(individual_scores)
     return {
-        "team_name": str(data.get("team_name") or side), "total_a": speech_total, "total_b": free_total,
+        "team_name": str(data.get("team_name") or side)[:100], "total_a": speech_total, "total_b": free_total,
         "deduction": deduction, "coherence": coherence,
         "final_total": speech_total + free_total - deduction + coherence,
         "ind_scores": individual_scores, "raw_df_a": clean_speech, "raw_df_b": [clean_free],
-        "last_saved": data.get("last_saved") or _now().isoformat(),
+        "last_saved": str(data.get("last_saved") or _now().isoformat())[:40],
     }
 
 
 def save_draft(match_id, judge_name, side, score_data, db=None):
     db = _resolve_db(db)
-    if not normalize_judge_name(judge_name):
+    judge = normalize_judge_name(judge_name)
+    if not judge:
         raise ValueError("請輸入評判姓名！")
-    if has_final_submission(match_id, judge_name, db):
+    if has_final_submission(match_id, judge, db):
         raise ValueError("你已提交過評分！無法修改評分！")
+    capacity = db.query(f"""SELECT COUNT(DISTINCT judge_name) AS n,
+        COUNT(*) FILTER (WHERE judge_name=:judge) AS current
+        FROM {TABLE_SCORE_DRAFTS} WHERE match_id=:match_id""",
+        {"match_id": match_id, "judge": judge})
+    if (not capacity.empty and int(capacity.iloc[0]["n"] or 0) >= JUDGE_MAX_PER_MATCH
+            and int(capacity.iloc[0]["current"] or 0) == 0):
+        raise ValueError("本場評判人數已達保護上限，請聯絡賽會人員。")
     data = normalise_side_data(side, score_data)
     db.execute(
         f"""INSERT INTO {TABLE_SCORE_DRAFTS} (match_id, judge_name, side, score_payload, is_final, updated_at)
             VALUES (:match_id, :judge_name, :side, :payload, FALSE, :updated_at)
             ON CONFLICT (match_id, judge_name, side) DO UPDATE SET
               score_payload=EXCLUDED.score_payload, is_final=FALSE, updated_at=EXCLUDED.updated_at""",
-        {"match_id": match_id, "judge_name": normalize_judge_name(judge_name), "side": side,
+        {"match_id": match_id, "judge_name": judge, "side": side,
          "payload": _serialize(data), "updated_at": _now().replace(tzinfo=None)},
     )
     return data
@@ -187,9 +202,15 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data, db=None):
     pro, con = normalise_side_data("正方", pro_data), normalise_side_data("反方", con_data)
     now = _now()
     with db.transaction() as session:
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                        {"key": f"judge_submit:{match_id}"})
         exists = session.execute(text(f"SELECT 1 FROM {TABLE_SCORES} WHERE match_id=:match_id AND judge_name=:judge_name"), {"match_id": match_id, "judge_name": judge}).fetchone()
         if exists:
             return False
+        capacity = session.execute(text(f"SELECT COUNT(*) AS n FROM {TABLE_SCORES} WHERE match_id=:match_id"),
+                                   {"match_id": match_id}).fetchone()
+        if capacity and int(capacity._mapping["n"] or 0) >= JUDGE_MAX_PER_MATCH:
+            raise ValueError("本場評判人數已達保護上限，請聯絡賽會人員。")
         for side, data in (("正方", pro), ("反方", con)):
             session.execute(text(f"""INSERT INTO {TABLE_SCORE_DRAFTS} (match_id, judge_name, side, score_payload, is_final, updated_at)
                 VALUES (:match_id,:judge_name,:side,:payload,TRUE,:updated_at)

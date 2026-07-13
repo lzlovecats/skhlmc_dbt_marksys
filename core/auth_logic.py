@@ -9,12 +9,40 @@ password and records the login.
 
 import datetime
 import json
+import os
+import threading
+import time
 from zoneinfo import ZoneInfo
 
 import bcrypt
 
 from schema import TABLE_ACCOUNTS, TABLE_LOGIN_RECORDS, VIEW_COMMITTEE_VOTE_ACTIVITY
 from core.vote_logic import _resolve_db
+from system_limits import LOGIN_RECORD_RETENTION_DAYS, MAINTENANCE_PRUNE_INTERVAL_SECONDS
+
+_login_prune_lock = threading.Lock()
+_login_last_prune = 0.0
+
+
+def append_login_record(user_id: str, login_type: str, logged_in_at, db=None) -> None:
+    """Append a bounded audit event and prune old login rows at most daily."""
+    global _login_last_prune
+    db = _resolve_db(db)
+    db.execute(
+        f"INSERT INTO {TABLE_LOGIN_RECORDS} (user_id,login_type,logged_in_at) "
+        "VALUES (:uid,:kind,:logged_in_at)",
+        {"uid": user_id, "kind": str(login_type)[:40], "logged_in_at": logged_in_at},
+    )
+    monotonic_now = time.monotonic()
+    if monotonic_now - _login_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+        return
+    with _login_prune_lock:
+        if monotonic_now - _login_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+            return
+        cutoff = datetime.datetime.now().replace(tzinfo=None) - datetime.timedelta(days=LOGIN_RECORD_RETENTION_DAYS)
+        db.execute(f"CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at ON {TABLE_LOGIN_RECORDS}(logged_in_at)")
+        db.execute(f"DELETE FROM {TABLE_LOGIN_RECORDS} WHERE logged_in_at<:cutoff", {"cutoff": cutoff})
+        _login_last_prune = monotonic_now
 
 
 def verify_password(plain: str, stored: str) -> bool:
@@ -113,10 +141,6 @@ def record_login(user_id: str, db=None) -> None:
     except Exception:
         pass
     try:
-        db.execute(
-            f"INSERT INTO {TABLE_LOGIN_RECORDS} (user_id, login_type, logged_in_at) "
-            "VALUES (:uid, 'committee', :t)",
-            {"uid": user_id, "t": now.strftime("%Y-%m-%d %H:%M:%S")},
-        )
+        append_login_record(user_id, "committee", now, db=db)
     except Exception:
         pass

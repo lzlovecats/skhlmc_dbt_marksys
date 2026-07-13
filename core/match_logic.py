@@ -1,6 +1,7 @@
 """Streamlit-free match management and team roster logic."""
 
 import datetime as dt
+import os
 import random
 import secrets
 from zoneinfo import ZoneInfo
@@ -13,6 +14,7 @@ from schema import (
     CREATE_MATCH_ROSTER_LINKS, TABLE_DEBATERS, TABLE_MATCHES,
     TABLE_MATCH_ROSTER_LINKS, TABLE_TOPICS,
 )
+from system_limits import MATCH_INVENTORY_LIMIT
 
 HKT = ZoneInfo("Asia/Hong_Kong")
 TIME_SLOTS = [f"{hour:02d}:{minute:02d}" for hour in range(15, 19) for minute in range(0, 60, 10) if hour < 18 or minute == 0]
@@ -33,8 +35,10 @@ def ensure_roster_links(db=None):
 
 
 def _match_records(db):
-    matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id")
-    debaters = db.query(f"SELECT match_id, side, position, debater_name FROM {TABLE_DEBATERS}")
+    matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
+    debaters = db.query(f"""SELECT match_id,side,position,debater_name FROM {TABLE_DEBATERS}
+        WHERE match_id IN (SELECT match_id FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit)""",
+        {"limit": MATCH_INVENTORY_LIMIT})
     out = []
     for _, row in matches.iterrows():
         record = {"match_id": _clean(row["match_id"]), "match_date": _date(row.get("match_date")), "match_time": _time(row.get("match_time")), "topic_text": _clean(row.get("topic_text")), "pro_team": _clean(row.get("pro_team")), "con_team": _clean(row.get("con_team")), "has_access_code": _has(row.get("access_code_hash")), "has_review_password": _has(row.get("review_password_hash"))}
@@ -73,6 +77,9 @@ def create_match(match_id, db=None):
     match_id = _clean(match_id)
     if not match_id: return {"ok": False, "message": "未輸入任何文字！"}
     db = _resolve_db(db)
+    count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCHES}")
+    if not count.empty and int(count.iloc[0]["n"] or 0) >= MATCH_INVENTORY_LIMIT:
+        return {"ok": False, "message": "場次已達保護上限，請先刪除不再需要的舊場次。"}
     found = db.query(f"SELECT 1 FROM {TABLE_MATCHES} WHERE match_id = :id", {"id": match_id})
     if not found.empty: return {"ok": False, "message": "此場次已存在。"}
     db.execute(f"INSERT INTO {TABLE_MATCHES} (match_id, match_date, match_time, topic_text, pro_team, con_team) VALUES (:id, NULL, NULL, '', '', '')", {"id": match_id})
@@ -109,10 +116,10 @@ def draw_topic(difficulty=None, db=None):
     if difficulty not in (None, "", 1, 2, 3, "1", "2", "3"):
         return {"ok": False, "message": "請選擇有效的難度。"}
     db = _resolve_db(db); params = {"difficulty": int(difficulty)} if difficulty else {}
-    sql = f"SELECT topic_text FROM {TABLE_TOPICS}" + (" WHERE difficulty = :difficulty" if difficulty else "")
+    sql = f"SELECT topic_text FROM {TABLE_TOPICS}" + (" WHERE difficulty = :difficulty" if difficulty else "") + " ORDER BY RANDOM() LIMIT 1"
     rows = db.query(sql, params)
     if rows.empty: return {"ok": False, "message": "抽取辯題失敗：辯題庫為空或出現錯誤。"}
-    return {"ok": True, "topic": random.choice(rows["topic_text"].tolist())}
+    return {"ok": True, "topic": str(rows.iloc[0]["topic_text"])}
 
 
 def draw_sides(team1, team2):

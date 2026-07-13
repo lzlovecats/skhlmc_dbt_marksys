@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import Response as BinaryResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from urllib.parse import quote
 router=APIRouter(prefix="/api/review",tags=["review"]); COOKIE="review_match"
-class LoginBody(BaseModel): match_id:str; password:str
+class LoginBody(BaseModel): match_id:str=Field(max_length=200); password:str=Field(max_length=512)
 def db():
  from deploy.proxy import get_vote_db
  return get_vote_db()
@@ -45,6 +45,6 @@ def pdf(request:Request,judge_name:str|None=None):
  safe_match=''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in str(match_id))
  safe_judge=''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in str(payload['selected_judge']))
  filename=f'{safe_match}_{safe_judge}_評判評分表.pdf'
- return BinaryResponse(content,media_type='application/pdf',headers={'Content-Disposition':f"attachment; filename*=UTF-8''{quote(filename)}"})
+ return BinaryResponse(content,media_type='application/pdf',headers={'Content-Disposition':f"attachment; filename*=UTF-8''{quote(filename)}",'Content-Encoding':'identity'})
 @router.post('/logout')
 def logout(response:Response): response.delete_cookie(COOKIE,path='/'); return {"ok":True}

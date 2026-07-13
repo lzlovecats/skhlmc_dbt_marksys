@@ -26,14 +26,14 @@ class MatchDb:
         self.changed = 1
 
     def query(self, sql, params=None):
+        if "FROM debaters" in sql:
+            return pd.DataFrame(columns=["match_id", "side", "position", "debater_name"])
         if "FROM matches ORDER BY" in sql:
             return pd.DataFrame([{
                 "match_id": "測試場次", "match_date": None, "match_time": None,
                 "topic_text": "", "pro_team": "", "con_team": "",
                 "access_code_hash": None, "review_password_hash": None,
             }])
-        if "FROM debaters" in sql:
-            return pd.DataFrame(columns=["match_id", "side", "position", "debater_name"])
         if "JOIN matches" in sql:
             return pd.DataFrame([{
                 "match_id": "測試場次", "side": "pro", "roster_token": "pro-token",

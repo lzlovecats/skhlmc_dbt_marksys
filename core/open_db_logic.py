@@ -5,10 +5,13 @@ module intentionally has no Streamlit dependency; callers supply a DB executor
 that implements the same ``query`` contract used by the other core modules.
 """
 
+import os
+
 import pandas as pd
 
 from schema import TABLE_TOPICS, TABLE_TOPIC_VOTES
 from core.vote_logic import _resolve_db
+from system_limits import OPEN_DB_MAX_TOPICS
 
 DIFFICULTY_OPTIONS = {
     1: "Lv1 — 概念日常",
@@ -21,9 +24,14 @@ def fetch_open_db_data(db=None):
     """Fetch exactly the two source datasets used by the Streamlit page."""
     db = _resolve_db(db)
     topics = db.query(
-        f"SELECT topic_text, author, category, difficulty FROM {TABLE_TOPICS}"
+        f"SELECT topic_text, author, category, difficulty FROM {TABLE_TOPICS} "
+        "ORDER BY topic_text LIMIT :limit",
+        {"limit": OPEN_DB_MAX_TOPICS},
     )
-    vote_stats = db.query(f"SELECT category, status FROM {TABLE_TOPIC_VOTES}")
+    vote_stats = db.query(
+        f"""SELECT category,status,COUNT(*) AS motion_count FROM {TABLE_TOPIC_VOTES}
+        WHERE status IN ('passed','rejected') GROUP BY category,status"""
+    )
     return topics, vote_stats
 
 
@@ -102,10 +110,17 @@ def category_vote_pass_rate(topic_vote_stats_df):
     if resolved.empty:
         return pd.DataFrame(columns=["類別", "動議數量", "通過數", "投票通過率"])
     resolved["category"] = resolved["category"].fillna("未分類")
-    stats = resolved.groupby("category").agg(
-        動議數量=("status", "count"),
-        通過數=("status", lambda value: (value == "passed").sum()),
-    ).reset_index()
+    if "motion_count" in resolved.columns:
+        resolved["motion_count"] = pd.to_numeric(resolved["motion_count"], errors="coerce").fillna(0)
+        resolved["passed_count"] = resolved["motion_count"].where(resolved["status"] == "passed", 0)
+        stats = resolved.groupby("category", as_index=False).agg(
+            動議數量=("motion_count", "sum"), 通過數=("passed_count", "sum"),
+        )
+    else:
+        stats = resolved.groupby("category").agg(
+            動議數量=("status", "count"),
+            通過數=("status", lambda value: (value == "passed").sum()),
+        ).reset_index()
     stats["投票通過率"] = stats["通過數"] / stats["動議數量"]
     stats = stats.sort_values(by=["投票通過率", "動議數量"], ascending=[False, False])
     display = stats.rename(columns={"category": "類別"}).copy()
@@ -118,4 +133,3 @@ def dataframe_records(dataframe):
     if dataframe.empty:
         return []
     return dataframe.where(pd.notna(dataframe), None).to_dict(orient="records")
-

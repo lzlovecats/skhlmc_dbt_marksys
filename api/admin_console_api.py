@@ -5,6 +5,7 @@ HttpOnly sessions and the SQL runner deliberately keeps the legacy guards.
 """
 import datetime
 import json
+import os
 import re
 import secrets
 from zoneinfo import ZoneInfo
@@ -24,21 +25,27 @@ from schema import (
 )
 from version import APP_VERSION
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
+from system_limits import (
+    ACCOUNT_INVENTORY_LIMIT, ADMIN_RECENT_LOGIN_LIMIT, ADMIN_SESSION_TTL_SECONDS,
+    MAX_ADMIN_CONSOLE_SESSIONS, SQL_RESULT_MAX_BYTES,
+    SQL_RESULT_MAX_CELL_CHARS, SQL_RESULT_MAX_ROWS, SQL_STATEMENT_TIMEOUT_MS,
+)
 
 router = APIRouter(prefix="/api", tags=["admin-console"])
 _SESSIONS = {}
-TTL_SECONDS = 60 * 60 * 4
+TTL_SECONDS = ADMIN_SESSION_TTL_SECONDS
+MAX_SERVER_SESSIONS = MAX_ADMIN_CONSOLE_SESSIONS
 
 
-class PasswordBody(BaseModel): password: str
-class SqlBody(BaseModel): sql: str; confirmed: bool = False
-class PasswordChange(BaseModel): current_password: str = ""; new_password: str; confirm_password: str = ""
-class BugUpdate(BaseModel): status: str; reply: str = ""; fixed_version: str = ""
-class AccountBody(BaseModel): user_id: str; password: str = ""
+class PasswordBody(BaseModel): password: str = Field(max_length=512)
+class SqlBody(BaseModel): sql: str = Field(max_length=100_000); confirmed: bool = False
+class PasswordChange(BaseModel): current_password: str = Field(default="", max_length=512); new_password: str = Field(max_length=512); confirm_password: str = Field(default="", max_length=512)
+class BugUpdate(BaseModel): status: str = Field(max_length=40); reply: str = Field(default="", max_length=5000); fixed_version: str = Field(default="", max_length=80)
+class AccountBody(BaseModel): user_id: str = Field(max_length=200); password: str = Field(default="", max_length=512)
 class AccountAccessBody(BaseModel): disabled: bool
 class JsonSettings(BaseModel): values: dict
-class PushBody(BaseModel): title: str; body: str; url: str = "/vote"; target_user: str | None = None; confirmed: bool = False
-class BypassBody(BaseModel): users: list[str] = Field(default_factory=list); expires_at: str = ""; revoke_user: str = ""; revoke_all: bool = False
+class PushBody(BaseModel): title: str = Field(max_length=200); body: str = Field(max_length=2000); url: str = Field(default="/vote", max_length=500); target_user: str | None = Field(default=None, max_length=200); confirmed: bool = False
+class BypassBody(BaseModel): users: list[str] = Field(default_factory=list, max_length=ACCOUNT_INVENTORY_LIMIT); expires_at: str = Field(default="", max_length=40); revoke_user: str = Field(default="", max_length=200); revoke_all: bool = False
 
 
 def _db():
@@ -49,11 +56,39 @@ def _now(): return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=N
 def _config(db, key):
     x=db.query("SELECT value FROM system_config WHERE key=:key",{"key":key}); return None if x.empty else str(x.iloc[0]["value"])
 def _set(db,key,value): db.execute("INSERT INTO system_config(key,value,updated_at) VALUES(:key,:value,:now) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",{"key":key,"value":value,"now":_now()})
+def _prune_sessions():
+    """Drop expired/old console sessions so repeated logins cannot grow RAM forever."""
+    now = _now()
+    for token, row in list(_SESSIONS.items()):
+        if row["expires"] <= now:
+            _SESSIONS.pop(token, None)
+    overflow = len(_SESSIONS) - MAX_SERVER_SESSIONS
+    if overflow > 0:
+        oldest = sorted(_SESSIONS, key=lambda token: _SESSIONS[token]["created"])
+        for token in oldest[:overflow]:
+            _SESSIONS.pop(token, None)
+
+
 def _issue(response, kind):
-    token=secrets.token_urlsafe(32); _SESSIONS[token]={"kind":kind,"expires":_now()+datetime.timedelta(seconds=TTL_SECONDS)}
+    _prune_sessions()
+    token=secrets.token_urlsafe(32); now=_now()
+    _SESSIONS[token]={"kind":kind,"created":now,"expires":now+datetime.timedelta(seconds=TTL_SECONDS)}
+    _prune_sessions()
     response.set_cookie(f"{kind}_session",token,max_age=TTL_SECONDS,path="/",samesite="lax",httponly=True); return token
 def _has(request,kind):
+    _prune_sessions()
     row=_SESSIONS.get(request.cookies.get(f"{kind}_session", "")); return bool(row and row["kind"]==kind and row["expires"]>_now())
+
+
+@router.get("/dev-settings/system-limits")
+def system_limit_registry(request: Request):
+    """Developer-only view of the values resolved when this worker started."""
+    if not _has(request, "developer"):
+        raise HTTPException(401, "未登入開發者設定")
+    from system_limits import effective_limits
+    return {"limits": effective_limits()}
+def _revoke(request, kind):
+    _SESSIONS.pop(request.cookies.get(f"{kind}_session", ""), None)
 def _require(request,kind):
     if not _has(request,kind): raise HTTPException(401,"未登入或驗證已過期")
 def _rows(df): return [dict(x) for x in df.to_dict(orient="records")]
@@ -79,7 +114,10 @@ def sql_verify(body:PasswordBody,request:Request,response:Response):
 def db_data(request:Request):
     _require(request,"sql"); db=_db()
     tables=_rows(db.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name"))
-    logs=_rows(db.query("SELECT * FROM login_records ORDER BY logged_in_at DESC LIMIT 50"))
+    logs=_rows(db.query(
+        "SELECT * FROM login_records ORDER BY logged_in_at DESC LIMIT :limit",
+        {"limit": ADMIN_RECENT_LOGIN_LIMIT},
+    ))
     return {"tables":[x["table_name"] for x in tables],"logs":logs}
 
 @router.get("/db-management/logs")
@@ -93,13 +131,30 @@ def _unsafe(sql):
     compact=sql.strip().rstrip(";"); upper=compact.upper()
     if not compact: return "請輸入 SQL"
     if ";" in compact: return "每次只可執行一條 SQL"
+    if not re.match(r"^(SELECT|WITH|INSERT|UPDATE|DELETE)\b", upper):
+        return "此頁只可執行 SELECT、WITH、INSERT、UPDATE 或 DELETE"
     if re.search(r"\bSYSTEM_CONFIG\b",upper): return "此頁不可存取 system_config"
     if re.search(r"\b(DROP|TRUNCATE|ALTER|CREATE)\b",upper): return "此頁不可執行 DDL 語句"
     return ""
 
+
+def _sql_cell(value):
+    """Make SQL-console values JSON-safe without copying legacy BYTEA payloads."""
+    if value is None:
+        return None
+    if isinstance(value, memoryview):
+        return f"<binary {value.nbytes} bytes omitted>"
+    if isinstance(value, (bytes, bytearray)):
+        return f"<binary {len(value)} bytes omitted>"
+    rendered = str(value)
+    if len(rendered) > SQL_RESULT_MAX_CELL_CHARS:
+        omitted = len(rendered) - SQL_RESULT_MAX_CELL_CHARS
+        return rendered[:SQL_RESULT_MAX_CELL_CHARS] + f"… <{omitted} chars omitted>"
+    return rendered
+
 @router.post("/db-management/execute")
 def sql_execute(body:SqlBody,request:Request):
-    _require(request,"sql"); sql=body.sql.strip(); error=_unsafe(sql)
+    _require(request,"sql"); sql=body.sql.strip().rstrip(";"); error=_unsafe(sql)
     if error: raise HTTPException(400,error)
     upper=sql.upper(); dangerous=bool(re.search(r"\b(UPDATE\s+.+?\s+SET|DELETE\s+FROM)\b",upper,re.S)) and not bool(re.search(r"\bWHERE\b",upper))
     if dangerous and not body.confirmed: return {"requires_confirmation":True,"sql":sql}
@@ -107,10 +162,26 @@ def sql_execute(body:SqlBody,request:Request):
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
-            result=conn.execute(text(sql)); is_select=upper.startswith("SELECT") or upper.startswith("WITH")
+            conn.execute(text("SELECT set_config('statement_timeout', :timeout, TRUE)"),
+                         {"timeout": f"{SQL_STATEMENT_TIMEOUT_MS}ms"})
+            is_select=upper.startswith("SELECT") or upper.startswith("WITH")
+            executor = conn.execution_options(
+                stream_results=True, max_row_buffer=min(SQL_RESULT_MAX_ROWS + 1, 100),
+            ) if is_select else conn
+            result=executor.execute(text(sql))
             if is_select:
-                cols=list(result.keys()); rows=[dict(zip(cols,row)) for row in result.fetchall()]
-                return {"kind":"select","columns":cols,"rows":[{k:str(v) if v is not None else None for k,v in r.items()} for r in rows]}
+                cols=list(result.keys()); fetched=result.fetchmany(SQL_RESULT_MAX_ROWS + 1)
+                rows=[]; used_bytes=0; truncated=len(fetched) > SQL_RESULT_MAX_ROWS
+                reason="row_limit" if truncated else ""
+                for raw in fetched[:SQL_RESULT_MAX_ROWS]:
+                    item={key:_sql_cell(value) for key,value in zip(cols,raw)}
+                    item_bytes=len(json.dumps(item,ensure_ascii=False,default=str).encode("utf-8"))
+                    if used_bytes + item_bytes > SQL_RESULT_MAX_BYTES:
+                        truncated=True; reason="byte_limit"; break
+                    rows.append(item); used_bytes += item_bytes
+                return {"kind":"select","columns":cols,"rows":rows,"truncated":truncated,
+                        "truncation_reason":reason,"row_limit":SQL_RESULT_MAX_ROWS,
+                        "byte_limit":SQL_RESULT_MAX_BYTES,"returned_bytes":used_bytes}
             return {"kind":"dml","count":result.rowcount}
     except Exception as exc: raise HTTPException(400,f"執行失敗：{exc}") from exc
 
@@ -123,23 +194,24 @@ def dev_login(body:PasswordBody,response:Response):
     _issue(response,"developer"); return {"ok":True}
 
 @router.post("/developer/logout")
-def dev_logout(response:Response): response.delete_cookie("developer_session",path="/"); return {"ok":True}
+def dev_logout(request:Request,response:Response):
+    _revoke(request,"developer"); response.delete_cookie("developer_session",path="/"); return {"ok":True}
 
 @router.get("/developer/data")
 def dev_data(request:Request):
     _require(request,"developer"); db=_db(); db.execute(CREATE_BUG_REPORTS)
     bugs=[]; accounts=[]
-    configs={k:_config(db,k) or "" for k in ("maintenance_mode","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")}
-    account_rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id")
+    configs={k:_config(db,k) or "" for k in ("maintenance_mode","maintenance_deadline","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")}
+    account_rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT})
     login_disabled=set(_json_list_config(db,"login_disabled_accounts"))
     account_options=[str(value).strip() for value in account_rows.get("user_id",[]) if str(value).strip() and str(value).strip() not in login_disabled]
-    inactive_rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE account_status='inactive' AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id")
+    inactive_rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE account_status='inactive' AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT})
     inactive_accounts=[str(value).strip() for value in inactive_rows.get("user_id",[]) if str(value).strip() and str(value).strip() not in login_disabled]
     providers=sorted({str(config.get("provider") or "").strip() for config in AI_MODEL_OPTIONS.values() if config.get("provider")})
     from deploy.proxy import _get_proxy_secret
     provider_keys={provider:next((str(config.get("api_key") or "") for config in AI_MODEL_OPTIONS.values() if config.get("provider")==provider),"") for provider in providers}
     models=[{"label":label,"provider":config.get("provider","")} for label,config in AI_MODEL_OPTIONS.items()]
-    subs=_rows(db.query(f"SELECT user_id,COUNT(*) AS device_count FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE is_active=TRUE GROUP BY user_id ORDER BY user_id"))
+    subs=_rows(db.query(f"SELECT user_id,COUNT(*) AS device_count FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE is_active=TRUE GROUP BY user_id ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT}))
     return {"version":APP_VERSION,"bugs":bugs,"accounts":accounts,"account_options":account_options,"inactive_accounts":inactive_accounts,"ai_options":{"providers":providers,"models":models,"default_model":DEFAULT_AI_MODEL,"key_status":{provider:bool(key and _get_proxy_secret(key)) for provider,key in provider_keys.items()},"key_names":provider_keys},"configs":configs,"subscriptions":subs}
 
 @router.get("/developer/collection/{kind}")
@@ -197,6 +269,8 @@ def create_account(body:AccountBody,request:Request):
     if not uid or not body.password: raise HTTPException(400,"請輸入用戶名稱及密碼")
     db=_db(); exists=db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:uid",{"uid":uid})
     if not exists.empty: raise HTTPException(400,"此用戶名稱已存在")
+    count=scalar_count(db,f"SELECT COUNT(*) total FROM {TABLE_ACCOUNTS}")
+    if count >= ACCOUNT_INVENTORY_LIMIT: raise HTTPException(409,"帳戶已達保護上限，請先停用及整理舊帳戶")
     db.execute(f"INSERT INTO {TABLE_ACCOUNTS}(user_id,password_hash,account_status) VALUES(:uid,:pw,'inactive')",{"uid":uid,"pw":hash_password(body.password)}); return {"ok":True}
 
 @router.post("/developer/accounts/{uid}/password")
@@ -276,7 +350,7 @@ def update_bypass(body:BypassBody,request:Request):
         except ValueError as exc: raise HTTPException(400,"到期時間格式不正確") from exc
         now_hk=datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
         if expires <= now_hk: raise HTTPException(400,"到期時間必須在未來")
-        valid={str(x).strip() for x in db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE account_status='inactive' AND COALESCE(account_disabled,FALSE)=FALSE").get("user_id",[])}
+        valid={str(x).strip() for x in db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE account_status='inactive' AND COALESCE(account_disabled,FALSE)=FALSE LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT}).get("user_id",[])}
         valid-=set(_json_list_config(db,"login_disabled_accounts"))
         invalid=sorted(set(users)-valid)
         if invalid: raise HTTPException(400,"只可為非活躍帳戶開放："+"、".join(invalid))
@@ -286,14 +360,15 @@ def update_bypass(body:BypassBody,request:Request):
 
 @router.post("/developer/settings")
 def developer_settings(body:JsonSettings,request:Request):
-    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model"}
+    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","maintenance_deadline","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model"}
     account_list_keys={"tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers"}
     cleaned={}
     for key,value in body.values.items():
         if key not in allowed: raise HTTPException(400,f"不允許的設定：{key}")
         if key in account_list_keys:
             if not isinstance(value,list): raise HTTPException(400,f"{key} 必須是帳戶清單")
-            value=list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+            value=list(dict.fromkeys(str(item).strip()[:200] for item in value if str(item).strip()))
+            if len(value) > ACCOUNT_INVENTORY_LIMIT: raise HTTPException(413,f"{key} 清單超過保護上限")
         cleaned[key]=value
     if "lateness_fund_managers" in cleaned and not cleaned["lateness_fund_managers"]:
         raise HTTPException(400,"至少保留一位遲到基金管理員")
@@ -303,6 +378,24 @@ def developer_settings(body:JsonSettings,request:Request):
         value=str(cleaned["maintenance_mode"]).strip().lower()
         if value not in ("true","false"): raise HTTPException(400,"維護模式值無效")
         cleaned["maintenance_mode"]=value
+    deadline_was_supplied="maintenance_deadline" in cleaned
+    if deadline_was_supplied or cleaned.get("maintenance_mode")=="true":
+        value=str(cleaned.get("maintenance_deadline") or _config(db,"maintenance_deadline") or "").strip()
+        if not value:
+            raise HTTPException(400,"開啟維護模式前請設定預期完成時間")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}",value):
+            raise HTTPException(400,"請輸入有效的預期完成時間")
+        try:
+            deadline=datetime.datetime.fromisoformat(value)
+        except (TypeError,ValueError):
+            raise HTTPException(400,"請輸入有效的預期完成時間")
+        if deadline.tzinfo is not None:
+            raise HTTPException(400,"預期完成時間須使用香港本地時間")
+        now_hk=datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+        if deadline <= now_hk:
+            raise HTTPException(400,"預期完成時間必須在未來")
+        if deadline_was_supplied:
+            cleaned["maintenance_deadline"]=deadline.strftime("%Y-%m-%dT%H:%M")
     if "ai_enabled_providers" in cleaned or "ai_default_model" in cleaned:
         providers=cleaned.get("ai_enabled_providers")
         if providers is None:
@@ -317,7 +410,7 @@ def developer_settings(body:JsonSettings,request:Request):
         cleaned["ai_enabled_providers"]=providers; cleaned["ai_default_model"]=model
     requested={user for key,value in cleaned.items() if key in account_list_keys for user in value}
     if requested:
-        rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE")
+        rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT})
         valid={str(value).strip() for value in rows.get("user_id",[]) if str(value).strip()}
         valid-=set(_json_list_config(db,"login_disabled_accounts"))
         invalid=sorted(requested-valid)

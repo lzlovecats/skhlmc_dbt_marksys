@@ -3,6 +3,11 @@
 These files are retained as the rendering and behaviour reference for pages now
 served directly by FastAPI HTML routes. They are not registered in `main.py`.
 
+> Resource safety: these files are reference-only. Do not register them again.
+> Several historical pages contain whole-table, BYTEA/base64 or ZIP workflows
+> that intentionally sit outside the current FastAPI bandwidth/RAM/storage guards.
+> Port any needed behaviour into the bounded `api/` + `core/` path instead.
+
 | Legacy source | Active HTML route |
 | --- | --- |
 | `home.py` | `/` |

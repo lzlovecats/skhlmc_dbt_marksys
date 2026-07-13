@@ -1,20 +1,40 @@
 """Public, read-only data endpoint for the HTML topic bank."""
 
+import hashlib
+import json
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
+from system_limits import OPEN_DB_CACHE_TTL_SECONDS, OPEN_DB_STALE_REVALIDATE_SECONDS
 
 router = APIRouter(prefix="/api/open-db", tags=["open-db"])
 
-_CACHE_TTL_SECONDS = 60
-_cache = {"expires_at": 0.0, "payload": None}
+_CACHE_TTL_SECONDS = OPEN_DB_CACHE_TTL_SECONDS
+_cache = {"expires_at": 0.0, "payload": None, "etag": ""}
+
+
+def _cache_headers(response: Response, etag: str):
+    response.headers["Cache-Control"] = (
+        f"public, max-age={OPEN_DB_CACHE_TTL_SECONDS}, "
+        f"stale-while-revalidate={OPEN_DB_STALE_REVALIDATE_SECONDS}"
+    )
+    response.headers["ETag"] = etag
 
 
 @router.get("/data")
-def open_db_data():
+def open_db_data(request: Request, response: Response):
     """Return only the fields and aggregates rendered by ``open_db.py``."""
     now = time.monotonic()
     if _cache["payload"] is not None and now < _cache["expires_at"]:
+        if request.headers.get("if-none-match") == _cache["etag"]:
+            return Response(status_code=304, headers={
+                "Cache-Control": (
+                    f"public, max-age={OPEN_DB_CACHE_TTL_SECONDS}, "
+                    f"stale-while-revalidate={OPEN_DB_STALE_REVALIDATE_SECONDS}"
+                ),
+                "ETag": _cache["etag"],
+            })
+        _cache_headers(response, _cache["etag"])
         return _cache["payload"]
     try:
         from deploy.proxy import get_vote_db
@@ -33,6 +53,8 @@ def open_db_data():
         }
     except Exception as exc:
         raise HTTPException(503, f"連線錯誤: {exc}") from exc
-    _cache.update({"expires_at": now + _CACHE_TTL_SECONDS, "payload": payload})
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    etag = '"' + hashlib.sha256(encoded).hexdigest() + '"'
+    _cache.update({"expires_at": now + _CACHE_TTL_SECONDS, "payload": payload, "etag": etag})
+    _cache_headers(response, etag)
     return payload
-

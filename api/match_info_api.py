@@ -1,16 +1,16 @@
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/match-info", tags=["match-info"])
 
-class CreateBody(BaseModel): match_id: str
+class CreateBody(BaseModel): match_id: str = Field(max_length=200)
 class SaveBody(BaseModel):
-    match_id: str; match_date: str = ""; match_time: str = ""; topic_text: str = ""; pro_team: str = ""; con_team: str = ""
-    pro_1: str = ""; pro_2: str = ""; pro_3: str = ""; pro_4: str = ""; con_1: str = ""; con_2: str = ""; con_3: str = ""; con_4: str = ""
-    access_code: str = ""; review_password: str = ""; clear_access_code: bool = False; clear_review_password: bool = False
+    match_id: str = Field(max_length=200); match_date: str = Field(default="", max_length=10); match_time: str = Field(default="", max_length=5); topic_text: str = Field(default="", max_length=500); pro_team: str = Field(default="", max_length=100); con_team: str = Field(default="", max_length=100)
+    pro_1: str = Field(default="", max_length=80); pro_2: str = Field(default="", max_length=80); pro_3: str = Field(default="", max_length=80); pro_4: str = Field(default="", max_length=80); con_1: str = Field(default="", max_length=80); con_2: str = Field(default="", max_length=80); con_3: str = Field(default="", max_length=80); con_4: str = Field(default="", max_length=80)
+    access_code: str = Field(default="", max_length=512); review_password: str = Field(default="", max_length=512); clear_access_code: bool = False; clear_review_password: bool = False
 class DrawTopicBody(BaseModel): difficulty: int | None = None
-class DrawSidesBody(BaseModel): team1: str = ""; team2: str = ""
-class SideBody(BaseModel): side: str
+class DrawSidesBody(BaseModel): team1: str = Field(default="", max_length=100); team2: str = Field(default="", max_length=100)
+class SideBody(BaseModel): side: str = Field(max_length=10)
 
 def _db():
     from deploy.proxy import get_vote_db

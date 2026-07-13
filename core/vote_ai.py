@@ -1,5 +1,7 @@
 """Streamlit-free AI helpers for the vote HTML/API migration."""
 
+import os
+
 from ai_model_config import AI_MODEL_OPTIONS, NON_MANUAL_DEFAULT_AI_MODEL, NON_MANUAL_MODEL_OPTIONS
 from prompts import (
     VOTE_BANK_ANALYSIS_SYSTEM_PROMPT,
@@ -13,6 +15,11 @@ from prompts import (
 )
 from schema import TABLE_TOPIC_REMOVAL_VOTES, TABLE_TOPIC_VOTES, TABLE_TOPICS
 from core.vote_logic import parse_reason_list
+from system_limits import (
+    ACCOUNT_LIST_LIMIT, VOTE_AI_CATEGORY_EXAMPLE_LIMIT,
+    VOTE_AI_DISCUSSION_COMMENT_LIMIT, VOTE_AI_MAX_OUTPUT_TOKENS,
+    VOTE_AI_PROMPT_MAX_CHARS, VOTE_AI_TOPIC_SAMPLE_LIMIT,
+)
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -78,6 +85,9 @@ def _format_ai_error(provider, error):
 
 
 def generate_general_ai_reply(system_prompt, user_text, secrets, model_label=None):
+    user_text = str(user_text or "")
+    if len(user_text) > VOTE_AI_PROMPT_MAX_CHARS:
+        user_text = user_text[:VOTE_AI_PROMPT_MAX_CHARS] + "\n[輸入已按伺服器資源上限截斷]"
     model = _model_config(model_label)
     if not model:
         return "❌ 未能載入 AI 模型設定。", None
@@ -103,6 +113,7 @@ def _generate_gemini(model, system_prompt, user_text, secrets):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.7,
+                max_output_tokens=VOTE_AI_MAX_OUTPUT_TOKENS,
             ),
         )
         meta = _read_attr(response, "usage_metadata", "usageMetadata")
@@ -133,6 +144,7 @@ def _generate_openrouter(model, system_prompt, user_text, secrets):
                 {"role": "user", "content": user_text},
             ],
             temperature=0.7,
+            max_tokens=VOTE_AI_MAX_OUTPUT_TOKENS,
         )
         usage_meta = _read_attr(response, "usage")
         usage = _usage_record(
@@ -147,31 +159,33 @@ def _generate_openrouter(model, system_prompt, user_text, secrets):
 
 def gather_topic_review_context(category, difficulty, db):
     lines = []
-    bank_df = db.query(f"SELECT topic_text, category FROM {TABLE_TOPICS}")
-    if not bank_df.empty:
-        total = len(bank_df)
-        same_cat = bank_df[bank_df["category"] == category]
-        cat_count = len(same_cat)
+    totals = db.query(f"""SELECT COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE category=:category) AS category_count FROM {TABLE_TOPICS}""",
+        {"category": category})
+    total = int(totals.iloc[0]["total"] or 0) if not totals.empty else 0
+    cat_count = int(totals.iloc[0]["category_count"] or 0) if not totals.empty else 0
+    if total:
         ratio = cat_count / total * 100 if total else 0.0
         lines.append(f"現有辯題庫共 {total} 條；類別「{category}」佔 {cat_count} 條（{ratio:.0f}%，上限 20%）。")
-        sample = same_cat["topic_text"].tolist()[:15]
+        sample_df = db.query(f"SELECT topic_text FROM {TABLE_TOPICS} WHERE category=:category ORDER BY topic_text LIMIT :limit",
+                             {"category": category, "limit": VOTE_AI_CATEGORY_EXAMPLE_LIMIT})
+        sample = sample_df["topic_text"].tolist() if not sample_df.empty else []
         if sample:
             lines.append("同類別現有辯題（用嚟檢查重複／重疊）：")
             lines.extend(f"- {t}" for t in sample)
     else:
         lines.append("現有辯題庫暫時無資料。")
 
-    votes_df = db.query(
-        f"SELECT status, category, difficulty FROM {TABLE_TOPIC_VOTES} "
-        "WHERE status IN ('passed', 'rejected')"
-    )
+    votes_df = db.query(f"""SELECT status,category,difficulty,COUNT(*) AS n
+        FROM {TABLE_TOPIC_VOTES} WHERE status IN ('passed','rejected')
+        GROUP BY status,category,difficulty""")
     if votes_df.empty:
         lines.append("歷史提案投票數據不足，通過機率只能作定性判斷。")
         return "\n".join(lines)
 
     def _rate(df):
-        n = len(df)
-        passed = int((df["status"] == "passed").sum())
+        n = int(df["n"].sum())
+        passed = int(df.loc[df["status"] == "passed", "n"].sum())
         return passed, n, (passed / n * 100 if n else 0.0)
 
     passed, n, rate = _rate(votes_df)
@@ -205,12 +219,13 @@ def review_topic(topic, category, difficulty, db, secrets):
 
 
 def gather_bank_analysis_context(db):
-    bank_df = db.query(f"SELECT topic_text, category, difficulty FROM {TABLE_TOPICS}")
-    if bank_df.empty:
+    distribution = db.query(f"""SELECT category,difficulty,COUNT(*) AS n FROM {TABLE_TOPICS}
+        GROUP BY category,difficulty""")
+    if distribution.empty:
         return "辯題庫暫時無題目。", []
-    total = len(bank_df)
+    total = int(distribution["n"].sum())
     summary_lines = [f"總題目數：{total}", "類別分佈："]
-    cat_counts = bank_df["category"].value_counts()
+    cat_counts = distribution.groupby("category", dropna=False)["n"].sum()
     for cat in CATEGORIES:
         c = int(cat_counts.get(cat, 0))
         pct = c / total * 100 if total else 0
@@ -223,14 +238,19 @@ def gather_bank_analysis_context(db):
     summary_lines.extend(f"- {DIFFICULTY_CRITERIA[lvl]}" for lvl in (1, 2, 3))
     summary_lines.append("難度分佈：")
     for lvl in (1, 2, 3):
-        c = int((bank_df["difficulty"] == lvl).sum())
+        c = int(distribution.loc[distribution["difficulty"] == lvl, "n"].sum())
         pct = c / total * 100 if total else 0
         summary_lines.append(f"- {DIFFICULTY_OPTIONS.get(lvl, lvl)}：{c}（{pct:.0f}%）")
-    votes_df = db.query(f"SELECT status FROM {TABLE_TOPIC_VOTES} WHERE status IN ('passed', 'rejected')")
+    votes_df = db.query(f"""SELECT status,COUNT(*) AS n FROM {TABLE_TOPIC_VOTES}
+        WHERE status IN ('passed','rejected') GROUP BY status""")
     if not votes_df.empty:
-        n = len(votes_df)
-        passed = int((votes_df["status"] == "passed").sum())
+        n = int(votes_df["n"].sum())
+        passed = int(votes_df.loc[votes_df["status"] == "passed", "n"].sum())
         summary_lines.append(f"歷史提案通過率：{passed}/{n}（{passed / n * 100:.0f}%）")
+    bank_df = db.query(f"""SELECT topic_text,category,difficulty FROM {TABLE_TOPICS}
+        ORDER BY topic_text LIMIT :sample_limit""", {"sample_limit": VOTE_AI_TOPIC_SAMPLE_LIMIT})
+    if total > len(bank_df):
+        summary_lines.append(f"題目逐項檢查只抽取最多 {VOTE_AI_TOPIC_SAMPLE_LIMIT} 條；分佈統計仍使用完整資料。")
     topic_lines = []
     for _, r in bank_df.iterrows():
         try:
@@ -274,7 +294,10 @@ def gather_vote_history_analysis_context(vote_df, db):
         status_parts = [f"{_status_label(status)} {int(count)}" for status, count in type_df["status"].value_counts().items()]
         summary_lines.append(f"{motion_type}：{len(type_df)} 項（{'、'.join(status_parts) if status_parts else '未有狀態'}）")
 
-    account_df = db.query("SELECT user_id FROM accounts WHERE user_id NOT IN ('admin', 'Gemini') ORDER BY user_id")
+    account_df = db.query(
+        "SELECT user_id FROM accounts WHERE user_id NOT IN ('admin', 'Gemini') "
+        "ORDER BY user_id LIMIT :limit", {"limit": ACCOUNT_LIST_LIMIT}
+    )
     all_user_ids = account_df["user_id"].tolist() if not account_df.empty else []
     if not ballots.empty:
         for uid in ballots["user_id"].dropna().unique().tolist():
@@ -366,7 +389,8 @@ def build_motion_background(motion_type, motion_key, db):
 
 
 def discussion_reply(motion_type, motion_key, comments, db, secrets, question=None):
-    discussion_lines = [f"{c['user_id']}：{c['comment_text']}" for c in comments]
+    recent_comments = comments[-VOTE_AI_DISCUSSION_COMMENT_LIMIT:]
+    discussion_lines = [f"{c['user_id']}：{str(c['comment_text'])[:2000]}" for c in recent_comments]
     removal_reasons = None
     if motion_type == "topic_removal":
         reason_rows = db.query(

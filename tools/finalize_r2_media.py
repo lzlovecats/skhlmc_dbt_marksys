@@ -19,9 +19,11 @@ sys.path.insert(0, str(ROOT))
 
 from core import r2_storage
 from deploy.proxy import _get_db_engine
+from system_limits import R2_FINALIZER_BATCH_SIZE
+from version import APP_VERSION
 
 
-CONFIRMATION = "4.1.2-R2-VERIFIED"
+CONFIRMATION = f"{APP_VERSION}-R2-VERIFIED"
 
 
 def _verify_object(key: str, expected_size: int = 0, expected_sha: str = "") -> None:
@@ -41,6 +43,21 @@ def _column_exists(conn, table: str, column: str) -> bool:
     )"""), {"table": table, "column": column}).scalar())
 
 
+def _verify_rows(engine, sql: str, verifier, batch_size: int = R2_FINALIZER_BATCH_SIZE) -> int:
+    """Stream metadata in bounded batches; media bytes always stay in R2."""
+    count = 0
+    with engine.connect().execution_options(stream_results=True) as conn:
+        result = conn.execute(text(sql)).mappings()
+        while True:
+            rows = result.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                verifier(row)
+                count += 1
+    return count
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
@@ -54,19 +71,18 @@ def main() -> int:
         print("Database is not configured.", file=sys.stderr)
         return 2
 
-    with engine.connect() as conn:
-        photos = conn.execute(text("""SELECT id,r2_key,thumbnail_r2_key,
+    photo_count = _verify_rows(engine, """SELECT id,r2_key,thumbnail_r2_key,
             COALESCE(byte_size,0) byte_size,COALESCE(sha256,'') sha256
-            FROM match_photos ORDER BY id""")).mappings().all()
-        audio = conn.execute(text("""SELECT id,r2_key,COALESCE(size_bytes,0) size_bytes,
+            FROM match_photos ORDER BY id""", lambda row: (
+                _verify_object(str(row["r2_key"] or ""), int(row["byte_size"]), str(row["sha256"] or "")),
+                _verify_object(str(row["thumbnail_r2_key"] or "")),
+            ))
+    audio_count = _verify_rows(engine, """SELECT id,r2_key,COALESCE(size_bytes,0) size_bytes,
             COALESCE(audio_sha256,'') audio_sha256
-            FROM tts_voice_recordings ORDER BY id""")).mappings().all()
-    for row in photos:
-        _verify_object(str(row["r2_key"] or ""), int(row["byte_size"]), str(row["sha256"] or ""))
-        _verify_object(str(row["thumbnail_r2_key"] or ""))
-    for row in audio:
-        _verify_object(str(row["r2_key"] or ""), int(row["size_bytes"]), str(row["audio_sha256"] or ""))
-    print(f"verified photos={len(photos)} audio={len(audio)}")
+            FROM tts_voice_recordings ORDER BY id""", lambda row:
+                _verify_object(str(row["r2_key"] or ""), int(row["size_bytes"]),
+                               str(row["audio_sha256"] or "")))
+    print(f"verified photos={photo_count} audio={audio_count}")
 
     if not args.apply:
         print(f"dry-run only; use --apply --confirm {CONFIRMATION} after production playback verification")

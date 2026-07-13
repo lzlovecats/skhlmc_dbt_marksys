@@ -5,6 +5,11 @@ of provider billing metadata needed by the AI fund ledger.
 """
 
 import httpx
+from system_limits import (
+    AI_PROVIDER_GEMINI_TIMEOUT_SECONDS, AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS,
+    AI_PROVIDER_MAX_OUTPUT_TOKENS, AI_PROVIDER_PROMPT_MAX_CHARS,
+    AI_PROVIDER_SOURCE_LIMIT,
+)
 
 
 def _read(mapping, *names, default=None):
@@ -23,6 +28,8 @@ def _append_sources(text, sources):
         seen.add(url)
         safe_title = str(title or url).replace("[", "(").replace("]", ")")
         unique.append((safe_title, url))
+        if len(unique) >= AI_PROVIDER_SOURCE_LIMIT:
+            break
     if not unique:
         return text
     lines = [f"{index}. [{title}]({url})" for index, (title, url) in enumerate(unique, 1)]
@@ -97,15 +104,18 @@ def _usage(data, provider, web_search=False):
 
 
 async def generate_text(config, system, user, *, api_key, audio_base64="", audio_mime="audio/webm", web_search=False):
+    system = str(system or "")[:AI_PROVIDER_PROMPT_MAX_CHARS]
+    user = str(user or "")[:AI_PROVIDER_PROMPT_MAX_CHARS]
     if config["provider"] in ("openrouter", "custom"):
         payload = {"model": config["model"], "messages": [
             {"role": "system", "content": system}, {"role": "user", "content": user},
-        ], "temperature": 0.3 if web_search else 0.7}
+        ], "temperature": 0.3 if web_search else 0.7,
+            "max_tokens": AI_PROVIDER_MAX_OUTPUT_TOKENS}
         if web_search and config["provider"] == "openrouter":
             payload["tools"] = [{"type": "openrouter:web_search",
                                  "parameters": {"search_context_size": "medium"}}]
         endpoint = (config.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/") + "/chat/completions"
-        async with httpx.AsyncClient(timeout=70) as client:
+        async with httpx.AsyncClient(timeout=AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS) as client:
             response = await client.post(endpoint,
                 headers={"Authorization": f"Bearer {api_key}"}, json=payload)
             response.raise_for_status()
@@ -117,11 +127,12 @@ async def generate_text(config, system, user, *, api_key, audio_base64="", audio
         parts.append({"inline_data": {"mime_type": audio_mime or "audio/webm", "data": audio_base64}})
     payload = {"system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"temperature": 0.3 if web_search else 0.7}}
+        "generationConfig": {"temperature": 0.3 if web_search else 0.7,
+                             "maxOutputTokens": AI_PROVIDER_MAX_OUTPUT_TOKENS}}
     if web_search:
         payload["tools"] = [{"google_search": {}}]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{config['model']}:generateContent?key={api_key}"
-    async with httpx.AsyncClient(timeout=90) as client:
+    async with httpx.AsyncClient(timeout=AI_PROVIDER_GEMINI_TIMEOUT_SECONDS) as client:
         response = await client.post(url, json=payload)
         response.raise_for_status()
     data = response.json()

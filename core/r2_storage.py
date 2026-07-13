@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 import datetime as dt
 from functools import lru_cache
@@ -22,9 +23,26 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 import tomllib
+from system_limits import (
+    R2_CLAIM_MAX_TTL_SECONDS, R2_CLIENT_MAX_ATTEMPTS,
+    R2_DOWNLOAD_URL_MAX_TTL_SECONDS, R2_DOWNLOAD_URL_TTL_SECONDS,
+    R2_INTENT_RETENTION_DAYS, R2_OBJECT_CACHE_MAX_AGE_SECONDS,
+    R2_STORAGE_STOP_BYTES, R2_STORAGE_WARN_BYTES,
+    R2_UPLOAD_CLAIM_TTL_SECONDS,
+    R2_UPLOAD_URL_MAX_TTL_SECONDS, R2_UPLOAD_URL_TTL_SECONDS,
+    R2_URL_MIN_TTL_SECONDS, R2_USAGE_SNAPSHOT_MAX_AGE_SECONDS,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+_usage_refresh_lock = threading.Lock()
+
+
+def _nonnegative_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 @lru_cache(maxsize=1)
@@ -83,7 +101,7 @@ def client():
         aws_access_key_id=cfg["access_key_id"],
         aws_secret_access_key=cfg["secret_access_key"],
         region_name="auto",
-        config=Config(signature_version="s3v4", retries={"max_attempts": 3}),
+        config=Config(signature_version="s3v4", retries={"max_attempts": R2_CLIENT_MAX_ATTEMPTS}),
     )
 
 
@@ -91,7 +109,10 @@ def _params(key: str) -> dict:
     return {"Bucket": settings()["bucket"], "Key": key}
 
 
-def presign_put(key: str, mime_type: str, sha256: str, byte_size: int, expires: int = 300) -> str:
+def presign_put(
+    key: str, mime_type: str, sha256: str, byte_size: int,
+    expires: int = R2_UPLOAD_URL_TTL_SECONDS,
+) -> str:
     size = int(byte_size)
     if size <= 0:
         raise ValueError("byte_size must be positive")
@@ -99,11 +120,12 @@ def presign_put(key: str, mime_type: str, sha256: str, byte_size: int, expires: 
         **_params(key),
         "ContentLength": size,
         "ContentType": mime_type,
-        "CacheControl": "private, max-age=86400",
+        "CacheControl": f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}",
         "Metadata": {"sha256": sha256},
     }
     return client().generate_presigned_url(
-        "put_object", Params=params, ExpiresIn=max(60, min(int(expires), 900))
+        "put_object", Params=params,
+        ExpiresIn=max(R2_URL_MIN_TTL_SECONDS, min(int(expires), R2_UPLOAD_URL_MAX_TTL_SECONDS)),
     )
 
 
@@ -113,14 +135,15 @@ def presign_get(
     mime_type: str = "application/octet-stream",
     file_name: str = "",
     download: bool = False,
-    expires: int = 600,
+    expires: int = R2_DOWNLOAD_URL_TTL_SECONDS,
 ) -> str:
     params = {**_params(key), "ResponseContentType": mime_type}
     if download:
         safe_name = str(file_name or "download").replace('"', "").replace("\r", "").replace("\n", "")
         params["ResponseContentDisposition"] = f'attachment; filename="{safe_name}"'
     return client().generate_presigned_url(
-        "get_object", Params=params, ExpiresIn=max(60, min(int(expires), 3600))
+        "get_object", Params=params,
+        ExpiresIn=max(R2_URL_MIN_TTL_SECONDS, min(int(expires), R2_DOWNLOAD_URL_MAX_TTL_SECONDS)),
     )
 
 
@@ -134,7 +157,7 @@ def upload_bytes(key: str, data: bytes, mime_type: str, sha256: str = "") -> Non
         **_params(key),
         Body=data,
         ContentType=mime_type,
-        CacheControl="private, max-age=86400",
+        CacheControl=f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}",
         Metadata={"sha256": digest},
     )
 
@@ -148,9 +171,116 @@ def delete(key: str) -> None:
     client().delete_object(**_params(key))
 
 
+def promote(pending_key: str, final_key: str) -> dict:
+    """Copy a verified pending object to its durable key without using Render bytes."""
+    if not pending_key.startswith("pending/") or final_key.startswith("pending/"):
+        raise ValueError("invalid R2 promotion path")
+    cfg = settings()
+    pending = head(pending_key)
+    try:
+        client().copy_object(
+            **_params(final_key),
+            CopySource={"Bucket": cfg["bucket"], "Key": pending_key},
+            MetadataDirective="COPY",
+        )
+        durable = head(final_key)
+        if (
+            int(pending.get("ContentLength") or 0) != int(durable.get("ContentLength") or 0)
+            or (pending.get("Metadata") or {}).get("sha256")
+            != (durable.get("Metadata") or {}).get("sha256")
+        ):
+            raise RuntimeError("R2 promotion verification failed")
+    except Exception:
+        try:
+            delete(final_key)
+        except Exception:
+            pass
+        raise
+    delete(pending_key)
+    return durable
+
+
+def bucket_usage_bytes() -> int:
+    total = 0
+    paginator = client().get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=settings()["bucket"]):
+        total += sum(int(item.get("Size") or 0) for item in page.get("Contents") or [])
+    return total
+
+
+def _intent_declared_bytes(db) -> int:
+    from schema import CREATE_R2_UPLOAD_INTENTS, CREATE_SYSTEM_CONFIG, TABLE_R2_UPLOAD_INTENTS
+    db.execute(CREATE_R2_UPLOAD_INTENTS)
+    rows = db.query(f"""SELECT COALESCE(SUM(declared_bytes),0) AS total
+        FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")
+    return int(rows.iloc[0]["total"] or 0) if not rows.empty else 0
+
+
+def storage_budget_status(db, *, refresh: bool = False) -> dict:
+    """Return an exact-R2 snapshot plus conservative post-snapshot intents."""
+    from schema import CREATE_SYSTEM_CONFIG
+
+    db.execute(CREATE_SYSTEM_CONFIG)
+    intent_bytes = _intent_declared_bytes(db)
+    rows = db.query("SELECT value FROM system_config WHERE key='r2_storage_usage_snapshot'")
+    snapshot = {}
+    if not rows.empty:
+        try:
+            snapshot = json.loads(str(rows.iloc[0]["value"] or "{}"))
+        except Exception:
+            snapshot = {}
+    now = dt.datetime.now(dt.timezone.utc)
+    try:
+        as_of = dt.datetime.fromisoformat(str(snapshot.get("as_of") or ""))
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=dt.timezone.utc)
+    except Exception:
+        as_of = None
+    stale = not as_of or (now - as_of).total_seconds() >= R2_USAGE_SNAPSHOT_MAX_AGE_SECONDS
+    if refresh and stale:
+        with _usage_refresh_lock:
+            # Another request may have refreshed while this thread waited.
+            latest_rows = db.query("SELECT value FROM system_config WHERE key='r2_storage_usage_snapshot'")
+            try:
+                latest = json.loads(str(latest_rows.iloc[0]["value"] or "{}")) if not latest_rows.empty else {}
+                latest_as_of = dt.datetime.fromisoformat(str(latest.get("as_of") or ""))
+                if latest_as_of.tzinfo is None:
+                    latest_as_of = latest_as_of.replace(tzinfo=dt.timezone.utc)
+            except Exception:
+                latest, latest_as_of = {}, None
+            if latest_as_of and (now - latest_as_of).total_seconds() < R2_USAGE_SNAPSHOT_MAX_AGE_SECONDS:
+                snapshot = latest
+            else:
+                exact = bucket_usage_bytes()
+                snapshot = {
+                    "bytes": exact, "as_of": now.isoformat(),
+                    "intent_bytes_snapshot": intent_bytes,
+                }
+                db.execute("""INSERT INTO system_config(key,value,updated_at)
+                    VALUES('r2_storage_usage_snapshot',:value,:now)
+                    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""", {
+                    "value": json.dumps(snapshot, separators=(",", ":")),
+                    "now": now.replace(tzinfo=None),
+                })
+            stale = False
+    base = _nonnegative_int(snapshot.get("bytes"))
+    intent_snapshot = _nonnegative_int(snapshot.get("intent_bytes_snapshot"))
+    total = base + max(0, intent_bytes - intent_snapshot)
+    return {
+        "total_bytes": total, "snapshot_bytes": base,
+        "snapshot_as_of": str(snapshot.get("as_of") or ""),
+        "intent_bytes": intent_bytes,
+        "intent_bytes_after_snapshot": max(0, intent_bytes - intent_snapshot),
+        "snapshot_stale": stale, "warning": total >= R2_STORAGE_WARN_BYTES,
+        "blocked": total >= R2_STORAGE_STOP_BYTES,
+        "warn_bytes": R2_STORAGE_WARN_BYTES, "stop_bytes": R2_STORAGE_STOP_BYTES,
+    }
+
+
 def reserve_upload_intent(
     db, *, intent_id: str, user_id: str, media_kind: str, object_keys: list[str],
     declared_bytes: int, user_daily_limit: int, global_monthly_limit: int,
+    storage_stop_bytes: int = R2_STORAGE_STOP_BYTES,
 ) -> tuple[bool, str]:
     """Persistently cap issued PUT URLs, including uploads never finalized."""
     from schema import CREATE_R2_UPLOAD_INTENTS, TABLE_R2_UPLOAD_INTENTS
@@ -163,7 +293,25 @@ def reserve_upload_intent(
     month_utc = month_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
     with db.transaction() as session:
         session.execute(text(CREATE_R2_UPLOAD_INTENTS))
+        session.execute(text(CREATE_SYSTEM_CONFIG))
         session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_quota'))"))
+        session.execute(text(f"""DELETE FROM {TABLE_R2_UPLOAD_INTENTS}
+            WHERE status IN ('completed','orphan_deleted') AND completed_at<:cutoff"""),
+            {"cutoff": now_utc - dt.timedelta(days=R2_INTENT_RETENTION_DAYS)})
+        snapshot_row = session.execute(text(
+            "SELECT value FROM system_config WHERE key='r2_storage_usage_snapshot'"
+        )).fetchone()
+        try:
+            storage_snapshot = json.loads(str(snapshot_row[0] or "{}")) if snapshot_row else {}
+        except Exception:
+            storage_snapshot = {}
+        current_declared = int(session.execute(text(f"""SELECT COALESCE(SUM(declared_bytes),0)
+            FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")).scalar() or 0)
+        base_bytes = _nonnegative_int(storage_snapshot.get("bytes"))
+        intent_snapshot = _nonnegative_int(storage_snapshot.get("intent_bytes_snapshot"))
+        projected = base_bytes + max(0, current_declared - intent_snapshot) + int(declared_bytes)
+        if projected >= int(storage_stop_bytes):
+            return False, "storage_global"
         user_count = int(session.execute(text(f"""SELECT COUNT(*)
             FROM {TABLE_R2_UPLOAD_INTENTS}
             WHERE user_id=:user AND media_kind=:kind AND created_at>=:start"""), {
@@ -196,6 +344,14 @@ def complete_upload_intent(db, intent_id: str) -> None:
         WHERE intent_id=:id AND status='issued'""", {"id": intent_id, "now": now})
 
 
+def mark_upload_intent_deleted(db, intent_id: str) -> None:
+    from schema import TABLE_R2_UPLOAD_INTENTS
+    db.execute(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+        SET status='orphan_deleted',completed_at=:now WHERE intent_id=:id""", {
+        "id": intent_id, "now": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+    })
+
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -205,9 +361,13 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
 
 
-def sign_upload_claim(claim: dict, secret: str, expires: int = 600) -> str:
+def sign_upload_claim(
+    claim: dict, secret: str, expires: int = R2_UPLOAD_CLAIM_TTL_SECONDS,
+) -> str:
     payload = dict(claim)
-    payload["exp"] = int(time.time()) + max(60, min(int(expires), 1800))
+    payload["exp"] = int(time.time()) + max(
+        R2_URL_MIN_TTL_SECONDS, min(int(expires), R2_CLAIM_MAX_TTL_SECONDS)
+    )
     encoded = _b64url(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
     return f"{encoded}.{_b64url(signature)}"

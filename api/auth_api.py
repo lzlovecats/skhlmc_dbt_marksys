@@ -7,24 +7,27 @@ a session started here works everywhere.
 """
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pathlib import Path
+from system_limits import (
+    COMMITTEE_COOKIE_MAX_AGE_DAYS, NOTIFICATION_READ_RETENTION_DAYS,
+)
 
 router = APIRouter(prefix="/api/committee", tags=["committee"])
 
 COOKIE_NAME = "committee_user"
-COOKIE_MAX_AGE = 180 * 24 * 60 * 60   # 180 days, matching functions.return_expire_day
+COOKIE_MAX_AGE = COMMITTEE_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60
 
 
 class LoginBody(BaseModel):
-    user_id: str
-    password: str
+    user_id: str = Field(max_length=200)
+    password: str = Field(max_length=512)
 
 
 class PasswordBody(BaseModel):
-    current_password: str
-    new_password: str
-    confirm_password: str
+    current_password: str = Field(max_length=512)
+    new_password: str = Field(max_length=512)
+    confirm_password: str = Field(max_length=512)
 
 
 def _current_notification():
@@ -106,6 +109,7 @@ def notification(request: Request):
         return {"notification": None}
     db = get_vote_db()
     db.execute(CREATE_NOTIFICATION_READS)
+    db.execute(f"CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at ON {TABLE_NOTIFICATION_READS}(read_at)")
     seen = db.query(
         f"SELECT 1 FROM {TABLE_NOTIFICATION_READS} WHERE notification_id = :nid AND user_id = :uid",
         {"nid": notice["id"], "uid": user_id},
@@ -115,12 +119,12 @@ def notification(request: Request):
 
 class NotificationReadBody(BaseModel):
     notification_id: int
-    notification_title: str
+    notification_title: str = Field(max_length=300)
 
 
 @router.post("/notification/read")
 def notification_read(body: NotificationReadBody, request: Request):
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     from deploy.proxy import _require_committee_user, get_vote_db
     from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
@@ -141,6 +145,10 @@ def notification_read(body: NotificationReadBody, request: Request):
             "seen_at": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
         },
     )
+    db.execute(f"DELETE FROM {TABLE_NOTIFICATION_READS} WHERE read_at<:cutoff", {
+        "cutoff": datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+                  - timedelta(days=NOTIFICATION_READ_RETENTION_DAYS),
+    })
     return {"status": "ok"}
 
 

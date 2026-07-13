@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from schema import VIEW_COMMITTEE_VOTE_ACTIVITY
 from core.vote_logic import _resolve_db
+from system_limits import ACCOUNT_LIST_LIMIT
 
 _ACTIVITY_VIEW_SQL = f"""
 SELECT
@@ -28,6 +29,7 @@ SELECT
     is_active
 FROM {VIEW_COMMITTEE_VOTE_ACTIVITY}
 ORDER BY user_id
+LIMIT {ACCOUNT_LIST_LIMIT}
 """
 
 

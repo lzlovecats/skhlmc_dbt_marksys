@@ -1,12 +1,13 @@
 """Streamlit-free competition registration rules and persistence."""
 
 import datetime as dt
+import os
 import re
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from core.auth_logic import verify_password
+from core.auth_logic import append_login_record, verify_password
 from core.vote_logic import _resolve_db
 from schema import (
     CREATE_COMPETITION_REGISTRATIONS,
@@ -15,6 +16,7 @@ from schema import (
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_LOGIN_RECORDS,
 )
+from system_limits import REGISTRATION_EDITION_HISTORY_LIMIT, REGISTRATION_MAX_PER_EDITION
 
 
 HKT = ZoneInfo("Asia/Hong_Kong")
@@ -158,6 +160,13 @@ def submit_registration(data, competition_edition, db=None):
     if submitted_edition != current_edition:
         return {"ok": False, "message": "報名屆數已更新，請重新載入頁面後再提交。"}
 
+    count = db.query(
+        f"SELECT COUNT(*) AS n FROM {TABLE_COMPETITION_REGISTRATIONS} WHERE competition_edition=:edition",
+        {"edition": current_edition},
+    )
+    if not count.empty and int(count.iloc[0]["n"] or 0) >= REGISTRATION_MAX_PER_EDITION:
+        return {"ok": False, "message": "本屆網上報名名額已滿，請聯絡賽會人員。"}
+
     duplicate = db.query(
         f"""
         SELECT 1 FROM {TABLE_COMPETITION_REGISTRATIONS}
@@ -227,7 +236,9 @@ def registration_admin_data(competition_edition=None, status="全部", db=None):
     db = _resolve_db(db)
     settings = get_registration_settings(db)
     editions_data = db.query(
-        f"SELECT DISTINCT competition_edition FROM {TABLE_COMPETITION_REGISTRATIONS} ORDER BY competition_edition DESC"
+        f"SELECT DISTINCT competition_edition FROM {TABLE_COMPETITION_REGISTRATIONS} "
+        "ORDER BY competition_edition DESC LIMIT :limit",
+        {"limit": REGISTRATION_EDITION_HISTORY_LIMIT},
     )
     editions = [int(value) for value in editions_data["competition_edition"].tolist()] if not editions_data.empty else []
     if settings and settings["competition_edition"] not in editions:
@@ -307,8 +318,5 @@ def check_admin_password(password, db=None):
         return {"ok": False, "message": "系統錯誤：未能讀取密碼，請聯絡開發人員"}
     if not verify_password((password or "").strip(), str(result.iloc[0]["value"])):
         return {"ok": False, "message": "密碼錯誤"}
-    db.execute(
-        f"INSERT INTO {TABLE_LOGIN_RECORDS} (user_id, login_type, logged_in_at) VALUES ('admin', 'admin', :logged_in_at)",
-        {"logged_in_at": _now().strftime("%Y-%m-%d %H:%M:%S")},
-    )
+    append_login_record("admin", "admin", _now(), db=db)
     return {"ok": True}

@@ -3,6 +3,7 @@ import base64
 import json
 import math
 import os
+import secrets
 from pathlib import Path
 import httpx
 import streamlit.components.v1 as components
@@ -129,6 +130,10 @@ def _render_live_debate_component(
     tokens=None,
     session_labels=None,
     ai_starts: bool = False,
+    relay_user_id: str = "",
+    relay_practice_kind: str = "solo_free",
+    relay_practice_id: str = "",
+    relay_max_seconds_by_token=None,
 ):
     template_path = Path(__file__).parent / "templates" / "live_debate.html"
     live_html = template_path.read_text(encoding="utf-8")
@@ -147,9 +152,15 @@ def _render_live_debate_component(
     token_sigs = {}
     if relay_ws_base:
         try:
+            seconds_by_token = relay_max_seconds_by_token or {}
+            default_seconds = max(30, min(int(float(duration_minutes or 2.5) * 60), 30 * 60))
             for t in [token, *(tokens or [])]:
                 if t and t not in token_sigs:
-                    token_sigs[t] = sign_relay_token(t)
+                    token_sigs[t] = sign_relay_token(
+                        t, relay_user_id, relay_practice_kind,
+                        int(seconds_by_token.get(t) or default_seconds),
+                        relay_practice_id,
+                    )
         except Exception as e:
             st.caption(f"Live relay 簽章未能產生：{e}")
     live_html = live_html.replace("__TOKEN_SIGS__", json.dumps(token_sigs))
@@ -889,22 +900,8 @@ if selected_tab == "free_debate":
                     "bell_schedule": free_bell_schedule,
                     "duration_minutes": float(live_minutes),
                     "prompt": live_prompt,
+                    "practice_id": secrets.token_urlsafe(12),
                 }
-                try:
-                    live_usage = estimate_ai_feature_usage(
-                        "free_debate_live",
-                        FREE_DEBATE_LIVE_MODEL_LABEL,
-                        duration_minutes=live_token_minutes,
-                    )
-                    log_ai_fund_usage(
-                        user_id=user_id,
-                        feature="free_debate_live",
-                        model_label=FREE_DEBATE_LIVE_MODEL_LABEL,
-                        success=True,
-                        usage_override=live_usage,
-                    )
-                except Exception as e:
-                    st.caption(f"Live 用量估算未能寫入：{e}")
                 st.success("請按下方「開始自由辯論」連線並允許麥克風權限。")
 
     live_session = st.session_state.get("free_debate_live_session")
@@ -922,6 +919,16 @@ if selected_tab == "free_debate":
             live_session.get("duration_minutes", 10),
             live_session.get("bell_schedule"),
             ai_starts=live_session["side"] == "反方",
+            relay_user_id=user_id,
+            relay_practice_kind="solo_free",
+            relay_practice_id=live_session["practice_id"],
+            relay_max_seconds_by_token={
+                live_session["token"]: max(
+                    60, min(10 * 60, int(math.ceil(
+                        float(live_session.get("duration_minutes", 10)) * 2 * 60
+                    )))
+                )
+            },
         )
         if st.button("結束打Free De", key="free_debate_live_end"):
             del st.session_state["free_debate_live_session"]
@@ -1066,26 +1073,9 @@ if selected_tab == "full_mock":
                     "session_labels": [s["label"] for s in mock_sessions],
                     "duration_minutes": mock_total_minutes,
                     "prompt": mock_prompt,
+                    "practice_id": secrets.token_urlsafe(12),
+                    "session_planned_seconds": [s["planned_seconds"] for s in mock_sessions],
                 }
-                # 逐節按計劃時長各記一條，summing 到真實全長（雙方段落兩邊都計，同 caption 一致）。
-                for sess in mock_sessions:
-                    sess_billed_minutes = full_mock_total_seconds(sess["segments"]) / 60
-                    try:
-                        sess_usage = estimate_ai_feature_usage(
-                            "full_mock_live",
-                            FREE_DEBATE_LIVE_MODEL_LABEL,
-                            duration_minutes=sess_billed_minutes,
-                        )
-                        log_ai_fund_usage(
-                            user_id=user_id,
-                            feature="full_mock_live",
-                            model_label=FREE_DEBATE_LIVE_MODEL_LABEL,
-                            success=True,
-                            usage_override=sess_usage,
-                        )
-                    except Exception as e:
-                        st.caption(f"Mock 用量估算未能寫入：{e}")
-                        break
                 st.success("請按下方「開始Mock」連線並允許麥克風權限。")
 
     mock_session = st.session_state.get("full_mock_live_session")
@@ -1106,6 +1096,15 @@ if selected_tab == "full_mock":
             segments=mock_session.get("segments"),
             tokens=mock_tokens,
             session_labels=mock_session.get("session_labels"),
+            relay_user_id=user_id,
+            relay_practice_kind="solo_mock",
+            relay_practice_id=mock_session["practice_id"],
+            relay_max_seconds_by_token={
+                token_value: max(60, min(30 * 60, int(planned) + 120))
+                for token_value, planned in zip(
+                    mock_tokens, mock_session.get("session_planned_seconds") or []
+                )
+            },
         )
         if st.button("結束打Mock", key="full_mock_live_end"):
             del st.session_state["full_mock_live_session"]

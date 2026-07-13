@@ -10,9 +10,12 @@ vote resolution — without importing Streamlit.
 """
 
 import json
+import os
 import re
 
 from schema import TABLE_PUSH_SUBSCRIPTIONS
+from system_limits import PUSH_RECIPIENT_LIMIT
+
 
 
 def push_title_with_emoji(title):
@@ -91,8 +94,9 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
 
     try:
         rows = db.query(
-            f"SELECT endpoint, user_id, subscription_json FROM {TABLE_PUSH_SUBSCRIPTIONS} {where}",
-            params,
+            f"SELECT endpoint,user_id,subscription_json FROM {TABLE_PUSH_SUBSCRIPTIONS} {where} "
+            "ORDER BY updated_at DESC LIMIT :recipient_limit",
+            {**params, "recipient_limit": PUSH_RECIPIENT_LIMIT},
         )
     except Exception:
         return 0

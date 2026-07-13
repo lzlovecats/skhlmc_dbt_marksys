@@ -1143,6 +1143,14 @@ CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
     ON {TABLE_MOTION_COMMENTS}(motion_type, motion_key);
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active
     ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_inactive_updated
+    ON {TABLE_PUSH_SUBSCRIPTIONS}(updated_at) WHERE is_active=FALSE;
+CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at
+    ON {TABLE_LOGIN_RECORDS}(logged_in_at);
+CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at
+    ON {TABLE_NOTIFICATION_READS}(read_at);
+CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
+    ON {TABLE_AI_TRAINING_AUDIT}(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
     ON {TABLE_AI_FUND_TRANSACTIONS}(status);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_created_at
