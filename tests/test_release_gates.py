@@ -95,7 +95,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn("changed = db.execute_count", core)
         self.assertIn("比賽屆數必須為正整數", core)
 
-    def test_match_info_defaults_are_streamlit_aligned_and_saves_are_atomic(self):
+    def test_match_info_defaults_and_atomic_saves(self):
         html = (ROOT / "frontend" / "match_info" / "index.html").read_text(encoding="utf-8")
         core = (ROOT / "core" / "match_logic.py").read_text(encoding="utf-8")
         for marker in ("state.default_date", "state.default_time", "難度篩選", "隊伍名稱1", "留空代表保留現有密碼", "hasUnsavedChanges", "尚未儲存的修改", "beforeunload"):
@@ -121,7 +121,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
         core = (ROOT / "core" / "judging_logic.py").read_text(encoding="utf-8")
         self.assertIn('@router.get("/config")', api)
         self.assertIn("/api/judging/config", html)
-        self.assertIn('/shared/judging-ux.js?v=4.0.3-judging', html)
+        self.assertIn('/shared/judging-ux.js', html)
+        self.assertNotIn('/shared/judging-ux.js?v=', html)
         self.assertNotIn("const speech=[[", html)
         for marker in ("zeroWarnings", "預計結果", "雙方同分", "switchMatch", "上次儲存：", "S.saved[side]=false"):
             self.assertIn(compact(marker), compact(html))
@@ -133,7 +134,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('expected_slots', core)
         self.assertIn('with db.transaction() as session', core)
 
-    def test_review_restores_streamlit_score_sheet_features(self):
+    def test_review_has_complete_score_sheet_features(self):
         html = (ROOT / "frontend" / "review" / "index.html").read_text(encoding="utf-8")
         api = (ROOT / "api" / "review_api.py").read_text(encoding="utf-8")
         core = (ROOT / "core" / "review_logic.py").read_text(encoding="utf-8")
@@ -161,7 +162,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
         for caption in ("使用賽會人員密碼登入後", "舊抽籤結果會自動失效", "方便稍後抄錄到"):
             self.assertIn(caption, html)
 
-    def test_lateness_fund_has_manager_gates_and_streamlit_features(self):
+    def test_lateness_fund_has_manager_gates_and_complete_features(self):
         html = (ROOT / "frontend" / "lateness_fund" / "index.html").read_text(encoding="utf-8")
         api = (ROOT / "api" / "funds_api.py").read_text(encoding="utf-8")
         core = (ROOT / "core" / "funds_logic.py").read_text(encoding="utf-8")
@@ -175,7 +176,7 @@ class MigrationParityRegressionTests(unittest.TestCase):
             self.assertIn(marker, core)
         self.assertIn("lateness_fund_managers", admin)
 
-    def test_ai_fund_has_streamlit_exports_summary_and_safe_admin_actions(self):
+    def test_ai_fund_has_exports_summary_and_safe_admin_actions(self):
         html = (ROOT / "frontend" / "ai_fund" / "index.html").read_text(encoding="utf-8")
         api = (ROOT / "api" / "funds_api.py").read_text(encoding="utf-8")
         core = (ROOT / "core" / "funds_logic.py").read_text(encoding="utf-8")
@@ -184,8 +185,9 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertNotIn('/shared/server-tables.js', html)
         for marker in ('usage-summary', 'transactions.csv', 'usage.csv', 'HTTPException(409', 'result or {}'):
             self.assertIn(marker, api)
-        for marker in ('AI_PAYMENT_METHODS', 'COALESCE(account_disabled,FALSE)=FALSE', 'def ai_usage_summary', '不能為負數', '_AI_SCHEMA_LOCK'):
+        for marker in ('AI_PAYMENT_METHODS', 'COALESCE(account_disabled,FALSE)=FALSE', 'def ai_usage_summary', '不能為負數', '_AI_PRUNE_LOCK'):
             self.assertIn(marker, core)
+        self.assertNotIn('_ensure_ai', core)
         self.assertNotIn('DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature', core)
         for marker in ("provider_refund", "member_refund", "Provider 退款予基金", "退款予委員"):
             self.assertIn(marker, html)
@@ -195,16 +197,21 @@ class MigrationParityRegressionTests(unittest.TestCase):
     def test_ai_training_reviews_preserve_server_page(self):
         app = (ROOT / "frontend" / "ai_training" / "app.js").read_text(encoding="utf-8")
         html = (ROOT / "frontend" / "ai_training" / "index.html").read_text(encoding="utf-8")
+        formatted_app = compact(app)
         for marker in ("preservePage=false", "target._voteServerSpec?.page", "loadRecordings(resetPage=false)", '"adminLlm"'):
-            self.assertIn(marker, app)
-        self.assertIn('loadRecordings(true)', app)
-        self.assertIn('4.1.2-r2-only', html)
+            self.assertIn(compact(marker), formatted_app)
+        self.assertIn(compact('loadRecordings(true)'), formatted_app)
+        self.assertIn('/ai-training/app.js?v=__APP_VERSION__', html)
+        proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
+        self.assertIn('html.replace("__APP_VERSION__", APP_VERSION)', proxy)
 
     def test_home_displays_release_version(self):
         home = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
-        version = (ROOT / "version.py").read_text(encoding="utf-8")
-        self.assertIn("請根據你的身份選擇對應功能（系統版本：4.1.2）", home)
-        self.assertIn('APP_VERSION = "4.1.2"', version)
+        logic = (ROOT / "core" / "home_logic.py").read_text(encoding="utf-8")
+        self.assertIn('id="systemVersion"', home)
+        self.assertIn('data.version || "未知"', home)
+        self.assertIn('from version import APP_VERSION', logic)
+        self.assertIn('"version": APP_VERSION', logic)
 
     def test_ai_coach_has_global_model_and_standalone_mock(self):
         html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text(encoding="utf-8")
@@ -225,7 +232,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
         proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
         self.assertIn('@router.post("/prepare-live")', api)
         self.assertIn('consume_live_brief', proxy)
-        self.assertIn('record_live_usage', proxy)
+        self.assertIn('_reserve_solo_live_slot', proxy)
+        self.assertIn('The quota is consumed only after', proxy)
         self.assertIn('research_brief=research_brief', proxy)
         self.assertIn('_LIVE_BRIEF_TABLE', api)
         self.assertNotIn('_LIVE_BRIEFS = {}', api)
@@ -256,8 +264,8 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertIn('meta = await api("/api/ai-coach/data")', browser)
         self.assertIn('$("mockForm").addEventListener("submit"', browser)
         self.assertIn('brief_id: data.brief_id', browser)
-        self.assertIn("duration < 1 || duration > 60", browser)
-        self.assertIn("blob.size > 2 * 1024 * 1024", browser)
+        self.assertIn("duration > limits.audio_max_seconds", browser)
+        self.assertIn("blob.size > limits.audio_max_bytes", browser)
         self.assertIn("bytes.subarray(index, index + 32768)", browser)
         self.assertNotIn("String.fromCharCode(...new Uint8Array", browser)
         self.assertLess(html.index('data-pane="fact"'), html.index('data-pane="research"'))
@@ -334,11 +342,58 @@ class StaticArchitectureTests(unittest.TestCase):
             if "<table" in text:
                 self.assertIn('/shared/vote-ui.js', text, str(path))
 
-    def test_streamlit_is_not_started_in_production(self):
+    def test_active_sql_selects_explicit_columns(self):
+        for folder in ("api", "core", "deploy"):
+            for path in (ROOT / folder).glob("*.py"):
+                source = path.read_text(encoding="utf-8")
+                with self.subTest(path=path.relative_to(ROOT)):
+                    self.assertIsNone(re.search(r"\bSELECT\s+\*(?!\w)", source, re.I))
+
+    def test_committee_browser_auth_uses_http_only_cookie_only(self):
+        proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
+        browser_sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for folder in (ROOT / "frontend", ROOT / "templates")
+            for path in folder.rglob("*")
+            if path.suffix in {".html", ".js"}
+        )
+        auth_api = (ROOT / "api" / "auth_api.py").read_text(encoding="utf-8")
+        self.assertIn("httponly=True", auth_api)
+        self.assertNotIn('localStorage.getItem("committee_user")', browser_sources)
+        self.assertNotIn('websocket.query_params.get("u"', proxy)
+
+    def test_retired_streamlit_runtime_is_absent(self):
         start = (ROOT / "deploy" / "start.sh").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         self.assertNotIn("streamlit run", start)
         self.assertNotIn("streamlit>=", requirements.lower())
+        retired_paths = (
+            "main.py",
+            "auth.py",
+            "db.py",
+            "functions.py",
+            "ai_coach_helpers.py",
+            "speech_recorder_component.py",
+            "legacy_streamlit",
+            "components/speech_recorder",
+        )
+        for relative in retired_paths:
+            with self.subTest(relative=relative):
+                path = ROOT / relative
+                if path.is_dir():
+                    self.assertFalse(any(item.is_file() for item in path.rglob("*")))
+                else:
+                    self.assertFalse(path.exists())
+
+    def test_all_html_is_readable_and_not_line_minified(self):
+        html_paths = sorted((ROOT / "frontend").rglob("*.html"))
+        html_paths += sorted((ROOT / "templates").rglob("*.html"))
+        self.assertTrue(html_paths)
+        for path in html_paths:
+            with self.subTest(path=path.relative_to(ROOT)):
+                lines = path.read_text(encoding="utf-8").splitlines()
+                self.assertGreater(len(lines), 100)
+                self.assertLessEqual(max(map(len, lines)), 500)
 
 
 if __name__ == "__main__":

@@ -105,17 +105,40 @@
           <section id="consent" class="card hidden">
             <h2>錄音用途及授權</h2>
             <p id="consentText"></p>
-            <label class="check"
-              ><input
-                id="agree"
-                type="checkbox"
-              />我已閱讀並同意以上錄音用途及授權安排</label
-            ><button id="consentBtn" class="primary">確認同意</button>
+            <label class="check">
+              <input id="agree" type="checkbox" />
+              我已閱讀並同意以上錄音用途及授權安排
+            </label>
+            <label class="check">
+              <input id="voiceCloningConfirmed" type="checkbox" />
+              我明確同意錄音可用作建立近似本人聲線的內部 TTS 模型
+            </label>
+            <label class="check">
+              <input id="cloudProcessingConfirmed" type="checkbox" />
+              我明確同意錄音可交由受控雲端 GPU／AI 服務處理
+            </label>
+            <label>
+              錄音者是否未滿 18 歲？
+              <select id="minorStatus" required>
+                <option value="">請明確選擇</option>
+                <option value="adult">否，已滿 18 歲</option>
+                <option value="minor">是，未滿 18 歲</option>
+              </select>
+            </label>
+            <label id="guardianConsent" class="check hidden">
+              <input id="guardianConfirmed" type="checkbox" />
+              我確認已取得家長／學校授權
+            </label>
+            <button id="consentBtn" class="primary">確認同意</button>
           </section>
           <section id="recorder" class="hidden">
             <div class="split">
               <section class="card">
                 <h2>錄音提交</h2>
+                <p class="caption">
+                  每段錄音會按伺服器集中設定的時間及大小上限檢查；檔案會直接上載至
+                  Cloudflare R2，不會經 Render 傳送。
+                </p>
                 <label
                   >錄音模式<select id="scriptType">
                     <option value="short">短句練習</option>
@@ -263,6 +286,27 @@
           <p class="caption">
             集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。
           </p>
+          <details open>
+            <summary>📊 AI 訓練容量及匯出限制</summary>
+            <p id="trainingBandwidthUsage" class="caption">
+              正在讀取本月系統用量…
+            </p>
+            <ul>
+              <li>
+                錄音長度、大小、每人每日及全系統每月上載限額均由伺服器集中設定；技術資料會由伺服器重新檢測，並須通過已簽署的
+                AI 預檢或人工覆核。
+              </li>
+              <li>
+                錄音檔案及管理員下載均使用 R2 直連。系統不再建立經 Render 傳送的
+                ZIP，以免再次消耗 Render RAM 及 outbound
+                bandwidth；管理員可取得一小時有效的 R2 下載清單。
+              </li>
+              <li>
+                實際 bandwidth 及 R2 門檻顯示於上方；達相應保護階段會停止新 Live
+                或暫停非必要 AI 處理，但 R2 錄音、JSON 清單及管理功能維持運作。
+              </li>
+            </ul>
+          </details>
           <section class="card">
             <h2>AI訓練 Readiness</h2>
             <div id="readinessSummary" class="caption">載入中…</div>
@@ -405,6 +449,6 @@
     </dialog>
     <script src="/shared/vote-ui.js"></script>
     <script src="/shared/markdown.js"></script>
-    <script src="/ai-training/app.js?v=4.1.2-r2-only"></script>
+    <script src="/ai-training/app.js?v=__APP_VERSION__"></script>
   </body>
 </html>

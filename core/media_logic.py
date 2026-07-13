@@ -1,31 +1,34 @@
-"""Streamlit-free media replay, administration, and match-photo logic."""
+"""Media replay, administration and match-photo logic."""
 
 import csv
 import datetime as dt
 import io
+import itertools
+import os
 import re
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-import pandas as pd
+from sqlalchemy import text
 
 from core.vote_logic import _resolve_db
 from schema import (
-    CREATE_MATCH_PHOTOS,
-    CREATE_MATCH_VIDEOS,
-    CREATE_VIDEO_CHAPTERS,
-    CREATE_VIDEO_COMMENTS,
-    CREATE_VIDEO_PROGRESS,
-    CREATE_VIDEO_VIEWS,
-    CREATE_VIDEO_VOTES,
     TABLE_MATCHES,
     TABLE_MATCH_PHOTOS,
     TABLE_MATCH_VIDEOS,
+    TABLE_R2_UPLOAD_INTENTS,
     TABLE_VIDEO_CHAPTERS,
     TABLE_VIDEO_COMMENTS,
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
     TABLE_VIDEO_VOTES,
+)
+from system_limits import (
+    PHOTO_BATCH_MAX_ITEMS,
+    VIDEO_COMMENT_MAX_PER_USER_DAY, VIDEO_COMMENT_MAX_PER_VIDEO,
+    VIDEO_COMMENT_RATE_WINDOW_HOURS,
+    VIDEO_IMPORT_MAX_ROWS, VIDEO_OPTION_LIMIT, VIDEO_REPLAY_LIST_LIMIT,
+    VIDEO_TOTAL_LIMIT,
 )
 
 
@@ -129,44 +132,7 @@ def is_youtube_url(url):
     )
 
 
-def ensure_match_videos_table(db=None):
-    db = _resolve_db(db)
-    db.execute(CREATE_MATCH_VIDEOS)
-    db.execute(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ALTER COLUMN match_id DROP NOT NULL")
-    for column in ("match_label", "standalone_topic_text", "standalone_pro_team", "standalone_con_team"):
-        db.execute(f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS {column} TEXT")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_videos_match_id ON {TABLE_MATCH_VIDEOS}(match_id)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_videos_visible_order ON {TABLE_MATCH_VIDEOS}(is_visible, display_order)")
-
-
-def ensure_video_interaction_tables(db=None):
-    db = _resolve_db(db)
-    ensure_match_videos_table(db)
-    for sql in (CREATE_VIDEO_VIEWS, CREATE_VIDEO_COMMENTS, CREATE_VIDEO_VOTES, CREATE_VIDEO_CHAPTERS, CREATE_VIDEO_PROGRESS):
-        db.execute(sql)
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_views_video_id ON {TABLE_VIDEO_VIEWS}(video_id)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_comments_video_created ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice ON {TABLE_VIDEO_VOTES}(video_id, vote_choice)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)")
-
-
-def ensure_match_photos_table(db=None):
-    db = _resolve_db(db)
-    ensure_match_videos_table(db)
-    db.execute(CREATE_MATCH_PHOTOS)
-    db.execute(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS photo_date DATE")
-    for column, data_type in (
-        ("r2_key", "TEXT"), ("thumbnail_r2_key", "TEXT"),
-        ("byte_size", "INTEGER"), ("sha256", "TEXT"),
-        ("width", "INTEGER"), ("height", "INTEGER"),
-    ):
-        db.execute(f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS {column} {data_type}")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_photos_album_created ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC)")
-    db.execute(f"CREATE INDEX IF NOT EXISTS idx_match_photos_date_created ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC)")
-
-
-def _replay_rows(user_id, db):
+def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT):
     return db.query(
         f"""
         SELECT v.id, v.match_id, COALESCE(NULLIF(v.match_label, ''), v.match_id) AS match_display,
@@ -193,7 +159,8 @@ def _replay_rows(user_id, db):
         WHERE COALESCE(v.is_visible, TRUE) = TRUE
         ORDER BY progress.updated_at DESC NULLS LAST, m.match_date DESC NULLS LAST, m.match_time DESC NULLS LAST,
                  v.display_order ASC, v.created_at DESC
-        """, {"user_id": user_id}
+        LIMIT :limit
+        """, {"user_id": user_id, "limit": max(1, int(limit))}
     )
 
 
@@ -213,7 +180,6 @@ def _replay_record(row):
 
 def replay_data(user_id, selected_video_id=None, db=None):
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
     videos = [_replay_record(row) for _, row in _replay_rows(user_id, db).iterrows()]
     if not videos:
         return {"videos": [], "selected": None, "chapters": [], "comments": [], "my_vote": None, "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS}
@@ -252,10 +218,32 @@ def add_comment(video_id, user_id, comment_text, db=None):
     if not comment_text:
         return {"ok": False, "message": "請輸入留言內容。"}
     db = _resolve_db(db)
-    db.execute(
-        f"INSERT INTO {TABLE_VIDEO_COMMENTS} (video_id, user_id, comment_text, created_at) VALUES (:video_id, :user_id, :comment_text, :created_at)",
-        {"video_id": int(video_id), "user_id": user_id, "comment_text": comment_text, "created_at": now_hkt()},
-    )
+    now = now_hkt()
+    params = {
+        "video_id": int(video_id), "user_id": user_id,
+        "comment_text": comment_text, "created_at": now,
+        "user_cutoff": now - dt.timedelta(hours=VIDEO_COMMENT_RATE_WINDOW_HOURS),
+    }
+    # One short transaction makes both quotas authoritative under concurrent
+    # requests. The per-user limit is intentionally global across all videos;
+    # scoping it to one video allowed the nominal daily cap to multiply by the
+    # full video inventory.
+    with db.transaction() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('video_comment_quota'))"))
+        counts = conn.execute(text(f"""SELECT
+            (SELECT COUNT(*) FROM {TABLE_VIDEO_COMMENTS}
+              WHERE video_id=:video_id) AS video_count,
+            (SELECT COUNT(*) FROM {TABLE_VIDEO_COMMENTS}
+              WHERE user_id=:user_id AND created_at>=:user_cutoff) AS user_day_count
+        """), params).mappings().first()
+        if counts and int(counts["video_count"] or 0) >= VIDEO_COMMENT_MAX_PER_VIDEO:
+            return {"ok": False, "message": "此片段留言已達保護上限。"}
+        if counts and int(counts["user_day_count"] or 0) >= VIDEO_COMMENT_MAX_PER_USER_DAY:
+            return {"ok": False, "message": "你今日的片段留言次數已達上限。"}
+        conn.execute(text(
+            f"INSERT INTO {TABLE_VIDEO_COMMENTS} (video_id, user_id, comment_text, created_at) "
+            "VALUES (:video_id, :user_id, :comment_text, :created_at)"
+        ), params)
     return {"ok": True, "message": "已成功留言"}
 
 
@@ -274,17 +262,25 @@ def save_chapters(video_id, chapters, db=None):
     if invalid:
         return {"ok": False, "message": "以下章節時間格式無效：" + "、".join(invalid)}
     db = _resolve_db(db)
-    db.execute(f"DELETE FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id = :video_id", {"video_id": int(video_id)})
-    for label, index, seconds in values:
-        db.execute(
-            f"INSERT INTO {TABLE_VIDEO_CHAPTERS} (video_id, chapter_label, start_seconds, display_order, updated_at) VALUES (:video_id, :chapter_label, :start_seconds, :display_order, :updated_at)",
-            {"video_id": int(video_id), "chapter_label": label, "start_seconds": seconds, "display_order": index, "updated_at": now_hkt()},
-        )
+    params = [
+        {"video_id": int(video_id), "chapter_label": label,
+         "start_seconds": seconds, "display_order": index, "updated_at": now_hkt()}
+        for label, index, seconds in values
+    ]
+    with db.transaction() as conn:
+        conn.execute(text(f"DELETE FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id=:video_id"),
+                     {"video_id": int(video_id)})
+        if params:
+            conn.execute(text(f"""INSERT INTO {TABLE_VIDEO_CHAPTERS}
+                (video_id,chapter_label,start_seconds,display_order,updated_at)
+                VALUES(:video_id,:chapter_label,:start_seconds,:display_order,:updated_at)"""),
+                params)
     return {"ok": True, "message": "章節時間表已更新。"}
 
 
 def _match_rows(db):
-    return db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team FROM {TABLE_MATCHES} ORDER BY match_date DESC NULLS LAST, match_time DESC NULLS LAST, match_id")
+    return db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team FROM {TABLE_MATCHES} ORDER BY match_date DESC NULLS LAST, match_time DESC NULLS LAST, match_id LIMIT :limit",
+                    {"limit": VIDEO_OPTION_LIMIT})
 
 
 def match_options(db=None):
@@ -327,7 +323,9 @@ def add_video(data, db=None):
     if errors:
         return {"ok": False, "errors": errors}
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
+    count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
+    if not count.empty and int(count.iloc[0]["n"] or 0) >= VIDEO_TOTAL_LIMIT:
+        return {"ok": False, "message": f"片段總數已達 {VIDEO_TOTAL_LIMIT} 項保護上限，請先封存舊資料。"}
     db.execute(
         f"""INSERT INTO {TABLE_MATCH_VIDEOS} (match_id, match_label, video_title, youtube_url, standalone_topic_text, standalone_pro_team, standalone_con_team, is_visible, display_order, created_at, updated_at)
         VALUES (:match_id, :match_label, :video_title, :youtube_url, :standalone_topic_text, :standalone_pro_team, :standalone_con_team, :is_visible, :display_order, :created_at, :updated_at)""",
@@ -336,7 +334,7 @@ def add_video(data, db=None):
     return {"ok": True, "message": "比賽片段已新增。"}
 
 
-def _admin_video_rows(db):
+def _admin_video_rows(db, limit=20, offset=0):
     return db.query(
         f"""SELECT v.id, v.match_id, v.match_label, v.video_title, v.youtube_url, v.standalone_topic_text, v.standalone_pro_team, v.standalone_con_team, COALESCE(v.is_visible, TRUE) AS is_visible, v.display_order, v.created_at, v.updated_at,
         COALESCE(NULLIF(v.match_label, ''), v.match_id) AS match_display,
@@ -344,7 +342,8 @@ def _admin_video_rows(db):
         COALESCE(NULLIF(m.pro_team, ''), NULLIF(v.standalone_pro_team, '')) AS pro_team,
         COALESCE(NULLIF(m.con_team, ''), NULLIF(v.standalone_con_team, '')) AS con_team, m.match_date, m.match_time
         FROM {TABLE_MATCH_VIDEOS} v LEFT JOIN {TABLE_MATCHES} m ON v.match_id = m.match_id
-        ORDER BY m.match_date DESC NULLS LAST, m.match_time DESC NULLS LAST, v.display_order ASC, v.created_at DESC"""
+        ORDER BY m.match_date DESC NULLS LAST, m.match_time DESC NULLS LAST, v.display_order ASC, v.created_at DESC
+        LIMIT :limit OFFSET :offset""", {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
     )
 
 
@@ -355,14 +354,13 @@ def _admin_video_record(row):
 
 def video_admin_data(selected_video_id=None, page=1, page_size=20, db=None):
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
-    all_videos = [_admin_video_record(row) for _, row in _admin_video_rows(db).iterrows()]
     page_size = max(1, min(int(page_size or 20), 100))
-    total = len(all_videos)
+    count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
+    total = int(count.iloc[0]["n"] or 0) if not count.empty else 0
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = max(1, min(int(page or 1), total_pages))
     start = (page - 1) * page_size
-    videos = all_videos[start:start + page_size]
+    videos = [_admin_video_record(row) for _, row in _admin_video_rows(db, page_size, start).iterrows()]
     selected_id = safe_int(selected_video_id, videos[0]["id"] if videos else 0)
     if videos and selected_id not in {video["id"] for video in videos}:
         selected_id = videos[0]["id"]
@@ -425,8 +423,11 @@ def _row_value(row, *keys):
     return ""
 
 
-def parse_import_csv(raw_text):
-    return list(csv.DictReader(io.StringIO(raw_text.lstrip("\ufeff")))) if clean_text(raw_text) else []
+def parse_import_csv(raw_text, max_rows=None):
+    if not clean_text(raw_text):
+        return []
+    reader = csv.DictReader(io.StringIO(raw_text.lstrip("\ufeff")))
+    return list(reader if max_rows is None else itertools.islice(reader, max_rows + 1))
 
 
 def parse_bool(value, default=True):
@@ -441,12 +442,19 @@ def parse_bool(value, default=True):
 
 
 def import_videos(raw_text, parse_from_title=True, db=None):
-    rows = parse_import_csv(raw_text)
+    rows = parse_import_csv(raw_text, VIDEO_IMPORT_MAX_ROWS)
     if not rows:
         return {"ok": False, "message": "請先上載或貼上 CSV。"}
+    if len(rows) > VIDEO_IMPORT_MAX_ROWS:
+        return {"ok": False, "message": f"每次最多匯入 {VIDEO_IMPORT_MAX_ROWS} 行，請分批處理。"}
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
-    existing = db.query(f"SELECT youtube_url FROM {TABLE_MATCH_VIDEOS}")
+    total_frame = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
+    total_videos = int(total_frame.iloc[0]["n"] or 0) if not total_frame.empty else 0
+    if total_videos >= VIDEO_TOTAL_LIMIT:
+        return {"ok": False, "message": f"片段總數已達 {VIDEO_TOTAL_LIMIT} 項保護上限，請先封存舊資料。"}
+    rows = rows[:max(0, VIDEO_TOTAL_LIMIT - total_videos)]
+    existing = db.query(f"SELECT youtube_url FROM {TABLE_MATCH_VIDEOS} LIMIT :limit",
+                        {"limit": VIDEO_TOTAL_LIMIT})
     existing_urls = {clean_text(url) for url in existing["youtube_url"].tolist()} if not existing.empty else set()
     inserted = skipped = duplicated = 0
     for row in rows:
@@ -482,7 +490,6 @@ def import_videos(raw_text, parse_from_title=True, db=None):
 
 def album_options(db=None):
     db = _resolve_db(db)
-    ensure_match_videos_table(db)
     rows = db.query(
         f"""SELECT DISTINCT ON (album_label) id AS match_video_id, album_label, match_date, match_time
         FROM (SELECT v.id, COALESCE(NULLIF(v.match_label, ''), NULLIF(v.match_id, ''), v.video_title) AS album_label,
@@ -490,7 +497,8 @@ def album_options(db=None):
               FROM {TABLE_MATCH_VIDEOS} v LEFT JOIN {TABLE_MATCHES} m ON v.match_id = m.match_id
               WHERE COALESCE(v.is_visible, TRUE) = TRUE) albums
         WHERE album_label IS NOT NULL AND album_label != ''
-        ORDER BY album_label, match_date DESC NULLS LAST, match_time DESC NULLS LAST, display_order ASC, created_at DESC"""
+        ORDER BY album_label, match_date DESC NULLS LAST, match_time DESC NULLS LAST, display_order ASC, created_at DESC
+        LIMIT :limit""", {"limit": VIDEO_OPTION_LIMIT}
     )
     options = [{"label": OTHER_ALBUM, "video_id": None}]
     for _, row in rows.iterrows():
@@ -502,7 +510,6 @@ def album_options(db=None):
 
 def photo_data(db=None):
     db = _resolve_db(db)
-    ensure_match_photos_table(db)
     options = album_options(db)
     return {"albums": options, "photos": [], "other_album": OTHER_ALBUM}
 
@@ -510,47 +517,56 @@ def photo_data(db=None):
 def register_r2_photos(user_id, album_label, match_video_id, photo_date,
                        photo_title, caption, files, db=None):
     """Persist metadata after direct-to-R2 uploads have been verified."""
-    if not files or len(files) > 5:
-        return {"ok": False, "message": "每次必須上載一至五張圖片。"}
+    if not files or len(files) > PHOTO_BATCH_MAX_ITEMS:
+        return {"ok": False, "message": f"每次必須上載一至{PHOTO_BATCH_MAX_ITEMS}張圖片。"}
     db = _resolve_db(db)
-    ensure_match_photos_table(db)
     parsed_date = None
     if clean_text(photo_date):
         try:
             parsed_date = dt.date.fromisoformat(clean_text(photo_date))
         except ValueError:
             return {"ok": False, "message": "相片日期格式無效。"}
+    params = []
     for item in files:
-        db.execute(
+        params.append(
+            {
+                "match_video_id": int(match_video_id) if match_video_id not in (None, "") else None,
+                "album_label": clean_text(album_label), "photo_date": parsed_date,
+                "photo_title": clean_text(photo_title)[:300] or None,
+                "caption": clean_text(caption)[:2000] or None,
+                "file_name": clean_text(item["file_name"])[:240],
+                "mime_type": clean_text(item.get("mime_type"))[:80] or "image/webp",
+                "r2_key": item["r2_key"], "thumbnail_r2_key": item["thumbnail_r2_key"],
+                "byte_size": int(item.get("byte_size") or 0),
+                "sha256": clean_text(item.get("sha256"))[:64],
+                "width": int(item.get("width") or 0) or None,
+                "height": int(item.get("height") or 0) or None,
+                "uploaded_by": user_id, "created_at": now_hkt(),
+            }
+        )
+    with db.transaction() as conn:
+        intent_ids = [str(item.get("intent_id") or "") for item in files]
+        claimed = conn.execute(text(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+            SET status='completed',completed_at=:now
+            WHERE intent_id=ANY(:ids) AND status='issued'"""), {
+            "ids": intent_ids, "now": now_hkt(),
+        }).rowcount
+        if claimed != len(intent_ids):
+            raise ValueError("一個或多個R2 upload intents已使用或失效")
+        conn.execute(text(
             f"""INSERT INTO {TABLE_MATCH_PHOTOS}
                 (match_video_id,album_label,photo_date,photo_title,caption,file_name,
                  mime_type,r2_key,thumbnail_r2_key,byte_size,sha256,
                  width,height,uploaded_by,created_at)
                 VALUES(:match_video_id,:album_label,:photo_date,:photo_title,:caption,
                  :file_name,:mime_type,:r2_key,:thumbnail_r2_key,:byte_size,
-                 :sha256,:width,:height,:uploaded_by,:created_at)""",
-            {
-                "match_video_id": int(match_video_id) if match_video_id not in (None, "") else None,
-                "album_label": clean_text(album_label), "photo_date": parsed_date,
-                "photo_title": clean_text(photo_title) or None,
-                "caption": clean_text(caption) or None,
-                "file_name": clean_text(item["file_name"]),
-                "mime_type": clean_text(item.get("mime_type")) or "image/webp",
-                "r2_key": item["r2_key"], "thumbnail_r2_key": item["thumbnail_r2_key"],
-                "byte_size": int(item.get("byte_size") or 0),
-                "sha256": clean_text(item.get("sha256")),
-                "width": int(item.get("width") or 0) or None,
-                "height": int(item.get("height") or 0) or None,
-                "uploaded_by": user_id, "created_at": now_hkt(),
-            },
-        )
+                 :sha256,:width,:height,:uploaded_by,:created_at)"""), params)
     return {"ok": True, "message": "圖片已成功上載。"}
 
 
 def photo_media(photo_id, db=None):
     """Return lightweight R2 metadata without fetching object bytes."""
     db = _resolve_db(db)
-    ensure_match_photos_table(db)
     rows = db.query(
         f"SELECT file_name,mime_type,r2_key,thumbnail_r2_key FROM {TABLE_MATCH_PHOTOS} WHERE id=:id",
         {"id": int(photo_id)},
@@ -561,6 +577,9 @@ def photo_media(photo_id, db=None):
     return {
         "file_name": clean_text(row.get("file_name")) or f"match-photo-{int(photo_id)}.jpg",
         "mime_type": clean_text(row.get("mime_type")) or "image/webp",
+        # Both the browser upload path and the legacy migration tool encode
+        # thumbnails as WebP even when an old original was JPEG or PNG.
+        "thumbnail_mime_type": "image/webp",
         "r2_key": clean_text(row.get("r2_key")),
         "thumbnail_r2_key": clean_text(row.get("thumbnail_r2_key")),
     }

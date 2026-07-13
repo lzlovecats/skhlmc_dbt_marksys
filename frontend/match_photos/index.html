@@ -241,6 +241,19 @@
           </li>
         </ul>
       </details>
+      <details>
+        <summary>📊 相片容量及上載限額</summary>
+        <p id="photoBandwidthUsage" class="caption">登入後顯示本月系統用量。</p>
+        <ul>
+          <li id="photoLimitSummary">登入後按伺服器設定顯示相片上載限額。</li>
+          <li id="photoSizeSummary">
+            圖片會由瀏覽器按伺服器設定壓縮，再直接上載至 Cloudflare R2。
+          </li>
+          <li>
+            上載連結會綁定檔案大小及雜湊值；未完成登記或驗證失敗的檔案會被清理，以免佔用儲存空間。
+          </li>
+        </ul>
+      </details>
       <div id="loading" class="notice">載入中…</div>
       <section id="login" class="card login hidden">
         <h2>內部委員會成員登入</h2>
@@ -277,6 +290,9 @@
               accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
             />
+            <p id="photoUploadCaption" class="caption">
+              登入後顯示實際上載限額。
+            </p>
             <div id="uploadMessage"></div>
             <button class="primary" type="submit">上載圖片</button>
           </form>
@@ -316,9 +332,6 @@
           <label for="search">搜尋</label
           ><input id="search" placeholder="輸入場次、標題、說明或上載者" />
           <div id="count" class="caption"></div>
-          <div id="noResults" class="notice hidden">
-            沒有符合條件的圖片。請調整搜尋關鍵字或篩選條件後再試。
-          </div>
           <div id="gallery"></div>
         </section>
       </section>
@@ -344,50 +357,27 @@
           $("toast").classList.remove("hidden");
           setTimeout(() => $("toast").classList.add("hidden"), 2800);
         }
-        function filtered() {
-          let rows = [...state.photos],
-            filter = $("filter").value,
-            term = $("search").value.trim().toLocaleLowerCase();
-          if (filter !== "全部")
-            rows = rows.filter((p) => p.album_label === filter);
-          if (term)
-            rows = rows.filter((p) =>
-              [
-                p.album_label,
-                p.photo_date,
-                p.photo_title,
-                p.caption,
-                p.uploaded_by,
-                p.file_name,
-              ]
-                .join(" ")
-                .toLocaleLowerCase()
-                .includes(term),
-            );
-          const sort = $("sort").value;
-          rows.sort((a, b) => {
-            const dateA = a.photo_date || "",
-              dateB = b.photo_date || "",
-              createdA = a.created_at || "",
-              createdB = b.created_at || "";
-            if (sort === "相片日期（舊至新）")
-              return (
-                dateA.localeCompare(dateB) || createdB.localeCompare(createdA)
-              );
-            if (sort === "上載時間（新至舊）")
-              return createdB.localeCompare(createdA);
-            if (sort === "上載時間（舊至新）")
-              return createdA.localeCompare(createdB);
-            return (
-              dateB.localeCompare(dateA) || createdB.localeCompare(createdA)
-            );
-          });
-          return rows;
-        }
         function render() {
           $("loading").classList.add("hidden");
           $("login").classList.add("hidden");
           $("app").classList.remove("hidden");
+          const budget = state.bandwidth_budget || {};
+          const storage = state.storage_budget || {};
+          const limits = state.limits || {};
+          const storageStop = Number(storage.stop_bytes || 0) / 1e9;
+          const storageWarn = Number(storage.warn_bytes || 0) / 1e9;
+          const fmtLimit = (value) =>
+            value.toFixed(2).replace(/\.00$/, "").replace(/0$/, "");
+          $("photoBandwidthUsage").textContent =
+            `本月系統已記錄約 ${(Number(budget.total_bytes || 0) / 1e9).toFixed(2)}GB；目前保護階段：${budget.stage || 0}。R2 約 ${(Number(storage.total_bytes || 0) / 1e9).toFixed(2)}GB / ${storageStop ? fmtLimit(storageStop) + "GB" : "未設定"}${storage.warning ? `，已進入${fmtLimit(storageWarn)}GB警告區` : ""}。`;
+          const maxMb = Number(limits.photo_max_bytes || 0) / 1024 / 1024;
+          const thumbKb = Number(limits.thumbnail_max_bytes || 0) / 1024;
+          $("photoLimitSummary").textContent =
+            `每次最多上載 ${limits.batch_max_items} 張；每名委員每日最多 ${limits.daily_user_limit} 張；全系統每月最多 ${limits.monthly_global_limit} 張。`;
+          $("photoSizeSummary").textContent =
+            `每張原圖最多 ${fmtLimit(maxMb)}MB、最長邊 ${limits.photo_max_dimension}px；縮圖最多 ${fmtLimit(thumbKb)}KB、最長邊 ${limits.thumbnail_max_dimension}px。圖片會由瀏覽器直接上載至 Cloudflare R2。`;
+          $("photoUploadCaption").textContent =
+            `每次最多 ${limits.batch_max_items} 張；每張原圖最多 ${fmtLimit(maxMb)}MB，系統會建立不超過 ${fmtLimit(thumbKb)}KB 的縮圖。`;
           $("album").innerHTML = state.albums
             .map(
               (a) =>
@@ -397,8 +387,8 @@
           const filters = [
             "全部",
             ...new Set(
-              state.photos
-                .map((p) => p.album_label)
+              state.albums
+                .map((album) => album.label)
                 .filter(Boolean)
                 .sort(),
             ),
@@ -409,27 +399,6 @@
               (x) =>
                 `<option ${x === prior ? "selected" : ""}>${esc(x)}</option>`,
             )
-            .join("");
-          $("empty").classList.toggle("hidden", state.photos.length > 0);
-          $("galleryApp").classList.toggle("hidden", !state.photos.length);
-          renderGallery();
-        }
-        function renderGallery() {
-          if (!state.photos.length) return;
-          const rows = filtered(),
-            compact = $("view").value === "縮圖牆";
-          $("count").textContent = `共 ${rows.length} 張圖片`;
-          $("noResults").classList.toggle("hidden", rows.length > 0);
-          const gallery = $("gallery");
-          gallery.className = compact ? "thumbs" : "standard";
-          gallery.innerHTML = rows
-            .map((p) => {
-              const title =
-                  p.photo_title || p.file_name || `match-photo-${p.id}.jpg`,
-                date = p.photo_date ? ` ｜ ${p.photo_date}` : "",
-                image = `/api/match-photos/image/${p.id}`;
-              return `<article class="photo"><img src="${image}" alt="${esc(title)}"><div class="photo-title">${esc(compact && title.length > 18 ? title.slice(0, 18) + "..." : title)}</div>${compact && p.photo_date ? `<div class="photo-meta">${esc(p.photo_date)}</div>` : ""}${compact ? `<details><summary>詳情</summary><div>${esc(title)}</div><div class="photo-meta">${esc(p.album_label)}${esc(date)} ｜ ${esc(p.created_at)} ｜ ${esc(p.uploaded_by)}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<a href="${image}?download=1">下載原圖</a></details>` : `<div class="photo-meta">${esc(p.album_label)}${esc(date)} ｜ ${esc(p.created_at)} ｜ ${esc(p.uploaded_by)}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<details><summary>下載</summary><a href="${image}?download=1">下載原圖</a></details>`}</article>`;
-            })
             .join("");
         }
         async function load() {
@@ -506,14 +475,31 @@
               height,
             };
           };
-          let original = await render(2000, 0.8);
-          if (original.blob.size > 2 * 1024 * 1024)
-            original = await render(1600, 0.68);
-          if (original.blob.size > 2 * 1024 * 1024) {
+          const limits = state.limits;
+          let original = await render(limits.photo_max_dimension, 0.8);
+          if (original.blob.size > limits.photo_max_bytes)
+            original = await render(
+              Math.max(1, Math.round(limits.photo_max_dimension * 0.8)),
+              0.68,
+            );
+          if (original.blob.size > limits.photo_max_bytes) {
             bitmap.close?.();
-            throw new Error(`${file.name} 壓縮後仍超過 2MB。`);
+            throw new Error(
+              `${file.name} 壓縮後仍超過 ${(limits.photo_max_bytes / 1024 / 1024).toFixed(2)}MB。`,
+            );
           }
-          const thumbnail = await render(480, 0.72);
+          let thumbnail = await render(limits.thumbnail_max_dimension, 0.72);
+          if (thumbnail.blob.size > limits.thumbnail_max_bytes)
+            thumbnail = await render(
+              Math.max(1, Math.round(limits.thumbnail_max_dimension * 0.8)),
+              0.55,
+            );
+          if (thumbnail.blob.size > limits.thumbnail_max_bytes) {
+            bitmap.close?.();
+            throw new Error(
+              `${file.name} 縮圖壓縮後仍超過 ${(limits.thumbnail_max_bytes / 1024).toFixed(0)}KB。`,
+            );
+          }
           bitmap.close?.();
           return {
             original,
@@ -528,14 +514,12 @@
             method: "PUT",
             headers: {
               "Content-Type": mimeType,
-              "Cache-Control": "private, max-age=86400",
               "x-amz-meta-sha256": sha,
               ...(target.headers || {}),
             },
             body: blob,
           });
-          if (!r.ok)
-            throw new Error(`R2 上載失敗（HTTP ${r.status}）。`);
+          if (!r.ok) throw new Error(`R2 上載失敗（HTTP ${r.status}）。`);
         }
         async function uploadR2Photos(files) {
           const tokens = [];
@@ -610,11 +594,11 @@
             notice("uploadMessage", "warn", "請先選擇圖片。");
             return;
           }
-          if (files.length > 5) {
+          if (files.length > state.limits.batch_max_items) {
             notice(
               "uploadMessage",
               "warn",
-              "每次最多只可上載五張圖片。",
+              `每次最多只可上載 ${state.limits.batch_max_items} 張圖片。`,
             );
             return;
           }
@@ -627,10 +611,6 @@
             notice("uploadMessage", "err", error.message);
           }
         });
-        ["filter", "sort", "view"].forEach((id) =>
-          $(id).addEventListener("change", renderGallery),
-        );
-        $("search").addEventListener("input", renderGallery);
         load();
       })();
     </script>

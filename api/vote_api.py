@@ -1,15 +1,16 @@
-"""JSON endpoints backing the HTML voting page (Phase 2 vertical slice).
+"""JSON endpoints backing topic proposals, ballots and removals.
 
 Mounted by ``deploy/proxy.py`` via ``app.include_router(router)``. Auth and the
 DB executor live in the proxy; they are pulled in lazily inside the handlers so
 this module and the proxy don't form an import cycle at load time.
 
-The read path reuses ``core.vote_logic.fetch_vote_data`` unchanged — the same
-function the Streamlit page uses — so both UIs stay on one source of truth.
+The read path and state transitions reuse ``core.vote_logic`` so HTTP and
+domain code stay on one source of truth.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from system_limits import VOTE_PENDING_MOTION_LIMIT
 
 router = APIRouter(prefix="/api/vote", tags=["vote"])
 
@@ -129,7 +130,7 @@ def vote_data(user_id: str = Depends(_committee_user)):
     for e in expired:
         _fire_push(db, "辯題投票逾期", f"「{e['topic']}」未達入庫標準，已自動否決。",
                    f"topic-vote-expired-{e['topic']}")
-    pending, passed, rejected = fetch_vote_data(db=db)
+    pending, passed, rejected = fetch_vote_data(db=db, resolved_limit=0)
     comment_counts = get_comment_counts("topic_vote", db=db)
     for row in pending:
         row["comment_count"] = comment_counts.get(row.get("topic_text"), 0)
@@ -152,10 +153,10 @@ def vote_data(user_id: str = Depends(_committee_user)):
 
 # ── cast a vote ───────────────────────────────────────────────────────────────
 class CastBody(BaseModel):
-    mode: str                       # "topic" | "depose"
-    topic: str
-    action: str                     # "agree" | "against" | "withdraw"
-    reasons: list[str] | None = None  # required for a topic "against" vote
+    mode: str = Field(max_length=20)                       # "topic" | "depose"
+    topic: str = Field(max_length=500)
+    action: str = Field(max_length=20)                     # "agree" | "against" | "withdraw"
+    reasons: list[str] | None = Field(default=None, max_length=10)  # required for a topic "against" vote
     confirm_category: bool = False    # set true to proceed past the >20% warning
 
 
@@ -211,15 +212,16 @@ def _fire_resolution_push(db, mode, topic, resolved):
     _fire_push(db, title, body_tmpl.format(t=topic), tag_tmpl.format(t=topic))
 
 
-def _auto_resolve(vl, mode, topic, motion, agree_count, against_count, threshold, db):
-    """Apply the same auto-resolution the Streamlit page runs after each vote,
-    then fire the matching committee push. Returns "passed", "rejected" or None."""
+def _apply_auto_resolution(
+    vl, mode, topic, motion, agree_count, against_count, threshold, db
+):
+    """Apply a resolution and return ``(status, changed)`` without network I/O."""
     outcome = vl.resolve_vote(agree_count, against_count, threshold)
     if outcome is None:
-        return None
+        return None, False
     if mode == "topic":
         if outcome == "pass":
-            vl.apply_topic_pass(
+            changed = vl.apply_topic_pass(
                 topic,
                 author=motion.get("proposer_user_id"),
                 category=motion.get("category"),
@@ -228,17 +230,26 @@ def _auto_resolve(vl, mode, topic, motion, agree_count, against_count, threshold
             )
             resolved = "passed"
         else:
-            vl.apply_topic_reject(topic, db=db)
+            changed = vl.apply_topic_reject(topic, db=db)
             resolved = "rejected"
     else:
         # depose: "pass" == the removal motion carries (topic deleted)
         if outcome == "pass":
-            vl.apply_depose_pass(topic, db=db)
+            changed = vl.apply_depose_pass(topic, db=db)
             resolved = "passed"
         else:
-            vl.apply_depose_reject(topic, db=db)
+            changed = vl.apply_depose_reject(topic, db=db)
             resolved = "rejected"
-    _fire_resolution_push(db, mode, topic, resolved)
+    return resolved, bool(changed)
+
+
+def _auto_resolve(vl, mode, topic, motion, agree_count, against_count, threshold, db):
+    """Compatibility helper: resolve and send a best-effort notification."""
+    resolved, changed = _apply_auto_resolution(
+        vl, mode, topic, motion, agree_count, against_count, threshold, db
+    )
+    if changed:
+        _fire_resolution_push(db, mode, topic, resolved)
     return resolved
 
 
@@ -260,48 +271,84 @@ def vote_cast(body: CastBody, user_id: str = Depends(_committee_user)):
     topic = (body.topic or "").strip()
     if not topic:
         raise HTTPException(400, "topic is required")
+    reasons = None
+    if body.action == "against" and body.mode == "topic":
+        reasons = [
+            str(reason).strip()
+            for reason in (body.reasons or [])
+            if str(reason).strip()
+        ]
+        if not reasons:
+            raise HTTPException(
+                400, "a topic against-vote requires at least one reason"
+            )
+        if any(len(reason) > 500 for reason in reasons):
+            raise HTTPException(400, "每個反對原因最多 500 個字")
 
     table = TABLE_TOPIC_VOTES if body.mode == "topic" else TABLE_TOPIC_REMOVAL_VOTES
     db = _vote_db()
+    resolution_changed = False
+    with vl.motion_transaction(db, table, topic) as transaction_db:
+        motion = vl.get_motion(table, topic, db=transaction_db)
+        if motion is None:
+            raise HTTPException(404, "motion not found")
+        if motion.get("status") != "pending":
+            raise HTTPException(409, "motion already resolved")
 
-    motion = vl.get_motion(table, topic, db=db)
-    if motion is None:
-        raise HTTPException(404, "motion not found")
-    if motion.get("status") != "pending":
-        raise HTTPException(409, "motion already resolved")
+        current = vl.get_user_ballot(table, topic, user_id, db=transaction_db)
 
-    current = vl.get_user_ballot(table, topic, user_id, db=db)
-
-    if body.action == "withdraw":
-        vl.ballot_delete(table, topic, user_id, db=db)
-    elif body.action == "agree":
-        # Category-balance guard only applies to topic votes transitioning to agree.
-        if body.mode == "topic" and current != "agree":
-            exceeds, ratio, cat_count, total = vl.check_category_would_exceed(motion.get("category"), db=db)
-            if exceeds and not body.confirm_category:
-                return {
-                    "status": "confirm_category",
-                    "category": motion.get("category"),
-                    "ratio": ratio,
-                    "cat_count": cat_count,
-                    "total": total,
-                }
-        if current == "against":
-            vl.ballot_switch_agree(table, topic, user_id, db=db)
+        if body.action == "withdraw":
+            vl.ballot_delete(table, topic, user_id, db=transaction_db)
+        elif body.action == "agree":
+            # The category guard and ballot transition are protected by the same
+            # motion lock, so two voters cannot resolve from stale tallies.
+            if body.mode == "topic" and current != "agree":
+                exceeds, ratio, cat_count, total = vl.check_category_would_exceed(
+                    motion.get("category"), db=transaction_db
+                )
+                if exceeds and not body.confirm_category:
+                    return {
+                        "status": "confirm_category",
+                        "category": motion.get("category"),
+                        "ratio": ratio,
+                        "cat_count": cat_count,
+                        "total": total,
+                    }
+            if current == "against":
+                vl.ballot_switch_agree(table, topic, user_id, db=transaction_db)
+            else:
+                vl.ballot_upsert(
+                    table, topic, user_id, "agree", db=transaction_db
+                )
         else:
-            vl.ballot_upsert(table, topic, user_id, "agree", db=db)
-    else:  # against
-        if body.mode == "topic":
-            reasons = [str(r).strip() for r in (body.reasons or []) if str(r).strip()]
-            if not reasons:
-                raise HTTPException(400, "a topic against-vote requires at least one reason")
-            vl.ballot_upsert(table, topic, user_id, "against", reasons=vl.dump_json(reasons), db=db)
-        else:
-            vl.ballot_upsert(table, topic, user_id, "against", db=db)
+            vl.ballot_upsert(
+                table,
+                topic,
+                user_id,
+                "against",
+                reasons=vl.dump_json(reasons) if reasons is not None else None,
+                db=transaction_db,
+            )
 
-    agree_count, against_count = vl.count_ballots(table, topic, db=db)
-    threshold = _motion_threshold(motion, body.mode, db)
-    resolved = _auto_resolve(vl, body.mode, topic, motion, agree_count, against_count, threshold, db)
+        agree_count, against_count = vl.count_ballots(
+            table, topic, db=transaction_db
+        )
+        threshold = _motion_threshold(motion, body.mode, transaction_db)
+        resolved, resolution_changed = _apply_auto_resolution(
+            vl,
+            body.mode,
+            topic,
+            motion,
+            agree_count,
+            against_count,
+            threshold,
+            transaction_db,
+        )
+
+    # Do external notification work after commit. A push failure must not roll
+    # back a valid ballot or hold the per-motion database lock open.
+    if resolution_changed:
+        _fire_resolution_push(db, body.mode, topic, resolved)
 
     return {
         "status": "ok",
@@ -393,9 +440,9 @@ def member_stats(user_id: str = Depends(_committee_user)):
 
 
 class CommentBody(BaseModel):
-    motion_type: str
-    motion_key: str
-    text: str | None = None
+    motion_type: str = Field(max_length=30)
+    motion_key: str = Field(max_length=500)
+    text: str | None = Field(default=None, max_length=2000)
     tag_ai: bool = False
 
 
@@ -435,7 +482,10 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
     _require_pending_motion(motion_type, motion_key, db)
     text = (body.text or "").strip()
     if text:
-        vl.insert_comment(motion_type, motion_key, user_id, text, db=db)
+        try:
+            vl.insert_comment(motion_type, motion_key, user_id, text, db=db)
+        except ValueError as exc:
+            raise HTTPException(429, str(exc)) from exc
         snippet = text if len(text) <= 40 else text[:40] + "⋯"
         topic_label = motion_key if len(motion_key) <= 20 else motion_key[:20] + "⋯"
         _fire_push(db, "💬 新留言", f"{user_id} 在「{topic_label}」發表意見：{snippet}",
@@ -473,8 +523,8 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
 
 
 class AiReviewBody(BaseModel):
-    topic: str
-    category: str
+    topic: str = Field(max_length=500)
+    category: str = Field(max_length=80)
     difficulty: int
 
 
@@ -520,7 +570,7 @@ def analysis(user_id: str = Depends(_committee_user)):
 
 
 class AiAnalysisBody(BaseModel):
-    kind: str
+    kind: str = Field(max_length=20)
 
 
 @router.post("/analysis/ai")
@@ -549,8 +599,8 @@ def run_analysis(body: AiAnalysisBody, user_id: str = Depends(_committee_user)):
 
 
 class ProposeBody(BaseModel):
-    topic: str
-    category: str
+    topic: str = Field(max_length=500)
+    category: str = Field(max_length=80)
     difficulty: int   # 1 / 2 / 3, matching vote.py's difficulty selectbox
     confirm_imbalance: bool = False
 
@@ -573,12 +623,14 @@ def propose(body: ProposeBody, user_id: str = Depends(_committee_user)):
     db = _vote_db()
     if not is_active_member(user_id, db=db):
         raise HTTPException(403, "非活躍成員不能提出新辯題")
-    if vl.count_pending_votes(db=db) >= 10:
-        raise HTTPException(409, "目前已有 10 個待表決辯題，請先完成投票再提交")
+    if vl.count_pending_votes(db=db) >= VOTE_PENDING_MOTION_LIMIT:
+        raise HTTPException(409, f"目前已有 {VOTE_PENDING_MOTION_LIMIT} 個待表決辯題，請先完成投票再提交")
     if vl.topic_vote_or_bank_exists(topic, db=db):
         raise HTTPException(409, "此辯題已存在")
 
     ratio, cat_count, total = vl.category_current_ratio(body.category, db=db)
+    if total >= vl.TOPIC_BANK_MAX:
+        raise HTTPException(409, "辯題庫已達保護上限，請先整理或罷免舊辯題")
     if ratio > 0.2 and not body.confirm_imbalance:
         return {
             "status": "confirm_imbalance",
@@ -597,9 +649,9 @@ def propose(body: ProposeBody, user_id: str = Depends(_committee_user)):
 
 
 class DeposeBody(BaseModel):
-    topic: str | None = None
-    topics: list[str] | None = None
-    reasons: list[str]
+    topic: str | None = Field(default=None, max_length=500)
+    topics: list[str] | None = Field(default=None, max_length=10)
+    reasons: list[str] = Field(max_length=10)
 
 
 @router.post("/depose")
@@ -608,7 +660,10 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     from core import vote_logic as vl
     from core.members import is_active_member, count_active_members
 
-    topics = list(dict.fromkeys(str(t).strip() for t in (body.topics or []) if str(t).strip()))
+    raw_topics = [str(t).strip() for t in (body.topics or []) if str(t).strip()]
+    if any(len(topic) > 500 for topic in raw_topics):
+        raise HTTPException(400, "每個辯題最多 500 個字")
+    topics = list(dict.fromkeys(raw_topics))
     if body.topic:
         single = str(body.topic).strip()
         if single and single not in topics:
@@ -618,12 +673,14 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     reasons = [str(r).strip() for r in (body.reasons or []) if str(r).strip()]
     if not reasons:
         raise HTTPException(400, "請至少交代一個罷免原因")
+    if any(len(reason) > 500 for reason in reasons):
+        raise HTTPException(400, "每個罷免原因最多 500 個字")
 
     db = _vote_db()
     if not is_active_member(user_id, db=db):
         raise HTTPException(403, "非活躍成員不能提出罷免動議")
-    if vl.count_pending_deposes(db=db) >= 10:
-        raise HTTPException(409, "目前已有 10 個罷免動議，請先完成投票再提交")
+    if vl.count_pending_deposes(db=db) >= VOTE_PENDING_MOTION_LIMIT:
+        raise HTTPException(409, f"目前已有 {VOTE_PENDING_MOTION_LIMIT} 個罷免動議，請先完成投票再提交")
 
     missing = [topic for topic in topics if not vl.topic_in_bank(topic, db=db)]
     if missing:
@@ -635,7 +692,7 @@ def depose(body: DeposeBody, user_id: str = Depends(_committee_user)):
     deadline = None
     pending_now = vl.count_pending_deposes(db=db)
     for topic in topics:
-        if pending_now >= 10:
+        if pending_now >= VOTE_PENDING_MOTION_LIMIT:
             skipped.append(topic)
             continue
         if vl.depose_pending_exists(topic, db=db):

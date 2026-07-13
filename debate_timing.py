@@ -280,13 +280,15 @@ def get_full_mock_sequence(debate_format, free_debate_minutes=None):
     return segments
 
 
+def _mock_segment_duration(segment):
+    """Provider/session time for a segment; 雙方 uses one time bank per side."""
+    seconds = max(0, int(segment.get("seconds", 0) or 0))
+    return seconds * 2 if segment.get("side") == "雙方" else seconds
+
+
 def full_mock_total_seconds(segments):
     """估算 Mock 全長（秒）。雙方段落（自由辯論）兩邊都計。"""
-    total = 0
-    for seg in segments:
-        secs = seg.get("seconds", 0)
-        total += secs * 2 if seg.get("side") == "雙方" else secs
-    return total
+    return sum(_mock_segment_duration(seg) for seg in segments)
 
 
 # 對應 Gemini Live 純語音單次連線 15 分鐘上限，留安全邊際。
@@ -315,12 +317,13 @@ def split_mock_into_sessions(segments, budget_seconds=MOCK_SESSION_BUDGET_SECOND
     cur_ch = None
     for seg in segments:
         ch = _mock_chapter(seg["id"])
-        if cur and (ch != cur_ch or cur_sec + seg["seconds"] > budget_seconds):
+        segment_seconds = _mock_segment_duration(seg)
+        if cur and (ch != cur_ch or cur_sec + segment_seconds > budget_seconds):
             raw.append((cur_ch, cur, cur_sec))
             cur = []
             cur_sec = 0
         cur.append(seg)
-        cur_sec += seg["seconds"]
+        cur_sec += segment_seconds
         cur_ch = ch
     if cur:
         raw.append((cur_ch, cur, cur_sec))

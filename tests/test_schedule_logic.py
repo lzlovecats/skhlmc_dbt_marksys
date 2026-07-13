@@ -5,7 +5,7 @@ from core.schedule_logic import draw_schedule
 
 
 class ScheduleLogicTests(unittest.TestCase):
-    def test_validation_matches_streamlit(self):
+    def test_validation_matches_schedule_contract(self):
         self.assertEqual(draw_schedule("甲")["message"], "至少需要 2 隊隊伍。")
         self.assertEqual(draw_schedule("甲\n甲")["message"], "隊伍名稱有重複，請檢查輸入。")
 

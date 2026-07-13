@@ -560,21 +560,6 @@
         renderTranscriptBySide();
       }
 
-      // ── committee token from parent app (same as live_debate authToken) ──
-      function authToken() {
-        try {
-          const t =
-            window.parent && window.parent.localStorage
-              ? window.parent.localStorage.getItem("committee_user")
-              : "";
-          if (t) return t;
-        } catch (e) {}
-        try {
-          return window.localStorage.getItem("committee_user") || "";
-        } catch (e) {
-          return "";
-        }
-      }
       function wsBase() {
         if (ROOM_WS_BASE) return ROOM_WS_BASE;
         try {
@@ -1302,18 +1287,11 @@
             ws.readyState === WebSocket.CONNECTING)
         )
           return;
-        const token = authToken();
         if (!ROOM_CODE) {
           setConn("未有房間代碼。");
           return;
         }
-        // New HTML pages authenticate with an HttpOnly same-origin cookie.  The
-        // server also accepts the legacy localStorage token when one exists.
-        const url =
-          wsBase() +
-          "/" +
-          ROOM_CODE +
-          (token ? "?u=" + encodeURIComponent(token) : "");
+        const url = wsBase() + "/" + ROOM_CODE;
         ws = new WebSocket(url);
         ws.onopen = () => {
           reconnectAttempt = 0;

@@ -1,37 +1,37 @@
 """Organiser-authenticated JSON endpoints for HTML video management."""
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/video-admin", tags=["video-admin"])
 
 
 class VideoBody(BaseModel):
-    video_source: str
-    match_id: str | None = None
-    match_label: str = ""
-    standalone_topic_text: str = ""
-    standalone_pro_team: str = ""
-    standalone_con_team: str = ""
-    video_title: str = ""
-    youtube_url: str = ""
+    video_source: str = Field(max_length=40)
+    match_id: str | None = Field(default=None, max_length=200)
+    match_label: str = Field(default="", max_length=200)
+    standalone_topic_text: str = Field(default="", max_length=500)
+    standalone_pro_team: str = Field(default="", max_length=100)
+    standalone_con_team: str = Field(default="", max_length=100)
+    video_title: str = Field(default="", max_length=300)
+    youtube_url: str = Field(default="", max_length=1000)
     display_order: int = 0
     is_visible: bool = True
 
 
 class ImportBody(BaseModel):
-    csv_text: str = ""
+    csv_text: str = Field(default="", max_length=500_000)
     parse_from_title: bool = True
 
 
 class ChapterItem(BaseModel):
-    chapter_label: str
+    chapter_label: str = Field(max_length=40)
     enabled: bool
-    time_text: str = ""
+    time_text: str = Field(default="", max_length=20)
 
 
 class ChaptersBody(BaseModel):
-    chapters: list[ChapterItem]
+    chapters: list[ChapterItem] = Field(max_length=30)
 
 
 def _db():

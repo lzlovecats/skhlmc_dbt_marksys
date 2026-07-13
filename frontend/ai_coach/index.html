@@ -233,6 +233,31 @@
             使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。
           </div>
         </details>
+        <details class="guide" open>
+          <summary>📊 練習限額及網絡傳輸量保護</summary>
+          <div class="sub">
+            <p id="bandwidthUsage">正在讀取本月系統用量…</p>
+            <ul>
+              <li>
+                單人及聯機 Free De／完整 Mock
+                都有每人時段quota、全系統每月quota及server時間上限。
+              </li>
+              <li>
+                同時房間數、房間人數及每條 Gemini Live
+                連線傳輸量均由伺服器集中限制。
+              </li>
+              <li>
+                實際用量及現時生效門檻會由伺服器讀取後顯示，不會依賴頁面寫死數值。
+              </li>
+            </ul>
+            <p>
+              實際 bandwidth
+              門檻會由伺服器集中設定並顯示於上方；達停止門檻後不再建立 Gemini
+              Live／聯機房間，達必要功能門檻後只保留一般頁面、JSON、R2
+              媒體及管理功能。
+            </p>
+          </div>
+        </details>
         <section class="card">
           <h2>🤖 AI 模型</h2>
           <label>AI 模型<select id="globalModel"></select></label>
@@ -597,7 +622,7 @@
       <div class="busy-pill"><i class="spinner"></i>處理中…</div>
     </div>
     <script src="/shared/vote-ui.js"></script>
-    <script src="/shared/markdown.js?v=4.0.0"></script>
-    <script src="/shared/ai-parity.js?v=4.0.0"></script>
+    <script src="/shared/markdown.js"></script>
+    <script src="/shared/ai-parity.js"></script>
   </body>
 </html>

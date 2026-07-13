@@ -52,13 +52,19 @@ TABLE_LATENESS_FUND_EXPENSES = "lateness_fund_expenses"
 TABLE_LATENESS_FUND_PERIODS = "lateness_fund_periods"
 TABLE_BUG_REPORTS = "bug_reports"
 TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
+TABLE_BANDWIDTH_USAGE_LOGS = "bandwidth_usage_logs"
+TABLE_R2_UPLOAD_INTENTS = "r2_upload_intents"
+TABLE_PROJECTOR_STATE = "projector_state"
+TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
+TABLE_AI_COACH_PREPARE_USAGE = "ai_coach_prepare_usage"
+TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
 
 # Table: ACCOUNTS
 # Committee member accounts.
 # account_status: 'admin' | 'active' | 'inactive'
-# password_hash stores bcrypt hashes. Use hash_password() from functions.py when creating/updating accounts.
+# password_hash stores bcrypt hashes. Use core.auth_logic.hash_password when creating/updating accounts.
 # Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
 CREATE_ACCOUNTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
@@ -124,7 +130,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_SCORES} (
     judge_name               TEXT,
     pro_total_score          INTEGER,
     con_total_score          INTEGER,
-    submitted_time           TEXT,
+    submitted_time           TIME,
     pro_free_debate_score    INTEGER,
     con_free_debate_score    INTEGER,
     pro_deduction_points     INTEGER,
@@ -176,14 +182,13 @@ CREATE TABLE IF NOT EXISTS {TABLE_BEST_DEBATER_RANKINGS} (
 
 # Table: SCORE_DRAFTS
 # Cloud auto-save drafts for judges (overwritten on each save).
-# `score_payload` is a JSON blob containing the full scoring state including
-# raw DataFrames serialised to JSON strings.
+# `score_payload` stores the validated scoring state as structured JSON.
 CREATE_SCORE_DRAFTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_SCORE_DRAFTS} (
     match_id        TEXT,
     judge_name      TEXT,
     side            TEXT,
-    score_payload   TEXT,
+    score_payload   JSONB,
     is_final        BOOLEAN DEFAULT FALSE,
     updated_at      TIMESTAMP,
     CONSTRAINT score_drafts_match_judge_side_key
@@ -246,9 +251,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTES} (
     created_at          TIMESTAMP,
     deadline_date       DATE,
     approval_threshold  INTEGER,
-    CONSTRAINT fk_topic_removal_votes_topic
-        FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPICS}(topic_text)
-        ON DELETE CASCADE,
+    -- Deliberately no FK to topics: a passed removal deletes the bank row but
+    -- the resolved motion and its ballots remain as governance history.
     CONSTRAINT fk_topic_removal_votes_proposer_user
         FOREIGN KEY (proposer_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
@@ -507,10 +511,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_CONSENTS} (
     consent_text     TEXT        NOT NULL,
     consented_at     TIMESTAMP   DEFAULT NOW(),
     withdrawn_at     TIMESTAMP,
-    voice_cloning_confirmed BOOLEAN DEFAULT FALSE,
-    cloud_processing_confirmed BOOLEAN DEFAULT FALSE,
-    is_minor         BOOLEAN DEFAULT FALSE,
-    guardian_confirmed BOOLEAN DEFAULT FALSE,
+    voice_cloning_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    cloud_processing_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    is_minor         BOOLEAN NOT NULL DEFAULT FALSE,
+    guardian_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (user_id, consent_version),
     CONSTRAINT fk_tts_voice_consents_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
@@ -567,6 +571,76 @@ CREATE TABLE IF NOT EXISTS {TABLE_PRACTICE_DAILY_USAGE} (
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
 );
+"""
+
+CREATE_BANDWIDTH_USAGE_LOGS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_BANDWIDTH_USAGE_LOGS} (
+    id          BIGSERIAL PRIMARY KEY,
+    source      TEXT NOT NULL,
+    user_id     TEXT,
+    bytes_out   BIGINT NOT NULL CHECK (bytes_out >= 0),
+    details     TEXT,
+    created_at  TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT fk_bandwidth_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+CREATE_R2_UPLOAD_INTENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
+    intent_id       TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    media_kind      TEXT NOT NULL,
+    object_keys     TEXT NOT NULL,
+    declared_bytes  BIGINT NOT NULL CHECK (declared_bytes > 0),
+    status          TEXT NOT NULL DEFAULT 'issued',
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMP,
+    CONSTRAINT fk_r2_upload_intent_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Short-lived runtime state. These definitions intentionally match the
+# production-compatible tables that used to be created inside request paths.
+# Type/FK changes wait for the versioned P1 baseline instead of being guessed.
+CREATE_PROJECTOR_STATE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_STATE} (
+    display_key   TEXT PRIMARY KEY,
+    match_id      TEXT,
+    debate_format TEXT,
+    seg_index     INTEGER DEFAULT 0,
+    visible       BOOLEAN DEFAULT TRUE,
+    updated_at    TIMESTAMP
+);
+"""
+
+CREATE_AI_COACH_LIVE_BRIEFS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_LIVE_BRIEFS} (
+    brief_id   TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    brief      TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+CREATE_AI_COACH_PREPARE_USAGE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_PREPARE_USAGE} (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    CONSTRAINT fk_ai_coach_prepare_usage_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+CREATE_AI_COACH_PREPARE_USAGE_INDEX = f"""
+CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
+    ON {TABLE_AI_COACH_PREPARE_USAGE}(user_id, created_at DESC);
 """
 
 # Table: TTS_SCRIPTS
@@ -639,116 +713,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_LLM_TRAINING_SUBMISSIONS} (
 );
 """
 
-# Reproducible AI datasets, model releases, evaluation and RAG governance.
-# The pgvector column is added by an isolated migration below so a database
-# without permission to enable extensions can still run the rest of the app.
-CREATE_AI_DATASET_SNAPSHOTS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_DATASET_SNAPSHOTS} (
-    snapshot_id       TEXT PRIMARY KEY,
-    dataset_kind      TEXT NOT NULL CHECK (dataset_kind IN ('tts', 'llm')),
-    speaker_user_id   TEXT,
-    consent_version   TEXT,
-    item_count        INTEGER NOT NULL DEFAULT 0,
-    total_seconds     NUMERIC NOT NULL DEFAULT 0,
-    manifest_sha256   TEXT NOT NULL,
-    manifest_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    status            TEXT NOT NULL DEFAULT 'ready'
-        CHECK (status IN ('draft', 'ready', 'withdrawn', 'archived')),
-    created_by        TEXT,
-    created_at        TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_AI_DATASET_SNAPSHOT_ITEMS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_DATASET_SNAPSHOT_ITEMS} (
-    snapshot_id       TEXT NOT NULL REFERENCES {TABLE_AI_DATASET_SNAPSHOTS}(snapshot_id) ON DELETE CASCADE,
-    source_table      TEXT NOT NULL,
-    source_id         TEXT NOT NULL,
-    source_sha256     TEXT,
-    consent_version   TEXT,
-    split_name        TEXT CHECK (split_name IN ('train', 'validation', 'test')),
-    metadata_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    PRIMARY KEY (snapshot_id, source_table, source_id)
-);
-"""
-
-CREATE_AI_MODEL_VERSIONS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_MODEL_VERSIONS} (
-    model_id           TEXT PRIMARY KEY,
-    model_type         TEXT NOT NULL CHECK (model_type IN ('tts', 'llm', 'embedding')),
-    base_model         TEXT NOT NULL,
-    dataset_snapshot_id TEXT REFERENCES {TABLE_AI_DATASET_SNAPSHOTS}(snapshot_id),
-    artifact_uri       TEXT,
-    status             TEXT NOT NULL DEFAULT 'research'
-        CHECK (status IN ('research', 'candidate', 'deployable', 'retired', 'blocked')),
-    config_json        JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    metrics_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_by         TEXT,
-    created_at         TIMESTAMP DEFAULT NOW(),
-    updated_at         TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_AI_EVAL_CASES = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CASES} (
-    case_id          TEXT PRIMARY KEY,
-    task_type        TEXT NOT NULL,
-    title            TEXT NOT NULL,
-    input_json       JSONB NOT NULL,
-    rubric_json      JSONB NOT NULL,
-    reference_text   TEXT,
-    is_active        BOOLEAN DEFAULT TRUE,
-    created_at       TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_AI_EVAL_RUNS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_RUNS} (
-    id               BIGSERIAL PRIMARY KEY,
-    case_id          TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CASES}(case_id),
-    model_label      TEXT NOT NULL,
-    pipeline_version TEXT NOT NULL,
-    output_text      TEXT NOT NULL,
-    score_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    usage_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_by       TEXT,
-    created_at       TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_RAG_DOCUMENTS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_RAG_DOCUMENTS} (
-    document_id       TEXT PRIMARY KEY,
-    submission_id     INTEGER REFERENCES {TABLE_LLM_TRAINING_SUBMISSIONS}(id) ON DELETE CASCADE,
-    title             TEXT,
-    data_type         TEXT,
-    topic_text        TEXT,
-    side              TEXT,
-    source_note       TEXT,
-    content_sha256    TEXT NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'withdrawn', 'archived')),
-    embedding_model   TEXT NOT NULL,
-    embedding_version TEXT NOT NULL,
-    indexed_at        TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_RAG_CHUNKS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_RAG_CHUNKS} (
-    chunk_id          TEXT PRIMARY KEY,
-    document_id       TEXT NOT NULL REFERENCES {TABLE_RAG_DOCUMENTS}(document_id) ON DELETE CASCADE,
-    chunk_index       INTEGER NOT NULL,
-    content_text      TEXT NOT NULL,
-    token_estimate    INTEGER NOT NULL DEFAULT 0,
-    embedding_model   TEXT NOT NULL,
-    embedding_version TEXT NOT NULL,
-    embedding_json    JSONB,
-    metadata_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_at        TIMESTAMP DEFAULT NOW(),
-    UNIQUE (document_id, chunk_index)
-);
-"""
-
+# Dataset/model, eval and RAG schemas are intentionally absent from the
+# bootstrap until their roadmap gates and versioned migrations are complete.
 CREATE_AI_TRAINING_AUDIT = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_TRAINING_AUDIT} (
     id             BIGSERIAL PRIMARY KEY,
@@ -757,8 +723,43 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_TRAINING_AUDIT} (
     target_type    TEXT NOT NULL,
     target_id      TEXT,
     details_json   JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_at     TIMESTAMP DEFAULT NOW()
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_ai_training_audit_actor_length
+        CHECK (actor_user_id IS NULL OR char_length(actor_user_id) <= 200),
+    CONSTRAINT chk_ai_training_audit_action_length
+        CHECK (char_length(action) BETWEEN 1 AND 100),
+    CONSTRAINT chk_ai_training_audit_target_type_length
+        CHECK (char_length(target_type) BETWEEN 1 AND 100),
+    CONSTRAINT chk_ai_training_audit_target_id_length
+        CHECK (target_id IS NULL OR char_length(target_id) <= 300),
+    CONSTRAINT chk_ai_training_audit_details_object
+        CHECK (jsonb_typeof(details_json) = 'object')
 );
+"""
+
+# ``init_db`` remains available for isolated/bootstrap databases. Mirror the
+# migration's privacy boundary so Supabase default grants cannot expose audit
+# rows when this path creates the table before the migration runner records it.
+LOCK_AI_TRAINING_AUDIT_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_AI_TRAINING_AUDIT} FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_AI_TRAINING_AUDIT}_id_seq FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_AI_TRAINING_AUDIT} FROM %I',
+            role_name
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_AI_TRAINING_AUDIT}_id_seq FROM %I',
+            role_name
+        );
+    END LOOP;
+END $$;
 """
 
 # Table: MATCH_ROSTER_LINKS
@@ -933,7 +934,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_BUG_REPORTS} (
 """
 
 # View: COMMITTEE_VOTE_ACTIVITY
-# Canonical source for committee participation metrics used by Streamlit.
+# Canonical source for committee participation metrics used by the API.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
 DROP VIEW IF EXISTS {VIEW_COMMITTEE_VOTE_ACTIVITY};
 CREATE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
@@ -1066,9 +1067,7 @@ FROM base_stats;
 CREATE_INDICES = f"""
 CREATE INDEX IF NOT EXISTS idx_tv_status ON {TABLE_TOPIC_VOTES}(status);
 CREATE INDEX IF NOT EXISTS idx_tvb_user_id ON {TABLE_TOPIC_VOTE_BALLOTS}(user_id);
-CREATE INDEX IF NOT EXISTS idx_tvb_topic_text ON {TABLE_TOPIC_VOTE_BALLOTS}(topic_text);
 CREATE INDEX IF NOT EXISTS idx_trvb_user_id ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(user_id);
-CREATE INDEX IF NOT EXISTS idx_trvb_topic_text ON {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}(topic_text);
 CREATE INDEX IF NOT EXISTS idx_competition_registrations_edition_status
     ON {TABLE_COMPETITION_REGISTRATIONS}(competition_edition, status);
 CREATE INDEX IF NOT EXISTS idx_match_videos_match_id
@@ -1081,6 +1080,8 @@ CREATE INDEX IF NOT EXISTS idx_video_views_user_updated
     ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_video_comments_video_created
     ON {TABLE_VIDEO_COMMENTS}(video_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_comments_user_created
+    ON {TABLE_VIDEO_COMMENTS}(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice
     ON {TABLE_VIDEO_VOTES}(video_id, vote_choice);
 CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
@@ -1097,16 +1098,29 @@ CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(speaker_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bandwidth_usage_created
+    ON {TABLE_BANDWIDTH_USAGE_LOGS}(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_r2_upload_intents_quota
+    ON {TABLE_R2_UPLOAD_INTENTS}(media_kind, user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
     ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active
     ON {TABLE_TTS_LEXICON}(is_active, category);
-CREATE INDEX IF NOT EXISTS idx_match_roster_links_token
-    ON {TABLE_MATCH_ROSTER_LINKS}(roster_token);
 CREATE INDEX IF NOT EXISTS idx_motion_comments_motion
     ON {TABLE_MOTION_COMMENTS}(motion_type, motion_key);
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active
     ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_inactive_updated
+    ON {TABLE_PUSH_SUBSCRIPTIONS}(updated_at) WHERE is_active=FALSE;
+CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at
+    ON {TABLE_LOGIN_RECORDS}(logged_in_at);
+CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at
+    ON {TABLE_NOTIFICATION_READS}(read_at);
+CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
+    ON {TABLE_AI_TRAINING_AUDIT}(created_at)
+    WHERE action NOT IN (
+        'consent_granted', 'consent_withdrawn', 'submission_withdrawn'
+    );
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
     ON {TABLE_AI_FUND_TRANSACTIONS}(status);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_created_at
@@ -1125,7 +1139,27 @@ CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created
     ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC);
 """
 
-# System-wide configuration (e.g. hashed passwords managed via the 開發者設定 page)
+# Typed, namespaced application configuration.  ``value`` retains its native
+# JSON type and ``is_secret`` lets future RLS/column policies distinguish
+# credentials from ordinary settings.  The old system_config table remains for
+# one rollback window only; active code writes app_config.
+CREATE_APP_CONFIG = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_APP_CONFIG} (
+    key         TEXT        PRIMARY KEY,
+    namespace   TEXT        NOT NULL
+        CHECK (namespace IN ('auth', 'runtime', 'access', 'ai', 'finance',
+                             'analysis', 'resource', 'migration', 'legacy')),
+    value       JSONB       NOT NULL,
+    value_type  TEXT        NOT NULL
+        CHECK (value_type IN ('string', 'boolean', 'number', 'array', 'object')),
+    is_secret   BOOLEAN     NOT NULL DEFAULT FALSE,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT app_config_json_type_matches
+        CHECK (jsonb_typeof(value) = value_type)
+);
+"""
+
+# Legacy rollback bridge.  New code must not write this table.
 CREATE_SYSTEM_CONFIG = """
 CREATE TABLE IF NOT EXISTS system_config (
     key        TEXT PRIMARY KEY,
@@ -1166,14 +1200,8 @@ ALL_SCHEMAS = [
     CREATE_TTS_SCRIPTS,               # → (standalone)
     CREATE_TTS_LEXICON,               # → (standalone)
     CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
-    CREATE_AI_DATASET_SNAPSHOTS,
-    CREATE_AI_DATASET_SNAPSHOT_ITEMS,
-    CREATE_AI_MODEL_VERSIONS,
-    CREATE_AI_EVAL_CASES,
-    CREATE_AI_EVAL_RUNS,
-    CREATE_RAG_DOCUMENTS,
-    CREATE_RAG_CHUNKS,
     CREATE_AI_TRAINING_AUDIT,
+    LOCK_AI_TRAINING_AUDIT_PRIVILEGES,
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
@@ -1183,153 +1211,63 @@ ALL_SCHEMAS = [
     CREATE_LATENESS_FUND_PERIODS,     # no deps
     CREATE_BUG_REPORTS,               # → accounts
     CREATE_PRACTICE_DAILY_USAGE,       # → accounts
+    CREATE_BANDWIDTH_USAGE_LOGS,        # → accounts
+    CREATE_R2_UPLOAD_INTENTS,           # → accounts
+    CREATE_PROJECTOR_STATE,             # short-lived projector state
+    CREATE_AI_COACH_LIVE_BRIEFS,        # short-lived AI coach state
+    CREATE_AI_COACH_PREPARE_USAGE,      # AI coach quota ledger
+    CREATE_AI_COACH_PREPARE_USAGE_INDEX,
+    CREATE_APP_CONFIG,                  # typed runtime configuration
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
 ]
 
 
-# ─────────────────────────────────────────────────────────────
-# Idempotent migrations
-# ─────────────────────────────────────────────────────────────
-# `CREATE TABLE IF NOT EXISTS` cannot retrofit constraint changes onto tables
-# that already exist, so older databases keep whatever constraints they were
-# first created with. These migrations bring existing databases up to date.
-# Each statement must be safe to run repeatedly.
-#
-# The FK-upgrade blocks look up the *actual* constraint by the columns it links
-# (regardless of its name — old DBs use the auto-generated `*_fkey` name, newer
-# ones use the explicit `fk_*` name) and rebuild it with ON DELETE CASCADE, so
-# that deleting/removing a topic also clears its removal-vote row and ballots.
-MIGRATIONS = [
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS thumbnail_r2_key TEXT",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS byte_size INTEGER",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS sha256 TEXT",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS width INTEGER",
-    f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS height INTEGER",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS r2_key TEXT",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS voice_cloning_confirmed BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS cloud_processing_confirmed BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS guardian_confirmed BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_CONSENTS} ADD COLUMN IF NOT EXISTS is_minor BOOLEAN DEFAULT FALSE",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS audio_sha256 TEXT",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS measured_duration_seconds NUMERIC",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS channel_count INTEGER",
-    f"ALTER TABLE {TABLE_TTS_VOICE_RECORDINGS} ADD COLUMN IF NOT EXISTS detected_format TEXT",
-    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS script_type TEXT DEFAULT 'short'",
-    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_id TEXT",
-    f"ALTER TABLE {TABLE_TTS_SCRIPTS} ADD COLUMN IF NOT EXISTS manuscript_title TEXT",
-    f"""
-    CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
-        ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order)
-    """,
-    f"CREATE INDEX IF NOT EXISTS idx_snapshot_items_source ON {TABLE_AI_DATASET_SNAPSHOT_ITEMS}(source_table, source_id)",
-    f"CREATE INDEX IF NOT EXISTS idx_models_type_status ON {TABLE_AI_MODEL_VERSIONS}(model_type, status)",
-    f"CREATE INDEX IF NOT EXISTS idx_rag_documents_status ON {TABLE_RAG_DOCUMENTS}(status, data_type)",
-    f"CREATE INDEX IF NOT EXISTS idx_rag_chunks_document ON {TABLE_RAG_CHUNKS}(document_id, chunk_index)",
-    "CREATE EXTENSION IF NOT EXISTS vector",
-    f"ALTER TABLE {TABLE_RAG_CHUNKS} ADD COLUMN IF NOT EXISTS embedding vector(768)",
-    f"""
-    DO $$
-    DECLARE cname text;
-    BEGIN
-        SELECT conname INTO cname
-        FROM pg_constraint
-        WHERE conrelid = '{TABLE_TOPIC_REMOVAL_VOTES}'::regclass
-          AND contype = 'f'
-          AND confrelid = '{TABLE_TOPICS}'::regclass;
-        IF cname IS NOT NULL THEN
-            EXECUTE format('ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTES} DROP CONSTRAINT %I', cname);
-        END IF;
-        ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTES}
-            ADD CONSTRAINT fk_topic_removal_votes_topic
-            FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPICS}(topic_text) ON DELETE CASCADE;
-    END $$;
-    """,
-    f"""
-    DO $$
-    DECLARE cname text;
-    BEGIN
-        SELECT conname INTO cname
-        FROM pg_constraint
-        WHERE conrelid = '{TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}'::regclass
-          AND contype = 'f'
-          AND confrelid = '{TABLE_TOPIC_REMOVAL_VOTES}'::regclass;
-        IF cname IS NOT NULL THEN
-            EXECUTE format('ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} DROP CONSTRAINT %I', cname);
-        END IF;
-        ALTER TABLE {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
-            ADD CONSTRAINT fk_topic_removal_vote_ballots_topic
-            FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPIC_REMOVAL_VOTES}(topic_text) ON DELETE CASCADE;
-    END $$;
-    """,
-]
+class ManagedDatabaseBootstrapError(RuntimeError):
+    """Raised when the empty-database bootstrap targets a managed database."""
 
 
-def run_migrations(conn) -> list[str]:
-    """Run each idempotent migration in its own transaction.
-
-    A failure in one migration is isolated (rolled back and logged) so it does
-    not block the others. Returns a per-statement result log.
-    """
-    results = []
-    uses_session = hasattr(conn, "session")
-    for ddl in MIGRATIONS:
-        label = " ".join(ddl.split())[:70]
-        try:
-            if uses_session:
-                with conn.session as s:
-                    s.execute(text(ddl))
-                    s.commit()
-            else:
-                conn.execute(text(ddl))
-                conn.commit()
-            results.append(f"OK: {label}")
-        except Exception as e:
-            if not uses_session:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            results.append(f"ERR: {label} -> {e}")
-    return results
+def _assert_bootstrap_target(conn) -> None:
+    managed = conn.execute(text(
+        "SELECT to_regclass('public.schema_migrations') IS NOT NULL"
+    )).scalar()
+    if managed:
+        raise ManagedDatabaseBootstrapError(
+            "Database已有versioned migration ledger；請使用tools/manage_db_migrations.py，"
+            "不可再執行empty-database bootstrap。"
+        )
 
 
 def init_db(conn) -> None:
     """
-    Create all tables if they do not already exist, then run migrations.
+    Bootstrap all current tables for a new, empty database.
 
     Parameters
     ----------
-    conn : SQLAlchemy connection / session, or a Streamlit SQLConnection object.
-           Accepts both raw SQLAlchemy sessions and Streamlit's st.connection wrapper.
+    conn : SQLAlchemy connection/session or a small wrapper exposing ``session``.
 
     Example
     -------
-    # With Streamlit connection:
-    from schema import init_db
-    import .streamlit as st
-    conn = st.connection("postgresql", type="sql")
-    init_db(conn)
-
-    # With a raw SQLAlchemy engine:
+    # With a SQLAlchemy engine:
     from sqlalchemy import create_engine
     engine = create_engine("postgresql://...")
     with engine.connect() as raw_conn:
         init_db(raw_conn)
     """
-    # Support both Streamlit SQLConnection and raw SQLAlchemy session/connection
+    # Support a session wrapper or a raw SQLAlchemy connection.
     if hasattr(conn, "session"):
         with conn.session as s:
+            _assert_bootstrap_target(s)
             for ddl in ALL_SCHEMAS:
                 s.execute(text(ddl))
+            from core.ai_training_defaults import seed_default_tts_scripts
+            seed_default_tts_scripts(s)
             s.commit()
     else:
+        _assert_bootstrap_target(conn)
         for ddl in ALL_SCHEMAS:
             conn.execute(text(ddl))
+        from core.ai_training_defaults import seed_default_tts_scripts
+        seed_default_tts_scripts(conn)
         conn.commit()
-
-    # Retrofit constraint changes onto pre-existing tables.
-    run_migrations(conn)

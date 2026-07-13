@@ -1,9 +1,10 @@
-"""Streamlit-free read model for the organiser results page."""
+"""Read model for the organiser results page."""
 
 import pandas as pd
 
 from core.vote_logic import _resolve_db
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORES
+from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
 RANK_COLUMNS = ("pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m")
 ROLE_KEYS = {
@@ -25,18 +26,29 @@ def _scores(match_id=None, db=None):
         SELECT s.match_id, s.judge_name, s.pro_total_score, s.con_total_score,
                s.submitted_time, s.pro_free_debate_score, s.con_free_debate_score,
                s.pro_deduction_points, s.con_deduction_points,
-               s.pro_coherence_score, s.con_coherence_score, m.pro_team, m.con_team
+               s.pro_coherence_score, s.con_coherence_score,
+               m.pro_team, m.con_team, m.topic_text, m.match_date, m.match_time
         FROM {TABLE_SCORES} s LEFT JOIN {TABLE_MATCHES} m ON s.match_id = m.match_id
     """
     if match_id is not None:
         sql += " WHERE s.match_id = :match_id"
         params["match_id"] = match_id
+        sql += " ORDER BY s.judge_name LIMIT :score_limit"
+        params["score_limit"] = JUDGE_MAX_PER_MATCH
+    else:
+        sql += " ORDER BY s.match_id,s.judge_name LIMIT :score_limit"
+        params["score_limit"] = MATCH_INVENTORY_LIMIT * JUDGE_MAX_PER_MATCH
     scores = db.query(sql, params)
     if scores.empty:
         return scores
     detail_sql = f"SELECT match_id, judge_name, side, position, debater_score FROM {TABLE_DEBATER_SCORES}"
     if match_id is not None:
         detail_sql += " WHERE match_id = :match_id"
+        detail_sql += " ORDER BY judge_name,side,position LIMIT :detail_limit"
+        params["detail_limit"] = JUDGE_MAX_PER_MATCH * 8
+    else:
+        detail_sql += " ORDER BY match_id,judge_name,side,position LIMIT :detail_limit"
+        params["detail_limit"] = MATCH_INVENTORY_LIMIT * JUDGE_MAX_PER_MATCH * 8
     details = db.query(detail_sql, params)
     if not details.empty:
         details["column"] = details["side"].astype(str) + details["position"].astype(str) + "_m"
@@ -124,20 +136,31 @@ def _anomalies(scores):
     return anomalies
 
 
-def results_data(selected_match_id=None, db=None):
+def results_data(selected_match_id=None, db=None, match_ids=None):
     db = _resolve_db(db)
-    scores = _scores(db=db)
-    if scores is None or scores.empty:
-        return {"matches": [], "selected_match_id": None, "has_scores": False}
-    scores["match_id"] = scores["match_id"].astype(str)
-    matches = scores["match_id"].drop_duplicates().tolist()
-    selected = str(selected_match_id) if selected_match_id in matches else matches[0]
-    match_scores = scores[scores["match_id"] == selected].copy()
+    if match_ids is None:
+        match_rows = db.query(f"""SELECT DISTINCT match_id FROM {TABLE_SCORES}
+            ORDER BY match_id LIMIT :limit""", {"limit": MATCH_INVENTORY_LIMIT})
+        if match_rows.empty:
+            return {"matches": [], "selected_match_id": None, "has_scores": False}
+        matches = match_rows["match_id"].astype(str).tolist()
+    else:
+        matches = list(dict.fromkeys(str(value) for value in match_ids if str(value).strip()))[:MATCH_INVENTORY_LIMIT]
+        if not matches:
+            return {"matches": [], "selected_match_id": None, "has_scores": False}
+    requested = str(selected_match_id or "")
+    selected = requested if requested in matches else matches[0]
+    match_scores = _scores(selected, db=db)
+    if match_scores.empty:
+        return {"matches": matches, "selected_match_id": selected, "has_scores": False}
     pro_votes = int((match_scores["pro_total_score"] > match_scores["con_total_score"]).sum())
     con_votes = int((match_scores["con_total_score"] > match_scores["pro_total_score"]).sum())
     draws = int((match_scores["pro_total_score"] == match_scores["con_total_score"]).sum())
-    topic_rows = db.query(f"SELECT topic_text FROM {TABLE_MATCHES} WHERE match_id = :match_id", {"match_id": selected})
-    topic = _clean(topic_rows.iloc[0]["topic_text"]) if not topic_rows.empty else "（未有辯題資料）"
+    topic = (
+        _clean(match_scores["topic_text"].iloc[0])
+        if "topic_text" in match_scores.columns and _clean(match_scores["topic_text"].iloc[0])
+        else "（未有辯題資料）"
+    )
     best_rows, best = _best_debaters(selected, match_scores, db)
     pro_team, con_team = _clean(match_scores["pro_team"].iloc[0]), _clean(match_scores["con_team"].iloc[0])
     winner = "pro" if pro_votes > con_votes else "con" if con_votes > pro_votes else "draw"

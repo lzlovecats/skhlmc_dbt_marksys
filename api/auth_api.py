@@ -1,30 +1,32 @@
-"""Committee login endpoints for the HTML page (Phase 3).
-
-Lets the HTML vote page authenticate without Streamlit. Verifies credentials via
-core.auth_logic and sets the same signed ``committee_user`` cookie that the rest
-of the system (proxy _verify_committee_token, Streamlit auth) already trusts, so
-a session started here works everywhere.
-"""
+"""Committee authentication, account and one-time notification endpoints."""
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pathlib import Path
+import threading
+import time
+from system_limits import (
+    COMMITTEE_COOKIE_MAX_AGE_DAYS, MAINTENANCE_PRUNE_INTERVAL_SECONDS,
+    NOTIFICATION_READ_RETENTION_DAYS,
+)
 
 router = APIRouter(prefix="/api/committee", tags=["committee"])
 
 COOKIE_NAME = "committee_user"
-COOKIE_MAX_AGE = 180 * 24 * 60 * 60   # 180 days, matching functions.return_expire_day
+COOKIE_MAX_AGE = COMMITTEE_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60
+_notification_prune_lock = threading.Lock()
+_notification_last_prune = 0.0
 
 
 class LoginBody(BaseModel):
-    user_id: str
-    password: str
+    user_id: str = Field(max_length=200)
+    password: str = Field(max_length=512)
 
 
 class PasswordBody(BaseModel):
-    current_password: str
-    new_password: str
-    confirm_password: str
+    current_password: str = Field(max_length=512)
+    new_password: str = Field(max_length=512)
+    confirm_password: str = Field(max_length=512)
 
 
 def _current_notification():
@@ -50,6 +52,25 @@ def _current_notification():
     if noti_id is None or not title:
         return None
     return {"id": noti_id, "title": title, "content": "\n".join(lines[content_start:]).strip()}
+
+
+def _prune_notification_reads(db, now):
+    """Bound acknowledgement storage, with at most one DELETE per interval."""
+    global _notification_last_prune
+    monotonic_now = time.monotonic()
+    if monotonic_now - _notification_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+        return
+    with _notification_prune_lock:
+        if monotonic_now - _notification_last_prune < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+            return
+        from datetime import timedelta
+        from schema import TABLE_NOTIFICATION_READS
+
+        db.execute(
+            f"DELETE FROM {TABLE_NOTIFICATION_READS} WHERE read_at<:cutoff",
+            {"cutoff": now - timedelta(days=NOTIFICATION_READ_RETENTION_DAYS)},
+        )
+        _notification_last_prune = monotonic_now
 
 
 @router.post("/login")
@@ -98,14 +119,13 @@ def me(request: Request):
 def notification(request: Request):
     """Return the current one-time notice when this member has not read it."""
     from deploy.proxy import _require_committee_user, get_vote_db
-    from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
+    from schema import TABLE_NOTIFICATION_READS
 
     user_id = _require_committee_user(request)
     notice = _current_notification()
     if not notice:
         return {"notification": None}
     db = get_vote_db()
-    db.execute(CREATE_NOTIFICATION_READS)
     seen = db.query(
         f"SELECT 1 FROM {TABLE_NOTIFICATION_READS} WHERE notification_id = :nid AND user_id = :uid",
         {"nid": notice["id"], "uid": user_id},
@@ -115,7 +135,7 @@ def notification(request: Request):
 
 class NotificationReadBody(BaseModel):
     notification_id: int
-    notification_title: str
+    notification_title: str = Field(max_length=300)
 
 
 @router.post("/notification/read")
@@ -123,14 +143,14 @@ def notification_read(body: NotificationReadBody, request: Request):
     from datetime import datetime
     from zoneinfo import ZoneInfo
     from deploy.proxy import _require_committee_user, get_vote_db
-    from schema import CREATE_NOTIFICATION_READS, TABLE_NOTIFICATION_READS
+    from schema import TABLE_NOTIFICATION_READS
 
     user_id = _require_committee_user(request)
     current = _current_notification()
     if not current or body.notification_id != current["id"]:
         raise HTTPException(400, "通知已更新，請重新載入")
     db = get_vote_db()
-    db.execute(CREATE_NOTIFICATION_READS)
+    now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
     db.execute(
         f"INSERT INTO {TABLE_NOTIFICATION_READS} "
         "(notification_id, notification_title, user_id, read_at) "
@@ -138,9 +158,10 @@ def notification_read(body: NotificationReadBody, request: Request):
         "ON CONFLICT (notification_id, user_id) DO NOTHING",
         {
             "nid": current["id"], "title": current["title"], "uid": user_id,
-            "seen_at": datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m-%d %H:%M:%S"),
+            "seen_at": now,
         },
     )
+    _prune_notification_reads(db, now)
     return {"status": "ok"}
 
 

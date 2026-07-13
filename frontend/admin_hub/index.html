@@ -120,7 +120,10 @@
             if (!r.ok) throw Error(d.detail || "登入失敗");
             await check();
           } catch (x) {
-            $("msg").innerHTML = `<div class="notice">${x.message}</div>`;
+            const notice = document.createElement("div");
+            notice.className = "notice";
+            notice.textContent = x.message;
+            $("msg").replaceChildren(notice);
           } finally {
             busy(false);
           }

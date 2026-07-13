@@ -19,7 +19,7 @@ class ApiSmokeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(path).status_code, 200)
 
-    def test_unknown_route_is_not_forwarded_to_streamlit(self):
+    def test_unknown_route_is_not_forwarded_to_retired_runtime(self):
         response = self.client.get("/definitely-not-a-route")
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"detail": "Not Found"})

@@ -303,8 +303,14 @@
             .join("");
           $("summary").innerHTML =
             `<h2>本張分紙</h2><p class="summary-meta"><strong>正方：</strong> ${esc(record.pro_team)}<br><strong>反方：</strong> ${esc(record.con_team)}<br><strong>提交時間（香港時間／HKT）：</strong> ${esc(record.submitted_time)}</p><div class="metrics">${[
-              [`正方總分（${record.pro_team}）`, `${pro} / 460`],
-              [`反方總分（${record.con_team}）`, `${con} / 460`],
+              [
+                `正方總分（${record.pro_team}）`,
+                `${pro} / ${state.config.grand_total}`,
+              ],
+              [
+                `反方總分（${record.con_team}）`,
+                `${con} / ${state.config.grand_total}`,
+              ],
               ["本張分紙勝方", winner],
             ]
               .map(
@@ -319,16 +325,41 @@
             return;
           }
           const pdfUrl = `/api/review/pdf?judge_name=${encodeURIComponent(state.selected_judge)}`;
-          $("details").innerHTML =
-            `<div class="toolbar"><h2>評分詳情</h2><a class="button primary" href="${pdfUrl}">匯出 PDF</a></div><div class="tabs"><button class="tab active" data-side="正方">正方：${esc(record.pro_team)}</button><button class="tab" data-side="反方">反方：${esc(record.con_team)}</button></div>${[
-              "正方",
-              "反方",
-            ]
-              .map((side, index) => {
-                const data = state.sides[side];
-                return `<section class="panel ${index ? "" : "active"}" id="p${index}"><section class="card"><h2>${side}：${esc(data.team_name)}</h2><h3>甲：台上發言</h3>${table(data.raw_df_a)}<h3>乙：自由辯論</h3>${table(data.raw_df_b)}<div class="side-facts"><span>扣分總和：${esc(data.deduction)}</span><span>內容連貫：${esc(data.coherence)} / 5</span></div><div class="metric side-total"><div class="label">${side}總分</div><div class="value">${esc(data.final_total)} / 460</div></div></section></section>`;
-              })
-              .join("")}`;
+          const panels = ["正方", "反方"]
+            .map((side, index) => {
+              const data = state.sides[side];
+              return `
+                <section class="panel ${index ? "" : "active"}" id="p${index}">
+                  <section class="card">
+                    <h2>${side}：${esc(data.team_name)}</h2>
+                    <h3>甲：台上發言</h3>
+                    ${table(data.raw_df_a)}
+                    <h3>乙：自由辯論</h3>
+                    ${table(data.raw_df_b)}
+                    <div class="side-facts">
+                      <span>扣分總和：${esc(data.deduction)}</span>
+                      <span>內容連貫：${esc(data.coherence)} / ${esc(state.config.coherence_max)}</span>
+                    </div>
+                    <div class="metric side-total">
+                      <div class="label">${side}總分</div>
+                      <div class="value">${esc(data.final_total)} / ${esc(state.config.grand_total)}</div>
+                    </div>
+                  </section>
+                </section>
+              `;
+            })
+            .join("");
+          $("details").innerHTML = `
+            <div class="toolbar">
+              <h2>評分詳情</h2>
+              <a class="button primary" href="${pdfUrl}">匯出 PDF</a>
+            </div>
+            <div class="tabs">
+              <button class="tab active" data-side="正方">正方：${esc(record.pro_team)}</button>
+              <button class="tab" data-side="反方">反方：${esc(record.con_team)}</button>
+            </div>
+            ${panels}
+          `;
           document.querySelectorAll("[data-side]").forEach((button, index) => {
             button.onclick = () => {
               document

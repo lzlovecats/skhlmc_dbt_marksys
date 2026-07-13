@@ -1,17 +1,18 @@
-"""Direct-HTML API for AI coach.
+"""API for AI coach practice, speech review and strategy planning.
 
-The old page kept all provider calls in a Streamlit session.  This module keeps
-the same model choices and prompts, but keeps credentials and accounting on the
+This module keeps model choices and prompts server-side with credentials and accounting on the
 server so the browser never receives either.
 """
+import asyncio
 import base64
 import math
+import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ai_model_config import AI_MODEL_OPTIONS, DEFAULT_AI_MODEL
 from prompts import (
@@ -19,45 +20,84 @@ from prompts import (
     WEB_RESEARCH_SYSTEM_PROMPT, build_fact_check_user_prompt, build_strategy_prompt,
     build_strategy_user_prompt, build_web_research_user_prompt,
 )
+from schema import (
+    TABLE_AI_COACH_LIVE_BRIEFS,
+    TABLE_AI_DATASET_SNAPSHOTS,
+    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+    TABLE_AI_MODEL_VERSIONS,
+)
+from system_limits import (
+    AI_COACH_CONCURRENCY, AI_COACH_MATCH_LIMIT, AI_COACH_MAX_AUDIO_BYTES,
+    AI_COACH_MAX_AUDIO_SECONDS, AI_COACH_TOPIC_LIMIT, GEMINI_RELAY_MAX_BYTES,
+    LIVE_BRIEF_MAX_CHARS, LIVE_BRIEF_TTL_MINUTES, LIVE_FREE_MAX_MINUTES,
+    MAX_ROOMS, MULTIPLAYER_FREE_MONTHLY_ROOMS, MULTIPLAYER_MOCK_MONTHLY_ROOMS,
+    PREPARE_LIVE_USAGE_RETENTION_DAYS, PREPARE_LIVE_USER_DAILY_LIMIT,
+    PREPARE_LIVE_USER_HOURLY_LIMIT, SOLO_FREE_MONTHLY_LIMIT,
+    SOLO_MOCK_MONTHLY_LIMIT,
+)
 
 router = APIRouter(prefix="/api/ai-coach", tags=["ai-coach"])
-_LIVE_BRIEF_TABLE = "ai_coach_live_briefs"
+_LIVE_BRIEF_TABLE = TABLE_AI_COACH_LIVE_BRIEFS
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
-MAX_COACH_AUDIO_BYTES = 2 * 1024 * 1024
+MAX_COACH_AUDIO_BYTES = AI_COACH_MAX_AUDIO_BYTES
+AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 
 
 class CoachRequest(BaseModel):
-    feature: str
-    model_label: str = DEFAULT_AI_MODEL
-    topic: str = ""
-    side: str = "正方"
-    debate_format: str = "校園隨想"
-    text: str = ""
+    feature: str = Field(max_length=40)
+    model_label: str = Field(default=DEFAULT_AI_MODEL, max_length=120)
+    topic: str = Field(default="", max_length=500)
+    side: str = Field(default="正方", max_length=20)
+    debate_format: str = Field(default="校園隨想", max_length=80)
+    text: str = Field(default="", max_length=20_000)
     position: int = 1
-    research_need: str = ""
-    audio_base64: str = ""
-    audio_mime: str = "audio/webm"
-    match_id: str = ""
+    research_need: str = Field(default="", max_length=2000)
+    audio_base64: str = Field(default="", max_length=3_000_000)
+    audio_mime: str = Field(default="audio/webm", max_length=80)
+    match_id: str = Field(default="", max_length=100)
 
 class LivePrepareRequest(BaseModel):
-    topic: str
-    side: str = "正方"
-    debate_format: str = "校園隨想"
-    mode: str = "free"
-    model_label: str = DEFAULT_AI_MODEL
+    topic: str = Field(max_length=500)
+    side: str = Field(default="正方", max_length=20)
+    debate_format: str = Field(default="校園隨想", max_length=80)
+    mode: str = Field(default="free", max_length=20)
+    model_label: str = Field(default=DEFAULT_AI_MODEL, max_length=120)
 
-def _ensure_live_briefs(db):
-    db.execute(f"""CREATE TABLE IF NOT EXISTS {_LIVE_BRIEF_TABLE} (
-        brief_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, brief TEXT NOT NULL,
-        expires_at TEXT NOT NULL, created_at TEXT NOT NULL
-    )""")
+def _reserve_prepare_live(db, user_id: str) -> str | None:
+    """Atomically cap repeated pre-live research before provider tokens burn."""
+    now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    hour_start = now_hk.replace(minute=0, second=0, microsecond=0)
+    day_start = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
+    now_utc = now_hk.astimezone(timezone.utc).replace(tzinfo=None)
+    hour_utc = hour_start.astimezone(timezone.utc).replace(tzinfo=None)
+    day_utc = day_start.astimezone(timezone.utc).replace(tzinfo=None)
+    with db.transaction() as conn:
+        from sqlalchemy import text
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('ai_coach_prepare_live_quota'))"))
+        conn.execute(text("DELETE FROM ai_coach_prepare_usage WHERE created_at<:cutoff"),
+                     {"cutoff": day_utc - timedelta(days=PREPARE_LIVE_USAGE_RETENTION_DAYS)})
+        hourly = int(conn.execute(text("""SELECT COUNT(*) FROM ai_coach_prepare_usage
+            WHERE user_id=:user AND created_at>=:start"""), {
+            "user": user_id, "start": hour_utc,
+        }).scalar() or 0)
+        if hourly >= PREPARE_LIVE_USER_HOURLY_LIMIT:
+            return "賽前研究每人每小時只可執行一次，請稍後再試。"
+        daily = int(conn.execute(text("""SELECT COUNT(*) FROM ai_coach_prepare_usage
+            WHERE user_id=:user AND created_at>=:start"""), {
+            "user": user_id, "start": day_utc,
+        }).scalar() or 0)
+        if daily >= PREPARE_LIVE_USER_DAILY_LIMIT:
+            return f"賽前研究每人每日最多{PREPARE_LIVE_USER_DAILY_LIMIT}次，請翌日再試。"
+        conn.execute(text("""INSERT INTO ai_coach_prepare_usage(user_id,created_at)
+            VALUES(:user,:now)"""), {"user": user_id, "now": now_utc})
+    return None
 
 
 def consume_live_brief(brief_id, user_id):
     from deploy.proxy import get_vote_db
-    db = get_vote_db(); _ensure_live_briefs(db)
+    db = get_vote_db()
     key = str(brief_id or "")
     rows = db.query(
         f"SELECT brief,user_id,expires_at FROM {_LIVE_BRIEF_TABLE} WHERE brief_id=:brief_id",
@@ -71,15 +111,6 @@ def consume_live_brief(brief_id, user_id):
     row = rows.iloc[0]
     now_text = datetime.now().isoformat(sep=" ", timespec="seconds")
     return str(row["brief"]) if str(row["user_id"]) == str(user_id) and str(row["expires_at"]) >= now_text else ""
-
-def record_live_usage(user_id, feature, duration_minutes):
-    from deploy.proxy import get_vote_db
-    config={"provider":"gemini","input_price_per_million":0,"output_price_per_million":0}
-    try:
-        now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-        get_vote_db().execute("""INSERT INTO ai_fund_usage_logs(user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at) VALUES(:user,:feature,:label,'gemini',:usd,:hkd,0,0,:audio,0,'estimate','success','',:now)""",{"user":user_id,"feature":feature,"label":"Gemini Live","usd":round(float(duration_minutes)*0.01,4),"hkd":round(float(duration_minutes)*0.078,4),"audio":int(float(duration_minutes)*60*25),"now":now_hk})
-    except Exception: pass
-
 
 def _context(request):
     from deploy.proxy import _require_committee_user
@@ -95,7 +126,25 @@ def _config(label, db=None):
         if not base_url or not model or not api_key:
             raise HTTPException(503, "自家LLM尚未完成設定")
         if db is not None:
-            registered = db.query("SELECT 1 FROM ai_model_versions WHERE model_id=:model AND model_type='llm' AND status='deployable'", {"model": model})
+            from core.schema_features import READY, feature_bundle_state
+
+            try:
+                model_schema_ready = feature_bundle_state(
+                    db, "dataset_model", (
+                        TABLE_AI_DATASET_SNAPSHOTS,
+                        TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+                        TABLE_AI_MODEL_VERSIONS,
+                    )
+                ) == READY
+            except Exception as exc:
+                raise HTTPException(503, "自家LLM模型schema狀態暫時無法驗證") from exc
+            if not model_schema_ready:
+                raise HTTPException(503, "自家LLM模型registry尚未由正式migration啟用")
+            registered = db.query(
+                f"""SELECT 1 FROM {TABLE_AI_MODEL_VERSIONS}
+                    WHERE model_id=:model AND model_type='llm' AND status='deployable'""",
+                {"model": model},
+            )
             if registered.empty:
                 raise HTTPException(503, "自家LLM未通過deployable評估gate")
         return {"provider":"custom","model":model,"base_url":base_url,
@@ -116,7 +165,7 @@ def _estimate(feature, config, has_audio=False):
 
 
 def _usage(db, user_id, feature, label, config, success, error="", actual=None, has_audio=False):
-    # Same ledger table as Streamlit.  Use a conservative, transparent estimate;
+    # Use a conservative, transparent ledger estimate;
     # provider billing remains the source of truth in AI基金.
     estimate_inp, estimate_out = FEATURE_TOKEN_ESTIMATES.get(feature, (0, 0))
     actual = actual or {}
@@ -132,19 +181,25 @@ def _usage(db, user_id, feature, label, config, success, error="", actual=None, 
     if search:
         usd += search * (config.get("web_search_price_per_call") or 0)
     try:
-        db.execute(
-            """INSERT INTO ai_fund_usage_logs
-               (user_id, feature, model_label, provider, estimated_cost_usd, estimated_cost_hkd,
-                input_tokens, output_tokens, audio_tokens, search_calls, cost_source, status, error_message, created_at)
-               VALUES (:user_id,:feature,:label,:provider,:usd,:hkd,:inp,:out,:audio,:search,:source,:status,:error,:now)""",
-            {"user_id": user_id, "feature": feature, "label": label,
-             "provider": config.get("provider", ""), "usd": usd if success else 0,
-             "hkd": usd * 7.8 if success else 0, "inp": inp if success else 0,
-             "out": out if success else 0, "audio": audio if success else 0,
-             "search": search if success else 0,
-             "source": actual.get("cost_source") or "estimate",
-             "status": "success" if success else "failed", "error": str(error)[:500],
-             "now": datetime.now().isoformat(sep=" ", timespec="seconds")},
+        from core.funds_logic import log_ai_usage
+
+        log_ai_usage(
+            user_id,
+            feature,
+            success,
+            usage={
+                "model_label": label,
+                "provider": config.get("provider", ""),
+                "estimated_cost_usd": usd,
+                "estimated_cost_hkd": usd * 7.8,
+                "input_tokens": inp,
+                "output_tokens": out,
+                "audio_tokens": audio,
+                "search_calls": search,
+                "cost_source": actual.get("cost_source") or "estimate",
+            },
+            error_message=error,
+            db=db,
         )
     except Exception:
         # A missing optional accounting table must never make coaching unusable.
@@ -229,7 +284,7 @@ def _message(body: CoachRequest, db=None):
     raise HTTPException(400, "不支援的 AI 功能")
 
 
-async def _generate(config, system, user, body):
+async def _generate(config, system, user, body, user_id=""):
     from deploy.proxy import _get_proxy_secret
     key_name = config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"] == "openrouter" else "GEMINI_API_KEY")
     key = _get_proxy_secret(key_name).strip()
@@ -245,12 +300,20 @@ async def _generate(config, system, user, body):
         if len(audio_bytes) > MAX_COACH_AUDIO_BYTES:
             raise HTTPException(413, "錄音不可超過2MB")
     from core.ai_provider import generate_text
-    try:
-        return await generate_text(config, system, user, api_key=key,
-            audio_base64=body.audio_base64, audio_mime=body.audio_mime,
-            web_search=body.feature in ("web_research", "fact_check"))
-    except Exception as exc:
-        raise HTTPException(502, f"AI 服務錯誤：{str(exc)[:300]}") from exc
+    async with AI_COACH_SEMAPHORE:
+        try:
+            if body.audio_base64:
+                from deploy.proxy import record_bandwidth_usage
+                await asyncio.to_thread(
+                    record_bandwidth_usage, "ai_coach_audio_provider",
+                    len(body.audio_base64.encode("ascii")), str(user_id),
+                    aggregate_key=f"user={str(user_id)[:120]}",
+                )
+            return await generate_text(config, system, user, api_key=key,
+                audio_base64=body.audio_base64, audio_mime=body.audio_mime,
+                web_search=body.feature in ("web_research", "fact_check"))
+        except Exception as exc:
+            raise HTTPException(502, f"AI 服務錯誤：{str(exc)[:300]}") from exc
 
 
 @router.get("/data")
@@ -262,12 +325,11 @@ def data(request: Request):
                                get_debate_timer_config, get_full_mock_sequence,
                                split_mock_into_sessions)
     db=get_vote_db()
-    from core.funds_logic import _ensure_ai
-    _ensure_ai(db)
-    topics=db.query(f"SELECT topic_text,category,difficulty FROM {TABLE_TOPICS} ORDER BY category,topic_text")
-    matches=db.query(f"SELECT match_id,topic_text,pro_team,con_team FROM {TABLE_MATCHES} ORDER BY match_id DESC")
+    topics=db.query(f"SELECT topic_text,category,difficulty FROM {TABLE_TOPICS} ORDER BY category,topic_text LIMIT :topic_limit", {"topic_limit": AI_COACH_TOPIC_LIMIT})
+    matches=db.query(f"SELECT match_id,topic_text,pro_team,con_team FROM {TABLE_MATCHES} ORDER BY match_id DESC LIMIT :match_limit", {"match_limit": AI_COACH_MATCH_LIMIT})
     balance=db.query("SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) balance FROM ai_fund_transactions WHERE status='confirmed'")
-    low=db.query("SELECT value FROM system_config WHERE key='ai_fund_low_balance_hkd'")
+    from core.config_store import get_config
+    low_balance_hkd = float(get_config(db, "ai_fund_low_balance_hkd", 100) or 100)
     models=[]
     for label,item in AI_MODEL_OPTIONS.items():
         key_name="OPENROUTER_API_KEY" if item["provider"]=="openrouter" else "GEMINI_API_KEY"
@@ -290,7 +352,34 @@ def data(request: Request):
             "session_count": len(split_mock_into_sessions(segments)),
             "total_minutes": full_mock_total_seconds(segments) / 60,
         }
-    return {"models":models,"default_model":DEFAULT_AI_MODEL,"topics":[dict(x) for x in topics.to_dict("records")],"matches":[dict(x) for x in matches.to_dict("records")],"formats":{name:get_debate_timer_config(name) for name in DEBATE_FORMATS},"mock_formats":mock_formats,"fund":{"balance_hkd":float(balance.iloc[0]["balance"] or 0),"low_balance_hkd":float(low.iloc[0]["value"] or 100) if not low.empty else 100},"azure_tts":bool(_get_proxy_secret("AZURE_SPEECH_KEY") and _get_proxy_secret("AZURE_SPEECH_REGION"))}
+    from deploy.proxy import bandwidth_budget_status
+    return {
+        "models": models, "default_model": DEFAULT_AI_MODEL,
+        "topics": [dict(x) for x in topics.to_dict("records")],
+        "matches": [dict(x) for x in matches.to_dict("records")],
+        "formats": {name: get_debate_timer_config(name) for name in DEBATE_FORMATS},
+        "mock_formats": mock_formats,
+        "fund": {
+            "balance_hkd": float(balance.iloc[0]["balance"] or 0),
+            "low_balance_hkd": low_balance_hkd,
+        },
+        "azure_tts": bool(
+            _get_proxy_secret("AZURE_SPEECH_KEY")
+            and _get_proxy_secret("AZURE_SPEECH_REGION")
+        ),
+        "bandwidth_budget": bandwidth_budget_status(notify=True),
+        "resource_limits": {
+            "audio_max_bytes": AI_COACH_MAX_AUDIO_BYTES,
+            "audio_max_seconds": AI_COACH_MAX_AUDIO_SECONDS,
+            "solo_free_monthly": SOLO_FREE_MONTHLY_LIMIT,
+            "solo_mock_monthly": SOLO_MOCK_MONTHLY_LIMIT,
+            "multiplayer_free_monthly": MULTIPLAYER_FREE_MONTHLY_ROOMS,
+            "multiplayer_mock_monthly": MULTIPLAYER_MOCK_MONTHLY_ROOMS,
+            "free_max_minutes": LIVE_FREE_MAX_MINUTES,
+            "max_rooms": MAX_ROOMS,
+            "relay_max_bytes": GEMINI_RELAY_MAX_BYTES,
+        },
+    }
 
 
 @router.get("/mock-plan")
@@ -316,7 +405,9 @@ def mock_plan(request: Request):
 @router.post("/run")
 async def run(body: CoachRequest, request: Request):
     user_id = _context(request)
-    from deploy.proxy import get_vote_db, _get_proxy_secret
+    from deploy.proxy import get_vote_db, _get_proxy_secret, _bandwidth_essential_gate_error
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error: raise HTTPException(429, budget_error)
     db = get_vote_db()
     config = _config(body.model_label, db)
     key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")
@@ -331,11 +422,11 @@ async def run(body: CoachRequest, request: Request):
         except Exception:
             pass
     try:
-        result, actual = await _generate(config, system, user, body)
+        result, actual = await _generate(config, system, user, body, user_id)
     except HTTPException as exc:
         if config.get("provider") == "custom":
             fallback = AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
-            result, actual = await _generate(fallback, system, user, body)
+            result, actual = await _generate(fallback, system, user, body, user_id)
             config = fallback
         else:
             _usage(db, user_id, body.feature, body.model_label, config, False, exc.detail)
@@ -349,6 +440,8 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     user_id=_context(request);proxy=__import__('deploy.proxy',fromlist=['get_vote_db','_solo_live_quota_error']);db=proxy.get_vote_db();config=_config(body.model_label,db)
     quota_error=proxy._solo_live_quota_error(user_id,body.mode)
     if quota_error: raise HTTPException(429,quota_error)
+    prepare_error=_reserve_prepare_live(db,user_id)
+    if prepare_error: raise HTTPException(429,prepare_error)
     if not config.get("supports_web_search"):
         config=AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"
@@ -363,5 +456,6 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     try:brief,actual=await _generate(config,system,user,CoachRequest(feature="web_research",model_label=body.model_label,topic=body.topic,research_need=need))
     except Exception:brief=""
     _usage(__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db(),user_id,"web_research",body.model_label,config,bool(brief),actual=actual)
-    _ensure_live_briefs(db)
-    key=secrets.token_urlsafe(18);now=datetime.now();db.execute(f"INSERT INTO {_LIVE_BRIEF_TABLE}(brief_id,user_id,brief,expires_at,created_at) VALUES(:key,:user,:brief,:expires,:created)",{"key":key,"user":user_id,"brief":brief[:4500],"expires":(now+timedelta(minutes=15)).isoformat(sep=" ",timespec="seconds"),"created":now.isoformat(sep=" ",timespec="seconds")});return {"ok":True,"brief_id":key,"research_ready":bool(brief)}
+    key=secrets.token_urlsafe(18);now=datetime.now()
+    db.execute(f"DELETE FROM {_LIVE_BRIEF_TABLE} WHERE expires_at<:now", {"now": now.isoformat(sep=" ",timespec="seconds")})
+    db.execute(f"INSERT INTO {_LIVE_BRIEF_TABLE}(brief_id,user_id,brief,expires_at,created_at) VALUES(:key,:user,:brief,:expires,:created)",{"key":key,"user":user_id,"brief":brief[:LIVE_BRIEF_MAX_CHARS],"expires":(now+timedelta(minutes=LIVE_BRIEF_TTL_MINUTES)).isoformat(sep=" ",timespec="seconds"),"created":now.isoformat(sep=" ",timespec="seconds")});return {"ok":True,"brief_id":key,"research_ready":bool(brief)}

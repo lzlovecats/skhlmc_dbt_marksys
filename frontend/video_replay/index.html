@@ -489,7 +489,13 @@
                         () => saveProgress(v.id),
                         15000,
                       );
-                  } else if (e.data === 0 || e.data === 2) saveProgress(v.id);
+                  } else if (e.data === 0 || e.data === 2) {
+                    saveProgress(v.id);
+                    if (progressTimer) {
+                      clearInterval(progressTimer);
+                      progressTimer = null;
+                    }
+                  }
                 },
               },
             });

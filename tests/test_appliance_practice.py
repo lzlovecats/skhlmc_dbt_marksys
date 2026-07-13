@@ -2,7 +2,13 @@ import pathlib
 import re
 import unittest
 
-from debate_timing import DEBATE_FORMATS, get_full_mock_sequence
+from debate_timing import (
+    DEBATE_FORMATS,
+    MOCK_SESSION_BUDGET_SECONDS,
+    full_mock_total_seconds,
+    get_full_mock_sequence,
+    split_mock_into_sessions,
+)
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -91,6 +97,22 @@ class AppliancePracticeTests(unittest.TestCase):
                 self.assertIn("closing_pro", ids)
                 self.assertIn("closing_con", ids)
                 self.assertTrue(all(segment["bells"] for segment in segments))
+
+    def test_mock_session_budget_counts_both_free_debate_time_banks(self):
+        segments = get_full_mock_sequence("聯中", free_debate_minutes=5)
+        sessions = split_mock_into_sessions(segments)
+        self.assertEqual(
+            sum(session["planned_seconds"] for session in sessions),
+            full_mock_total_seconds(segments),
+        )
+        self.assertTrue(
+            all(session["planned_seconds"] <= MOCK_SESSION_BUDGET_SECONDS for session in sessions)
+        )
+        free_session = next(
+            session for session in sessions
+            if any(segment["id"] == "free" for segment in session["segments"])
+        )
+        self.assertEqual(free_session["planned_seconds"], 600)
 
     def test_mock_relay_signs_every_session_token(self):
         proxy = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")

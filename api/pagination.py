@@ -2,7 +2,9 @@
 
 import math
 
-PAGE_SIZE = 20
+from system_limits import API_PAGE_SIZE
+
+PAGE_SIZE = API_PAGE_SIZE
 
 
 def bounds(page: int):

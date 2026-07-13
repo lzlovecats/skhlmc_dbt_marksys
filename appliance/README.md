@@ -52,7 +52,7 @@ sudo chown -R marksys:marksys /var/backups/marksys
 # 3. 放 repo（或最少 appliance/）落 /opt/skhlmc-dbt-marksys
 #    e.g. sudo git clone <repo> /opt/skhlmc-dbt-marksys
 
-# 4. 放 secrets（用你現有 .streamlit/secrets.toml 嘅內容）
+# 4. 放 secrets（可沿用現有 secrets.toml 內容）
 sudo cp your-secrets.toml /etc/marksys/secrets.toml
 sudo chown marksys:marksys /etc/marksys/secrets.toml
 sudo chmod 600 /etc/marksys/secrets.toml

@@ -240,18 +240,8 @@
           });
         }
 
-        function authToken() {
-          try {
-            return window.localStorage.getItem("committee_user") || "";
-          } catch (e) {
-            return "";
-          }
-        }
-
         function api(method, url, body) {
           var headers = body ? { "Content-Type": "application/json" } : {};
-          var token = authToken();
-          if (token) headers.Authorization = "Bearer " + token;
           return fetch(url, {
             method: method,
             headers: Object.keys(headers).length ? headers : undefined,

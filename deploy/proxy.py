@@ -9,34 +9,42 @@ import math
 import os
 import re
 import secrets
+import threading
 import time
+from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote_plus
 from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
-
-import tomllib
 
 import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import text
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from schema import (
-    CREATE_AI_FUND_USAGE_LOGS,
-    CREATE_PRACTICE_DAILY_USAGE,
-    CREATE_PUSH_SUBSCRIPTIONS,
-    CREATE_VIDEO_PROGRESS,
-    CREATE_VIDEO_VIEWS,
+    TABLE_AI_DATASET_SNAPSHOTS,
+    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_FUND_USAGE_LOGS,
+    TABLE_AI_MODEL_VERSIONS,
+    TABLE_BANDWIDTH_USAGE_LOGS,
     TABLE_PRACTICE_DAILY_USAGE,
     TABLE_PUSH_SUBSCRIPTIONS,
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
 )
+from core.config_store import (
+    get_configs_from_connection,
+    migrate_legacy_config,
+    set_configs_on_connection,
+)
+from core.db_runtime import RuntimeDb, dispose_db_engine, get_db_engine
+from core.runtime_secrets import get_secret
 from debate_timing import (  # pure helpers, no side effects
     get_full_mock_sequence,
     split_mock_into_sessions,
@@ -46,7 +54,7 @@ from debate_timing import (  # pure helpers, no side effects
     DEBATE_FORMATS,
 )
 from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
-from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS  # pure, no streamlit
+from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
 from api.auth_api import router as committee_router
@@ -69,31 +77,161 @@ from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
 from api.ai_training_api import router as ai_training_router
 from api.admin_console_api import router as admin_console_router
+from version import APP_VERSION
+from system_limits import (
+    BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
+    BANDWIDTH_LOG_RETENTION_DAYS, BANDWIDTH_STOP_LIVE_BYTES,
+    BANDWIDTH_WARN_BYTES, CACHE_HTML_MAX_AGE_SECONDS, CACHE_HTML_STALE_SECONDS,
+    CACHE_MANIFEST_MAX_AGE_SECONDS, CACHE_SHARED_MAX_AGE_SECONDS,
+    CACHE_SHARED_STALE_SECONDS, CACHE_STATIC_MAX_AGE_SECONDS, GEMINI_RELAY_MAX_BYTES,
+    GEMINI_RELAY_MAX_SECONDS, GEMINI_RELAY_MIN_SECONDS,
+    GEMINI_RELAY_SIGNATURE_TTL_SECONDS, GEMINI_WS_MAX_SIZE,
+    GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE, LIVE_FREE_MAX_MINUTES,
+    MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_HTTP_BODY_BYTES, MAX_ROOMS,
+    MULTIPLAYER_FREE_MONTHLY_ROOMS,
+    MULTIPLAYER_MOCK_MONTHLY_ROOMS, PRACTICE_LIVE_MAX_PER_HOUR,
+    PRACTICE_LIVE_MIN_GAP_SECONDS, PRACTICE_LIVE_RATE_WINDOW_SECONDS,
+    PROJECTOR_MATCH_LIMIT,
+    PUSH_ACTIVE_DEVICES_PER_USER, PUSH_ENDPOINT_MAX_CHARS,
+    PUSH_INACTIVE_RETENTION_DAYS, PUSH_KEY_MAX_CHARS,
+    PUSH_SUBSCRIPTION_MAX_BYTES,
+    REQUEST_BODY_BUFFER_CONCURRENCY, ROOM_EMPTY_GRACE_SECONDS,
+    ROOM_JUDGEMENT_TIMEOUT_SECONDS,
+    ROOM_MAX_AGE_SECONDS, ROOM_MAX_CAPACITY, ROOM_NATIVE_AUDIO_BUFFER_MAX_BYTES,
+    ROOM_PENDING_TRANSCRIPT_MAX_CHARS, ROOM_TRANSCRIPT_ITEM_MAX_CHARS,
+    ROOM_TRANSCRIPT_MAX_ITEMS, ROOM_WS_SEND_TIMEOUT_SECONDS, SOLO_FREE_MONTHLY_LIMIT,
+    SOLO_MOCK_MONTHLY_LIMIT, TTS_CONCURRENCY, TTS_LEXICON_CACHE_TTL_SECONDS, TTS_LEXICON_LIMIT,
+    TTS_MAX_RESPONSE_BYTES, TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
+    TTS_PROVIDER_TIMEOUT_SECONDS, TTS_TEXT_MAX_CHARS, VIDEO_PROGRESS_MAX_SECONDS,
+    VIDEO_VIEW_DEDUPE_HOURS,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 CACHE_NO_CACHE = "no-cache"
-CACHE_HTML = "public, max-age=300, stale-while-revalidate=3600"
-CACHE_MANIFEST = "public, max-age=86400"
-CACHE_STATIC = "public, max-age=31536000, immutable"
+CACHE_HTML = f"public, max-age={CACHE_HTML_MAX_AGE_SECONDS}, stale-while-revalidate={CACHE_HTML_STALE_SECONDS}"
+CACHE_MANIFEST = f"public, max-age={CACHE_MANIFEST_MAX_AGE_SECONDS}"
+CACHE_STATIC = f"public, max-age={CACHE_STATIC_MAX_AGE_SECONDS}, immutable"
+CACHE_SHARED = f"public, max-age={CACHE_SHARED_MAX_AGE_SECONDS}, stale-while-revalidate={CACHE_SHARED_STALE_SECONDS}"
 
-app = FastAPI()
-MAX_HTTP_BODY_BYTES = int(os.getenv("MAX_HTTP_BODY_BYTES", str(5 * 1024 * 1024)))
+@asynccontextmanager
+async def _lifespan(_app):
+    try:
+        run_safe_startup_migrations()
+        yield
+    finally:
+        dispose_db_engine()
+
+
+app = FastAPI(lifespan=_lifespan)
+ESSENTIAL_ONLY_BLOCKED_PATHS = {
+    "/api/ai-coach/run",
+    "/api/ai-training/llm",
+    "/api/ai-training/recordings/quality-check",
+    "/api/ai-training/coverage/ai",
+    "/api/ai-training/regenerate-suggestions",
+    "/api/ai-training/rag/reindex",
+    "/api/tts/azure",
+    "/api/vote/ai-review",
+    "/api/vote/analysis/ai",
+}
+
+
+class RequestBodyLimitMiddleware:
+    """Enforce the body cap from actual ASGI chunks, including chunked uploads.
+
+    ``Content-Length`` remains a cheap early rejection, but is never trusted as
+    the sole RAM guard.  The request is replayed only after the complete body
+    has stayed within the cap, so endpoint-level ``except Exception`` blocks
+    cannot accidentally turn an oversized chunked request into a normal 400.
+    """
+
+    def __init__(self, inner, max_bytes: int):
+        self.inner = inner
+        self.max_bytes = max(1, int(max_bytes))
+        self.buffer_slots = asyncio.Semaphore(REQUEST_BODY_BUFFER_CONCURRENCY)
+
+    async def _reject(self, send):
+        body = json.dumps({
+            "detail": f"Request body exceeds the {self.max_bytes // (1024 * 1024)}MB server limit"
+        }).encode("utf-8")
+        await send({
+            "type": "http.response.start", "status": 413,
+            "headers": [(b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii"))],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.inner(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers") or []}
+        try:
+            declared = int(headers.get(b"content-length", b"0") or b"0")
+        except ValueError:
+            declared = self.max_bytes + 1
+        if declared > self.max_bytes:
+            await self._reject(send)
+            return
+
+        # At most a few 5MB buffers may be assembled simultaneously.  This is
+        # separate from Uvicorn's endpoint concurrency because the complete
+        # request has to be verified before Pydantic/endpoint code can run.
+        async with self.buffer_slots:
+            buffered = []
+            received = 0
+            while True:
+                message = await receive()
+                buffered.append(message)
+                if message.get("type") == "http.request":
+                    received += len(message.get("body") or b"")
+                    if received > self.max_bytes:
+                        await self._reject(send)
+                        return
+                    if not message.get("more_body", False):
+                        break
+                elif message.get("type") == "http.disconnect":
+                    break
+
+        index = 0
+
+        async def replay_receive():
+            nonlocal index
+            if index < len(buffered):
+                message = buffered[index]
+                index += 1
+                return message
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self.inner(scope, replay_receive, send)
+
+
+app.add_middleware(
+    GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE,
+    compresslevel=GZIP_COMPRESS_LEVEL,
+)
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_HTTP_BODY_BYTES)
 
 
 @app.middleware("http")
-async def reject_oversized_http_bodies(request: Request, call_next):
-    """Reject oversized JSON before FastAPI/Pydantic allocates it in Starter RAM."""
-    try:
-        content_length = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        content_length = MAX_HTTP_BODY_BYTES + 1
-    if content_length > MAX_HTTP_BODY_BYTES:
-        return JSONResponse(
-            {"detail": "Request body exceeds the 5MB server limit"}, status_code=413
-        )
+async def enforce_essential_only_budget(request: Request, call_next):
+    """At 4GB, block provider calls while retaining pages, JSON, R2 and admin."""
+    if request.url.path in ESSENTIAL_ONLY_BLOCKED_PATHS:
+        budget_error = _bandwidth_essential_gate_error()
+        if budget_error:
+            return JSONResponse({"detail": budget_error}, status_code=429)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def add_shared_static_cache_headers(request: Request, call_next):
+    """Make shared assets edge-cacheable without making unversioned files immutable."""
+    response = await call_next(request)
+    if request.url.path.startswith("/shared/") and response.status_code == 200:
+        response.headers["Cache-Control"] = CACHE_SHARED
+    return response
 
 
 app.mount("/shared", StaticFiles(directory=BASE_DIR / "frontend" / "shared"), name="shared")
@@ -120,69 +258,25 @@ app.include_router(ai_coach_router)
 app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 logger = logging.getLogger("skh_proxy")
-_db_engine = None
-_streamlit_secrets = None
 
 
 def _cache_headers(cache_control):
     return {"Cache-Control": cache_control}
 
 
-def _get_db_url():
-    env_url = os.getenv("DATABASE_URL")
-    if env_url:
-        return env_url
-
-    secrets_path = BASE_DIR / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        return None
-
-    with secrets_path.open("rb") as f:
-        secrets = tomllib.load(f)
-
-    db = secrets.get("connections", {}).get("postgresql", {})
-    if not db:
-        return None
-
-    dialect = db.get("dialect", "postgresql")
-    username = quote_plus(str(db.get("username", "")))
-    password = quote_plus(str(db.get("password", "")))
-    host = db.get("host", "localhost")
-    port = db.get("port", "5432")
-    database = db.get("database", "")
-    return f"{dialect}://{username}:{password}@{host}:{port}/{database}"
-
-
-def _get_streamlit_secrets():
-    global _streamlit_secrets
-    if _streamlit_secrets is not None:
-        return _streamlit_secrets
-
-    secrets_path = BASE_DIR / ".streamlit" / "secrets.toml"
-    if not secrets_path.exists():
-        _streamlit_secrets = {}
-        return _streamlit_secrets
-
-    try:
-        with secrets_path.open("rb") as f:
-            _streamlit_secrets = tomllib.load(f)
-    except Exception:
-        logger.exception("Failed to read Streamlit secrets")
-        _streamlit_secrets = {}
-    return _streamlit_secrets
+def _binary_cache_headers(cache_control):
+    # Starlette's generic gzip middleware only excludes event streams.  Mark
+    # already-compressed PNG/MP3 payloads as identity to avoid wasting CPU or
+    # making those files larger while text/JSON still benefits from gzip.
+    return {"Cache-Control": cache_control, "Content-Encoding": "identity"}
 
 
 def _get_proxy_secret(key: str, default: str = "") -> str:
-    value = os.getenv(key)
-    if value is not None:
-        return value
-    value = _get_streamlit_secrets().get(key, default)
-    return str(value) if value is not None else default
+    return get_secret(key, default)
 
 
 def _get_vapid():
-    """VAPID config for streamlit-free push (core.push), or None if unconfigured.
-    Mirrors functions._get_vapid_config but reads the proxy's own secret source."""
+    """Return server-side VAPID configuration, or ``None`` when incomplete."""
     public_key = _get_proxy_secret("VAPID_PUBLIC_KEY")
     private_key = _get_proxy_secret("VAPID_PRIVATE_KEY")
     subject = _get_proxy_secret("VAPID_SUBJECT", "https://skhlmc-dbt-marksys.onrender.com")
@@ -192,62 +286,24 @@ def _get_vapid():
 
 
 def _get_db_engine():
-    global _db_engine
-    if _db_engine is None:
-        db_url = _get_db_url()
-        if not db_url:
-            return None
-        _db_engine = create_engine(
-            db_url,
-            pool_pre_ping=True,
-            pool_size=int(os.getenv("DB_POOL_SIZE", "3")),
-            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
-            pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "10")),
-            pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "300")),
-        )
-
-        @event.listens_for(_db_engine, "connect")
-        def _set_search_path(dbapi_connection, connection_record):
-            cursor = dbapi_connection.cursor()
-            try:
-                cursor.execute("SET search_path TO public, extensions")
-            finally:
-                cursor.close()
-    return _db_engine
+    """Compatibility wrapper for API code and existing test patch points."""
+    return get_db_engine()
 
 
-class _ProxyDb:
-    """DB executor over the proxy's own SQLAlchemy engine, matching the duck-typed
-    contract consumed by ``core`` domain logic (query / execute / execute_count).
-
-    The streamlit-free counterpart of ``db.StreamlitDb`` — lets the proxy reuse
-    ``core.vote_logic`` without importing Streamlit. Search path (public,
-    extensions) is already set by the engine's connect listener.
-    """
-
-    def __init__(self, engine):
-        self._engine = engine
-
-    def query(self, sql_str, params=None):
-        import pandas as pd
-        with self._engine.connect() as conn:
-            result = conn.execute(text(sql_str), params or {})
-            rows = result.fetchall()
-            columns = list(result.keys())
-        return pd.DataFrame(rows, columns=columns)
-
-    def execute(self, sql_str, params=None):
-        with self._engine.begin() as conn:
-            conn.execute(text(sql_str), params or {})
-
-    def execute_count(self, sql_str, params=None):
-        with self._engine.begin() as conn:
-            result = conn.execute(text(sql_str), params or {})
-            return result.rowcount
-
-    def transaction(self):
-        """Yield one database transaction for an atomic domain operation."""
-        return self._engine.begin()
+def run_safe_startup_migrations():
+    """Apply small, idempotent compatibility migrations before serving traffic."""
+    engine = _get_db_engine()
+    if engine is None:
+        logger.warning("Skipping startup migrations: database is not configured")
+        return
+    with engine.begin() as conn:
+        config_result = migrate_legacy_config(conn)
+        if config_result["unknown"]:
+            logger.warning(
+                "Migrated %s unregistered legacy config keys; classify them before "
+                "removing system_config",
+                config_result["unknown"],
+            )
 
 
 def get_vote_db():
@@ -255,7 +311,7 @@ def get_vote_db():
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    return _ProxyDb(engine)
+    return RuntimeDb(engine)
 
 
 def _verify_committee_token(token: str):
@@ -269,17 +325,12 @@ def _verify_committee_token(token: str):
 
     user_id, sig = token.rsplit(":", 1)
     with engine.begin() as conn:
-        rows = conn.execute(
-            text("SELECT key,value FROM system_config WHERE key IN ('cookie_secret','login_disabled_accounts')")
-        ).fetchall()
-
-    configs = {str(row._mapping["key"]): row._mapping["value"] for row in rows}
+        configs = get_configs_from_connection(
+            conn, ("cookie_secret", "login_disabled_accounts")
+        )
     if "cookie_secret" not in configs:
         return None
-    try:
-        disabled_accounts = json.loads(str(configs.get("login_disabled_accounts") or "[]"))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        disabled_accounts = []
+    disabled_accounts = configs.get("login_disabled_accounts") or []
     if isinstance(disabled_accounts, list) and user_id in disabled_accounts:
         return None
 
@@ -309,26 +360,73 @@ def _get_relay_cookie_secret():
     if engine is None:
         return None
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT value FROM system_config WHERE key = 'cookie_secret'")
-        ).fetchone()
-    if row is None:
+        configs = get_configs_from_connection(conn, ("cookie_secret",))
+    secret = configs.get("cookie_secret")
+    if not secret:
         return None
-    _relay_cookie_secret = str(row._mapping["value"])
+    _relay_cookie_secret = str(secret)
     return _relay_cookie_secret
 
 
-def _verify_relay_signature(token: str, sig: str) -> bool:
-    """Verify the HMAC signature the app attaches to a Gemini Live ephemeral
-    token (see auth.sign_relay_token). Blocks anyone from using /gemini-live as
-    an open relay with an arbitrary token."""
-    if not token or not sig:
-        return False
+def _relay_b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _relay_b64decode(value: str) -> bytes:
+    raw = value.encode("ascii")
+    return base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+
+
+def _sign_relay_token(
+    token: str, user_id: str, practice_kind: str, max_seconds: int,
+    practice_id: str,
+) -> str:
+    """Bind a relay token to its member, quota category and server deadline."""
+    secret = _get_relay_cookie_secret()
+    if not secret or practice_kind not in ("solo_free", "solo_mock"):
+        return ""
+    payload = {
+        "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+        "user_id": str(user_id),
+        "practice_kind": practice_kind,
+        "practice_id": str(practice_id),
+        "max_seconds": max(GEMINI_RELAY_MIN_SECONDS, min(int(max_seconds), GEMINI_RELAY_MAX_SECONDS)),
+        "exp": int(time.time()) + GEMINI_RELAY_SIGNATURE_TTL_SECONDS,
+    }
+    encoded = _relay_b64(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"))
+    signature = hmac.new(secret.encode(), encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{encoded}.{_relay_b64(signature)}"
+
+
+def _verify_relay_signature(token: str, signed_claim: str) -> dict | None:
+    """Verify and return the server-authoritative Gemini relay claim."""
+    if not token or not signed_claim:
+        return None
     secret = _get_relay_cookie_secret()
     if not secret:
-        return False
-    expected = hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+        return None
+    try:
+        encoded, supplied = signed_claim.split(".", 1)
+        expected = hmac.new(secret.encode(), encoded.encode("ascii"), hashlib.sha256).digest()
+        if not hmac.compare_digest(_relay_b64(expected), supplied):
+            return None
+        payload = json.loads(_relay_b64decode(encoded))
+        if payload.get("token_sha256") != hashlib.sha256(token.encode()).hexdigest():
+            return None
+        if payload.get("practice_kind") not in ("solo_free", "solo_mock"):
+            return None
+        if not str(payload.get("user_id") or "") or not str(payload.get("practice_id") or ""):
+            return None
+        if int(payload.get("exp") or 0) < int(time.time()):
+            return None
+        seconds = int(payload.get("max_seconds") or 0)
+        if not GEMINI_RELAY_MIN_SECONDS <= seconds <= GEMINI_RELAY_MAX_SECONDS:
+            return None
+        return payload
+    except Exception:
+        return None
 
 
 def _sign_committee_token(user_id: str):
@@ -406,25 +504,10 @@ def _verify_review_token(token: str):
 
 
 def _require_committee_user(request: Request):
-    # The cookie is the primary source, but requests originating from the
-    # sandboxed Streamlit component iframe cannot carry a SameSite=Strict
-    # cookie, so fall back to a signed bearer token in the Authorization header.
     user_id = _verify_committee_cookie(request)
-    if not user_id:
-        auth = request.headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            user_id = _verify_committee_token(auth[7:].strip())
     if not user_id:
         raise HTTPException(status_code=401, detail="Not logged in")
     return user_id
-
-
-def _ensure_push_subscriptions_table(conn):
-    conn.execute(text(CREATE_PUSH_SUBSCRIPTIONS))
-    conn.execute(text(
-        f"CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_active "
-        f"ON {TABLE_PUSH_SUBSCRIPTIONS}(user_id, is_active)"
-    ))
 
 
 def _validated_push_subscription(payload):
@@ -434,25 +517,28 @@ def _validated_push_subscription(payload):
     keys = payload.get("keys")
     if (
         not endpoint.startswith("https://")
+        or len(endpoint) > PUSH_ENDPOINT_MAX_CHARS
         or not isinstance(keys, dict)
         or not str(keys.get("p256dh") or "").strip()
         or not str(keys.get("auth") or "").strip()
+        or len(str(keys.get("p256dh") or "")) > PUSH_KEY_MAX_CHARS
+        or len(str(keys.get("auth") or "")) > PUSH_KEY_MAX_CHARS
+        or len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > PUSH_SUBSCRIPTION_MAX_BYTES
     ):
         raise HTTPException(status_code=400, detail="Invalid push subscription")
     return endpoint
 
 
-def _ensure_video_tracking_tables(conn):
-    conn.execute(text(CREATE_VIDEO_VIEWS))
-    conn.execute(text(CREATE_VIDEO_PROGRESS))
-    conn.execute(text(
-        f"CREATE INDEX IF NOT EXISTS idx_video_views_user_updated "
-        f"ON {TABLE_VIDEO_VIEWS}(user_id, viewed_at DESC)"
-    ))
-    conn.execute(text(
-        f"CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated "
-        f"ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC)"
-    ))
+def _bound_push_subscriptions(conn, user_id: str, now) -> None:
+    """Keep only five active devices per member and discard stale inactive rows."""
+    conn.execute(text(f"""UPDATE {TABLE_PUSH_SUBSCRIPTIONS} SET is_active=FALSE,updated_at=:now
+        WHERE user_id=:user_id AND is_active=TRUE AND endpoint NOT IN
+          (SELECT endpoint FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE user_id=:user_id AND is_active=TRUE
+           ORDER BY updated_at DESC NULLS LAST LIMIT :device_limit)"""),
+        {"user_id": user_id, "now": now, "device_limit": PUSH_ACTIVE_DEVICES_PER_USER})
+    conn.execute(text(f"""DELETE FROM {TABLE_PUSH_SUBSCRIPTIONS}
+        WHERE is_active=FALSE AND updated_at<:cutoff"""),
+        {"cutoff": now - datetime.timedelta(days=PUSH_INACTIVE_RETENTION_DAYS)})
 
 
 @app.get("/manifest.json")
@@ -485,7 +571,7 @@ async def app_icon(size: str):
     if size not in {"180", "192", "512"} or not icon_path.exists():
         return Response(status_code=404)
     return FileResponse(icon_path, media_type="image/png",
-                        headers=_cache_headers(CACHE_STATIC))
+                        headers=_binary_cache_headers(CACHE_STATIC))
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -493,7 +579,7 @@ async def favicon():
     return FileResponse(
         BASE_DIR / "static" / "app-icon-192.png",
         media_type="image/png",
-        headers=_cache_headers(CACHE_STATIC),
+        headers=_binary_cache_headers(CACHE_STATIC),
     )
 
 
@@ -513,7 +599,6 @@ async def push_subscribe(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_push_subscriptions_table(conn)
         conn.execute(
             text(
                 f"INSERT INTO {TABLE_PUSH_SUBSCRIPTIONS} "
@@ -533,6 +618,7 @@ async def push_subscribe(request: Request):
                 "now": now,
             },
         )
+        _bound_push_subscriptions(conn, user_id, now)
 
     return {"ok": True}
 
@@ -553,7 +639,6 @@ async def push_unsubscribe(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_push_subscriptions_table(conn)
         if endpoint:
             conn.execute(
                 text(
@@ -603,8 +688,6 @@ async def push_resubscribe(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_push_subscriptions_table(conn)
-
         # The old endpoint is the capability that identifies the owning member.
         # Never create an active orphan subscription when it is missing/unknown;
         # the authenticated page reconciliation will safely recover it later.
@@ -647,6 +730,7 @@ async def push_resubscribe(request: Request):
                 ),
                 {"old_endpoint": old_endpoint},
             )
+        _bound_push_subscriptions(conn, str(user_id), now)
 
     return {"ok": True}
 
@@ -692,28 +776,47 @@ def tts_provider_configured() -> bool:
     )
 
 
-_LEXICON_TTL = 60.0  # seconds; dictionary edits in ai_training.py take effect within this
 _lexicon_cache = {"rows": None, "at": 0.0}
-_deployable_model_cache = {"values": {}, "at": 0.0}
+TTS_SEMAPHORE = asyncio.Semaphore(TTS_CONCURRENCY)
+
+
+async def _read_bounded_audio(response) -> bytes:
+    try:
+        declared = int(response.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > TTS_MAX_RESPONSE_BYTES:
+        raise TtsUnavailable("TTS response exceeds server limit", status=502)
+    data = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(data) + len(chunk) > TTS_MAX_RESPONSE_BYTES:
+            raise TtsUnavailable("TTS response exceeds server limit", status=502)
+        data.extend(chunk)
+    if not data:
+        raise TtsUnavailable("TTS returned empty audio", status=502)
+    return bytes(data)
 
 
 def _model_is_deployable(model_id: str, model_type: str) -> bool:
-    now = time.monotonic()
-    key = (model_id, model_type)
-    if now - _deployable_model_cache["at"] < 60 and key in _deployable_model_cache["values"]:
-        return bool(_deployable_model_cache["values"][key])
-    allowed = False
+    """Check the formal registry migration and live status before every call."""
     try:
+        from core.schema_features import READY, feature_bundle_state
+
+        db = get_vote_db()
+        if feature_bundle_state(db, "dataset_model", (
+            TABLE_AI_DATASET_SNAPSHOTS,
+            TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+            TABLE_AI_MODEL_VERSIONS,
+        )) != READY:
+            return False
         engine = _get_db_engine()
         with engine.connect() as conn:
-            allowed = conn.execute(text("""SELECT EXISTS(SELECT 1 FROM ai_model_versions
+            return bool(conn.execute(text(f"""SELECT EXISTS(SELECT 1 FROM {TABLE_AI_MODEL_VERSIONS}
                 WHERE model_id=:model AND model_type=:type AND status='deployable')"""),
-                {"model": model_id, "type": model_type}).scalar()
+                {"model": model_id, "type": model_type}).scalar())
     except Exception as exc:
         logger.info("model deployable gate unavailable: %s", exc)
-    _deployable_model_cache["values"][key] = bool(allowed)
-    _deployable_model_cache["at"] = now
-    return bool(allowed)
+        return False
 
 
 def _load_lexicon_overrides():
@@ -722,14 +825,15 @@ def _load_lexicon_overrides():
     error, keep the last good snapshot rather than dropping overrides."""
     now = time.monotonic()
     cached = _lexicon_cache["rows"]
-    if cached is not None and (now - _lexicon_cache["at"]) < _LEXICON_TTL:
+    if cached is not None and (now - _lexicon_cache["at"]) < TTS_LEXICON_CACHE_TTL_SECONDS:
         return cached
     rows = []
     try:
         engine = _get_db_engine()
         with engine.begin() as conn:
             result = conn.execute(
-                text("SELECT term, reading FROM tts_lexicon WHERE is_active = TRUE")
+                text("SELECT term, reading FROM tts_lexicon WHERE is_active = TRUE LIMIT :limit"),
+                {"limit": TTS_LEXICON_LIMIT},
             )
             for term_value, reading_value in result:
                 term_value = (term_value or "").strip()
@@ -747,19 +851,29 @@ def _load_lexicon_overrides():
     return rows
 
 
+@lru_cache(maxsize=1)
+def _compiled_lexicon(rows):
+    """Compile the potentially large alternation once per cached lexicon."""
+    replacements = {}
+    for term_value, reading_value in rows:
+        replacements.setdefault(term_value, reading_value)
+    if not replacements:
+        return None, replacements
+    pattern = re.compile("|".join(re.escape(term) for term in replacements))
+    return pattern, replacements
+
+
 def _preprocess_tts_text(text_value: str) -> str:
-    """讀音字典前處理 (tts_rd_plan.md 第二節「讀音層」). 合成前把 tts_lexicon 嘅
+    """讀音字典前處理 (docs/ROADMAP.md P3「讀音層」). 合成前把 tts_lexicon 嘅
     term → reading 覆寫。單人 (/api/tts/azure) 同聯機 (_room_gemini_pump) 都經呢度,
     改字典一次兩邊生效。將來可喺呢度加 G2P (ToJyutping/PyCantonese)。"""
     processed = (text_value or "").strip()
     if not processed:
         return processed
-    replacements = {}
-    for term_value, reading_value in _load_lexicon_overrides():
-        replacements.setdefault(term_value, reading_value)
-    if not replacements:
+    rows = tuple(_load_lexicon_overrides())
+    pattern, replacements = _compiled_lexicon(rows)
+    if pattern is None:
         return processed
-    pattern = re.compile("|".join(re.escape(term) for term in replacements))
     return pattern.sub(lambda match: replacements[match.group(0)], processed)
 
 
@@ -779,8 +893,9 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
     endpoint = f"https://{speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            azure_response = await client.post(
+        async with httpx.AsyncClient(timeout=TTS_PROVIDER_TIMEOUT_SECONDS) as client:
+            async with client.stream(
+                "POST",
                 endpoint,
                 content=ssml.encode("utf-8"),
                 headers={
@@ -789,23 +904,17 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
                     "X-Microsoft-OutputFormat": output_format,
                     "User-Agent": "skhlmc-dbt-marksys",
                 },
-            )
+            ) as azure_response:
+                if azure_response.status_code != 200:
+                    logger.warning("Azure TTS returned %s", azure_response.status_code)
+                    raise TtsUnavailable("Azure TTS request failed", status=502)
+                audio = await _read_bounded_audio(azure_response)
+                mime = azure_response.headers.get("content-type") or "audio/mpeg"
     except httpx.HTTPError as e:
         logger.warning("Azure TTS request failed: %s", e)
         raise TtsUnavailable("Azure TTS request failed", status=502)
 
-    if azure_response.status_code != 200:
-        logger.warning(
-            "Azure TTS returned %s: %s",
-            azure_response.status_code,
-            azure_response.text[:300],
-        )
-        raise TtsUnavailable("Azure TTS request failed", status=502)
-
-    return (
-        azure_response.content,
-        azure_response.headers.get("content-type") or "audio/mpeg",
-    )
+    return audio, mime
 
 
 async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
@@ -820,44 +929,57 @@ async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
     request_id = secrets.token_urlsafe(12)
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=5)) as client:
-            response = await client.post(custom_url, headers={
-                "Authorization": f"Bearer {api_key}", "Accept": "audio/*",
-                "X-Request-ID": request_id,
-            }, json={"text": text_value, "model_version": model_version,
-                     "request_id": request_id})
-            response.raise_for_status()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(
+            TTS_PROVIDER_TIMEOUT_SECONDS, connect=TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
+        )) as client:
+            async with client.stream("POST", custom_url, headers={
+                    "Authorization": f"Bearer {api_key}", "Accept": "audio/*",
+                    "X-Request-ID": request_id,
+                }, json={"text": text_value, "model_version": model_version,
+                         "request_id": request_id}) as response:
+                response.raise_for_status()
+                mime = (response.headers.get("content-type") or "audio/wav").split(";", 1)[0]
+                if not mime.startswith("audio/"):
+                    raise TtsUnavailable("Custom TTS returned invalid audio", status=502)
+                audio = await _read_bounded_audio(response)
+                response_model = response.headers.get("x-model-version") or model_version
     except httpx.HTTPError as exc:
         logger.warning("custom TTS failed request_id=%s: %s", request_id, exc)
         raise TtsUnavailable("Custom TTS request failed", status=502) from exc
-    mime = (response.headers.get("content-type") or "audio/wav").split(";", 1)[0]
-    if not response.content or not mime.startswith("audio/"):
-        raise TtsUnavailable("Custom TTS returned invalid audio", status=502)
     logger.info("custom TTS success request_id=%s model=%s elapsed_ms=%d bytes=%d",
-                request_id, response.headers.get("x-model-version") or model_version,
-                int((time.monotonic() - started) * 1000), len(response.content))
-    return response.content, mime
+                request_id, response_model,
+                int((time.monotonic() - started) * 1000), len(audio))
+    return audio, mime
 
 
 async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
     """統一 TTS 入口:單人 (/api/tts/azure route)、聯機 (_room_gemini_pump)、
     將來 custom model 全部行呢度。換 provider = 改 TTS_PROVIDER secret。"""
-    processed = _preprocess_tts_text(text_value)
+    raw = str(text_value or "").strip()
+    if len(raw) > TTS_TEXT_MAX_CHARS:
+        raise TtsUnavailable("TTS text exceeds server limit", status=400)
+    processed = _preprocess_tts_text(raw)
     if not processed:
         raise TtsUnavailable("Missing text", status=400)
+    if len(processed) > TTS_TEXT_MAX_CHARS:
+        raise TtsUnavailable("TTS lexicon expansion exceeds server limit", status=400)
     provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
-    if provider == "custom":
-        try:
-            return await _synthesize_custom(processed)
-        except TtsUnavailable as exc:
-            logger.warning("custom TTS unavailable; falling back to Azure: %s", exc)
-            return await _synthesize_azure(processed)
-    return await _synthesize_azure(processed)
+    async with TTS_SEMAPHORE:
+        if provider == "custom":
+            try:
+                return await _synthesize_custom(processed)
+            except TtsUnavailable as exc:
+                logger.warning("custom TTS unavailable; falling back to Azure: %s", exc)
+                return await _synthesize_azure(processed)
+        return await _synthesize_azure(processed)
 
 
 @app.post("/api/tts/azure")
 async def azure_tts(request: Request):
-    _require_committee_user(request)
+    user_id = _require_committee_user(request)
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error:
+        raise HTTPException(status_code=429, detail=budget_error)
 
     try:
         payload = await request.json()
@@ -869,7 +991,7 @@ async def azure_tts(request: Request):
     tts_text = str(payload.get("text") or "").strip()
     if not tts_text:
         raise HTTPException(status_code=400, detail="Missing text")
-    if len(tts_text) > 1200:
+    if len(tts_text) > TTS_TEXT_MAX_CHARS:
         raise HTTPException(status_code=400, detail="Text is too long")
 
     try:
@@ -877,10 +999,15 @@ async def azure_tts(request: Request):
     except TtsUnavailable as e:
         raise HTTPException(status_code=e.status, detail=str(e))
 
+    await asyncio.to_thread(
+        record_bandwidth_usage, "tts_audio_response", len(audio_bytes), str(user_id),
+        aggregate_key=f"user={str(user_id)[:120]}",
+    )
+
     return Response(
         content=audio_bytes,
         media_type=mime or "audio/mpeg",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "Content-Encoding": "identity"},
     )
 
 
@@ -903,13 +1030,14 @@ async def video_view(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_video_tracking_tables(conn)
         conn.execute(
-            text(
-                f"INSERT INTO {TABLE_VIDEO_VIEWS} (video_id, user_id, viewed_at) "
-                "VALUES (:video_id, :user_id, :viewed_at)"
-            ),
-            {"video_id": video_id, "user_id": user_id, "viewed_at": now},
+            text(f"""INSERT INTO {TABLE_VIDEO_VIEWS} (video_id,user_id,viewed_at)
+                SELECT :video_id,:user_id,:viewed_at
+                WHERE NOT EXISTS (SELECT 1 FROM {TABLE_VIDEO_VIEWS}
+                  WHERE video_id=:video_id AND user_id=:user_id
+                    AND viewed_at>=:view_cutoff)"""),
+            {"video_id": video_id, "user_id": user_id, "viewed_at": now,
+             "view_cutoff": now - datetime.timedelta(hours=VIDEO_VIEW_DEDUPE_HOURS)},
         )
 
     return {"ok": True}
@@ -933,10 +1061,17 @@ async def video_progress(request: Request):
         duration_seconds = max(0, int(float(payload.get("duration_seconds") or 0)))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid progress payload")
+    if (
+        video_id <= 0
+        or watched_seconds > VIDEO_PROGRESS_MAX_SECONDS
+        or duration_seconds > VIDEO_PROGRESS_MAX_SECONDS
+    ):
+        raise HTTPException(status_code=400, detail="Invalid progress payload")
+    if duration_seconds:
+        watched_seconds = min(watched_seconds, duration_seconds)
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_video_tracking_tables(conn)
         conn.execute(
             text(
                 f"""
@@ -950,6 +1085,8 @@ async def video_progress(request: Request):
                     watched_seconds = EXCLUDED.watched_seconds,
                     duration_seconds = EXCLUDED.duration_seconds,
                     updated_at = EXCLUDED.updated_at
+                WHERE {TABLE_VIDEO_PROGRESS}.watched_seconds IS DISTINCT FROM EXCLUDED.watched_seconds
+                   OR {TABLE_VIDEO_PROGRESS}.duration_seconds IS DISTINCT FROM EXCLUDED.duration_seconds
                 """
             ),
             {
@@ -967,26 +1104,13 @@ async def video_progress(request: Request):
 # ---------------------------------------------------------------------------
 # Competition-day projector (big-screen display + operator control)
 #
-# Additive and self-contained: new routes are registered before the catch-all
-# proxy below, backed by a single lazily-created table (projector_state) plus
-# read-only reads of the existing matches/debaters tables. No Streamlit page,
-# existing endpoint, or schema migration is touched, so deploying this to
-# Render does not change existing behaviour. The projector intentionally shows
-# NO timer — timing stays on the chairperson's own device exactly as before.
+# These routes are backed by projector_state plus read-only match/debater data.
+# Schema ownership lives in schema.py and compatibility creation runs at startup.
+# The projector intentionally shows no timer: timing stays on the chairperson's
+# own device.
 # ---------------------------------------------------------------------------
 
 PROJECTOR_DEFAULT_DISPLAY = "main"
-
-CREATE_PROJECTOR_STATE = """
-CREATE TABLE IF NOT EXISTS projector_state (
-    display_key   TEXT PRIMARY KEY,
-    match_id      TEXT,
-    debate_format TEXT,
-    seg_index     INTEGER DEFAULT 0,
-    visible       BOOLEAN DEFAULT TRUE,
-    updated_at    TIMESTAMP
-);
-"""
 
 # segment-id prefix -> debater position (1 主辯, 2 一副, 3 二副, 4 結辯).
 # Only these single-speaker turns map to a named debater; prep / free-debate /
@@ -1012,16 +1136,11 @@ def _active_side(seg_side: str):
     return None  # 雙方 / 準備 — no single active side
 
 
-def _ensure_projector_table(conn):
-    conn.execute(text(CREATE_PROJECTOR_STATE))
-
-
 def _resolve_projector_state(engine, display_key):
     """Turn the stored row into ready-to-render display JSON (motion, team
     names, current speaking role/name). All resolution happens here so the
     display page can stay dumb and just poll."""
     with engine.begin() as conn:
-        _ensure_projector_table(conn)
         row = conn.execute(
             text("SELECT match_id, debate_format, seg_index, visible "
                  "FROM projector_state WHERE display_key = :k"),
@@ -1116,8 +1235,9 @@ async def projector_list_matches(request: Request):
     with engine.begin() as conn:
         rows = conn.execute(text(
             "SELECT match_id, match_date, match_time, topic_text, pro_team, con_team "
-            "FROM matches ORDER BY match_date DESC NULLS LAST, match_time DESC NULLS LAST"
-        )).fetchall()
+            "FROM matches ORDER BY match_date DESC NULLS LAST, match_time DESC NULLS LAST "
+            "LIMIT :limit"
+        ), {"limit": PROJECTOR_MATCH_LIMIT}).fetchall()
     return {"matches": [
         {
             "match_id": x._mapping["match_id"],
@@ -1148,7 +1268,6 @@ async def projector_set_state(request: Request):
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     with engine.begin() as conn:
-        _ensure_projector_table(conn)
         current = conn.execute(
             text("SELECT match_id, debate_format, seg_index, visible "
                  "FROM projector_state WHERE display_key = :k"),
@@ -1349,7 +1468,9 @@ async def ai_coach_room_page(code: str, request: Request):
 
 @app.get("/ai-training")
 async def ai_training_page():
-    return FileResponse(BASE_DIR / "frontend" / "ai_training" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "ai_training" / "index.html").read_text(encoding="utf-8")
+    html = html.replace("__APP_VERSION__", APP_VERSION)
+    return Response(content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML))
 
 
 @app.get("/ai-training/app.js")
@@ -1393,7 +1514,7 @@ async def ai_fund_page():
 @app.get("/api/practice/bell")
 async def appliance_practice_bell():
     return FileResponse(BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg",
-                        headers=_cache_headers(CACHE_STATIC))
+                        headers=_binary_cache_headers(CACHE_STATIC))
 
 
 @app.get("/api/practice/timer-config")
@@ -1417,7 +1538,7 @@ async def appliance_practice_timer_config(request: Request):
     free_minutes = _opt_float("free_minutes")
     prep_minutes = _opt_float("closing_prep_minutes")
     if free_minutes is not None:
-        free_minutes = min(10.0, max(2.0, free_minutes))
+        free_minutes = min(float(LIVE_FREE_MAX_MINUTES), max(2.0, free_minutes))
     if prep_minutes is not None:
         prep_minutes = min(10.0, max(0.5, prep_minutes))
     config = get_debate_timer_config(
@@ -1449,10 +1570,10 @@ _PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
 # In-process rate limit for token minting, keyed by committee user. Single-kiosk
 # scale, so a plain dict that resets on restart is enough.
 _practice_live_hits: dict = {}
-_PRACTICE_LIVE_MAX_PER_HOUR = 30
-_PRACTICE_LIVE_MIN_GAP_SEC = 3
-SOLO_FREE_MONTHLY_LIMIT = int(os.getenv("SOLO_FREE_MONTHLY_LIMIT", "20"))
-SOLO_MOCK_MONTHLY_LIMIT = int(os.getenv("SOLO_MOCK_MONTHLY_LIMIT", "4"))
+_PRACTICE_LIVE_MAX_PER_HOUR = PRACTICE_LIVE_MAX_PER_HOUR
+_PRACTICE_LIVE_MIN_GAP_SEC = PRACTICE_LIVE_MIN_GAP_SECONDS
+_bandwidth_last_prune = None
+_bandwidth_prune_lock = threading.Lock()
 
 SOLO_LIMIT_MESSAGE = (
     "由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，"
@@ -1463,12 +1584,209 @@ GLOBAL_LIVE_LIMIT_MESSAGE = (
     "由於本月全系統的網絡傳輸量預算有限，Gemini Live練習名額已用完。"
     "為確保一般系統功能維持正常，請於下月再試或聯絡系統管理員。"
 )
+BANDWIDTH_STOP_MESSAGE = (
+    f"由於本月全系統網絡傳輸量已達{BANDWIDTH_STOP_LIVE_BYTES / 1_000_000_000:g}GB"
+    "預算上限，系統已停止建立新的Gemini Live"
+    "練習及聯機房間。一般功能、R2媒體及管理功能維持正常。"
+)
+BANDWIDTH_ESSENTIAL_MESSAGE = (
+    f"由於本月全系統網絡傳輸量已達{BANDWIDTH_ESSENTIAL_ONLY_BYTES / 1_000_000_000:g}GB"
+    "保護上限，本功能暫停使用。"
+    "目前只保留一般HTML、JSON、R2媒體及管理功能。"
+)
+
+
+def _bandwidth_month_context():
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    start_hk = now_hk.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return (
+        now_hk.strftime("%Y-%m"),
+        start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+    )
+
+
+def bandwidth_budget_status(*, notify: bool = False) -> dict:
+    """Return tracked high-bandwidth egress plus an optional Render baseline."""
+    engine = _get_db_engine()
+    period, start_utc = _bandwidth_month_context()
+    tracked = 0
+    if engine is not None:
+        with engine.begin() as conn:
+            tracked = int(conn.execute(text(f"""SELECT COALESCE(SUM(bytes_out),0)
+                FROM {TABLE_BANDWIDTH_USAGE_LOGS} WHERE created_at>=:start"""),
+                {"start": start_utc}).scalar() or 0)
+    try:
+        baseline = max(0, int(_get_proxy_secret("BANDWIDTH_MONTH_BASE_BYTES", "0") or 0))
+    except ValueError:
+        baseline = 0
+    baseline_as_of = _get_proxy_secret("BANDWIDTH_BASELINE_AS_OF", "").strip()
+    tracked_snapshot_raw = _get_proxy_secret("BANDWIDTH_BASELINE_TRACKED_BYTES", "").strip()
+    baseline_snapshot_ready = bool(baseline_as_of and tracked_snapshot_raw)
+    try:
+        tracked_snapshot = max(0, int(tracked_snapshot_raw or 0))
+    except ValueError:
+        tracked_snapshot = 0
+        baseline_snapshot_ready = False
+    baseline_period_ok = True
+    if baseline_as_of:
+        try:
+            parsed_as_of = datetime.datetime.fromisoformat(baseline_as_of)
+            if parsed_as_of.tzinfo is None:
+                parsed_as_of = parsed_as_of.replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+            baseline_period_ok = (
+                parsed_as_of.astimezone(ZoneInfo("Asia/Hong_Kong")).strftime("%Y-%m") == period
+            )
+        except ValueError:
+            baseline_period_ok = False
+    if baseline and baseline_snapshot_ready and baseline_period_ok:
+        tracked_after_baseline = max(0, tracked - tracked_snapshot)
+    else:
+        # Backward-compatible and deliberately conservative: an incomplete
+        # snapshot may double count, but can never silently under-enforce.
+        tracked_after_baseline = tracked
+    effective_baseline = baseline if baseline_period_ok else 0
+    total = effective_baseline + tracked_after_baseline
+    stage = 4 if total >= BANDWIDTH_ESSENTIAL_ONLY_BYTES else 3.5 if total >= BANDWIDTH_STOP_LIVE_BYTES else 3 if total >= BANDWIDTH_WARN_BYTES else 0
+    status = {
+        "period": period, "baseline_bytes": effective_baseline,
+        "baseline_as_of": baseline_as_of,
+        "baseline_tracked_snapshot_bytes": tracked_snapshot,
+        "baseline_snapshot_ready": baseline_snapshot_ready and baseline_period_ok,
+        "tracked_bytes": tracked, "tracked_after_baseline_bytes": tracked_after_baseline,
+        "total_bytes": total, "stage": stage,
+        "warn_bytes": BANDWIDTH_WARN_BYTES,
+        "stop_live_bytes": BANDWIDTH_STOP_LIVE_BYTES,
+        "essential_only_bytes": BANDWIDTH_ESSENTIAL_ONLY_BYTES,
+    }
+    if notify:
+        _send_bandwidth_warning_once(status)
+    return status
+
+
+def _send_bandwidth_warning_once(status: dict) -> None:
+    if status["total_bytes"] < BANDWIDTH_WARN_BYTES:
+        return
+    engine = _get_db_engine()
+    if engine is None:
+        return
+    marker = f"bandwidth_3gb_push_sent:{status['period']}"
+    claimed = False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('bandwidth_3gb_push'))"))
+        existing = get_configs_from_connection(conn, (marker,))
+        if marker not in existing:
+            set_configs_on_connection(conn, {
+                marker: status["total_bytes"],
+                "bandwidth_developer_warning": status,
+            }, updated_at=now)
+            claimed = True
+    if not claimed:
+        return
+    logger.warning("Monthly bandwidth warning reached: %s", status)
+    try:
+        from core.push import notify_committee
+        notify_committee(
+            get_vote_db(), _get_vapid(), "⚠️ 系統網絡傳輸量提示",
+            f"本月全系統網絡傳輸量已達{BANDWIDTH_WARN_BYTES / 1_000_000_000:g}GB。"
+            f"為控制營運預算，達{BANDWIDTH_STOP_LIVE_BYTES / 1_000_000_000:g}GB後"
+            "將停止新的Gemini Live及聯機房間。",
+            tag=f"bandwidth-warning-{status['period']}", url="/",
+        )
+    except Exception:
+        logger.exception("Failed to send committee bandwidth warning")
+
+
+def record_bandwidth_usage(
+    source: str, byte_count: int, user_id: str = "", details: str = "",
+    *, aggregate_key: str = "",
+) -> bool:
+    global _bandwidth_last_prune
+    count = max(0, int(byte_count or 0))
+    if not count:
+        return True
+    engine = _get_db_engine()
+    if engine is None:
+        return False
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    source = str(source)[:80]
+    user = str(user_id or "")[:200]
+    details = str(details or "")[:500]
+    aggregate_key = str(aggregate_key or "")[:400]
+    with engine.begin() as conn:
+        params = {
+            "source": source, "user": user, "insert_user": user or None,
+            "bytes": count, "details": details, "now": now,
+            "period_start": now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+        }
+        if aggregate_key:
+            # A 30-second checkpoint must survive a Render crash, but one row per
+            # checkpoint would turn a bandwidth safeguard into a storage leak.
+            # Keep one accumulating row per live session during the current month.
+            params["details"] = aggregate_key
+            lock_key = f"bandwidth:{source}:{user}:{aggregate_key}"
+            conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+                         {"lock_key": lock_key})
+            updated = conn.execute(text(f"""UPDATE {TABLE_BANDWIDTH_USAGE_LOGS}
+                SET bytes_out=bytes_out+:bytes
+                WHERE id=(SELECT id FROM {TABLE_BANDWIDTH_USAGE_LOGS}
+                    WHERE source=:source AND COALESCE(user_id,'')=:user
+                      AND details=:details AND created_at>=:period_start
+                    ORDER BY id DESC LIMIT 1)"""), params)
+            if updated.rowcount:
+                params = None
+        if params is not None:
+            conn.execute(text(f"""INSERT INTO {TABLE_BANDWIDTH_USAGE_LOGS}
+                (source,user_id,bytes_out,details,created_at)
+                VALUES(:source,:insert_user,:bytes,:details,:now)"""), params)
+    monotonic_now = time.monotonic()
+    if (
+        _bandwidth_last_prune is None
+        or monotonic_now - _bandwidth_last_prune >= MAINTENANCE_PRUNE_INTERVAL_SECONDS
+    ):
+        with _bandwidth_prune_lock:
+            if (
+                _bandwidth_last_prune is None
+                or monotonic_now - _bandwidth_last_prune >= MAINTENANCE_PRUNE_INTERVAL_SECONDS
+            ):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            f"DELETE FROM {TABLE_BANDWIDTH_USAGE_LOGS} WHERE created_at<:cutoff"
+                        ), {"cutoff": now - datetime.timedelta(days=BANDWIDTH_LOG_RETENTION_DAYS)})
+                except Exception:
+                    logger.exception("Bandwidth retention maintenance failed")
+                _bandwidth_last_prune = monotonic_now
+    try:
+        _send_bandwidth_warning_once(bandwidth_budget_status())
+    except Exception:
+        logger.exception("Bandwidth usage was recorded but warning delivery failed")
+    return True
+
+
+def _bandwidth_live_gate_error() -> str | None:
+    status = bandwidth_budget_status(notify=True)
+    return BANDWIDTH_STOP_MESSAGE if status["total_bytes"] >= BANDWIDTH_STOP_LIVE_BYTES else None
+
+
+def _bandwidth_essential_gate_error() -> str | None:
+    status = bandwidth_budget_status(notify=True)
+    return BANDWIDTH_ESSENTIAL_MESSAGE if status["total_bytes"] >= BANDWIDTH_ESSENTIAL_ONLY_BYTES else None
 
 
 def _practice_live_rate_check(user_id: str):
     """Return an error message if this user is minting too fast, else None."""
     now = time.time()
-    hits = [t for t in _practice_live_hits.get(user_id, []) if now - t < 3600]
+    # A restarted worker naturally clears this local throttle.  While it stays
+    # alive, prune every user's expired bucket so old committee IDs cannot turn
+    # the dict into an unbounded process-lifetime cache.
+    for key, values in list(_practice_live_hits.items()):
+        recent = [timestamp for timestamp in values if now - timestamp < PRACTICE_LIVE_RATE_WINDOW_SECONDS]
+        if recent:
+            _practice_live_hits[key] = recent
+        else:
+            _practice_live_hits.pop(key, None)
+    hits = [t for t in _practice_live_hits.get(user_id, []) if now - t < PRACTICE_LIVE_RATE_WINDOW_SECONDS]
     if hits and now - hits[-1] < _PRACTICE_LIVE_MIN_GAP_SEC:
         return "太快喇，請等幾秒再開始。"
     if len(hits) >= _PRACTICE_LIVE_MAX_PER_HOUR:
@@ -1478,22 +1796,35 @@ def _practice_live_rate_check(user_id: str):
     return None
 
 
+def _solo_quota_boundaries(now_hk: datetime.datetime, is_mock: bool):
+    """Return UTC-naive boundaries for the existing Live usage ledger."""
+    month_start_hk = now_hk.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    user_start_hk = (
+        (now_hk - datetime.timedelta(days=now_hk.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        if is_mock else now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    return (
+        user_start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+        month_start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+    )
+
+
 def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     """Enforce persistent per-user and global quotas before minting Live tokens."""
+    budget_error = _bandwidth_live_gate_error()
+    if budget_error:
+        return budget_error
     engine = _get_db_engine()
     if engine is None:
         return "Database is not configured"
-    now = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
     is_mock = mode == "mock"
     feature = "full_mock_live" if is_mock else "free_debate_live"
-    user_start = (
-        (now - datetime.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-        if is_mock else now.replace(hour=0, minute=0, second=0, microsecond=0)
-    )
+    user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
     global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
     with engine.begin() as conn:
-        conn.execute(text(CREATE_AI_FUND_USAGE_LOGS))
         user_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE user_id=:user AND feature=:feature AND status='success' AND created_at>=:start"""),
             {"user": user_id, "feature": feature, "start": user_start}).scalar() or 0)
@@ -1507,21 +1838,73 @@ def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     return None
 
 
-def _sign_relay_token(token: str) -> str:
-    """Mirror auth.sign_relay_token: HMAC the ephemeral token with the shared
-    cookie_secret so the /gemini-live relay (_verify_relay_signature) accepts it."""
-    secret = _get_relay_cookie_secret()
-    if not secret:
-        return ""
-    return hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+def _reserve_solo_live_slot(claim: dict) -> str | None:
+    """Consume a solo quota only after the upstream WebSocket has connected.
+
+    All Mock chapter tokens share ``practice_id`` and therefore consume one
+    quota row.  An issued token that is never used creates no database record.
+    """
+    budget_error = _bandwidth_live_gate_error()
+    if budget_error:
+        return budget_error
+    engine = _get_db_engine()
+    if engine is None:
+        return "Database is not configured"
+    from core.funds_logic import prune_ai_usage
+
+    prune_ai_usage(get_vote_db())
+    user_id = str(claim.get("user_id") or "")
+    practice_kind = str(claim.get("practice_kind") or "")
+    practice_id = str(claim.get("practice_id") or "")
+    is_mock = practice_kind == "solo_mock"
+    feature = "full_mock_live" if is_mock else "free_debate_live"
+    global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
+    now_utc = now_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    marker = f"relay_session:{practice_id}"[:500]
+    duration_minutes = max(0.5, int(claim.get("max_seconds") or 30) / 60)
+    with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_quota'))"))
+        already = conn.execute(text(f"""SELECT 1 FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE user_id=:user AND feature=:feature AND status='success'
+              AND error_message=:marker LIMIT 1"""), {
+            "user": user_id, "feature": feature, "marker": marker,
+        }).fetchone()
+        if already:
+            return None
+        user_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE user_id=:user AND feature=:feature AND status='success'
+              AND created_at>=:start"""), {
+            "user": user_id, "feature": feature, "start": user_start,
+        }).scalar() or 0)
+        if user_count >= 1:
+            return SOLO_LIMIT_MESSAGE
+        global_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE feature=:feature AND status='success' AND created_at>=:start"""), {
+            "feature": feature, "start": month_start,
+        }).scalar() or 0)
+        if global_count >= global_limit:
+            return GLOBAL_LIVE_LIMIT_MESSAGE
+        conn.execute(text(f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}
+            (user_id,feature,model_label,provider,estimated_cost_usd,
+             estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,
+             search_calls,cost_source,status,error_message,created_at)
+            VALUES(:user,:feature,'Gemini Live','gemini',:usd,:hkd,0,0,
+                   :audio,0,'relay','success',:marker,:now)"""), {
+            "user": user_id, "feature": feature,
+            "usd": round(duration_minutes * 0.01, 4),
+            "hkd": round(duration_minutes * 0.078, 4),
+            "audio": int(duration_minutes * 60 * 25),
+            "marker": marker, "now": now_utc,
+        })
+    return None
 
 
 def _practice_bell_src() -> str:
-    try:
-        data = (BASE_DIR / "assets" / "bell.mp3").read_bytes()
-        return "data:audio/mpeg;base64," + base64.b64encode(data).decode()
-    except FileNotFoundError:
-        return ""
+    # Do not inline the 38KB MP3 into every generated live/room page.  The
+    # versioned, edge-cacheable endpoint transfers it once per browser instead.
+    return "/api/practice/bell" if (BASE_DIR / "assets" / "bell.mp3").exists() else ""
 
 
 def _mint_gemini_live_token(duration_minutes: float, start_delay_minutes: float = 0):
@@ -1561,7 +1944,12 @@ def _mint_gemini_live_token(duration_minutes: float, start_delay_minutes: float 
     return token_name, None
 
 
-def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_starts, *, segments=None, tokens=None, session_labels=None, session_label="自由辯論"):
+def _render_live_debate_html(
+    token, prompt, live_minutes, bell_schedule, ai_starts, *, segments=None,
+    tokens=None, session_labels=None, session_label="自由辯論",
+    relay_user_id="", relay_practice_kind="solo_free", relay_practice_id="",
+    relay_max_seconds_by_token=None,
+):
     """Server-render templates/live_debate.html the same way ai_coach does, so the
     kiosk gets the identical Live engine for Free De and multi-session Mock."""
     html = (BASE_DIR / "templates" / "live_debate.html").read_text(encoding="utf-8")
@@ -1571,8 +1959,14 @@ def _render_live_debate_html(token, prompt, live_minutes, bell_schedule, ai_star
         # Mock reconnects with a fresh single-use token at every session boundary.
         # Sign every token up front; signing only the first makes section 2 fail
         # authentication whenever the Singapore relay is enabled.
+        seconds_by_token = relay_max_seconds_by_token or {}
+        default_seconds = max(30, min(int(float(live_minutes or 2.5) * 60), 30 * 60))
         for live_token in dict.fromkeys([token, *(tokens or [])]):
-            sig = _sign_relay_token(live_token)
+            sig = _sign_relay_token(
+                live_token, relay_user_id, relay_practice_kind,
+                int(seconds_by_token.get(live_token) or default_seconds),
+                relay_practice_id,
+            )
             if sig:
                 token_sigs[live_token] = sig
     replacements = {
@@ -1649,7 +2043,7 @@ async def appliance_ai_debate_live(request: Request):
     quota_error = _solo_live_quota_error(user_id, mode)
     if quota_error:
         return _practice_error_page("練習限額已用完", quota_error)
-    from api.ai_coach_api import consume_live_brief, record_live_usage
+    from api.ai_coach_api import consume_live_brief
     research_brief=consume_live_brief(q.get("brief_id"),user_id)
     if not topic:
         return _practice_error_page("未有辯題", "請先輸入辯題再開始。")
@@ -1664,7 +2058,7 @@ async def appliance_ai_debate_live(request: Request):
             live_minutes = float(q.get("minutes") or 5)
         except (TypeError, ValueError):
             live_minutes = 5.0
-        live_minutes = min(5.0, max(0.5, live_minutes))
+        live_minutes = min(10.0, max(0.5, live_minutes))
     else:
         live_minutes = 2.5
 
@@ -1673,6 +2067,7 @@ async def appliance_ai_debate_live(request: Request):
         sessions = split_mock_into_sessions(segments)
         total_minutes = full_mock_total_seconds(segments) / 60
         tokens=[]
+        relay_seconds = {}
         planned_elapsed_minutes = 0.0
         for session in sessions:
             session_minutes = full_mock_total_seconds(session["segments"]) / 60
@@ -1681,13 +2076,19 @@ async def appliance_ai_debate_live(request: Request):
             )
             if error:return _practice_error_page("未能開始",error)
             tokens.append(token)
+            relay_seconds[token] = max(60, min(30 * 60, int(session["planned_seconds"]) + 120))
             planned_elapsed_minutes += session_minutes
         flat=[]
         for index,session in enumerate(sessions):
             flat.extend({**segment,"session":index} for segment in session["segments"])
         prompt=build_full_mock_live_prompt(topic,side,debate_format,free_debate_minutes=live_minutes if debate_format=="聯中" else None,research_brief=research_brief)
-        record_live_usage(user_id,"full_mock_live",total_minutes)
-        html=_render_live_debate_html(tokens[0],prompt,total_minutes,[],False,segments=flat,tokens=tokens,session_labels=[s["label"] for s in sessions],session_label="Mock")
+        html=_render_live_debate_html(
+            tokens[0],prompt,total_minutes,[],False,segments=flat,tokens=tokens,
+            session_labels=[s["label"] for s in sessions],session_label="Mock",
+            relay_user_id=user_id,relay_practice_kind="solo_mock",
+            relay_practice_id=secrets.token_urlsafe(12),
+            relay_max_seconds_by_token=relay_seconds,
+        )
         return Response(content=html,media_type="text/html")
 
     bell_schedule = get_debate_timer_config(
@@ -1700,8 +2101,13 @@ async def appliance_ai_debate_live(request: Request):
         return _practice_error_page("未能開始", mint_error)
 
     prompt = build_free_debate_live_prompt(topic, side, research_brief)
-    record_live_usage(user_id,"free_debate_live",live_minutes*2)
-    html = _render_live_debate_html(token, prompt, live_minutes, bell_schedule, side == "反方")
+    max_seconds = max(60, min(10 * 60, int(math.ceil(live_minutes * 2 * 60))))
+    html = _render_live_debate_html(
+        token, prompt, live_minutes, bell_schedule, side == "反方",
+        relay_user_id=user_id,relay_practice_kind="solo_free",
+        relay_practice_id=secrets.token_urlsafe(12),
+        relay_max_seconds_by_token={token: max_seconds},
+    )
     return Response(content=html, media_type="text/html")
 
 
@@ -1709,8 +2115,6 @@ GEMINI_LIVE_WS_URL = (
     "wss://generativelanguage.googleapis.com/ws/"
     "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
 )
-GEMINI_WS_MAX_SIZE = int(os.getenv("GEMINI_WS_MAX_SIZE", str(4 * 1024 * 1024)))
-GEMINI_RELAY_MAX_BYTES = int(os.getenv("GEMINI_RELAY_MAX_BYTES", str(96 * 1024 * 1024)))
 
 
 @app.websocket("/gemini-live")
@@ -1724,11 +2128,13 @@ async def gemini_live_relay(websocket: WebSocket):
     # 授權：只服務由本 app（用 cookie_secret 簽發）嘅 token，防止外人白嫖 relay
     # 消耗連線／頻寬。喺 accept 之前 reject，唔會完成 WS handshake、亦唔會撥去
     # Google。
-    if not _verify_relay_signature(token, sig):
+    relay_claim = _verify_relay_signature(token, sig)
+    if not relay_claim:
         await websocket.close(code=1008)
         return
-
-    await websocket.accept()
+    if _bandwidth_live_gate_error():
+        await websocket.close(code=1008, reason="本月網絡傳輸量已達Live保護上限")
+        return
 
     backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
 
@@ -1744,8 +2150,31 @@ async def gemini_live_relay(websocket: WebSocket):
         await websocket.close(code=1011)
         return
 
+    # Both browser and upstream handshakes must succeed before quota is spent.
+    try:
+        await websocket.accept()
+    except Exception:
+        await backend.close(code=1001, reason="browser disconnected before accept")
+        return
+    try:
+        quota_error = await asyncio.to_thread(_reserve_solo_live_slot, relay_claim)
+    except Exception as exc:
+        logger.exception("Gemini relay quota reservation failed: %s", exc)
+        await backend.close(code=1011, reason="quota service unavailable")
+        await websocket.close(code=1011, reason="練習限額服務暫時不可用")
+        return
+    if quota_error:
+        await backend.close(code=1008, reason="practice quota unavailable")
+        await websocket.close(code=1008, reason="練習限額已用完")
+        return
+
+    # The quota is consumed only after both the browser and upstream Gemini
+    # WebSocket connections have succeeded.
+
     async with backend:
         relayed_bytes = 0
+        bandwidth_flushed = 0
+        deadline_reached = False
 
         def within_relay_budget(message) -> bool:
             nonlocal relayed_bytes
@@ -1779,9 +2208,42 @@ async def gemini_live_relay(websocket: WebSocket):
                 else:
                     await websocket.send_text(message)
 
+        async def enforce_deadline():
+            nonlocal deadline_reached
+            await asyncio.sleep(int(relay_claim["max_seconds"]))
+            deadline_reached = True
+            await backend.close(code=1008, reason="server practice time limit")
+            try:
+                await websocket.close(code=1008, reason="練習已達伺服器時間上限")
+            except RuntimeError:
+                pass
+
+        async def checkpoint_bandwidth():
+            nonlocal bandwidth_flushed
+            while True:
+                await asyncio.sleep(BANDWIDTH_CHECKPOINT_SECONDS)
+                snapshot = relayed_bytes
+                delta = max(0, snapshot - bandwidth_flushed)
+                if delta and await asyncio.to_thread(
+                    record_bandwidth_usage, "solo_gemini_relay", delta,
+                    str(relay_claim["user_id"]),
+                    aggregate_key=(f"practice={relay_claim['practice_kind']};"
+                                   f"id={relay_claim['practice_id']}"),
+                ):
+                    bandwidth_flushed = snapshot
+                if await asyncio.to_thread(_bandwidth_live_gate_error):
+                    await backend.close(code=1008, reason="monthly bandwidth protection")
+                    try:
+                        await websocket.close(code=1008, reason="本月Live網絡傳輸量已達保護上限")
+                    except RuntimeError:
+                        pass
+                    return
+
+        checkpoint_task = asyncio.create_task(checkpoint_bandwidth())
         tasks = [
             asyncio.create_task(client_to_backend()),
             asyncio.create_task(backend_to_client()),
+            asyncio.create_task(enforce_deadline()),
         ]
         try:
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -1790,9 +2252,24 @@ async def gemini_live_relay(websocket: WebSocket):
             for task in done:
                 task.result()
         except WebSocketDisconnect:
-            return
+            pass
         except Exception as e:
             logger.exception("Gemini Live relay failed: %s", e)
+        finally:
+            checkpoint_task.cancel()
+            try:
+                await checkpoint_task
+            except asyncio.CancelledError:
+                pass
+
+    final_delta = max(0, relayed_bytes - bandwidth_flushed)
+    if final_delta:
+        await asyncio.to_thread(
+            record_bandwidth_usage, "solo_gemini_relay", final_delta,
+            str(relay_claim["user_id"]),
+            aggregate_key=(f"practice={relay_claim['practice_kind']};"
+                           f"id={relay_claim['practice_id']}"),
+        )
 
     # 把 Google 嘅 close code / reason 傳返畀瀏覽器，令前端 formatCloseMessage
     # 對 token 過期(1008)等情況嘅提示照樣有效。1005/1006 唔可以明文送出，改用
@@ -1836,9 +2313,8 @@ async def gemini_live_relay(websocket: WebSocket):
 
 ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no O/0/I/1
 ROOM_CODE_LEN = 5
-MAX_ROOMS = int(os.getenv("MAX_ROOMS", "2"))
-ROOM_EMPTY_GRACE_MS = 60 * 1000       # keep an empty room this long for reconnects
-ROOM_MAX_AGE_MS = 90 * 60 * 1000      # hard TTL
+ROOM_EMPTY_GRACE_MS = ROOM_EMPTY_GRACE_SECONDS * 1000
+ROOM_MAX_AGE_MS = ROOM_MAX_AGE_SECONDS * 1000
 ROOM_JUDGEMENT_MODELS = model_slugs_for_labels(ROOM_JUDGEMENT_MODEL_LABELS)
 
 ROOMS = {}  # code -> Room
@@ -1848,8 +2324,6 @@ PRACTICE_DAILY_LIMIT_MESSAGE = (
     "每位委員每日只可進行一次聯機自由辯論及一次聯機完整模擬練習。"
     "你今日已使用此類別的練習限額，請於翌日再試。"
 )
-MULTIPLAYER_FREE_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_FREE_MONTHLY_ROOMS", "10"))
-MULTIPLAYER_MOCK_MONTHLY_ROOMS = int(os.getenv("MULTIPLAYER_MOCK_MONTHLY_ROOMS", "3"))
 
 
 def _practice_kind(structure: str) -> str:
@@ -1862,26 +2336,73 @@ def _reserve_practice_daily_slot(user_id: str, structure: str, room_code: str) -
     Reconnecting to the same room remains allowed; a different room in the same
     category on the same day is rejected.
     """
+    return _reserve_room_practice_slots([user_id], structure, room_code)
+
+
+def _reserve_room_practice_slots(user_ids, structure: str, room_code: str) -> bool:
+    """Atomically reserve the whole verified roster immediately before start."""
+    users = list(dict.fromkeys(str(user).strip() for user in user_ids if str(user).strip()))
+    if not users:
+        return False
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
-    usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    usage_date = now_hk.date()
     kind = _practice_kind(structure)
     with engine.begin() as conn:
-        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
-        conn.execute(text(f"""INSERT INTO {TABLE_PRACTICE_DAILY_USAGE}
-            (user_id,practice_kind,usage_date,room_code,created_at)
-            VALUES(:user,:kind,:day,:room,:now)
-            ON CONFLICT(user_id,practice_kind,usage_date) DO NOTHING"""), {
-            "user": user_id, "kind": kind, "day": usage_date,
-            "room": room_code, "now": datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None),
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('practice_room_monthly_quota'))"))
+        conn.execute(text(f"DELETE FROM {TABLE_PRACTICE_DAILY_USAGE} WHERE usage_date<:month_start"),
+                     {"month_start": usage_date.replace(day=1)})
+        room_exists = bool(conn.execute(text(
+            f"SELECT 1 FROM {TABLE_PRACTICE_DAILY_USAGE} WHERE room_code=:room LIMIT 1"
+        ), {"room": room_code}).fetchone())
+        if not room_exists:
+            month_start = usage_date.replace(day=1)
+            limit = MULTIPLAYER_MOCK_MONTHLY_ROOMS if structure == "mock" else MULTIPLAYER_FREE_MONTHLY_ROOMS
+            room_count = int(conn.execute(text(f"""SELECT COUNT(DISTINCT room_code)
+                FROM {TABLE_PRACTICE_DAILY_USAGE}
+                WHERE practice_kind=:kind AND usage_date>=:start"""), {
+                "kind": kind, "start": month_start,
+            }).scalar() or 0)
+            if room_count >= limit:
+                return False
+        for user_id in users:
+            existing = conn.execute(text(f"""SELECT room_code
+                FROM {TABLE_PRACTICE_DAILY_USAGE}
+                WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day"""), {
+                "user": user_id, "kind": kind, "day": usage_date,
+            }).scalar()
+            if existing and str(existing) != str(room_code):
+                return False
+        for user_id in users:
+            conn.execute(text(f"""INSERT INTO {TABLE_PRACTICE_DAILY_USAGE}
+                (user_id,practice_kind,usage_date,room_code,created_at)
+                VALUES(:user,:kind,:day,:room,:now)
+                ON CONFLICT(user_id,practice_kind,usage_date) DO NOTHING"""), {
+                "user": user_id, "kind": kind, "day": usage_date,
+                "room": room_code, "now": now_hk.replace(tzinfo=None),
+            })
+    return True
+
+
+def _release_practice_daily_slot(user_id: str, structure: str, room_code: str) -> None:
+    """Release only this creator's provisional slot after room setup fails."""
+    engine = _get_db_engine()
+    if engine is None:
+        return
+    usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+    with engine.begin() as conn:
+        conn.execute(text(f"""DELETE FROM {TABLE_PRACTICE_DAILY_USAGE}
+            WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day AND room_code=:room"""), {
+            "user": user_id, "kind": _practice_kind(structure),
+            "day": usage_date, "room": room_code,
         })
-        existing = conn.execute(text(f"""SELECT room_code
-            FROM {TABLE_PRACTICE_DAILY_USAGE}
-            WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day"""), {
-            "user": user_id, "kind": kind, "day": usage_date,
-        }).scalar()
-    return str(existing or "") == str(room_code)
+
+
+def _release_room_practice_slots(user_ids, structure: str, room_code: str) -> None:
+    for user_id in list(dict.fromkeys(str(user) for user in user_ids)):
+        _release_practice_daily_slot(user_id, structure, room_code)
 
 
 def _practice_daily_slot_available(user_id: str, structure: str) -> bool:
@@ -1890,7 +2411,6 @@ def _practice_daily_slot_available(user_id: str, structure: str) -> bool:
         raise HTTPException(status_code=503, detail="Database is not configured")
     usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
     with engine.begin() as conn:
-        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
         used = conn.execute(text(f"""SELECT 1 FROM {TABLE_PRACTICE_DAILY_USAGE}
             WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day"""), {
             "user": user_id, "kind": _practice_kind(structure), "day": usage_date,
@@ -1906,7 +2426,6 @@ def _practice_monthly_room_available(structure: str) -> bool:
     month_start = today.replace(day=1)
     limit = MULTIPLAYER_MOCK_MONTHLY_ROOMS if structure == "mock" else MULTIPLAYER_FREE_MONTHLY_ROOMS
     with engine.begin() as conn:
-        conn.execute(text(CREATE_PRACTICE_DAILY_USAGE))
         used = int(conn.execute(text(f"""SELECT COUNT(DISTINCT room_code)
             FROM {TABLE_PRACTICE_DAILY_USAGE}
             WHERE practice_kind=:kind AND usage_date>=:start"""), {
@@ -1977,6 +2496,8 @@ class Room:
         self.mode = mode                 # "A" | "B"
         self.created_by = created_by
         self.created_at = _now_ms()
+        self.started_ms = None
+        self.hard_deadline_ms = None
         self.phase = "lobby"             # lobby | active | ended
         self.debate_format = debate_format
         self.topic = topic
@@ -2005,6 +2526,16 @@ class Room:
         self.gemini_ws = None
         self.gemini_task = None
         self.tick_task = None
+        self.judgement_task = None
+        self.quota_users = []
+        # Approximate Render egress for this room.  We count successful
+        # websocket fan-out plus payloads sent from Render to Gemini, then write
+        # one aggregate row when the room ends or is garbage-collected.
+        self.bandwidth_bytes = 0
+        self.bandwidth_flushed_bytes = 0
+        self.bandwidth_recorded = False
+        self.bandwidth_lock = threading.Lock()
+        self.last_bandwidth_checkpoint_ms = _now_ms()
         # Server-side TTS: when on, the pump synthesizes the AI's transcript via
         # _synthesize_tts and broadcasts one audio blob to the whole room (synced,
         # one call/turn), keeping Gemini native audio as fallback. Set at gemini start.
@@ -2103,14 +2634,44 @@ class Room:
         }
 
 
+def _checkpoint_room_bandwidth(room, final: bool = False):
+    with room.bandwidth_lock:
+        if room.bandwidth_recorded:
+            return
+        snapshot = int(room.bandwidth_bytes)
+        delta = max(0, snapshot - int(room.bandwidth_flushed_bytes))
+        if delta and record_bandwidth_usage(
+            f"multiplayer_{room.structure}", delta, room.created_by,
+            aggregate_key=f"room={room.code};mode={room.mode}",
+        ):
+            room.bandwidth_flushed_bytes = snapshot
+        if final and room.bandwidth_flushed_bytes >= snapshot:
+            room.bandwidth_recorded = True
+
+
+def _record_room_bandwidth_once(room):
+    _checkpoint_room_bandwidth(room, final=True)
+
+
 def _gc_rooms():
+    def dispose(code, room, reason):
+        _record_room_bandwidth_once(room)
+        ROOMS.pop(code, None)
+        try:
+            asyncio.get_running_loop().create_task(_room_end(room, reason))
+        except RuntimeError:
+            # Defensive fallback for a future synchronous maintenance caller.
+            for task in (room.tick_task, room.gemini_task, room.judgement_task):
+                if task is not None and not task.done():
+                    task.cancel()
+
     now = _now_ms()
     for code in list(ROOMS.keys()):
         room = ROOMS.get(code)
         if room is None:
             continue
         if now - room.created_at > ROOM_MAX_AGE_MS:
-            ROOMS.pop(code, None)
+            dispose(code, room, "ttl")
             continue
         if any(m.connected for m in room.members.values()):
             room.empty_since = None
@@ -2118,7 +2679,7 @@ def _gc_rooms():
             if room.empty_since is None:
                 room.empty_since = now
             elif now - room.empty_since > ROOM_EMPTY_GRACE_MS:
-                ROOMS.pop(code, None)
+                dispose(code, room, "empty")
 
 
 def _active_room_count():
@@ -2134,12 +2695,23 @@ async def _room_broadcast(room, msg, exclude=None):
         try:
             # A stalled mobile client must not block audio fan-out to everyone
             # else.  The next reconnect rehydrates room state and transcript.
-            await asyncio.wait_for(member.ws.send_text(text), timeout=1.0)
+            await asyncio.wait_for(
+                member.ws.send_text(text), timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+            )
+            room.bandwidth_bytes += len(text.encode("utf-8"))
         except Exception:
             member.connected = False
 
     if recipients:
         await asyncio.gather(*(send(member) for member in recipients))
+
+
+async def _room_gemini_send(room, gws, payload):
+    encoded = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
+    await gws.send(encoded)
+    room.bandwidth_bytes += (
+        len(encoded) if isinstance(encoded, bytes) else len(encoded.encode("utf-8"))
+    )
 
 
 async def _room_tick(room):
@@ -2148,6 +2720,24 @@ async def _room_tick(room):
             await asyncio.sleep(1)
             if room.phase != "active" or ROOMS.get(room.code) is not room:
                 break
+            now = _now_ms()
+            if room.hard_deadline_ms and now >= room.hard_deadline_ms:
+                await _room_end(room, "server_time_limit")
+                break
+            seg = room.current_segment()
+            seg_seconds = int((seg or {}).get("seconds") or 0)
+            if (seg and room.seg_started_ms and seg_seconds > 0
+                    and now - room.seg_started_ms >= seg_seconds * (2 if seg.get("side") == "雙方" else 1) * 1000):
+                if room.seg_index >= len(room.segments) - 1:
+                    await _room_end(room, "server_segment_limit")
+                    break
+                await _room_advance_segment(room, room.seg_index + 1)
+            if now - room.last_bandwidth_checkpoint_ms >= BANDWIDTH_CHECKPOINT_SECONDS * 1000:
+                await asyncio.to_thread(_checkpoint_room_bandwidth, room, False)
+                room.last_bandwidth_checkpoint_ms = now
+                if await asyncio.to_thread(_bandwidth_live_gate_error):
+                    await _room_end(room, "monthly_bandwidth_limit")
+                    break
             await _room_broadcast(room, room.state_msg())
     except asyncio.CancelledError:
         raise
@@ -2170,10 +2760,57 @@ def _room_precheck_msg(room, msg_type="precheck_status"):
     }
 
 
-async def _room_start_active(room):
+def _room_mint_gemini_tokens(room) -> str | None:
+    if room.mode != "B" or room.gemini is None:
+        return None
+    durations = list(room.gemini.get("session_minutes") or [])
+    if not durations:
+        durations = [min(12.0, full_mock_total_seconds(room.segments) / 60 + 2)]
+    tokens = []
+    planned_elapsed = 0.0
+    for duration in durations:
+        token, error = _mint_gemini_live_token(
+            max(3, float(duration)), start_delay_minutes=planned_elapsed,
+        )
+        if error:
+            return error
+        tokens.append(token)
+        planned_elapsed += max(0.0, float(duration) - 2)
+    room.gemini["tokens"] = tokens
+    return None
+
+
+async def _room_start_active(room) -> str | None:
+    users = room.connected_user_ids()
+    try:
+        reserved = await asyncio.to_thread(
+            _reserve_room_practice_slots, users, room.structure, room.code,
+        )
+    except Exception as exc:
+        logger.exception("room quota reservation failed (%s): %s", room.code, exc)
+        return "練習限額暫時未能確認，未有扣除限額，請稍後再試。"
+    if not reserved:
+        return PRACTICE_DAILY_LIMIT_MESSAGE
+    room.quota_users = users
+    try:
+        mint_error = await asyncio.to_thread(_room_mint_gemini_tokens, room)
+    except Exception as exc:
+        logger.exception("room token mint failed (%s): %s", room.code, exc)
+        mint_error = "AI 對手暫時未能建立，未有扣除練習限額。"
+    if mint_error:
+        await asyncio.to_thread(
+            _release_room_practice_slots, users, room.structure, room.code,
+        )
+        room.quota_users = []
+        return mint_error
     room.phase = "active"
     room.seg_index = 0
-    room.seg_started_ms = _now_ms()
+    room.started_ms = _now_ms()
+    room.seg_started_ms = room.started_ms
+    total_seconds = full_mock_total_seconds(room.segments)
+    if room.structure == "free":
+        total_seconds = min(10 * 60, total_seconds)
+    room.hard_deadline_ms = room.started_ms + max(30, int(total_seconds)) * 1000
     room.side_elapsed_ms = {"正方": 0, "反方": 0}
     room.active_turn_user = None
     room.active_turn_side = None
@@ -2181,9 +2818,20 @@ async def _room_start_active(room):
     room.free_first_done = False
     room.precheck_id = None
     room.precheck_results = {}
-    await _room_start_gemini_if_needed(room)
+    gemini_ready = await _room_start_gemini_if_needed(room)
+    if room.mode == "B" and not gemini_ready:
+        room.phase = "lobby"
+        room.started_ms = None
+        room.hard_deadline_ms = None
+        room.gemini["tokens"] = []
+        await asyncio.to_thread(
+            _release_room_practice_slots, users, room.structure, room.code,
+        )
+        room.quota_users = []
+        return "AI 對手連線失敗，未有扣除練習限額；請重新測試後再開始。"
     _room_ensure_tick(room)
     await _room_broadcast(room, room.state_msg())
+    return None
 
 
 async def _room_begin_precheck(room):
@@ -2217,12 +2865,19 @@ async def _room_handle_precheck_result(room, member, msg):
             await _room_broadcast(room, {"type": "error", "message": start_error})
             await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
             return
-        await _room_start_active(room)
+        activation_error = await _room_start_active(room)
+        if activation_error:
+            await _room_broadcast(room, {"type": "error", "message": activation_error})
+            await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
     else:
         await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
 
 
 def _room_start_blocker(room):
+    if room.mode == "A":
+        members = [m for m in room.members.values() if m.connected]
+        if len(members) != 2 or {m.role for m in members} != {"正方", "反方"}:
+            return "真人對真人練習必須兩位委員在線，並分別擔任正方及反方。"
     if room.mode == "B" and room.structure == "mock":
         members = [m for m in room.members.values() if m.connected]
         required_positions = room.required_positions()
@@ -2258,8 +2913,10 @@ def _audio_fields(msg):
 # egress means no geo-block, so no relay hop is needed for this leg.
 
 async def _room_start_gemini_if_needed(room):
-    if room.mode != "B" or room.gemini is None or room.gemini_ws is not None:
-        return
+    if room.mode != "B" or room.gemini is None:
+        return True
+    if room.gemini_ws is not None:
+        return True
     tokens = room.gemini.get("tokens") or []
     session_index = min(room.gemini_session_index, max(0, len(tokens) - 1))
     token = tokens[session_index] if tokens else ""
@@ -2268,7 +2925,7 @@ async def _room_start_gemini_if_needed(room):
     if not token or not model:
         await _room_broadcast(room, {"type": "error",
                                      "message": "未有 AI 連線資料，AI 對手未能啟動。"})
-        return
+        return False
 
     backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
     try:
@@ -2279,7 +2936,7 @@ async def _room_start_gemini_if_needed(room):
         logger.exception("room Gemini connect failed (%s): %s", room.code, e)
         await _room_broadcast(room, {"type": "error",
                                      "message": "AI 對手連線失敗，請重新建立房間。"})
-        return
+        return False
 
     room.gemini_ws = gws
     # Decide once per session whether to re-voice the AI via server-side TTS.
@@ -2313,10 +2970,14 @@ async def _room_start_gemini_if_needed(room):
         }
     }
     try:
-        await gws.send(json.dumps(setup))
+        await _room_gemini_send(room, gws, setup)
     except Exception as e:
         logger.exception("room Gemini setup failed (%s): %s", room.code, e)
+        room.gemini_ws = None
+        await gws.close()
+        return False
     room.gemini_task = asyncio.create_task(_room_gemini_pump(room, gws))
+    return True
 
 
 # --- Server-side TTS for the room (mode B) -----------------------------------
@@ -2408,19 +3069,20 @@ async def _room_pump_tts(room, sc, state, final=False):
         # barge-in: drop pending TTS and reserved native audio for this turn
         state["pending"] = ""
         state["native"] = []
+        state["native_bytes"] = 0
         await _room_broadcast(room, {"type": "serverContent", "serverContent": _strip_audio_parts(sc)})
     else:
         parts = ((sc.get("modelTurn") or {}).get("parts")) or []
         if any((p.get("inlineData") or {}).get("data") for p in parts):
             state["native"].append(sc)
             state["native_bytes"] += len(json.dumps(sc, ensure_ascii=False))
-            if state["native_bytes"] > 8 * 1024 * 1024:
+            if state["native_bytes"] > ROOM_NATIVE_AUDIO_BUFFER_MAX_BYTES:
                 await _room_tts_fallback(room, state)
                 return
         await _room_broadcast(room, {"type": "serverContent", "serverContent": _strip_audio_parts(sc)})
         ot = sc.get("outputTranscription") or {}
         if ot.get("text"):
-            state["pending"] += ot["text"]
+            state["pending"] = (state["pending"] + str(ot["text"]))[-ROOM_PENDING_TRANSCRIPT_MAX_CHARS:]
         chunks, state["pending"] = _tts_take_sentences(state["pending"], force=final)
         for chunk in chunks:
             if not await _room_tts_synth(room, chunk, state):
@@ -2467,7 +3129,7 @@ async def _room_gemini_pump(room, gws):
                 await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
             ot = sc.get("outputTranscription") or {}
             if ot.get("text"):
-                ai_buffer["text"] += ot["text"]
+                ai_buffer["text"] = (ai_buffer["text"] + str(ot["text"]))[-ROOM_PENDING_TRANSCRIPT_MAX_CHARS:]
             if turn_complete:
                 if room.tts_enabled:
                     tts_state = _tts_new_turn_state()
@@ -2477,10 +3139,10 @@ async def _room_gemini_pump(room, gws):
                     item = {
                         "speaker": "AI", "side": ai_side, "seg": room.seg_index,
                         "label": (room.current_segment() or {}).get("label", ""),
-                        "text": text_value[:2000], "created_ms": _now_ms(),
+                        "text": text_value[:ROOM_TRANSCRIPT_ITEM_MAX_CHARS], "created_ms": _now_ms(),
                     }
                     room.transcript.append(item)
-                    room.transcript = room.transcript[-80:]
+                    room.transcript = room.transcript[-ROOM_TRANSCRIPT_MAX_ITEMS:]
                     await _room_broadcast(room, {"type": "transcript", "item": item})
                 await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
                                              "speaking": False})
@@ -2502,10 +3164,10 @@ async def _room_forward_audio_to_gemini(room, member, data, mime):
     if gws is None or not data:
         return
     try:
-        await gws.send(json.dumps({
+        await _room_gemini_send(room, gws, {
             "realtimeInput": {"audio": {"data": data,
                                         "mimeType": mime or "audio/pcm;rate=16000"}}
-        }))
+        })
     except Exception:
         pass
 
@@ -2558,10 +3220,10 @@ async def _room_cue_ai_segment(room, seg):
         "word_max": word_max,
     }) + ctx
     try:
-        await gws.send(json.dumps({"clientContent": {
+        await _room_gemini_send(room, gws, {"clientContent": {
             "turns": [{"role": "user", "parts": [{"text": cue}]}],
             "turnComplete": True,
-        }}))
+        }})
         await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
                                      "speaking": True})
     except Exception:
@@ -2585,6 +3247,42 @@ async def _room_on_segment_enter(room):
     ai_side = "反方" if room.human_side == "正方" else "正方"
     if seg.get("side") == ai_side:
         await _room_cue_ai_segment(room, seg)
+
+
+async def _room_advance_segment(room, index: int):
+    """Move the authoritative server timer without trusting client clocks."""
+    now = _now_ms()
+    if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
+        room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
+    room.seg_index = max(0, min(int(index), len(room.segments) - 1))
+    room.seg_started_ms = now
+    room.active_turn_user = None
+    room.active_turn_side = None
+    room.active_turn_started_ms = None
+    room.free_first_done = False
+    if room.current_segment() and room.current_segment().get("side") == "雙方":
+        room.side_elapsed_ms = {"正方": 0, "反方": 0}
+    await _room_broadcast(room, room.state_msg())
+    await _room_on_segment_enter(room)
+
+
+async def _room_end(room, reason: str = "host"):
+    if room.phase == "ended":
+        return
+    room.phase = "ended"
+    current = asyncio.current_task()
+    if room.tick_task is not None and room.tick_task is not current and not room.tick_task.done():
+        room.tick_task.cancel()
+    if room.judgement_task is not None and room.judgement_task is not current and not room.judgement_task.done():
+        room.judgement_task.cancel()
+    await _room_close_gemini(room)
+    await _room_broadcast(room, {"type": "ended", "reason": reason})
+    await asyncio.to_thread(_record_room_bandwidth_once, room)
+    sockets = [member.ws for member in room.members.values() if member.connected]
+    if sockets:
+        await asyncio.gather(*(
+            socket.close(code=1000, reason="practice ended") for socket in sockets
+        ), return_exceptions=True)
 
 
 # --- message handling ------------------------------------------------------
@@ -2685,7 +3383,9 @@ async def _room_handle_turn(room, member, speaking):
     if room.mode == "B" and room.is_open_free_segment() and room.gemini_ws is not None:
         try:
             key = "activityStart" if speaking else "activityEnd"
-            await room.gemini_ws.send(json.dumps({"realtimeInput": {key: {}}}))
+            await _room_gemini_send(
+                room, room.gemini_ws, {"realtimeInput": {key: {}}},
+            )
         except Exception:
             pass
     # Mock structure: after a human finishes a 雙方 (free-debate) turn, cue the AI
@@ -2704,15 +3404,20 @@ async def _room_handle_transcript(room, member, msg):
         "side": member.role or "",
         "seg": room.seg_index,
         "label": (room.current_segment() or {}).get("label", ""),
-        "text": text_value[:2000],
+        "text": text_value[:ROOM_TRANSCRIPT_ITEM_MAX_CHARS],
         "created_ms": _now_ms(),
     }
     room.transcript.append(item)
-    room.transcript = room.transcript[-80:]
+    room.transcript = room.transcript[-ROOM_TRANSCRIPT_MAX_ITEMS:]
     await _room_broadcast(room, {"type": "transcript", "item": item})
 
 
 async def _room_request_judgement(room):
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error:
+        room.judgement = budget_error
+        await _room_broadcast(room, {"type": "judgement", "text": budget_error})
+        return
     if not room.transcript:
         result = "暫時未有逐字稿，AI 評判未能判定哪一方勝出。請先完成發言，或使用支援語音轉文字的瀏覽器。"
         room.judgement = result
@@ -2742,7 +3447,7 @@ async def _room_request_judgement(room):
     }
     last_error = ""
     try:
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with httpx.AsyncClient(timeout=ROOM_JUDGEMENT_TIMEOUT_SECONDS) as client:
             for model in ROOM_JUDGEMENT_MODELS:
                 url = (
                     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -2845,25 +3550,11 @@ async def _room_handle_message(room, member, msg):
                 idx = room.seg_index
         else:
             idx = room.seg_index + 1
-        idx = max(0, min(idx, len(room.segments) - 1))
-        room.seg_index = idx
-        room.seg_started_ms = _now_ms()
-        room.active_turn_user = None
-        room.active_turn_side = None
-        room.active_turn_started_ms = None
-        room.free_first_done = False
-        if room.current_segment() and room.current_segment().get("side") == "雙方":
-            room.side_elapsed_ms = {"正方": 0, "反方": 0}
-        await _room_broadcast(room, room.state_msg())
-        await _room_on_segment_enter(room)
+        await _room_advance_segment(room, idx)
         return
 
     if mtype == "end" and is_host:
-        room.phase = "ended"
-        if room.tick_task is not None and not room.tick_task.done():
-            room.tick_task.cancel()
-        await _room_close_gemini(room)
-        await _room_broadcast(room, {"type": "ended"})
+        await _room_end(room, "host")
         return
 
     if mtype in ("turn_begin", "turn_end"):
@@ -2879,7 +3570,12 @@ async def _room_handle_message(room, member, msg):
         return
 
     if mtype == "request_judgement" and is_host:
-        asyncio.create_task(_room_request_judgement(room))
+        if room.judgement:
+            await member.ws.send_text(json.dumps({
+                "type": "judgement", "text": room.judgement,
+            }, ensure_ascii=False))
+        elif room.judgement_task is None or room.judgement_task.done():
+            room.judgement_task = asyncio.create_task(_room_request_judgement(room))
         return
 
     if mtype == "test_ping":
@@ -2922,6 +3618,9 @@ async def _room_handle_message(room, member, msg):
 @app.post("/api/room/create")
 async def room_create(request: Request):
     user_id = _require_committee_user(request)
+    budget_error = _bandwidth_live_gate_error()
+    if budget_error:
+        raise HTTPException(status_code=429, detail=budget_error)
     _gc_rooms()
     if _active_room_count() >= MAX_ROOMS:
         raise HTTPException(status_code=429, detail="太多練習房，請稍後再試")
@@ -2948,20 +3647,24 @@ async def room_create(request: Request):
         raise HTTPException(status_code=429, detail=GLOBAL_LIVE_LIMIT_MESSAGE)
     if structure == "free" and debate_format not in FREE_DEBATE_FORMATS:
         raise HTTPException(status_code=400, detail=f"{debate_format}不設自由辯論，請改用完整 Mock。")
-    topic = str(payload.get("topic") or "").strip()
+    topic = str(payload.get("topic") or "").strip()[:500]
     try:
         free_minutes = float(payload.get("free_minutes") or 2.5)
     except Exception:
         free_minutes = 2.5
+    # The browser is not authoritative over practice duration.  Without this
+    # clamp a crafted room-create request could keep a Free De room running far
+    # beyond the advertised ten-minute cap and consume the monthly budget.
+    free_minutes = min(float(LIVE_FREE_MAX_MINUTES), max(0.5, free_minutes))
     if mode == "A":
         capacity = 2
     elif structure == "mock":
-        capacity = 3 if debate_format == "星島" else 4
+        capacity = min(ROOM_MAX_CAPACITY, 3 if debate_format == "星島" else 4)
     else:
         try:
-            capacity = max(1, min(4, int(payload.get("capacity") or 4)))
+            capacity = max(1, min(ROOM_MAX_CAPACITY, int(payload.get("capacity") or ROOM_MAX_CAPACITY)))
         except Exception:
-            capacity = 4
+            capacity = ROOM_MAX_CAPACITY
 
     code = None
     for _ in range(20):
@@ -2979,59 +3682,34 @@ async def room_create(request: Request):
     else:
         hs = payload.get("human_side")
         room.human_side = hs if hs in ("正方", "反方") else "正方"
-        gem = payload.get("gemini")
-        if isinstance(gem, dict):
-            room.gemini = {
-                "tokens": gem.get("tokens") or [],
-                "sigs": gem.get("sigs") or {},
-                "prompt": gem.get("prompt") or "",
-                "model": gem.get("model") or "",
-                "session_labels": gem.get("session_labels") or [],
-            }
+        # Lobby creation stores only a server-side plan.  Quota reservation and
+        # Gemini token minting happen after every connected member passes the
+        # precheck, so abandoned lobbies cost neither quota nor provider token.
+        prompt = (
+            build_full_mock_live_prompt(topic, room.human_side, debate_format,
+                                        free_debate_minutes=free_minutes if debate_format == "聯中" else None)
+            if structure == "mock"
+            else build_free_debate_live_prompt(topic, room.human_side, "")
+        )
+        if structure == "mock":
+            sessions = split_mock_into_sessions(room.segments)
+            room.segments = [
+                {**segment, "session": session_index}
+                for session_index, session in enumerate(sessions)
+                for segment in session["segments"]
+            ]
+            session_labels = [session["label"] for session in sessions]
+            session_minutes = [
+                max(3, full_mock_total_seconds(session["segments"]) / 60 + 2)
+                for session in sessions
+            ]
         else:
-            # Direct HTML clients never receive an ephemeral token.  Mint it
-            # server-side, exactly as the former Streamlit page did, so the
-            # shared room remains usable with HttpOnly-cookie authentication.
-            prompt = (
-                build_full_mock_live_prompt(topic, room.human_side, debate_format,
-                                            free_debate_minutes=free_minutes if debate_format == "聯中" else None)
-                if structure == "mock"
-                else build_free_debate_live_prompt(topic, room.human_side, "")
-            )
-            if structure == "mock":
-                sessions = split_mock_into_sessions(room.segments)
-                tokens = []
-                # Rooms may wait for teammates before the host starts.  Give
-                # the lobby 30 minutes, then offset every chapter token by the
-                # planned duration of all previous chapters.
-                planned_elapsed_minutes = 30.0
-                for session in sessions:
-                    session_minutes = full_mock_total_seconds(session["segments"]) / 60
-                    duration = max(3, session_minutes + 2)
-                    token, mint_error = _mint_gemini_live_token(
-                        duration, start_delay_minutes=planned_elapsed_minutes
-                    )
-                    if not token:
-                        raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
-                    tokens.append(token)
-                    planned_elapsed_minutes += session_minutes
-                room.segments = [
-                    {**segment, "session": session_index}
-                    for session_index, session in enumerate(sessions)
-                    for segment in session["segments"]
-                ]
-                session_labels = [session["label"] for session in sessions]
-            else:
-                token, mint_error = _mint_gemini_live_token(14, start_delay_minutes=30)
-                if not token:
-                    raise HTTPException(status_code=503, detail=mint_error or "未能啟動 AI 對手。")
-                tokens = [token]
-                session_labels = []
-            room.gemini = {"tokens": tokens, "sigs": {}, "prompt": prompt,
-                           "model": FREE_DEBATE_LIVE_MODEL,
-                           "session_labels": session_labels}
-    if not _reserve_practice_daily_slot(user_id, structure, code):
-        raise HTTPException(status_code=429, detail=PRACTICE_DAILY_LIMIT_MESSAGE)
+            session_labels = []
+            session_minutes = [min(float(LIVE_FREE_MAX_MINUTES) + 2, full_mock_total_seconds(room.segments) / 60 + 2)]
+        room.gemini = {
+            "tokens": [], "prompt": prompt, "model": FREE_DEBATE_LIVE_MODEL,
+            "session_labels": session_labels, "session_minutes": session_minutes,
+        }
     ROOMS[code] = room
     return {"ok": True, "code": code, "mode": mode}
 
@@ -3083,15 +3761,9 @@ async def room_transcript(code: str, request: Request):
 
 @app.websocket("/room/{code}")
 async def room_ws(websocket: WebSocket, code: str):
-    # Auth before accept(): only committee-signed tokens (user_id:sig) get in,
-    # mirroring the Gemini relay's reject-before-handshake discipline.
-    token = websocket.query_params.get("u", "")
-    # Direct HTML pages use an HttpOnly committee cookie, while the old
-    # Streamlit component used a localStorage bearer token.  Accept either so
-    # a room does not fail merely because the browser cannot read HttpOnly.
-    user_id = _verify_committee_token(token)
-    if not user_id:
-        user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
+    # Authenticate before accept.  The same-origin HttpOnly cookie is the only
+    # browser credential, so signed member tokens never enter URLs or storage.
+    user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
     if not user_id:
         await websocket.close(code=1008)
         return
@@ -3106,6 +3778,16 @@ async def room_ws(websocket: WebSocket, code: str):
 
     existing = room.members.get(user_id)
     if existing is None:
+        if room.phase != "lobby":
+            try:
+                await websocket.send_text(json.dumps(
+                    {"type": "error", "message": "練習開始後不可加入新成員。"},
+                    ensure_ascii=False,
+                ))
+            except Exception:
+                pass
+            await websocket.close(code=1008)
+            return
         if len([m for m in room.members.values() if m.connected]) >= room.capacity:
             try:
                 await websocket.send_text(json.dumps(
@@ -3113,16 +3795,6 @@ async def room_ws(websocket: WebSocket, code: str):
             except Exception:
                 pass
             await websocket.close(code=1013)
-            return
-        if not _reserve_practice_daily_slot(user_id, room.structure, room.code):
-            try:
-                await websocket.send_text(json.dumps(
-                    {"type": "error", "message": PRACTICE_DAILY_LIMIT_MESSAGE},
-                    ensure_ascii=False,
-                ))
-            except Exception:
-                pass
-            await websocket.close(code=1008)
             return
         member = RoomMember(user_id, websocket)
         if room.mode == "A":

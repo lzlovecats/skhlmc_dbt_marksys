@@ -19,6 +19,7 @@ env/
 .env.*
 
 .streamlit/secrets.toml
+.secrets/secrets.toml
 *.db
 *.sqlite
 *.sqlite3
@@ -30,6 +31,10 @@ yarn-error.log*
 
 .idea/
 .vscode/
+tests/
+appliance/
+tools/
+assets/pdf_templates/score_sheet_template.docx
 dist/
 build/
 tmp/

@@ -1,6 +1,10 @@
-"""Pure tournament-draw helpers shared by HTML APIs and legacy Streamlit."""
+"""Pure tournament-draw helpers used by the schedule API."""
 
 import random
+from system_limits import SCHEDULE_MAX_TEAM_NAME_CHARS, SCHEDULE_MAX_TEAMS
+
+MAX_DRAW_TEAMS = SCHEDULE_MAX_TEAMS
+MAX_TEAM_NAME_CHARS = SCHEDULE_MAX_TEAM_NAME_CHARS
 
 
 def normalize_teams(raw_text):
@@ -10,6 +14,10 @@ def normalize_teams(raw_text):
 def validate_teams(teams):
     if len(teams) < 2:
         return "至少需要 2 隊隊伍。"
+    if len(teams) > MAX_DRAW_TEAMS:
+        return f"每次抽籤最多只可處理 {MAX_DRAW_TEAMS} 隊隊伍。"
+    if any(len(team) > MAX_TEAM_NAME_CHARS for team in teams):
+        return f"每個隊伍名稱最多 {MAX_TEAM_NAME_CHARS} 個字。"
     if len(teams) != len(set(teams)):
         return "隊伍名稱有重複，請檢查輸入。"
     return ""

@@ -2,7 +2,8 @@
 """Migrate PostgreSQL BYTEA media to private Cloudflare R2 one row at a time.
 
 The default is deliberately non-destructive: R2 keys are written back but the
-legacy BYTEA remains available for application fallback.  Run a second verified
+legacy BYTEA remains available only for rollback verification; production does
+not read it as a fallback. Run a second verified
 pass with ``--delete-db-binary`` only after the R2-enabled application is live.
 """
 
@@ -21,7 +22,7 @@ from PIL import Image
 from sqlalchemy import text
 
 from core import r2_storage
-from deploy.proxy import _get_db_engine
+from core.db_runtime import get_db_engine as _get_db_engine
 
 
 PHOTO_DDL = (

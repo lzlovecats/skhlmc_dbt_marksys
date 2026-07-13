@@ -7,10 +7,8 @@
     <meta name="theme-color" content="#111827" />
     <link rel="stylesheet" href="/shared/app-shell.css" />
     <style>
-      /* Always dark, to match the Streamlit app (config.toml base="dark").
-           Surfaces/text follow Streamlit's default dark theme (#0e1117 / #262730
-           / #fafafa); agree=green, against=red kept for clarity, accent=blue so
-           it never reads as an "against" red. */
+      /* Established dark product palette. Agree stays green, against stays red,
+         and the blue accent cannot be mistaken for an against action. */
       :root {
         color-scheme: dark;
         --bg: #0e1117;
@@ -700,7 +698,7 @@
         const confirmRoot = document.getElementById("confirmRoot");
         const tabsEl = document.getElementById("tabs");
 
-        // Mirror the constants in vote.py / functions.py.
+        // Client-side input limits mirror the server contract.
         const AI_COMMENT_USER = "Gemini"; // AI_COMMENT_USER_ID — replies rendered as markdown
         const REJECTION_REASONS = [
           "表述或界定不清",

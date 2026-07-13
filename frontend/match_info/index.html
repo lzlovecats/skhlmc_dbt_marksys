@@ -624,10 +624,9 @@
         }
 
         async function load(matchId = "") {
-          const suffix = matchId
-            ? `?match_id=${encodeURIComponent(matchId)}`
-            : "";
-          const response = await fetch(`/api/match-info/data${suffix}`, {
+          const query = new URLSearchParams({ compact: "true" });
+          if (matchId) query.set("match_id", matchId);
+          const response = await fetch(`/api/match-info/data?${query}`, {
             credentials: "same-origin",
           });
           if (response.status === 401) {

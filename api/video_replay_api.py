@@ -2,30 +2,30 @@
 
 from fastapi import APIRouter, Request
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/video-replay", tags=["video-replay"])
 
 
 class VoteBody(BaseModel):
     video_id: int
-    vote_choice: str
+    vote_choice: str = Field(max_length=20)
 
 
 class CommentBody(BaseModel):
     video_id: int
-    comment_text: str
+    comment_text: str = Field(min_length=1, max_length=1000)
 
 
 class ChapterItem(BaseModel):
-    chapter_label: str
+    chapter_label: str = Field(max_length=80)
     enabled: bool
-    time_text: str = ""
+    time_text: str = Field(default="", max_length=20)
 
 
 class ChaptersBody(BaseModel):
     video_id: int
-    chapters: list[ChapterItem]
+    chapters: list[ChapterItem] = Field(max_length=30)
 
 
 def _context(request: Request):
@@ -43,7 +43,7 @@ def data(request: Request, video_id: int | None = None):
 def comments(request: Request, video_id: int, page: int = 1):
     from core import media_logic as logic
     from schema import TABLE_VIDEO_COMMENTS
-    _user, db = _context(request); logic.ensure_video_interaction_tables(db); page,_,offset=bounds(page)
+    _user, db = _context(request); page,_,offset=bounds(page)
     params={"video_id":video_id}; total=scalar_count(db,f"SELECT COUNT(*) total FROM {TABLE_VIDEO_COMMENTS} WHERE video_id=:video_id",params)
     params.update(limit=PAGE_SIZE,offset=offset)
     frame=db.query(f"SELECT user_id,comment_text,created_at FROM {TABLE_VIDEO_COMMENTS} WHERE video_id=:video_id ORDER BY created_at DESC LIMIT :limit OFFSET :offset",params)

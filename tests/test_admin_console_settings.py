@@ -1,9 +1,11 @@
 import json
 import hashlib
 import hmac
+import datetime
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import HTTPException
@@ -49,6 +51,13 @@ class SettingsDb:
         return Transaction(self.executed)
 
 
+class EmptyConfigSettingsDb(SettingsDb):
+    def query(self, sql, params=None):
+        if "FROM system_config" in sql:
+            return pd.DataFrame()
+        return super().query(sql, params)
+
+
 class AccessDb:
     def __init__(self, configs):
         self.configs = configs
@@ -57,7 +66,15 @@ class AccessDb:
     def query(self, sql, params=None):
         if "SELECT 1 FROM accounts" in sql:
             return pd.DataFrame({"exists": [1]})
+        if "FROM app_config" in sql:
+            return pd.DataFrame(columns=["key", "value"])
         if "FROM system_config" in sql:
+            if " IN (" in sql:
+                keys = set((params or {}).values())
+                return pd.DataFrame([
+                    {"key": key, "value": value}
+                    for key, value in self.configs.items() if key in keys
+                ])
             key = (params or {}).get("key")
             return pd.DataFrame({"value": [self.configs[key]]}) if key in self.configs else pd.DataFrame()
         return pd.DataFrame()
@@ -72,16 +89,21 @@ class TokenRow:
 
 
 class TokenResult:
+    def __init__(self, rows):
+        self.rows = rows
+
     def fetchall(self):
-        return [
-            TokenRow("cookie_secret", "secret"),
-            TokenRow("login_disabled_accounts", '["alice"]'),
-        ]
+        return self.rows
 
 
 class TokenConnection:
-    def execute(self, _statement):
-        return TokenResult()
+    def execute(self, statement, _params=None):
+        if "FROM app_config" in str(statement):
+            return TokenResult([])
+        return TokenResult([
+            TokenRow("cookie_secret", "secret"),
+            TokenRow("login_disabled_accounts", '["alice"]'),
+        ])
 
 
 class TokenEngine:
@@ -109,11 +131,10 @@ class DeveloperSettingsTests(unittest.TestCase):
         self.assertNotIn('textarea id="ttsAllowed"', html)
         self.assertIn('selected("ttsReviewers")', adapter)
 
-    def test_page_restores_streamlit_admin_controls_without_browser_prompts(self):
+    def test_page_exposes_admin_controls_without_browser_prompts(self):
         html = (ROOT / "frontend" / "dev_settings" / "index.html").read_text(encoding="utf-8")
         for marker in (
             'id="pushForm"',
-            'id="initDb"',
             'id="bypassUsers"',
             'id="providerOptions"',
             'id="actionDialog"',
@@ -123,8 +144,59 @@ class DeveloperSettingsTests(unittest.TestCase):
         self.assertNotIn("prompt(", html)
         self.assertNotIn("confirm(", html)
         self.assertNotIn("data-delete", html)
+        self.assertNotIn('id="initDb"', html)
+        self.assertNotIn("/api/developer/init-db", html)
         self.assertIn("停用帳戶", html)
         self.assertIn("重新啟用", html)
+
+    def test_maintenance_controls_include_editable_deadline(self):
+        developer_html = (ROOT / "frontend" / "dev_settings" / "index.html").read_text(encoding="utf-8")
+        home_html = (ROOT / "frontend" / "home" / "index.html").read_text(encoding="utf-8")
+        maintenance_card = home_html.split('<section id="maintenance"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="maintenanceDeadline" type="datetime-local"', developer_html)
+        self.assertIn('id="saveMaintDeadline"', developer_html)
+        self.assertIn('href="/dev-settings"', maintenance_card)
+        self.assertNotIn("2026年4月3日", home_html)
+
+    def test_maintenance_deadline_is_saved_with_mode(self):
+        db = SettingsDb()
+        deadline = (
+            datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+            + datetime.timedelta(hours=2)
+        ).strftime("%Y-%m-%dT%H:%M")
+        body = JsonSettings(values={
+            "maintenance_mode": "true",
+            "maintenance_deadline": deadline,
+        })
+        with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
+            self.assertEqual(developer_settings(body, object()), {"ok": True})
+        stored = {row["key"]: json.loads(row["value"]) for row in db.executed}
+        self.assertIs(stored["maintenance_mode"], True)
+        self.assertEqual(stored["maintenance_deadline"], deadline)
+
+    def test_maintenance_mode_requires_a_deadline(self):
+        db = EmptyConfigSettingsDb()
+        body = JsonSettings(values={"maintenance_mode": "true"})
+        with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
+            with self.assertRaises(HTTPException) as caught:
+                developer_settings(body, object())
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("預期完成時間", caught.exception.detail)
+        self.assertEqual(db.executed, [])
+
+    def test_past_maintenance_deadline_is_rejected(self):
+        db = SettingsDb()
+        deadline = (
+            datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+            - datetime.timedelta(minutes=1)
+        ).strftime("%Y-%m-%dT%H:%M")
+        body = JsonSettings(values={"maintenance_deadline": deadline})
+        with patch("api.admin_console_api._require"), patch("api.admin_console_api._db", return_value=db):
+            with self.assertRaises(HTTPException) as caught:
+                developer_settings(body, object())
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("必須在未來", caught.exception.detail)
+        self.assertEqual(db.executed, [])
 
     def test_role_lists_are_deduplicated_before_atomic_save(self):
         db = SettingsDb()
