@@ -4,5 +4,7 @@ __pycache__/
 .DS_Store
 .cursor/
 .venv/
+venv/
+.pytest_cache/
 .idea
 .claude

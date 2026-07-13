@@ -75,13 +75,14 @@ class MediaSchemaTests(unittest.TestCase):
         self.assertIn("每星期", proxy.SOLO_LIMIT_MESSAGE)
         self.assertEqual(proxy.GEMINI_RELAY_MAX_BYTES, 96 * 1024 * 1024)
 
-    def test_hkt_quota_boundaries_are_compared_as_utc(self):
+    def test_hkt_quota_calendar_is_converted_for_existing_utc_live_ledger(self):
         now = datetime.datetime(2026, 7, 1, 0, 5, tzinfo=ZoneInfo("Asia/Hong_Kong"))
         daily, month = proxy._solo_quota_boundaries(now, False)
         self.assertEqual(daily, datetime.datetime(2026, 6, 30, 16, 0))
         self.assertEqual(month, datetime.datetime(2026, 6, 30, 16, 0))
         weekly, _ = proxy._solo_quota_boundaries(now, True)
         self.assertEqual(weekly, datetime.datetime(2026, 6, 28, 16, 0))
+        self.assertIn("prune_ai_usage", inspect.getsource(proxy._reserve_solo_live_slot))
 
     def test_bootstrap_and_startup_do_not_run_legacy_retrofits(self):
         startup = inspect.getsource(proxy.run_safe_startup_migrations)
@@ -90,6 +91,7 @@ class MediaSchemaTests(unittest.TestCase):
         self.assertNotIn("run_migrations", bootstrap)
         self.assertNotIn("ALTER COLUMN image_data", startup + bootstrap)
         self.assertNotIn("ALTER COLUMN audio_data", startup + bootstrap)
+        self.assertIn("seed_default_tts_scripts", bootstrap)
 
     def test_bandwidth_ledger_and_thresholds_are_present(self):
         self.assertIn("bytes_out", CREATE_BANDWIDTH_USAGE_LOGS)

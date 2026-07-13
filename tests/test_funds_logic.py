@@ -6,7 +6,7 @@ from fastapi import HTTPException, Response
 
 from core.funds_logic import (
     add_ai_transaction, ai_usage_summary, add_lateness_record, fiscal_label,
-    fiscal_start, is_lateness_manager, lateness_managers, save_ai_admin,
+    fiscal_start, is_lateness_manager, lateness_managers, log_ai_usage, save_ai_admin,
     update_lateness_paid,
 )
 
@@ -96,6 +96,55 @@ class LatenessFundLogicTests(unittest.TestCase):
 
 
 class AiFundLogicTests(unittest.TestCase):
+    def test_all_shared_usage_writes_prune_retained_telemetry_first(self):
+        db = FundDb()
+        with patch("core.funds_logic._AI_LAST_PRUNE", None), patch(
+            "core.funds_logic.time.monotonic", return_value=1
+        ):
+            log_ai_usage("member", "strategy", True, db=db)
+        self.assertIn("DELETE FROM ai_fund_usage_logs", db.executed[0][0])
+        self.assertIn("INSERT INTO ai_fund_usage_logs", db.executed[1][0])
+
+    def test_retention_failure_does_not_drop_current_usage_accounting(self):
+        class Db(FundDb):
+            def execute(self, sql, params=None):
+                if "DELETE FROM ai_fund_usage_logs" in sql:
+                    raise TimeoutError("maintenance timeout")
+                super().execute(sql, params)
+
+        db = Db()
+        with patch("core.funds_logic._AI_LAST_PRUNE", None), patch(
+            "core.funds_logic.time.monotonic", return_value=1
+        ):
+            log_ai_usage("member", "strategy", True, db=db)
+        self.assertEqual(len(db.executed), 1)
+        self.assertIn("INSERT INTO ai_fund_usage_logs", db.executed[0][0])
+
+    def test_custom_provider_keeps_its_own_cost_category(self):
+        db = FundDb()
+        with patch("core.funds_logic._AI_LAST_PRUNE", 1):
+            log_ai_usage(
+                "member", "strategy", True,
+                usage={"provider": "custom", "model_label": "local-v1"}, db=db,
+            )
+        insert = next(params for sql, params in db.executed if "INSERT INTO ai_fund_usage_logs" in sql)
+        self.assertEqual(insert["provider"], "custom")
+
+    def test_ai_coach_delegates_usage_to_shared_retention_writer(self):
+        from api.ai_coach_api import _usage
+
+        with patch("core.funds_logic.log_ai_usage") as writer:
+            _usage(
+                FundDb(), "member", "strategy", "Model", {"provider": "gemini"},
+                True, actual={"input_tokens": 11, "output_tokens": 7,
+                              "cost_source": "actual_tokens"},
+            )
+        writer.assert_called_once()
+        args, kwargs = writer.call_args
+        self.assertEqual(args[:3], ("member", "strategy", True))
+        self.assertEqual(kwargs["usage"]["input_tokens"], 11)
+        self.assertEqual(kwargs["usage"]["cost_source"], "actual_tokens")
+
     def test_member_deposit_rejects_unlisted_payment_method(self):
         with self.assertRaisesRegex(ValueError, "付款方式"):
             add_ai_transaction("member", "member_deposit", 10, payment_method="crypto", db=FundDb())

@@ -7,20 +7,70 @@ eligible for a result.
 
 from __future__ import annotations
 
-import json
-import math
+import threading
+import time
 
 import httpx
 from core.ai_provider import post_json_bounded
-from system_limits import (
-    RAG_CONTEXT_MAX_CHARS, RAG_FALLBACK_CANDIDATE_LIMIT,
-    RAG_PROVIDER_TIMEOUT_SECONDS,
-)
+from core.schema_features import READY, feature_bundle_state
+from schema import TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS
+from system_limits import RAG_CONTEXT_MAX_CHARS, RAG_PROVIDER_TIMEOUT_SECONDS
 
 
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
 EMBEDDING_DIMENSION = 768
+RAG_SCHEMA_CHECK_TTL_SECONDS = 300
+_RAG_SCHEMA_CACHE = {"ready": False, "checked_at": 0.0}
+_RAG_SCHEMA_LOCK = threading.Lock()
+
+
+def rag_schema_ready(db, *, force: bool = False) -> bool:
+    """Check the complete vector schema before any paid embedding request."""
+    now = time.monotonic()
+    if (
+        not force
+        and not _RAG_SCHEMA_CACHE["ready"]
+        and _RAG_SCHEMA_CACHE["checked_at"] > 0
+        and now - _RAG_SCHEMA_CACHE["checked_at"] < RAG_SCHEMA_CHECK_TTL_SECONDS
+    ):
+        return bool(_RAG_SCHEMA_CACHE["ready"])
+    with _RAG_SCHEMA_LOCK:
+        if (
+            not force
+            and not _RAG_SCHEMA_CACHE["ready"]
+            and _RAG_SCHEMA_CACHE["checked_at"] > 0
+            and now - _RAG_SCHEMA_CACHE["checked_at"] < RAG_SCHEMA_CHECK_TTL_SECONDS
+        ):
+            return bool(_RAG_SCHEMA_CACHE["ready"])
+        ready = False
+        try:
+            tables_ready = feature_bundle_state(
+                db, "rag", (TABLE_RAG_DOCUMENTS, TABLE_RAG_CHUNKS)
+            ) == READY
+            if tables_ready:
+                status = db.query(
+                    """SELECT
+                        EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')
+                            AS vector_extension_ready,
+                        EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema='public'
+                              AND table_name=:table_name
+                              AND column_name='embedding'
+                              AND udt_name='vector'
+                        ) AS embedding_column_ready""",
+                    {"table_name": TABLE_RAG_CHUNKS},
+                )
+                ready = bool(
+                    not status.empty
+                    and status.iloc[0]["vector_extension_ready"]
+                    and status.iloc[0]["embedding_column_ready"]
+                )
+        except Exception:
+            ready = False
+        _RAG_SCHEMA_CACHE.update(ready=ready, checked_at=now)
+        return ready
 
 
 async def _embed(text_value: str, api_key: str) -> list[float]:
@@ -35,17 +85,11 @@ async def _embed(text_value: str, api_key: str) -> list[float]:
     return [float(value) for value in values]
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        return -1.0
-    dot = sum(a * b for a, b in zip(left, right))
-    denom = math.sqrt(sum(a * a for a in left)) * math.sqrt(sum(b * b for b in right))
-    return dot / denom if denom else -1.0
-
-
 async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
                                min_similarity: float = 0.35) -> str:
     if not api_key or not str(query or "").strip():
+        return ""
+    if not rag_schema_ready(db):
         return ""
     top_k = max(1, min(int(top_k), 20))
     vector = await _embed(str(query), api_key)
@@ -63,50 +107,7 @@ async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
            "version": EMBEDDING_VERSION, "limit": int(top_k)})
         candidates = [dict(row) for row in rows.to_dict("records")]
     except Exception:
-        # Do not pull every candidate's content_text across Supabase merely to
-        # discard almost all of it after the local cosine calculation. Fetch
-        # vectors first, then retrieve content for the few winning chunk IDs.
-        rows = db.query("""SELECT c.chunk_id,c.embedding_json,d.document_id,d.title,
-            d.data_type,d.topic_text FROM rag_chunks c
-          JOIN rag_documents d ON d.document_id=c.document_id
-          JOIN llm_training_submissions s ON s.id=d.submission_id
-          WHERE d.status='active' AND s.status='accepted' AND s.anonymized=TRUE
-            AND s.permission_confirmed=TRUE AND c.embedding_model=:model
-            AND c.embedding_version=:version
-          ORDER BY c.created_at DESC LIMIT :candidate_limit""",
-          {"model": EMBEDDING_MODEL, "version": EMBEDDING_VERSION,
-           "candidate_limit": RAG_FALLBACK_CANDIDATE_LIMIT})
-        candidates = []
-        for row in rows.to_dict("records"):
-            try:
-                raw = row.get("embedding_json")
-                values = json.loads(raw) if isinstance(raw, str) else raw
-                values = [float(value) for value in (values or [])]
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            item = dict(row)
-            item["similarity"] = _cosine(vector, values)
-            candidates.append(item)
-        candidates.sort(key=lambda item: float(item.get("similarity") or -1), reverse=True)
-        candidates = candidates[:top_k]
-        if candidates:
-            params = {}
-            placeholders = []
-            for index, item in enumerate(candidates):
-                name = f"chunk_{index}"
-                placeholders.append(f":{name}")
-                params[name] = item["chunk_id"]
-            content_rows = db.query(f"""SELECT chunk_id,content_text FROM rag_chunks
-                WHERE chunk_id IN ({','.join(placeholders)})""", params)
-            content_by_id = {
-                str(row.get("chunk_id")): row.get("content_text")
-                for row in content_rows.to_dict("records")
-            }
-            candidates = [
-                {**item, "content_text": content_by_id.get(str(item["chunk_id"]), "")}
-                for item in candidates
-                if content_by_id.get(str(item["chunk_id"]), "")
-            ]
+        return ""
     accepted = [item for item in candidates if float(item.get("similarity") or -1) >= min_similarity]
     if not accepted:
         return ""

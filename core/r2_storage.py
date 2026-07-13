@@ -345,6 +345,26 @@ def mark_upload_intent_deleted(db, intent_id: str) -> None:
     })
 
 
+def delete_intent_objects(db, intent_id: str, object_keys) -> bool:
+    """Delete every possible object before closing its conservative intent."""
+    keys = tuple(dict.fromkeys(str(key) for key in object_keys if str(key or "").strip()))
+    deleted = True
+    for key in keys:
+        try:
+            delete(key)
+        except Exception:
+            deleted = False
+    if not deleted:
+        # Keep status=issued so storage accounting remains conservative and the
+        # orphan sweeper can retry every recorded pending/final key.
+        return False
+    try:
+        mark_upload_intent_deleted(db, str(intent_id or ""))
+    except Exception:
+        return False
+    return True
+
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 

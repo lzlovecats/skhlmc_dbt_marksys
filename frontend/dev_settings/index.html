@@ -207,11 +207,6 @@
             <label class="check"><input id="pushConfirmed" type="checkbox" /> 我確認要立即發送此通知</label>
             <button class="primary">發送推送通知</button>
           </form>
-          <section class="card danger-zone">
-            <h2>資料庫結構初始化</h2>
-            <p class="caption">適用於首次部署或程式結構更新後；會建立缺少的資料表、視圖及索引，並執行 migrations。</p>
-            <button id="initDb" class="danger">執行 init_db</button>
-          </section>
           <section class="card">
             <h2>Push 訂閱狀態</h2>
             <div id="subscriptions"></div>
@@ -663,10 +658,6 @@
           } finally {
             busy(false);
           }
-        };
-        $("initDb").onclick = async () => {
-          if (!(await askAction("執行資料庫初始化？", "會建立缺少的結構並執行 migrations；過程可能需時。"))) return;
-          mutate("/api/developer/init-db", { method: "POST" }, "資料庫結構初始化完成。");
         };
         document.querySelectorAll(".passwordForm").forEach(
           (f) =>

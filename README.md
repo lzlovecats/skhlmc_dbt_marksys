@@ -39,6 +39,7 @@ deploy/proxy.py ── app組裝／static／Live rooms ───────┘
 - `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
 - `deploy/proxy.py`：FastAPI app、靜態路由、WebSocket relay/rooms及process runtime。
 - `schema.py`：只供新、空database bootstrap；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理，runtime不再執行舊式retrofit清單。
+- 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
 詳細domain/table地圖、production database audit及架構債見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。未完成的RLS、自家TTS、自家LLM、migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
@@ -95,6 +96,8 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
 ```bash
 ./venv/bin/python -c "from deploy.proxy import _get_db_engine; from schema import init_db; e=_get_db_engine(); c=e.connect(); init_db(c); c.close()"
 ```
+
+`init_db`只接受未有`schema_migrations` ledger的新空database；既有／production環境一律使用`tools/manage_db_migrations.py`，Developer網頁不提供runtime DDL入口。
 
 先在本機產生三個不同的bcrypt hash及一個cookie secret，切勿把plaintext放入SQL、repo或shell history：
 
@@ -154,7 +157,7 @@ Production資料分為：
 - competition/scoring：registration、matches、rosters、drafts、scores及rankings；
 - topic governance：topic bank、proposals/removals、ballots及comments；
 - media：video metadata/activity及R2-backed photos；
-- AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions、eval/RAG/model lifecycle；
+- AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions及private audit；eval/RAG/model lifecycle仍未provision；
 - finance/operations：AI fund、lateness fund、bug reports及resource accounting。
 
 完整逐表保留理由、production drift及待處理indexes/FKs見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。

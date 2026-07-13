@@ -713,116 +713,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_LLM_TRAINING_SUBMISSIONS} (
 );
 """
 
-# Reproducible AI datasets, model releases, evaluation and RAG governance.
-# The pgvector column is added by an isolated migration below so a database
-# without permission to enable extensions can still run the rest of the app.
-CREATE_AI_DATASET_SNAPSHOTS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_DATASET_SNAPSHOTS} (
-    snapshot_id       TEXT PRIMARY KEY,
-    dataset_kind      TEXT NOT NULL CHECK (dataset_kind IN ('tts', 'llm')),
-    speaker_user_id   TEXT,
-    consent_version   TEXT,
-    item_count        INTEGER NOT NULL DEFAULT 0,
-    total_seconds     NUMERIC NOT NULL DEFAULT 0,
-    manifest_sha256   TEXT NOT NULL,
-    manifest_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    status            TEXT NOT NULL DEFAULT 'ready'
-        CHECK (status IN ('draft', 'ready', 'withdrawn', 'archived')),
-    created_by        TEXT,
-    created_at        TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_AI_DATASET_SNAPSHOT_ITEMS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_DATASET_SNAPSHOT_ITEMS} (
-    snapshot_id       TEXT NOT NULL REFERENCES {TABLE_AI_DATASET_SNAPSHOTS}(snapshot_id) ON DELETE CASCADE,
-    source_table      TEXT NOT NULL,
-    source_id         TEXT NOT NULL,
-    source_sha256     TEXT,
-    consent_version   TEXT,
-    split_name        TEXT CHECK (split_name IN ('train', 'validation', 'test')),
-    metadata_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    PRIMARY KEY (snapshot_id, source_table, source_id)
-);
-"""
-
-CREATE_AI_MODEL_VERSIONS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_MODEL_VERSIONS} (
-    model_id           TEXT PRIMARY KEY,
-    model_type         TEXT NOT NULL CHECK (model_type IN ('tts', 'llm', 'embedding')),
-    base_model         TEXT NOT NULL,
-    dataset_snapshot_id TEXT REFERENCES {TABLE_AI_DATASET_SNAPSHOTS}(snapshot_id),
-    artifact_uri       TEXT,
-    status             TEXT NOT NULL DEFAULT 'research'
-        CHECK (status IN ('research', 'candidate', 'deployable', 'retired', 'blocked')),
-    config_json        JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    metrics_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_by         TEXT,
-    created_at         TIMESTAMP DEFAULT NOW(),
-    updated_at         TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_AI_EVAL_CASES = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CASES} (
-    case_id          TEXT PRIMARY KEY,
-    task_type        TEXT NOT NULL,
-    title            TEXT NOT NULL,
-    input_json       JSONB NOT NULL,
-    rubric_json      JSONB NOT NULL,
-    reference_text   TEXT,
-    is_active        BOOLEAN DEFAULT TRUE,
-    created_at       TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_AI_EVAL_RUNS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_RUNS} (
-    id               BIGSERIAL PRIMARY KEY,
-    case_id          TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CASES}(case_id),
-    model_label      TEXT NOT NULL,
-    pipeline_version TEXT NOT NULL,
-    output_text      TEXT NOT NULL,
-    score_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    usage_json       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_by       TEXT,
-    created_at       TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_RAG_DOCUMENTS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_RAG_DOCUMENTS} (
-    document_id       TEXT PRIMARY KEY,
-    submission_id     INTEGER REFERENCES {TABLE_LLM_TRAINING_SUBMISSIONS}(id) ON DELETE CASCADE,
-    title             TEXT,
-    data_type         TEXT,
-    topic_text        TEXT,
-    side              TEXT,
-    source_note       TEXT,
-    content_sha256    TEXT NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'withdrawn', 'archived')),
-    embedding_model   TEXT NOT NULL,
-    embedding_version TEXT NOT NULL,
-    indexed_at        TIMESTAMP DEFAULT NOW()
-);
-"""
-
-CREATE_RAG_CHUNKS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_RAG_CHUNKS} (
-    chunk_id          TEXT PRIMARY KEY,
-    document_id       TEXT NOT NULL REFERENCES {TABLE_RAG_DOCUMENTS}(document_id) ON DELETE CASCADE,
-    chunk_index       INTEGER NOT NULL,
-    content_text      TEXT NOT NULL,
-    token_estimate    INTEGER NOT NULL DEFAULT 0,
-    embedding_model   TEXT NOT NULL,
-    embedding_version TEXT NOT NULL,
-    embedding_json    JSONB,
-    metadata_json     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_at        TIMESTAMP DEFAULT NOW(),
-    UNIQUE (document_id, chunk_index)
-);
-"""
-
+# Dataset/model, eval and RAG schemas are intentionally absent from the
+# bootstrap until their roadmap gates and versioned migrations are complete.
 CREATE_AI_TRAINING_AUDIT = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_TRAINING_AUDIT} (
     id             BIGSERIAL PRIMARY KEY,
@@ -831,8 +723,43 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_TRAINING_AUDIT} (
     target_type    TEXT NOT NULL,
     target_id      TEXT,
     details_json   JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    created_at     TIMESTAMP DEFAULT NOW()
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_ai_training_audit_actor_length
+        CHECK (actor_user_id IS NULL OR char_length(actor_user_id) <= 200),
+    CONSTRAINT chk_ai_training_audit_action_length
+        CHECK (char_length(action) BETWEEN 1 AND 100),
+    CONSTRAINT chk_ai_training_audit_target_type_length
+        CHECK (char_length(target_type) BETWEEN 1 AND 100),
+    CONSTRAINT chk_ai_training_audit_target_id_length
+        CHECK (target_id IS NULL OR char_length(target_id) <= 300),
+    CONSTRAINT chk_ai_training_audit_details_object
+        CHECK (jsonb_typeof(details_json) = 'object')
 );
+"""
+
+# ``init_db`` remains available for isolated/bootstrap databases. Mirror the
+# migration's privacy boundary so Supabase default grants cannot expose audit
+# rows when this path creates the table before the migration runner records it.
+LOCK_AI_TRAINING_AUDIT_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_AI_TRAINING_AUDIT} FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_AI_TRAINING_AUDIT}_id_seq FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_AI_TRAINING_AUDIT} FROM %I',
+            role_name
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_AI_TRAINING_AUDIT}_id_seq FROM %I',
+            role_name
+        );
+    END LOOP;
+END $$;
 """
 
 # Table: MATCH_ROSTER_LINKS
@@ -1190,7 +1117,10 @@ CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at
 CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at
     ON {TABLE_NOTIFICATION_READS}(read_at);
 CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
-    ON {TABLE_AI_TRAINING_AUDIT}(created_at);
+    ON {TABLE_AI_TRAINING_AUDIT}(created_at)
+    WHERE action NOT IN (
+        'consent_granted', 'consent_withdrawn', 'submission_withdrawn'
+    );
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
     ON {TABLE_AI_FUND_TRANSACTIONS}(status);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_created_at
@@ -1270,14 +1200,8 @@ ALL_SCHEMAS = [
     CREATE_TTS_SCRIPTS,               # → (standalone)
     CREATE_TTS_LEXICON,               # → (standalone)
     CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
-    CREATE_AI_DATASET_SNAPSHOTS,
-    CREATE_AI_DATASET_SNAPSHOT_ITEMS,
-    CREATE_AI_MODEL_VERSIONS,
-    CREATE_AI_EVAL_CASES,
-    CREATE_AI_EVAL_RUNS,
-    CREATE_RAG_DOCUMENTS,
-    CREATE_RAG_CHUNKS,
     CREATE_AI_TRAINING_AUDIT,
+    LOCK_AI_TRAINING_AUDIT_PRIVILEGES,
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
@@ -1300,6 +1224,21 @@ ALL_SCHEMAS = [
 ]
 
 
+class ManagedDatabaseBootstrapError(RuntimeError):
+    """Raised when the empty-database bootstrap targets a managed database."""
+
+
+def _assert_bootstrap_target(conn) -> None:
+    managed = conn.execute(text(
+        "SELECT to_regclass('public.schema_migrations') IS NOT NULL"
+    )).scalar()
+    if managed:
+        raise ManagedDatabaseBootstrapError(
+            "Database已有versioned migration ledger；請使用tools/manage_db_migrations.py，"
+            "不可再執行empty-database bootstrap。"
+        )
+
+
 def init_db(conn) -> None:
     """
     Bootstrap all current tables for a new, empty database.
@@ -1319,10 +1258,16 @@ def init_db(conn) -> None:
     # Support a session wrapper or a raw SQLAlchemy connection.
     if hasattr(conn, "session"):
         with conn.session as s:
+            _assert_bootstrap_target(s)
             for ddl in ALL_SCHEMAS:
                 s.execute(text(ddl))
+            from core.ai_training_defaults import seed_default_tts_scripts
+            seed_default_tts_scripts(s)
             s.commit()
     else:
+        _assert_bootstrap_target(conn)
         for ddl in ALL_SCHEMAS:
             conn.execute(text(ddl))
+        from core.ai_training_defaults import seed_default_tts_scripts
+        seed_default_tts_scripts(conn)
         conn.commit()

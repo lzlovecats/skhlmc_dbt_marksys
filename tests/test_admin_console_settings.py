@@ -135,7 +135,6 @@ class DeveloperSettingsTests(unittest.TestCase):
         html = (ROOT / "frontend" / "dev_settings" / "index.html").read_text(encoding="utf-8")
         for marker in (
             'id="pushForm"',
-            'id="initDb"',
             'id="bypassUsers"',
             'id="providerOptions"',
             'id="actionDialog"',
@@ -145,6 +144,8 @@ class DeveloperSettingsTests(unittest.TestCase):
         self.assertNotIn("prompt(", html)
         self.assertNotIn("confirm(", html)
         self.assertNotIn("data-delete", html)
+        self.assertNotIn('id="initDb"', html)
+        self.assertNotIn("/api/developer/init-db", html)
         self.assertIn("停用帳戶", html)
         self.assertIn("重新啟用", html)
 

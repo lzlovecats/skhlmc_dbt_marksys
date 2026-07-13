@@ -26,7 +26,6 @@ from schema import (
     TABLE_ACCOUNTS,
     TABLE_BUG_REPORTS,
     TABLE_PUSH_SUBSCRIPTIONS,
-    init_db,
 )
 from version import APP_VERSION
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
@@ -382,12 +381,6 @@ def send_manual_push(body:PushBody,request:Request):
     from deploy.proxy import _get_vapid
     sent=notify_committee(db,_get_vapid(),body.title.strip(),body.body.strip(),target_user=body.target_user,tag=f"manual-push-{_now().strftime('%Y%m%d%H%M%S')}",url=url)
     return {"ok":True,"sent":sent}
-
-@router.post("/developer/init-db")
-def developer_init_db(request:Request):
-    _require(request,"developer"); db=_db()
-    with db._engine.connect() as conn: init_db(conn)
-    return {"ok":True}
 
 @router.post("/developer/bypass")
 def update_bypass(body:BypassBody,request:Request):

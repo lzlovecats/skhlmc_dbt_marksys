@@ -9,7 +9,6 @@ import re
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 from sqlalchemy import text
 
 from core.vote_logic import _resolve_db

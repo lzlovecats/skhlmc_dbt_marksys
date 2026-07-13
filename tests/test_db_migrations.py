@@ -7,6 +7,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from core import db_migrations
+from schema import (
+    ALL_SCHEMAS,
+    LOCK_AI_TRAINING_AUDIT_PRIVILEGES,
+    ManagedDatabaseBootstrapError,
+    init_db,
+)
 from tools import manage_db_migrations as manager
 
 
@@ -41,6 +47,7 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
                 ("20260713_0001", "provision_resource_guards"),
                 ("20260713_0002", "lock_resource_guard_privileges"),
                 ("20260713_0003", "add_tts_consent_metadata"),
+                ("20260713_0004", "provision_ai_training_audit"),
             ],
         )
 
@@ -103,6 +110,53 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
             self.assertIn(f"ADD COLUMN {column}", migration.up_sql)
             self.assertIn(f"DROP COLUMN {column}", migration.down_sql)
         self.assertNotIn("UPDATE ", migration.up_sql)
+
+    def test_ai_training_audit_migration_is_private_and_preserves_evidence(self):
+        _baseline, migrations = manager.load_catalog()
+        migration = migrations[3]
+        self.assertEqual(migration.name, "provision_ai_training_audit")
+        self.assertIn("CREATE TABLE ai_training_audit", migration.up_sql)
+        self.assertIn("TIMESTAMPTZ NOT NULL DEFAULT NOW()", migration.up_sql)
+        self.assertIn("idx_ai_training_audit_created_at", migration.up_sql)
+        self.assertIn("consent_granted", migration.up_sql)
+        self.assertIn("submission_withdrawn", migration.up_sql)
+        for role in ("PUBLIC", "anon", "authenticated"):
+            self.assertIn(role, migration.up_sql)
+        self.assertIn("SEQUENCE ai_training_audit_id_seq", migration.up_sql)
+        self.assertIn("refusing to drop non-empty", migration.down_sql)
+        self.assertNotIn("CASCADE", migration.down_sql)
+
+    def test_bootstrap_audit_table_revokes_browser_table_and_sequence_access(self):
+        self.assertIn(LOCK_AI_TRAINING_AUDIT_PRIVILEGES, ALL_SCHEMAS)
+        for marker in (
+            "TABLE ai_training_audit FROM PUBLIC",
+            "SEQUENCE ai_training_audit_id_seq FROM PUBLIC",
+            "'anon', 'authenticated'",
+        ):
+            self.assertIn(marker, LOCK_AI_TRAINING_AUDIT_PRIVILEGES)
+
+    def test_bootstrap_refuses_a_database_with_a_migration_ledger(self):
+        class Result:
+            @staticmethod
+            def scalar():
+                return True
+
+        class Connection:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, statement, _params=None):
+                self.statements.append(str(statement))
+                return Result()
+
+            def commit(self):
+                raise AssertionError("managed database bootstrap must not commit")
+
+        connection = Connection()
+        with self.assertRaises(ManagedDatabaseBootstrapError):
+            init_db(connection)
+        self.assertEqual(len(connection.statements), 1)
+        self.assertIn("schema_migrations", connection.statements[0])
 
     def test_discovers_paired_migration_and_hashes_both_directions(self):
         with tempfile.TemporaryDirectory() as folder:

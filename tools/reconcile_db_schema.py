@@ -50,25 +50,15 @@ _CREATE_INDEX = re.compile(
     re.IGNORECASE,
 )
 _RUNTIME_DDL_FILE_ALLOWLIST = {
-    "api/ai_training_api.py",
     "core/config_store.py",
-    "deploy/proxy.py",
 }
 _RUNTIME_DDL_REFERENCE_ALLOWLIST = {
-    "CREATE_AI_DATASET_SNAPSHOTS",
-    "CREATE_AI_DATASET_SNAPSHOT_ITEMS",
-    "CREATE_AI_EVAL_CASES",
-    "CREATE_AI_EVAL_RUNS",
-    "CREATE_AI_MODEL_VERSIONS",
-    "CREATE_AI_TRAINING_AUDIT",
     "CREATE_APP_CONFIG",
-    "CREATE_RAG_CHUNKS",
-    "CREATE_RAG_DOCUMENTS",
 }
 _RUNTIME_DDL_DIRECT_ALLOWLIST: set[str] = set()
 _RUNTIME_DDL_INDIRECT_ALLOWLIST: set[str] = set()
 _RUNTIME_INDEX_ALLOWLIST: set[str] = set()
-_RUNTIME_DDL_SITE_BUDGET = 4
+_RUNTIME_DDL_SITE_BUDGET = 1
 _NON_COLUMN_PREFIXES = {
     "CHECK",
     "CONSTRAINT",
@@ -150,11 +140,12 @@ def _table_columns(sql: str) -> dict[str, set[str]]:
 
 
 def declared_inventory() -> dict:
-    tables = {
+    referenced_tables = {
         value
         for name, value in vars(bootstrap_schema).items()
         if name.startswith("TABLE_") and isinstance(value, str)
     }
+    bootstrap_tables: set[str] = set()
     columns: dict[str, set[str]] = {}
     ddl_values = [
         value
@@ -163,14 +154,19 @@ def declared_inventory() -> dict:
     ]
     for ddl in ddl_values:
         for table, names in _table_columns(ddl).items():
-            tables.add(table)
+            bootstrap_tables.add(table)
             columns.setdefault(table, set()).update(names)
     views = {
         value
         for name, value in vars(bootstrap_schema).items()
         if name.startswith("VIEW_") and isinstance(value, str)
     }
-    return {"tables": tables, "columns": columns, "views": views}
+    return {
+        "tables": referenced_tables | bootstrap_tables,
+        "bootstrap_tables": bootstrap_tables,
+        "columns": columns,
+        "views": views,
+    }
 
 
 def runtime_ddl_inventory() -> dict:
@@ -286,6 +282,7 @@ def build_report(snapshot: dict, declared: dict) -> dict:
         )
 
     declared_tables = set(declared["tables"])
+    bootstrap_tables = set(declared.get("bootstrap_tables", declared_tables))
     internal_tables = {LEDGER_TABLE} & production_tables
     production_application_tables = production_tables - internal_tables
     shared = sorted(production_application_tables & declared_tables)
@@ -323,7 +320,8 @@ def build_report(snapshot: dict, declared: dict) -> dict:
         "production_table_count": len(production_tables),
         "production_application_table_count": len(production_application_tables),
         "internal_tables": sorted(internal_tables),
-        "declared_bootstrap_table_count": len(declared_tables),
+        "declared_code_table_count": len(declared_tables),
+        "declared_bootstrap_table_count": len(bootstrap_tables),
         "shared_table_count": len(shared),
         "production_only_tables": production_only,
         "production_only_table_metrics": {

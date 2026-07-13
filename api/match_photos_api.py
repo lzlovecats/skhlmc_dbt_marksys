@@ -138,7 +138,9 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
     token = r2_storage.sign_upload_claim(claim, secret, expires=R2_UPLOAD_CLAIM_TTL_SECONDS)
     reserved, scope = r2_storage.reserve_upload_intent(
         _db, intent_id=object_id, user_id=str(user_id), media_kind="photo",
-        object_keys=[pending_original_key, pending_thumbnail_key],
+        object_keys=[
+            pending_original_key, pending_thumbnail_key, original_key, thumbnail_key,
+        ],
         declared_bytes=body.byte_size + body.thumbnail_byte_size,
         user_daily_limit=PHOTO_DAILY_USER_LIMIT,
         global_monthly_limit=PHOTO_MONTHLY_GLOBAL_LIMIT,
@@ -215,13 +217,15 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
             keys = [item.get("pending_r2_key"), item.get("pending_thumbnail_r2_key")]
             if include_final:
                 keys.extend((item.get("r2_key"), item.get("thumbnail_r2_key")))
-            for key in keys:
-                if key:
-                    try: r2_storage.delete(key)
-                    except Exception: pass
             if mark_deleted:
-                try: r2_storage.mark_upload_intent_deleted(db, str(item.get("intent_id") or ""))
-                except Exception: pass
+                r2_storage.delete_intent_objects(
+                    db, str(item.get("intent_id") or ""), keys
+                )
+            else:
+                for key in keys:
+                    if key:
+                        try: r2_storage.delete(key)
+                        except Exception: pass
 
     for token in body.upload_tokens:
         claim = r2_storage.verify_upload_claim(token, secret or "")

@@ -20,7 +20,12 @@ from prompts import (
     WEB_RESEARCH_SYSTEM_PROMPT, build_fact_check_user_prompt, build_strategy_prompt,
     build_strategy_user_prompt, build_web_research_user_prompt,
 )
-from schema import TABLE_AI_COACH_LIVE_BRIEFS
+from schema import (
+    TABLE_AI_COACH_LIVE_BRIEFS,
+    TABLE_AI_DATASET_SNAPSHOTS,
+    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+    TABLE_AI_MODEL_VERSIONS,
+)
 from system_limits import (
     AI_COACH_CONCURRENCY, AI_COACH_MATCH_LIMIT, AI_COACH_MAX_AUDIO_BYTES,
     AI_COACH_MAX_AUDIO_SECONDS, AI_COACH_TOPIC_LIMIT, GEMINI_RELAY_MAX_BYTES,
@@ -121,7 +126,25 @@ def _config(label, db=None):
         if not base_url or not model or not api_key:
             raise HTTPException(503, "自家LLM尚未完成設定")
         if db is not None:
-            registered = db.query("SELECT 1 FROM ai_model_versions WHERE model_id=:model AND model_type='llm' AND status='deployable'", {"model": model})
+            from core.schema_features import READY, feature_bundle_state
+
+            try:
+                model_schema_ready = feature_bundle_state(
+                    db, "dataset_model", (
+                        TABLE_AI_DATASET_SNAPSHOTS,
+                        TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+                        TABLE_AI_MODEL_VERSIONS,
+                    )
+                ) == READY
+            except Exception as exc:
+                raise HTTPException(503, "自家LLM模型schema狀態暫時無法驗證") from exc
+            if not model_schema_ready:
+                raise HTTPException(503, "自家LLM模型registry尚未由正式migration啟用")
+            registered = db.query(
+                f"""SELECT 1 FROM {TABLE_AI_MODEL_VERSIONS}
+                    WHERE model_id=:model AND model_type='llm' AND status='deployable'""",
+                {"model": model},
+            )
             if registered.empty:
                 raise HTTPException(503, "自家LLM未通過deployable評估gate")
         return {"provider":"custom","model":model,"base_url":base_url,
@@ -158,19 +181,25 @@ def _usage(db, user_id, feature, label, config, success, error="", actual=None, 
     if search:
         usd += search * (config.get("web_search_price_per_call") or 0)
     try:
-        db.execute(
-            """INSERT INTO ai_fund_usage_logs
-               (user_id, feature, model_label, provider, estimated_cost_usd, estimated_cost_hkd,
-                input_tokens, output_tokens, audio_tokens, search_calls, cost_source, status, error_message, created_at)
-               VALUES (:user_id,:feature,:label,:provider,:usd,:hkd,:inp,:out,:audio,:search,:source,:status,:error,:now)""",
-            {"user_id": user_id, "feature": feature, "label": label,
-             "provider": config.get("provider", ""), "usd": usd if success else 0,
-             "hkd": usd * 7.8 if success else 0, "inp": inp if success else 0,
-             "out": out if success else 0, "audio": audio if success else 0,
-             "search": search if success else 0,
-             "source": actual.get("cost_source") or "estimate",
-             "status": "success" if success else "failed", "error": str(error)[:500],
-             "now": datetime.now().isoformat(sep=" ", timespec="seconds")},
+        from core.funds_logic import log_ai_usage
+
+        log_ai_usage(
+            user_id,
+            feature,
+            success,
+            usage={
+                "model_label": label,
+                "provider": config.get("provider", ""),
+                "estimated_cost_usd": usd,
+                "estimated_cost_hkd": usd * 7.8,
+                "input_tokens": inp,
+                "output_tokens": out,
+                "audio_tokens": audio,
+                "search_calls": search,
+                "cost_source": actual.get("cost_source") or "estimate",
+            },
+            error_message=error,
+            db=db,
         )
     except Exception:
         # A missing optional accounting table must never make coaching unusable.

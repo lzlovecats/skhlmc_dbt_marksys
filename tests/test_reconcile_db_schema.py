@@ -25,6 +25,9 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
         self.assertIn("accounts", inventory["tables"])
         self.assertIn("app_config", inventory["tables"])
         self.assertIn("system_config", inventory["tables"])
+        self.assertIn("accounts", inventory["bootstrap_tables"])
+        self.assertNotIn("rag_documents", inventory["bootstrap_tables"])
+        self.assertNotIn("ai_eval_cases", inventory["bootstrap_tables"])
         self.assertIn("password_hash", inventory["columns"]["accounts"])
         self.assertIn(
             "committee_vote_activity_view",
@@ -85,12 +88,9 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
         sites = inventory["sites"]
         self.assertEqual(
             {site.split(":", 1)[0] for site in sites},
-            {
-                "api/ai_training_api.py",
-                "core/config_store.py",
-            },
+            {"core/config_store.py"},
         )
-        self.assertEqual(len(sites), 4)
+        self.assertEqual(len(sites), 1)
         self.assertEqual(
             set(inventory["references"]),
             reconciliation._RUNTIME_DDL_REFERENCE_ALLOWLIST,

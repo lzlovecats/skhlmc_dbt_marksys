@@ -28,7 +28,10 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from schema import (
+    TABLE_AI_DATASET_SNAPSHOTS,
+    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_FUND_USAGE_LOGS,
+    TABLE_AI_MODEL_VERSIONS,
     TABLE_BANDWIDTH_USAGE_LOGS,
     TABLE_PRACTICE_DAILY_USAGE,
     TABLE_PUSH_SUBSCRIPTIONS,
@@ -85,7 +88,7 @@ from system_limits import (
     GEMINI_RELAY_SIGNATURE_TTL_SECONDS, GEMINI_WS_MAX_SIZE,
     GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE, LIVE_FREE_MAX_MINUTES,
     MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_HTTP_BODY_BYTES, MAX_ROOMS,
-    MODEL_DEPLOYABLE_CACHE_TTL_SECONDS, MULTIPLAYER_FREE_MONTHLY_ROOMS,
+    MULTIPLAYER_FREE_MONTHLY_ROOMS,
     MULTIPLAYER_MOCK_MONTHLY_ROOMS, PRACTICE_LIVE_MAX_PER_HOUR,
     PRACTICE_LIVE_MIN_GAP_SECONDS, PRACTICE_LIVE_RATE_WINDOW_SECONDS,
     PROJECTOR_MATCH_LIMIT,
@@ -774,7 +777,6 @@ def tts_provider_configured() -> bool:
 
 
 _lexicon_cache = {"rows": None, "at": 0.0}
-_deployable_model_cache = {"values": {}, "at": 0.0}
 TTS_SEMAPHORE = asyncio.Semaphore(TTS_CONCURRENCY)
 
 
@@ -796,22 +798,25 @@ async def _read_bounded_audio(response) -> bytes:
 
 
 def _model_is_deployable(model_id: str, model_type: str) -> bool:
-    now = time.monotonic()
-    key = (model_id, model_type)
-    if now - _deployable_model_cache["at"] < MODEL_DEPLOYABLE_CACHE_TTL_SECONDS and key in _deployable_model_cache["values"]:
-        return bool(_deployable_model_cache["values"][key])
-    allowed = False
+    """Check the formal registry migration and live status before every call."""
     try:
+        from core.schema_features import READY, feature_bundle_state
+
+        db = get_vote_db()
+        if feature_bundle_state(db, "dataset_model", (
+            TABLE_AI_DATASET_SNAPSHOTS,
+            TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+            TABLE_AI_MODEL_VERSIONS,
+        )) != READY:
+            return False
         engine = _get_db_engine()
         with engine.connect() as conn:
-            allowed = conn.execute(text("""SELECT EXISTS(SELECT 1 FROM ai_model_versions
+            return bool(conn.execute(text(f"""SELECT EXISTS(SELECT 1 FROM {TABLE_AI_MODEL_VERSIONS}
                 WHERE model_id=:model AND model_type=:type AND status='deployable')"""),
-                {"model": model_id, "type": model_type}).scalar()
+                {"model": model_id, "type": model_type}).scalar())
     except Exception as exc:
         logger.info("model deployable gate unavailable: %s", exc)
-    _deployable_model_cache["values"][key] = bool(allowed)
-    _deployable_model_cache["at"] = now
-    return bool(allowed)
+        return False
 
 
 def _load_lexicon_overrides():
@@ -1567,7 +1572,7 @@ _PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
 _practice_live_hits: dict = {}
 _PRACTICE_LIVE_MAX_PER_HOUR = PRACTICE_LIVE_MAX_PER_HOUR
 _PRACTICE_LIVE_MIN_GAP_SEC = PRACTICE_LIVE_MIN_GAP_SECONDS
-_bandwidth_last_prune = 0.0
+_bandwidth_last_prune = None
 _bandwidth_prune_lock = threading.Lock()
 
 SOLO_LIMIT_MESSAGE = (
@@ -1735,12 +1740,22 @@ def record_bandwidth_usage(
                 (source,user_id,bytes_out,details,created_at)
                 VALUES(:source,:insert_user,:bytes,:details,:now)"""), params)
     monotonic_now = time.monotonic()
-    if monotonic_now - _bandwidth_last_prune >= MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+    if (
+        _bandwidth_last_prune is None
+        or monotonic_now - _bandwidth_last_prune >= MAINTENANCE_PRUNE_INTERVAL_SECONDS
+    ):
         with _bandwidth_prune_lock:
-            if monotonic_now - _bandwidth_last_prune >= MAINTENANCE_PRUNE_INTERVAL_SECONDS:
-                with engine.begin() as conn:
-                    conn.execute(text(f"DELETE FROM {TABLE_BANDWIDTH_USAGE_LOGS} WHERE created_at<:cutoff"),
-                                 {"cutoff": now - datetime.timedelta(days=BANDWIDTH_LOG_RETENTION_DAYS)})
+            if (
+                _bandwidth_last_prune is None
+                or monotonic_now - _bandwidth_last_prune >= MAINTENANCE_PRUNE_INTERVAL_SECONDS
+            ):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            f"DELETE FROM {TABLE_BANDWIDTH_USAGE_LOGS} WHERE created_at<:cutoff"
+                        ), {"cutoff": now - datetime.timedelta(days=BANDWIDTH_LOG_RETENTION_DAYS)})
+                except Exception:
+                    logger.exception("Bandwidth retention maintenance failed")
                 _bandwidth_last_prune = monotonic_now
     try:
         _send_bandwidth_warning_once(bandwidth_budget_status())
@@ -1782,7 +1797,7 @@ def _practice_live_rate_check(user_id: str):
 
 
 def _solo_quota_boundaries(now_hk: datetime.datetime, is_mock: bool):
-    """Return UTC-naive user and month boundaries for HKT calendar quotas."""
+    """Return UTC-naive boundaries for the existing Live usage ledger."""
     month_start_hk = now_hk.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     user_start_hk = (
         (now_hk - datetime.timedelta(days=now_hk.weekday())).replace(
@@ -1807,8 +1822,6 @@ def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
     is_mock = mode == "mock"
     feature = "full_mock_live" if is_mock else "free_debate_live"
-    # created_at is stored as UTC-naive. Convert Hong Kong calendar boundaries
-    # to UTC before comparing so midnight/week/month edges cannot bypass quota.
     user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
     global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
     with engine.begin() as conn:
@@ -1837,6 +1850,9 @@ def _reserve_solo_live_slot(claim: dict) -> str | None:
     engine = _get_db_engine()
     if engine is None:
         return "Database is not configured"
+    from core.funds_logic import prune_ai_usage
+
+    prune_ai_usage(get_vote_db())
     user_id = str(claim.get("user_id") or "")
     practice_kind = str(claim.get("practice_kind") or "")
     practice_id = str(claim.get("practice_id") or "")

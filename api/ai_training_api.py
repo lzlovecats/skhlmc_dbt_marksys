@@ -3,7 +3,7 @@ import asyncio
 import base64
 import hashlib
 import json
-import os
+import logging
 import re
 import subprocess
 import tempfile
@@ -22,11 +22,9 @@ from sqlalchemy import text
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_BYTES, EXPORT_MAX_ROWS, jsonl_response, require_row_limit
 from core.ai_provider import post_json_bounded
+from core.schema_features import DISABLED, PARTIAL, READY, feature_bundle_state, table_bundle_state
 
 from schema import (
-    CREATE_AI_DATASET_SNAPSHOTS, CREATE_AI_DATASET_SNAPSHOT_ITEMS,
-    CREATE_AI_EVAL_CASES, CREATE_AI_EVAL_RUNS, CREATE_AI_MODEL_VERSIONS,
-    CREATE_AI_TRAINING_AUDIT, CREATE_RAG_CHUNKS, CREATE_RAG_DOCUMENTS,
     TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_RUNS, TABLE_AI_MODEL_VERSIONS,
     TABLE_AI_TRAINING_AUDIT, TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
@@ -59,7 +57,7 @@ from system_limits import (
 )
 
 router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
-CONSENT_VERSION = "tts_voice_v2_2026_07"
+CONSENT_VERSION = "tts_voice_v3_2026_07"
 CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 TTS、讀音檢查及建立可生成近似本人聲音的語音模型；資料可交由受控雲端 GPU／AI 服務處理，但不會公開原始錄音或 checkpoint。我可撤回未來使用；撤回後錄音不再納入新資料集，使用過該錄音的 checkpoint會被停止部署並安排排除資料重訓。未成年錄音者須另有家長／學校授權。"
 ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_reviewers"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
@@ -71,33 +69,27 @@ LLM_REVIEW_SEMAPHORE = asyncio.Semaphore(LLM_REVIEW_CONCURRENCY)
 RAG_EMBED_SEMAPHORE = asyncio.Semaphore(RAG_EMBED_CONCURRENCY)
 RAG_EMBEDDING_MODEL = "gemini-embedding-2"
 RAG_EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
-_AI_TRAINING_SCHEMA_READY = False
-_AI_TRAINING_SCHEMA_LOCK = threading.Lock()
-_AI_TRAINING_AUDIT_LAST_PRUNE = 0.0
+_AI_TRAINING_AUDIT_LAST_PRUNE = None
 _AI_TRAINING_AUDIT_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
-# Kept here (rather than in the browser) so every fresh database is usable.
-DEFAULT_SCRIPT_BANK = [
-    ("free_001","Free De","你呢個講法最大問題係冇證明因果關係。"),("free_002","Free De","我想追問你，政策成本由邊個承擔？"),("free_003","Free De","如果你承認有例外，咁你個標準其實已經唔穩陣。"),
-    ("mock_001","Mock","多謝主席，各位評判、各位同學，今日我方立場非常清晰。"),("mock_002","Mock","總結我方三個重點，第一係可行性，第二係公平性，第三係長遠影響。"),("mock_003","Mock","對方一直避開核心問題，就係制度本身會否製造更大不公。"),
-    ("question_001","追問","你可唔可以畀一個具體例子，證明呢個方法真係有效？"),("question_002","追問","如果資源有限，你會優先幫邊一類人，點解？"),("rebuttal_001","反駁","對方將相關性講成因果性，呢個係明顯嘅邏輯跳步。"),("rebuttal_002","反駁","你嘅例子只係個別情況，唔足以支持一個普遍政策。"),
-    ("numbers_001","數字讀法","二零二六年，我哋預計有百分之三十五嘅學生受影響。"),("numbers_002","數字讀法","如果滿分係一百分，呢個方案最多只可以攞六十五分。"),("terms_002","術語/英文","自由辯論最重要唔係講得長，而係追問要準、反駁要快。"),("feedback_001","評語","你頭先嘅主線清楚，但回應對方追問時可以再直接啲。"),("feedback_002","評語","整體台風穩陣，不過個別位收得太急，畀評判嘅印象會扣分。"),("feedback_003","評語","你嘅論點有數據支持，值得欣賞，下次記得同時交代數據嚟源。"),
-    ("numbers_003","數字讀法","呢場比賽最後比數係四十八比五十二，我哋以四分之差落敗。"),("numbers_004","數字讀法","報名人數由二百三十七人升到一千零五人，升幅超過三倍。"),("numbers_005","數字讀法","第一、第二同第三名分別攞到九十五、八十八同八十一分。"),("numbers_006","數字讀法","聯絡電話係二五二八，三六七九，有問題可以隨時致電查詢。"),
-    ("date_001","日期時間","決賽定於二零二六年七月十九號，星期日下晝三點半喺禮堂舉行。"),("date_002","日期時間","報名截止日期係下個月八號，逾期恕不受理，請各位隊伍準時提交。"),("date_003","日期時間","每節限時四分三十秒，夠三分鐘會響第一次鈴，夠鐘就響兩下。"),
-    ("terms_004","術語/英文","OK，我哋而家開始 free debate 環節，計時交由 timer 負責。"),("terms_005","術語/英文","呢個 argument 嘅 logic 有斷層，你需要補返個 example 先撐得住。"),("terms_006","術語/英文","AI 辯論易會用 GPT 同 Gemini 兩個模型，分別做評語同即時回應。"),
-    ("poly_001","多音字","佢嘅行為好有問題，但銀行嗰行細字就冇人為意。"),("poly_002","多音字","呢點好重要，所以我哋要重新檢視成個制度嘅設計。"),("poly_003","多音字","校長話長遠嚟講，同學嘅成長比一時嘅長短更加關鍵。"),("poly_004","多音字","呢部分嘅分數唔高，但佢反映嘅身分認同問題就唔可以忽視。"),("poly_005","多音字","佢好奇點解一個好人會做出咁嘅選擇，我覺得值得深究。"),("poly_006","多音字","快樂同音樂表面相似，實際上係兩種完全唔同嘅體驗。"),
-    ("tone_001","聲調覆蓋","詩、史、試、時、市、事，呢六個字聲調各有不同，要讀得分明。"),("tone_002","聲調覆蓋","三分鐘、九十九分、五十蚊、一百萬，數字讀音要清清楚楚。"),("prosody_001","長句韻律","各位評判、各位老師、各位同學，多謝大家喺一個咁繁忙嘅星期日，抽時間出席今日呢場意義重大嘅辯論比賽。"),("prosody_002","長句韻律","我方認為，無論係從公平、效率，定係從長遠嘅社會影響嚟睇，呢個政策都應該經過更充分嘅諮詢先至推行。"),("prosody_003","長句韻律","如果我哋只係睇短期數字，好容易忽略咗背後真正需要幫助嘅人，而呢啲人往往就係最冇聲音嗰班。"),
-]
+_OPTIONAL_SCHEMA_BUNDLES = {
+    "dataset_model": (
+        TABLE_AI_DATASET_SNAPSHOTS,
+        TABLE_AI_DATASET_SNAPSHOT_ITEMS,
+        TABLE_AI_MODEL_VERSIONS,
+    ),
+    "eval": (TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_RUNS),
+    "rag": (TABLE_RAG_DOCUMENTS, TABLE_RAG_CHUNKS),
+}
 
 
 class ConsentBody(BaseModel):
     agreed: bool
-    # The page presents CONSENT_TEXT as one indivisible agreement. Defaults keep
-    # older direct-HTML clients compatible while the stored columns remain explicit.
-    voice_cloning_confirmed: bool = True
-    cloud_processing_confirmed: bool = True
-    is_minor: bool = False
-    guardian_confirmed: bool = False
+    voice_cloning_confirmed: bool
+    cloud_processing_confirmed: bool
+    is_minor: bool
+    guardian_confirmed: bool
 
 
 class RecordingBody(BaseModel):
@@ -218,46 +210,41 @@ def _segments(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
 
 def _ctx(request):
     from deploy.proxy import _require_committee_user, get_vote_db
-    user = _require_committee_user(request); db = get_vote_db()
-    _ensure_training_schema(db)
-    return user, db
+    return _require_committee_user(request), get_vote_db()
 
 
-def _ensure_training_schema(db):
-    """Run idempotent DDL and seed work once per worker, not per API call."""
-    global _AI_TRAINING_SCHEMA_READY
-    if _AI_TRAINING_SCHEMA_READY:
-        return
-    with _AI_TRAINING_SCHEMA_LOCK:
-        if _AI_TRAINING_SCHEMA_READY:
-            return
-        _initialize_training_schema(db)
-        _AI_TRAINING_SCHEMA_READY = True
+def _feature_schema_state(db, feature: str) -> bool:
+    """Require both the exact migration marker and a complete table bundle."""
+    try:
+        state = feature_bundle_state(db, feature, _OPTIONAL_SCHEMA_BUNDLES[feature])
+    except Exception as exc:
+        raise HTTPException(503, f"{feature} schema狀態暫時無法驗證") from exc
+    if state == PARTIAL:
+        raise HTTPException(503, f"{feature} schema只建立咗一部分，請先完成正式migration")
+    if state == DISABLED:
+        return False
+    return state == READY
 
 
-def _initialize_training_schema(db):
-    for ddl in (
-        CREATE_AI_DATASET_SNAPSHOTS, CREATE_AI_DATASET_SNAPSHOT_ITEMS,
-        CREATE_AI_MODEL_VERSIONS, CREATE_AI_EVAL_CASES, CREATE_AI_EVAL_RUNS,
-        CREATE_RAG_DOCUMENTS, CREATE_RAG_CHUNKS, CREATE_AI_TRAINING_AUDIT,
-    ):
-        db.execute(ddl)
-    eval_path = Path(__file__).resolve().parents[1] / "assets" / "ai_eval_cases_v0.json"
-    if eval_path.exists():
-        for case in json.loads(eval_path.read_text(encoding="utf-8")):
-            db.execute(f"""INSERT INTO {TABLE_AI_EVAL_CASES}
-                (case_id,task_type,title,input_json,rubric_json,reference_text,is_active)
-                VALUES(:id,:task,:title,CAST(:input AS jsonb),CAST(:rubric AS jsonb),:reference,TRUE)
-                ON CONFLICT(case_id) DO NOTHING""",
-                {"id":case["case_id"],"task":case["task_type"],"title":case["title"],
-                 "input":_json_param(case["input"]),"rubric":_json_param(case["rubric"]),
-                 "reference":case.get("reference_text")})
-    count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_TTS_SCRIPTS}")
-    if count.empty or int(count.iloc[0]["n"] or 0) == 0:
-        for order, (script_id, category, value) in enumerate(DEFAULT_SCRIPT_BANK):
-            db.execute(f"""INSERT INTO {TABLE_TTS_SCRIPTS}(script_id,category,text,is_active,sort_order,created_by)
-                VALUES(:id,:category,:text,TRUE,:sort,'system') ON CONFLICT(script_id) DO NOTHING""",
-                {"id":script_id,"category":category,"text":value,"sort":order})
+def _require_feature_schema(db, feature: str) -> None:
+    if not _feature_schema_state(db, feature):
+        raise HTTPException(503, f"{feature}功能尚未由正式migration啟用")
+
+
+def _run_optional_cleanup(db, required_tables, sql, params, label: str) -> bool:
+    """Best-effort cleanup of legacy/future derived data after base withdrawal."""
+    try:
+        if any(table_bundle_state(db, (table,)) != READY for table in required_tables):
+            return False
+        with db.transaction() as conn:
+            conn.execute(text(sql), params)
+        return True
+    except Exception:
+        # Base consent/submission withdrawal is already durable. A future
+        # feature migration must add an outbox before derived data is enabled;
+        # until then, never let optional schema drift block the privacy action.
+        logger.exception("Optional AI training cleanup failed: %s", label)
+        return False
 
 
 def _users(db, key):
@@ -270,15 +257,22 @@ def _users(db, key):
 def _is_admin(db, user): return user in _users(db, REVIEWERS_KEY)
 
 
+def _consent_lock_key(user) -> str:
+    # All consent versions share one privacy lock so an old/new release cannot
+    # re-grant while a withdrawal or recording finalization is in flight.
+    return f"tts_consent:{user}"
+
+
 def _has_active_voice_consent(db, user) -> bool:
     consent = db.query(
         f"SELECT 1 FROM {TABLE_TTS_VOICE_CONSENTS} "
         "WHERE user_id=:user AND consent_version=:version "
+        "AND consent_text=:consent_text "
         "AND withdrawn_at IS NULL "
         "AND voice_cloning_confirmed=TRUE "
         "AND cloud_processing_confirmed=TRUE "
         "AND (is_minor=FALSE OR guardian_confirmed=TRUE) LIMIT 1",
-        {"user": user, "version": CONSENT_VERSION},
+        {"user": user, "version": CONSENT_VERSION, "consent_text": CONSENT_TEXT},
     )
     return not consent.empty
 
@@ -367,22 +361,55 @@ def _verified_r2_audio_claim(body, user):
     return claim
 
 
-def _audit(db, actor, action, target_type, target_id="", details=None):
-    global _AI_TRAINING_AUDIT_LAST_PRUNE
-    db.execute(
-        f"INSERT INTO {TABLE_AI_TRAINING_AUDIT}(actor_user_id,action,target_type,target_id,details_json) "
-        "VALUES(:actor,:action,:target_type,:target_id,CAST(:details AS jsonb))",
-        {"actor": str(actor or "")[:200], "action": str(action)[:100],
-         "target_type": str(target_type)[:100], "target_id": str(target_id or "")[:300],
-         "details": _bounded_json_param(details or {}, "audit details")},
+def _audit(db, actor, action, target_type, target_id="", details=None, *, conn=None):
+    sql = (
+        f"INSERT INTO {TABLE_AI_TRAINING_AUDIT}"
+        "(actor_user_id,action,target_type,target_id,details_json) "
+        "VALUES(:actor,:action,:target_type,:target_id,CAST(:details AS jsonb))"
     )
+    params = {
+        "actor": str(actor or "")[:200],
+        "action": str(action)[:100],
+        "target_type": str(target_type)[:100],
+        "target_id": str(target_id or "")[:300],
+        "details": _bounded_json_param(details or {}, "audit details"),
+    }
+    if conn is None:
+        db.execute(sql, params)
+        _prune_audit(db)
+    else:
+        conn.execute(text(sql), params)
+
+
+def _prune_audit(db):
+    """Bound operational audit rows while retaining consent evidence."""
+    global _AI_TRAINING_AUDIT_LAST_PRUNE
     now = time.monotonic()
-    if now - _AI_TRAINING_AUDIT_LAST_PRUNE >= MAINTENANCE_PRUNE_INTERVAL_SECONDS:
-        with _AI_TRAINING_AUDIT_LOCK:
-            if now - _AI_TRAINING_AUDIT_LAST_PRUNE >= MAINTENANCE_PRUNE_INTERVAL_SECONDS:
-                db.execute(f"DELETE FROM {TABLE_AI_TRAINING_AUDIT} WHERE created_at<:cutoff",
-                           {"cutoff": datetime.now() - timedelta(days=AI_TRAINING_AUDIT_RETENTION_DAYS)})
-                _AI_TRAINING_AUDIT_LAST_PRUNE = now
+    if (
+        _AI_TRAINING_AUDIT_LAST_PRUNE is not None
+        and now - _AI_TRAINING_AUDIT_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS
+    ):
+        return
+    with _AI_TRAINING_AUDIT_LOCK:
+        if (
+            _AI_TRAINING_AUDIT_LAST_PRUNE is not None
+            and now - _AI_TRAINING_AUDIT_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS
+        ):
+            return
+        try:
+            db.execute(
+                f"""DELETE FROM {TABLE_AI_TRAINING_AUDIT}
+                    WHERE created_at < NOW() - make_interval(days => :days)
+                      AND action NOT IN (
+                        'consent_granted','consent_withdrawn','submission_withdrawn'
+                      )""",
+                {"days": AI_TRAINING_AUDIT_RETENTION_DAYS},
+            )
+        except Exception:
+            logger.exception("AI training audit retention maintenance failed")
+            _AI_TRAINING_AUDIT_LAST_PRUNE = now
+            return
+        _AI_TRAINING_AUDIT_LAST_PRUNE = now
 
 
 def _json_param(value) -> str:
@@ -421,33 +448,9 @@ def _rag_chunks(value: str, size: int = 700, overlap: int = 100) -> list[str]:
 
 def _require_rag_vector_schema(db):
     """Fail closed until pgvector is provisioned by a versioned migration."""
-    try:
-        status = db.query(
-            """
-            SELECT
-              EXISTS (
-                SELECT 1 FROM pg_extension WHERE extname='vector'
-              ) AS vector_extension_ready,
-              EXISTS (
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema=current_schema()
-                  AND table_name=:table_name
-                  AND column_name='embedding'
-                  AND udt_name='vector'
-              ) AS embedding_column_ready
-            """,
-            {"table_name": TABLE_RAG_CHUNKS},
-        )
-    except Exception as exc:
-        raise HTTPException(
-            503, "RAG向量schema尚未由正式migration啟用"
-        ) from exc
-    if (
-        status.empty
-        or not bool(status.iloc[0]["vector_extension_ready"])
-        or not bool(status.iloc[0]["embedding_column_ready"])
-    ):
+    from core.rag import rag_schema_ready
+
+    if not rag_schema_ready(db, force=True):
         raise HTTPException(503, "RAG向量schema尚未由正式migration啟用")
 
 
@@ -648,7 +651,7 @@ def recording_upload_intent(body: RecordingUploadIntentBody, request: Request):
     }, secret, expires=R2_UPLOAD_CLAIM_TTL_SECONDS)
     reserved, scope = r2_storage.reserve_upload_intent(
         db, intent_id=intent_id, user_id=str(user), media_kind="tts",
-        object_keys=[pending_key], declared_bytes=body.byte_size,
+        object_keys=[pending_key, key], declared_bytes=body.byte_size,
         user_daily_limit=TTS_UPLOAD_INTENTS_PER_USER_DAY,
         global_monthly_limit=TTS_UPLOAD_INTENTS_GLOBAL_MONTH,
     )
@@ -678,34 +681,106 @@ def consent(body: ConsentBody, request: Request):
         raise HTTPException(400, "必須確認聲線模型及受控雲端處理用途")
     if body.is_minor and not body.guardian_confirmed:
         raise HTTPException(400, "未成年錄音者必須確認已取得家長／學校授權")
-    db.execute(f"""INSERT INTO {TABLE_TTS_VOICE_CONSENTS}
-                   (user_id,consent_version,consent_text,consented_at,withdrawn_at,
-                    voice_cloning_confirmed,cloud_processing_confirmed,is_minor,guardian_confirmed)
-                   VALUES(:user,:version,:consent,:now,NULL,TRUE,TRUE,:minor,:guardian)
-                   ON CONFLICT(user_id,consent_version) DO UPDATE SET
-                    consent_text=EXCLUDED.consent_text,consented_at=EXCLUDED.consented_at,
-                    withdrawn_at=NULL,voice_cloning_confirmed=TRUE,cloud_processing_confirmed=TRUE,
-                    is_minor=EXCLUDED.is_minor,guardian_confirmed=EXCLUDED.guardian_confirmed""",
-               {"user":user,"version":CONSENT_VERSION,"consent":CONSENT_TEXT,"now":datetime.now(),
-                "minor":body.is_minor,"guardian":body.guardian_confirmed})
-    _audit(db, user, "consent_granted", "tts_consent", CONSENT_VERSION,
-           {"is_minor": body.is_minor, "guardian_confirmed": body.guardian_confirmed})
-    return {"ok": True}
+    changed = False
+    with db.transaction() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {
+            "key": _consent_lock_key(user),
+        })
+        existing = conn.execute(text(f"""SELECT consent_text
+            FROM {TABLE_TTS_VOICE_CONSENTS}
+            WHERE user_id=:user AND consent_version=:version FOR UPDATE"""),
+            {"user": user, "version": CONSENT_VERSION}).mappings().first()
+        if existing is not None and str(existing["consent_text"] or "") != CONSENT_TEXT:
+            raise HTTPException(
+                500,
+                "同意書內容已改動但CONSENT_VERSION未更新，為保障授權證據已拒絕覆寫。",
+            )
+        result = conn.execute(text(f"""INSERT INTO {TABLE_TTS_VOICE_CONSENTS}
+                       (user_id,consent_version,consent_text,consented_at,withdrawn_at,
+                        voice_cloning_confirmed,cloud_processing_confirmed,is_minor,guardian_confirmed)
+                       VALUES(:user,:version,:consent,:now,NULL,TRUE,TRUE,:minor,:guardian)
+                       ON CONFLICT(user_id,consent_version) DO UPDATE SET
+                        consent_text=EXCLUDED.consent_text,consented_at=EXCLUDED.consented_at,
+                        withdrawn_at=NULL,voice_cloning_confirmed=TRUE,cloud_processing_confirmed=TRUE,
+                        is_minor=EXCLUDED.is_minor,guardian_confirmed=EXCLUDED.guardian_confirmed
+                       WHERE {TABLE_TTS_VOICE_CONSENTS}.withdrawn_at IS NOT NULL
+                          OR {TABLE_TTS_VOICE_CONSENTS}.voice_cloning_confirmed IS DISTINCT FROM TRUE
+                          OR {TABLE_TTS_VOICE_CONSENTS}.cloud_processing_confirmed IS DISTINCT FROM TRUE
+                          OR {TABLE_TTS_VOICE_CONSENTS}.is_minor IS DISTINCT FROM EXCLUDED.is_minor
+                          OR {TABLE_TTS_VOICE_CONSENTS}.guardian_confirmed IS DISTINCT FROM EXCLUDED.guardian_confirmed
+                       RETURNING 1"""),
+                   {"user":user,"version":CONSENT_VERSION,"consent":CONSENT_TEXT,"now":datetime.now(),
+                    "minor":body.is_minor,"guardian":body.guardian_confirmed})
+        stored = conn.execute(text(f"""SELECT consent_text
+            FROM {TABLE_TTS_VOICE_CONSENTS}
+            WHERE user_id=:user AND consent_version=:version"""),
+            {"user": user, "version": CONSENT_VERSION}).mappings().first()
+        if stored is None or str(stored["consent_text"] or "") != CONSENT_TEXT:
+            raise HTTPException(
+                500,
+                "同意書版本核對失敗，為保障授權證據已取消本次操作。",
+            )
+        changed = result.fetchone() is not None
+        if changed:
+            _audit(db, user, "consent_granted", "tts_consent", CONSENT_VERSION,
+                   {
+                       "is_minor": body.is_minor,
+                       "guardian_confirmed": body.guardian_confirmed,
+                       "consent_text_sha256": hashlib.sha256(
+                           CONSENT_TEXT.encode("utf-8")
+                       ).hexdigest(),
+                   },
+                   conn=conn)
+    if changed:
+        _prune_audit(db)
+    return {"ok": True, "changed": changed}
 
 
 @router.delete("/consent")
 def withdraw(request: Request):
     user, db = _ctx(request)
-    db.execute(f"UPDATE {TABLE_TTS_VOICE_CONSENTS} SET withdrawn_at=:now WHERE user_id=:user AND consent_version=:version AND withdrawn_at IS NULL", {"user":user,"version":CONSENT_VERSION,"now":datetime.now()})
-    db.execute(f"UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status='withdrawn' WHERE speaker_user_id=:user AND status!='withdrawn'", {"user":user})
-    db.execute(f"""UPDATE {TABLE_AI_DATASET_SNAPSHOTS} SET status='withdrawn'
-                   WHERE dataset_kind='tts' AND speaker_user_id=:user AND status IN ('draft','ready')""", {"user": user})
-    db.execute(f"""UPDATE {TABLE_AI_MODEL_VERSIONS} SET status='blocked',updated_at=:now
-                   WHERE dataset_snapshot_id IN (SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOTS}
-                   WHERE dataset_kind='tts' AND speaker_user_id=:user) AND status!='retired'""",
-               {"user": user, "now": datetime.now()})
-    _audit(db, user, "consent_withdrawn", "tts_consent", CONSENT_VERSION)
-    return {"ok":True}
+    now = datetime.now()
+    changed = False
+    with db.transaction() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {
+            "key": _consent_lock_key(user),
+        })
+        consent_result = conn.execute(text(f"""UPDATE {TABLE_TTS_VOICE_CONSENTS}
+            SET withdrawn_at=:now
+            WHERE user_id=:user AND withdrawn_at IS NULL
+            RETURNING 1"""), {"user":user,"now":now})
+        recording_result = conn.execute(text(f"""UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status='withdrawn'
+            WHERE speaker_user_id=:user AND status!='withdrawn'"""), {"user":user})
+        consent_rows = max(0, int(consent_result.rowcount or 0))
+        recording_rows = max(0, int(recording_result.rowcount or 0))
+        changed = consent_rows > 0 or recording_rows > 0
+        if changed:
+            _audit(db, user, "consent_withdrawn", "tts_consent", CONSENT_VERSION,
+                   {
+                       "all_consent_versions": True,
+                       "consent_rows": consent_rows,
+                       "recording_rows": recording_rows,
+                   }, conn=conn)
+    if changed:
+        _prune_audit(db)
+    _run_optional_cleanup(
+        db, (TABLE_AI_DATASET_SNAPSHOTS,),
+        f"""UPDATE {TABLE_AI_DATASET_SNAPSHOTS} SET status='withdrawn'
+            WHERE dataset_kind='tts' AND speaker_user_id=:user
+              AND status IN ('draft','ready')""",
+        {"user": user}, "withdraw TTS snapshots",
+    )
+    _run_optional_cleanup(
+        db, (TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_MODEL_VERSIONS),
+        f"""UPDATE {TABLE_AI_MODEL_VERSIONS}
+            SET status='blocked',updated_at=:now
+            WHERE dataset_snapshot_id IN (
+                SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOTS}
+                WHERE dataset_kind='tts' AND speaker_user_id=:user
+            ) AND status!='retired'""",
+        {"user": user, "now": now}, "block withdrawn TTS models",
+    )
+    return {"ok":True, "changed": changed}
 
 
 @router.post("/recordings")
@@ -767,6 +842,23 @@ def recording(body: RecordingBody, request: Request):
               "transcript":str(trusted_review.get("transcript") or "")[:8000],"now":datetime.now()}
     try:
         with db.transaction() as conn:
+            conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {
+                "key": _consent_lock_key(user),
+            })
+            active_consent = conn.execute(text(f"""SELECT 1
+                FROM {TABLE_TTS_VOICE_CONSENTS}
+                WHERE user_id=:user AND consent_version=:version
+                  AND consent_text=:consent_text AND withdrawn_at IS NULL
+                  AND voice_cloning_confirmed=TRUE
+                  AND cloud_processing_confirmed=TRUE
+                  AND (is_minor=FALSE OR guardian_confirmed=TRUE)
+                FOR SHARE"""), {
+                "user": user,
+                "version": CONSENT_VERSION,
+                "consent_text": CONSENT_TEXT,
+            }).fetchone()
+            if active_consent is None:
+                raise HTTPException(409, "錄音同意已撤回或版本已更新，請勿提交呢段錄音。")
             claimed = conn.execute(text(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
                 SET status='completed',completed_at=:now
                 WHERE intent_id=:intent_id AND status='issued'"""), {
@@ -781,12 +873,11 @@ def recording(body: RecordingBody, request: Request):
                        VALUES(:user,:script,:prompt,:r2_key,:mime,:ext,:size,:duration,:sha,:measured,
                         :sample_rate,:channels,:detected,:review_status,:review_json,:transcript,'pending',:now)"""), params)
     except Exception as exc:
-        for key in {pending_r2_key, r2_key}:
-            if key:
-                try: r2_storage.delete(key)
-                except Exception: pass
-        try: r2_storage.mark_upload_intent_deleted(db, str(claim.get("intent_id") or ""))
-        except Exception: pass
+        r2_storage.delete_intent_objects(
+            db, str(claim.get("intent_id") or ""), (pending_r2_key, r2_key)
+        )
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(502, "錄音metadata未能以交易方式寫入，已清理R2檔案。") from exc
     return {"ok":True, "message":"錄音已提交，等待人工審核。"}
 
@@ -946,13 +1037,56 @@ async def llm(body: LlmBody, request: Request):
 @router.delete("/llm/{submission_id}")
 def withdraw_llm(submission_id: int, request: Request):
     user, db = _ctx(request)
-    row=db.query(f"SELECT status FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id AND submitted_by=:user",{"id":submission_id,"user":user})
-    if row.empty: raise HTTPException(404,"找不到提交")
-    if row.iloc[0]["status"] not in ("pending", "accepted"): raise HTTPException(409,"只有待審核或已接受資料可以撤回")
-    db.execute(f"UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS} SET status='withdrawn' WHERE id=:id",{"id":submission_id})
-    db.execute(f"UPDATE {TABLE_RAG_DOCUMENTS} SET status='withdrawn' WHERE submission_id=:id", {"id": submission_id})
-    _audit(db, user, "submission_withdrawn", "llm_submission", submission_id)
-    return {"ok":True}
+    now = datetime.now()
+    changed = False
+    with db.transaction() as conn:
+        current = conn.execute(text(f"""SELECT status
+            FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
+            WHERE id=:id AND submitted_by=:user FOR UPDATE"""),
+            {"id": submission_id, "user": user}).mappings().first()
+        if current is None:
+            raise HTTPException(404, "找不到提交")
+        if current["status"] != "withdrawn":
+            conn.execute(text(f"""UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS}
+                SET status='withdrawn' WHERE id=:id AND submitted_by=:user"""),
+                {"id":submission_id,"user":user})
+            changed = True
+            _audit(db, user, "submission_withdrawn", "llm_submission", submission_id,
+                   conn=conn)
+    if changed:
+        _prune_audit(db)
+    cleanup_params = {
+        "id": submission_id,
+        "source_table": TABLE_LLM_TRAINING_SUBMISSIONS,
+        "source_id": str(submission_id),
+        "now": now,
+    }
+    _run_optional_cleanup(
+        db, (TABLE_RAG_DOCUMENTS,),
+        f"DELETE FROM {TABLE_RAG_DOCUMENTS} WHERE submission_id=:id",
+        cleanup_params, "delete withdrawn RAG document",
+    )
+    _run_optional_cleanup(
+        db, (TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS),
+        f"""UPDATE {TABLE_AI_DATASET_SNAPSHOTS} SET status='withdrawn'
+            WHERE dataset_kind='llm' AND status IN ('draft','ready')
+              AND snapshot_id IN (
+                SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOT_ITEMS}
+                WHERE source_table=:source_table AND source_id=:source_id
+              )""",
+        cleanup_params, "withdraw LLM snapshots",
+    )
+    _run_optional_cleanup(
+        db, (TABLE_AI_DATASET_SNAPSHOT_ITEMS, TABLE_AI_MODEL_VERSIONS),
+        f"""UPDATE {TABLE_AI_MODEL_VERSIONS}
+            SET status='blocked',updated_at=:now
+            WHERE status!='retired' AND dataset_snapshot_id IN (
+                SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOT_ITEMS}
+                WHERE source_table=:source_table AND source_id=:source_id
+            )""",
+        cleanup_params, "block withdrawn LLM models",
+    )
+    return {"ok":True, "changed": changed}
 
 
 @router.post("/lexicon")
@@ -1238,14 +1372,26 @@ def review_recording(record_id:int, body:ReviewBody, request:Request):
     user,db=_ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可審核")
     if body.status not in ('accepted','rejected'): raise HTTPException(400,"狀態不正確")
-    row = db.query(f"SELECT status,script_id FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id", {"id": record_id})
-    if row.empty: raise HTTPException(404, "找不到錄音")
-    if row.iloc[0]["status"] != "pending": raise HTTPException(409, "只有待審核錄音可以更新")
-    db.execute(f"UPDATE {TABLE_TTS_VOICE_RECORDINGS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":record_id})
-    if body.status == "rejected":
-        db.execute(f"UPDATE {TABLE_TTS_SCRIPTS} SET is_active=TRUE,updated_at=:now WHERE script_id=:script",
-                   {"script": row.iloc[0]["script_id"], "now": datetime.now()})
-    _audit(db, user, "recording_reviewed", "tts_recording", record_id, {"status": body.status})
+    now = datetime.now()
+    with db.transaction() as conn:
+        current = conn.execute(text(f"""SELECT status,script_id
+            FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id FOR UPDATE"""),
+            {"id": record_id}).mappings().first()
+        if current is None:
+            raise HTTPException(404, "找不到錄音")
+        if current["status"] != "pending":
+            raise HTTPException(409, "只有待審核錄音可以更新")
+        conn.execute(text(f"""UPDATE {TABLE_TTS_VOICE_RECORDINGS}
+            SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now
+            WHERE id=:id"""),
+            {"status":body.status,"note":body.note,"user":user,"now":now,"id":record_id})
+        if body.status == "rejected":
+            conn.execute(text(f"""UPDATE {TABLE_TTS_SCRIPTS}
+                SET is_active=TRUE,updated_at=:now WHERE script_id=:script"""),
+                {"script": current["script_id"], "now": now})
+        _audit(db, user, "recording_reviewed", "tts_recording", record_id,
+               {"status": body.status}, conn=conn)
+    _prune_audit(db)
     return {"ok":True}
 
 
@@ -1254,13 +1400,22 @@ def review_llm(submission_id:int, body:ReviewBody, request:Request):
     user,db=_ctx(request)
     if not _is_admin(db,user): raise HTTPException(403,"只有管理員可審核")
     if body.status not in ('accepted','rejected'): raise HTTPException(400,"狀態不正確")
-    row = db.query(f"SELECT status FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id", {"id": submission_id})
-    if row.empty: raise HTTPException(404, "找不到提交")
-    if row.iloc[0]["status"] != "pending": raise HTTPException(409, "只有待審核資料可以更新")
-    db.execute(f"UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS} SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now WHERE id=:id", {"status":body.status,"note":body.note,"user":user,"now":datetime.now(),"id":submission_id})
-    if body.status == "rejected":
-        db.execute(f"UPDATE {TABLE_RAG_DOCUMENTS} SET status='archived' WHERE submission_id=:id", {"id": submission_id})
-    _audit(db, user, "submission_reviewed", "llm_submission", submission_id, {"status": body.status})
+    with db.transaction() as conn:
+        current = conn.execute(text(f"""SELECT status
+            FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id FOR UPDATE"""),
+            {"id": submission_id}).mappings().first()
+        if current is None:
+            raise HTTPException(404, "找不到提交")
+        if current["status"] != "pending":
+            raise HTTPException(409, "只有待審核資料可以更新")
+        conn.execute(text(f"""UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS}
+            SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now
+            WHERE id=:id"""),
+            {"status":body.status,"note":body.note,"user":user,
+             "now":datetime.now(),"id":submission_id})
+        _audit(db, user, "submission_reviewed", "llm_submission", submission_id,
+               {"status": body.status}, conn=conn)
+    _prune_audit(db)
     return {"ok":True}
 
 
@@ -1279,19 +1434,27 @@ def readiness(request: Request):
               AND c.cloud_processing_confirmed=TRUE
               AND (c.is_minor=FALSE OR c.guardian_confirmed=TRUE)) AS eligible_clips
       FROM {TABLE_TTS_VOICE_RECORDINGS} r
-      LEFT JOIN {TABLE_TTS_VOICE_CONSENTS} c ON c.user_id=r.speaker_user_id
+      LEFT JOIN {TABLE_TTS_VOICE_CONSENTS} c
+        ON c.user_id=r.speaker_user_id AND c.consent_version=:version
+       AND c.consent_text=:consent_text
       GROUP BY r.speaker_user_id ORDER BY accepted_minutes DESC LIMIT :inventory_limit""",
-      {"version": CONSENT_VERSION, "inventory_limit": AI_TRAINING_INVENTORY_LIMIT}))
+      {"version": CONSENT_VERSION, "consent_text": CONSENT_TEXT,
+       "inventory_limit": AI_TRAINING_INVENTORY_LIMIT}))
     lexicon = db.query(f"SELECT COUNT(*) n FROM {TABLE_TTS_LEXICON} WHERE is_active=TRUE")
     llm = _rows(db.query(f"""SELECT data_type,COUNT(*) docs,COALESCE(SUM(LENGTH(content_text)),0) chars
         FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
         AND anonymized=TRUE AND permission_confirmed=TRUE GROUP BY data_type ORDER BY docs DESC
         LIMIT :group_limit""", {"group_limit": AI_TRAINING_READINESS_GROUP_LIMIT}))
     active_lexicon = int(lexicon.iloc[0]["n"] or 0) if not lexicon.empty else 0
-    eval_rows = db.query(f"SELECT COUNT(*) n FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE")
-    eval_count = int(eval_rows.iloc[0]["n"] or 0) if not eval_rows.empty else 0
+    eval_provisioned = _feature_schema_state(db, "eval")
+    eval_rows = (
+        db.query(f"SELECT COUNT(*) n FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE")
+        if eval_provisioned else None
+    )
+    eval_count = int(eval_rows.iloc[0]["n"] or 0) if eval_rows is not None and not eval_rows.empty else 0
     return json_safe({"consent_version": CONSENT_VERSION, "speakers": speakers,
-        "active_lexicon": active_lexicon, "llm_by_type": llm, "active_eval_cases": eval_count,
+        "active_lexicon": active_lexicon, "llm_by_type": llm,
+        "eval_provisioned": eval_provisioned, "active_eval_cases": eval_count,
         "gates": {"tts_min_train_minutes": 30, "tts_target_collected_minutes": 40,
                   "tts_min_lexicon": 50, "llm_eval_cases": 30,
                   "llm_min_instruction_pairs_for_lora": 500}})
@@ -1300,6 +1463,7 @@ def readiness(request: Request):
 @router.get("/eval/cases")
 def eval_cases(request: Request):
     _user, db = _admin(request)
+    _require_feature_schema(db, "eval")
     return json_safe({"items": _rows(db.query(f"""SELECT case_id,task_type,title,input_json,
         rubric_json,reference_text FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE
         ORDER BY task_type,case_id LIMIT :eval_limit""", {"eval_limit": AI_EVAL_CASE_LIMIT}))})
@@ -1308,6 +1472,7 @@ def eval_cases(request: Request):
 @router.post("/eval/runs")
 async def eval_baseline(request: Request):
     user, db = _admin(request)
+    _require_feature_schema(db, "eval")
     payload_body = await request.json()
     model_label = str(payload_body.get("model_label") or "Gemini 2.5 Flash")[:200]
     cases = _rows(db.query(f"SELECT case_id,task_type,title,input_json,rubric_json FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE ORDER BY case_id LIMIT :eval_limit", {"eval_limit": AI_EVAL_CASE_LIMIT}))
@@ -1319,6 +1484,7 @@ async def eval_baseline(request: Request):
 @router.post("/datasets/snapshots")
 def create_snapshot(body: SnapshotBody, request: Request):
     user, db = _admin(request)
+    _require_feature_schema(db, "dataset_model")
     if body.dataset_kind not in ("tts", "llm"):
         raise HTTPException(400, "dataset_kind只可為tts或llm")
     items = []
@@ -1416,6 +1582,7 @@ def create_snapshot(body: SnapshotBody, request: Request):
 @router.get("/models")
 def models(request: Request):
     _user, db = _admin(request)
+    _require_feature_schema(db, "dataset_model")
     return json_safe({"items": _rows(db.query(f"""SELECT model_id,model_type,base_model,
         dataset_snapshot_id,artifact_uri,status,config_json,metrics_json,created_by,created_at,updated_at
         FROM {TABLE_AI_MODEL_VERSIONS} ORDER BY created_at DESC LIMIT :inventory_limit""",
@@ -1425,6 +1592,7 @@ def models(request: Request):
 @router.post("/models")
 def register_model(body: ModelRegisterBody, request: Request):
     user, db = _admin(request)
+    _require_feature_schema(db, "dataset_model")
     if body.model_type not in ("tts", "llm", "embedding") or not body.model_id.strip() or not body.base_model.strip():
         raise HTTPException(400, "模型資料不完整")
     model_count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_AI_MODEL_VERSIONS}")
@@ -1448,6 +1616,7 @@ def register_model(body: ModelRegisterBody, request: Request):
 @router.post("/models/{model_id}/metrics")
 def model_metrics(model_id: str, body: ModelMetricsBody, request: Request):
     user, db = _admin(request)
+    _require_feature_schema(db, "dataset_model")
     row = db.query(f"SELECT model_type,dataset_snapshot_id,status FROM {TABLE_AI_MODEL_VERSIONS} WHERE model_id=:id",
                    {"id": model_id})
     if row.empty: raise HTTPException(404, "找不到模型")

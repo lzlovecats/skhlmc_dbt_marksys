@@ -22,7 +22,7 @@ Provider 價格可隨時調整；付款前應以各 provider dashboard 及官方
 | Render | FastAPI、HTML、WebSocket、Gemini relay | Starter | US$7，約 HK$55 | 512MB RAM、0.5 CPU；目前帳戶顯示 5GB outbound/月 |
 | Supabase | PostgreSQL database | Free | US$0 | 500MB database、500MB RAM、5GB egress、5GB cached egress、1GB Storage |
 | Cloudflare R2 | Private 相片、縮圖及 TTS 錄音 | Standard Free Tier | 預期 US$0 | 10GB-month、1M Class A、10M Class B；Internet egress 免費 |
-| Google Gemini API | AI Coach、審核、RAG embedding、Gemini Live | Free／paid usage | US$0 起，按使用量 | 模型 token、Search grounding、Live API rate limits |
+| Google Gemini API | AI Coach、審核、Gemini Live；未來RAG embedding | Free／paid usage | US$0 起，按使用量 | 模型 token、Search grounding、Live API rate limits；RAG schema未provision時會在provider call前停止 |
 | OpenRouter | DeepSeek、Claude、GPT 等可選模型 | Prepaid／usage | 無固定月費 | 按模型 token 及搜尋用量扣 credits |
 | Azure Speech | 可選廣東話 TTS | 按 Azure subscription | 未能由 repo 確定 | 按合成字元／subscription quota |
 | YouTube | 比賽影片 embed | 外部服務 | 系統無固定月費 | 影片 bytes 直接由 YouTube 傳送，不經 Render |
@@ -198,11 +198,11 @@ AI Coach request、同時最多兩個
 | HTTP | request body實際stream累計5MB；同時最多4個body buffer；1KB以上文字回應gzip |
 | 管理員SQL | statement timeout 10秒；最多500行／1MB；binary cell不回傳；禁止maintenance DDL |
 | CSV／JSONL | 最多5,000行及5MB；超額明確413，不會產生看似完整的截斷backup |
-| LLM training | 每筆20,000字；每人每日10筆；全庫最多5,000筆；export先在DB計算bytes；每個snapshot最多500筆、只保留200個snapshot |
-| RAG | 每次最多10份變更文件／100 chunks；active文件總數最多1,000；embedding最多3個並行；只存pgvector一份embedding |
+| LLM training | Active收集：每筆20,000字、每人每日10筆、全庫最多5,000筆，export先在DB計算bytes；future snapshot registry未provision，計劃上限為每個500筆／共200個 |
+| RAG | 目前fail-closed且embedding前先做cached schema gate；正式provision後才啟用每次10份文件／100 chunks、最多1,000 active文件、3個embedding並行及單一pgvector storage |
 | AI／TTS | AI分析最多3個並行；TTS最多2個並行及4MB response；prompt／response token均有上限 |
 | 資料庫inventory | 辯題2,000、場次500、每場評判50、影片2,000、AI training項目2,000、帳戶1,000 |
-| 長期log | bandwidth 62日、login／notification read／AI usage telemetry 400日；R2 intents完成／孤兒狀態90日；AI基金交易永久保留 |
+| 長期log | bandwidth 62日；login／notification read／AI usage及一般AI training audit 400日；consent grant/withdraw及AI基金交易永久保留；R2 intents完成／孤兒狀態90日 |
 | Push／互動 | 每人最多5個active push devices；舊inactive subscription 90日後刪除；影片view每人每片24小時只記一次 |
 | 其他輸入 | 抽籤最多128隊；投票理由每項500字；影片章節最多30段；評分JSON只保留schema需要欄位 |
 

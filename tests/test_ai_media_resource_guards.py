@@ -11,7 +11,7 @@ import pandas as pd
 
 from core import ai_provider, media_logic, push, r2_storage, rag
 from deploy import proxy
-from api import ai_training_api
+from api import ai_coach_api, ai_training_api
 from tools import prepare_gpt_sovits_dataset as dataset_tool
 
 
@@ -66,6 +66,36 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(proxy.TtsUnavailable):
                 await proxy._synthesize_tts("four")
         preprocess.assert_not_called()
+
+
+class R2IntentCleanupTests(unittest.TestCase):
+    def test_failed_object_delete_keeps_intent_open_for_orphan_retry(self):
+        with patch("core.r2_storage.delete", side_effect=[None, RuntimeError("R2 timeout")]), \
+             patch("core.r2_storage.mark_upload_intent_deleted") as close:
+            self.assertFalse(
+                r2_storage.delete_intent_objects(object(), "intent-1", ("pending/a", "audio/a"))
+            )
+        close.assert_not_called()
+
+    def test_all_objects_must_delete_before_intent_is_closed(self):
+        db = object()
+        with patch("core.r2_storage.delete") as delete, patch(
+            "core.r2_storage.mark_upload_intent_deleted"
+        ) as close:
+            self.assertTrue(
+                r2_storage.delete_intent_objects(db, "intent-1", ("pending/a", "audio/a"))
+            )
+        self.assertEqual(delete.call_count, 2)
+        close.assert_called_once_with(db, "intent-1")
+
+    def test_upload_intents_record_pending_and_final_cleanup_keys(self):
+        tts = (ROOT / "api/ai_training_api.py").read_text(encoding="utf-8")
+        photos = (ROOT / "api/match_photos_api.py").read_text(encoding="utf-8")
+        self.assertIn("object_keys=[pending_key, key]", tts)
+        self.assertIn(
+            "pending_original_key, pending_thumbnail_key, original_key, thumbnail_key",
+            photos,
+        )
 
 
 class PromptAndLexiconTests(unittest.TestCase):
@@ -291,61 +321,101 @@ class PushResourceTests(unittest.TestCase):
         self.assertEqual(len(db.executions), 4)
 
 
-class RagFallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_fallback_fetches_content_only_for_ranked_winners_and_caps_context(self):
+class RagSchemaGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_absent_schema_skips_paid_embedding(self):
         class Db:
             def __init__(self):
                 self.queries = []
 
             def query(self, sql, params=None):
                 self.queries.append((sql, params or {}))
-                if "<=>" in sql:
-                    raise RuntimeError("pgvector unavailable")
-                if "embedding_json" in sql:
-                    return pd.DataFrame(
-                        [
-                            {
-                                "chunk_id": "best",
-                                "embedding_json": json.dumps([1.0, 0.0]),
-                                "document_id": "doc-1",
-                                "title": "Best",
-                                "data_type": "debate",
-                                "topic_text": "topic",
-                            },
-                            {
-                                "chunk_id": "weak",
-                                "embedding_json": json.dumps([0.0, 1.0]),
-                                "document_id": "doc-2",
-                                "title": "Weak",
-                                "data_type": "debate",
-                                "topic_text": "topic",
-                            },
-                        ]
-                    )
-                return pd.DataFrame(
-                    [{"chunk_id": "best", "content_text": "x" * 5_000}]
-                )
+                return pd.DataFrame([{"table_0": False, "table_1": False}])
 
         db = Db()
-        with patch("core.rag._embed", new=AsyncMock(return_value=[1.0, 0.0])), patch(
-            "core.rag.RAG_CONTEXT_MAX_CHARS", 1_000
-        ):
+        embed = AsyncMock(return_value=[1.0, 0.0])
+        with patch.dict(rag._RAG_SCHEMA_CACHE, {"ready": False, "checked_at": 0}, clear=True), \
+             patch("core.rag.time.monotonic", return_value=1_000), \
+             patch("core.rag._embed", new=embed):
             context = await rag.retrieve_rag_context(
                 db, "key", "query", top_k=1, min_similarity=0.1
             )
+        self.assertEqual(context, "")
+        embed.assert_not_awaited()
+        # No migration has been released for RAG, so the explicit code marker
+        # disables it without spending even one catalog round-trip.
+        self.assertEqual(len(db.queries), 0)
 
-        fallback_sql = next(sql for sql, _ in db.queries if "embedding_json" in sql)
-        content_sql, content_params = next(
-            (sql, params)
-            for sql, params in db.queries
-            if "SELECT chunk_id,content_text" in sql
-        )
-        self.assertNotIn("content_text", fallback_sql)
-        self.assertIn("chunk_id IN (:chunk_0)", content_sql)
-        self.assertEqual(content_params, {"chunk_0": "best"})
-        self.assertLessEqual(len(context), 1_000)
-        self.assertIn("[RAG:best]", context)
-        self.assertNotIn("[RAG:weak]", context)
+    async def test_vector_failure_does_not_download_json_fallback(self):
+        class Db:
+            def __init__(self):
+                self.queries = []
+
+            def query(self, sql, params=None):
+                self.queries.append((sql, params or {}))
+                if "obj_description" in sql:
+                    return pd.DataFrame([{"applied": True}])
+                if "to_regclass" in sql:
+                    return pd.DataFrame([{
+                        "relation_0": True, "relation_1": True,
+                        "table_0": True, "table_1": True,
+                    }])
+                if "pg_extension" in sql:
+                    return pd.DataFrame([{
+                        "vector_extension_ready": True,
+                        "embedding_column_ready": True,
+                    }])
+                raise RuntimeError("vector query unavailable")
+
+        db = Db()
+        with patch.dict(rag._RAG_SCHEMA_CACHE, {"ready": False, "checked_at": 0}, clear=True), \
+             patch.dict("core.schema_features.FEATURE_MIGRATION_VERSIONS", {"rag": "20260714_0001"}, clear=False), \
+             patch("core.rag.time.monotonic", return_value=1_000), \
+             patch("core.rag._embed", new=AsyncMock(return_value=[1.0, 0.0])):
+            context = await rag.retrieve_rag_context(db, "key", "query")
+
+        self.assertEqual(context, "")
+        self.assertFalse(any("embedding_json" in sql for sql, _ in db.queries))
+
+    async def test_stale_positive_readiness_is_rechecked_before_embedding(self):
+        class Db:
+            def __init__(self): self.queries = []
+            def query(self, sql, params=None):
+                self.queries.append((sql, params or {}))
+                return pd.DataFrame([{"applied": False}])
+
+        db = Db()
+        embed = AsyncMock(return_value=[1.0, 0.0])
+        with patch.dict(rag._RAG_SCHEMA_CACHE, {"ready": True, "checked_at": 999}, clear=True), \
+             patch.dict("core.schema_features.FEATURE_MIGRATION_VERSIONS", {"rag": "20260714_0001"}, clear=False), \
+             patch("core.rag.time.monotonic", return_value=1_000), \
+             patch("core.rag._embed", new=embed):
+            context = await rag.retrieve_rag_context(db, "key", "query")
+        self.assertEqual(context, "")
+        embed.assert_not_awaited()
+        self.assertEqual(len(db.queries), 1)
+
+
+class CustomModelGateTests(unittest.TestCase):
+    def test_custom_llm_cannot_use_unversioned_legacy_registry(self):
+        class Db:
+            def query(self, *_args, **_kwargs):
+                raise AssertionError("disabled feature must not query legacy tables")
+
+        values = {
+            "CUSTOM_LLM_BASE_URL": "https://llm.internal",
+            "CUSTOM_LLM_MODEL": "llm-v1",
+            "CUSTOM_LLM_API_KEY": "secret",
+        }
+        with patch("deploy.proxy._get_proxy_secret", side_effect=lambda key, *_: values.get(key, "")):
+            with self.assertRaisesRegex(Exception, "registry尚未由正式migration啟用"):
+                ai_coach_api._config("自家辯論 LLM", Db())
+
+    def test_custom_tts_cannot_use_unversioned_legacy_registry(self):
+        with patch("deploy.proxy.get_vote_db", return_value=object()), patch(
+            "deploy.proxy._get_db_engine"
+        ) as engine:
+            self.assertFalse(proxy._model_is_deployable("tts-v1", "tts"))
+        engine.assert_not_called()
 
 
 class MediaTransactionTests(unittest.TestCase):

@@ -32,19 +32,30 @@ def _referenced_keys(db) -> set[str]:
     return keys
 
 
-def _issued_intents_by_key(db) -> dict[str, str]:
+def _issued_intents(db) -> dict[str, dict]:
     db.execute(CREATE_R2_UPLOAD_INTENTS)
-    rows = db.query("SELECT intent_id,object_keys FROM r2_upload_intents WHERE status='issued'")
-    result: dict[str, str] = {}
+    rows = db.query("""SELECT intent_id,object_keys,created_at
+        FROM r2_upload_intents WHERE status='issued'""")
+    intents: dict[str, dict] = {}
     for _, row in rows.iterrows():
+        intent_id = str(row["intent_id"])
         try:
-            keys = json.loads(str(row["object_keys"] or "[]"))
+            keys = [str(key) for key in json.loads(str(row["object_keys"] or "[]"))]
         except Exception:
             keys = []
-        for key in keys:
-            if str(key).startswith("pending/"):
-                result[str(key)] = str(row["intent_id"])
-    return result
+        intents[intent_id] = {"keys": keys, "created_at": row.get("created_at")}
+    return intents
+
+
+def _as_utc(value):
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if not isinstance(value, dt.datetime):
+        try:
+            value = dt.datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+    return value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None else value.astimezone(dt.timezone.utc)
 
 
 def main() -> int:
@@ -64,13 +75,14 @@ def main() -> int:
         print("Database is not configured.", file=sys.stderr)
         return 2
     referenced = _referenced_keys(db)
-    pending_intents = _issued_intents_by_key(db)
+    issued_intents = _issued_intents(db)
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
         hours=max(R2_ORPHAN_MIN_AGE_HOURS, args.older_than_hours)
     )
     orphan_count = 0
     total_bytes = 0
     dry_run_sample: list[tuple[str, int]] = []
+    present_keys: set[str] = set()
     s3 = r2_storage.client()
     bucket = r2_storage.settings()["bucket"]
     paginator = s3.get_paginator("list_objects_v2")
@@ -78,6 +90,8 @@ def main() -> int:
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for item in page.get("Contents") or []:
                 key = str(item.get("Key") or "")
+                if key:
+                    present_keys.add(key)
                 modified = item.get("LastModified")
                 if key and key not in referenced and modified and modified <= cutoff:
                     size = int(item.get("Size") or 0)
@@ -85,15 +99,25 @@ def main() -> int:
                     total_bytes += size
                     if args.apply:
                         r2_storage.delete(key)
-                        intent_id = pending_intents.get(key)
-                        if intent_id:
-                            r2_storage.mark_upload_intent_deleted(db, intent_id)
+                        present_keys.discard(key)
                         print(f"deleted {key}")
                     elif len(dry_run_sample) < R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT:
                         dry_run_sample.append((key, size))
     print(f"orphans={orphan_count} bytes={total_bytes} cutoff={cutoff.isoformat()}")
     for key, size in dry_run_sample:
         print(f"dry-run {size:>10} {key}")
+    if args.apply:
+        for intent_id, intent in issued_intents.items():
+            keys = intent["keys"]
+            created_at = _as_utc(intent.get("created_at"))
+            if (
+                keys
+                and all(key.startswith(PREFIXES) for key in keys)
+                and created_at is not None
+                and created_at <= cutoff
+                and not any(key in present_keys for key in keys)
+            ):
+                r2_storage.mark_upload_intent_deleted(db, intent_id)
     return 0
 
 

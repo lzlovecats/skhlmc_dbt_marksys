@@ -317,8 +317,8 @@
 
 #### N. AI訓練資料
 - 獲Developer授權的錄音提交者可先閱讀並確認聲音複製、雲端處理及未成年安排，再按句庫錄音；錄音會直接上載private R2，不經database保存binary。
-- 提交者可播放自己的錄音、查看AI預檢及審核狀態，亦可撤回同意。撤回後資料不再進入新dataset export／重訓。
-- 獲授權reviewer可管理句庫及讀音字典、試聽和審核錄音、審核LLM文字、查看coverage/readiness、建立dataset snapshot及model/eval/RAG記錄。
+- 提交者可播放自己的錄音、查看AI預檢及審核狀態，亦可撤回同意。撤回會在同一個資料庫transaction把現有錄音標示為withdrawn並寫入不可由browser讀取的audit；資料不再進入新dataset export／重訓。
+- 獲授權reviewer可管理句庫及讀音字典、試聽和審核錄音、審核LLM文字，以及查看coverage/readiness。Dataset/model registry、固定eval worker及RAG尚未正式啟用；readiness會顯示eval未provision，相關進階操作會明確暫停而不會自動建表或消耗embedding API。
 - AI預檢只供初篩，accepted仍需人手確認；上載、播放、export及AI分析都有大小、數量及費用上限。
 
 #### O. 比賽相片及Bug回報

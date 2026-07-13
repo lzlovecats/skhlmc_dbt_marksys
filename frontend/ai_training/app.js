@@ -307,8 +307,17 @@
     $("llmStats").textContent =
       stats.llm.map((x) => `${x.status}: ${x.count}`).join(" ｜ ") ||
       "暫無資料";
+    const evalStatus = ready.eval_provisioned
+      ? `${ready.active_eval_cases} / ${ready.gates.llm_eval_cases}`
+      : "尚未啟用";
+    const speakerStatus = (ready.speakers || [])
+      .map(
+        (speaker) =>
+          `<p><b>${esc(speaker.speaker_user_id)}</b>：accepted ${speaker.accepted_minutes || 0}分鐘（${speaker.accepted_clips || 0}段）｜現行授權 eligible ${speaker.eligible_clips || 0}段｜pending ${speaker.pending_minutes || 0}分鐘</p>`,
+      )
+      .join("");
     $("readinessSummary").innerHTML =
-      `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}｜固定Eval：${ready.active_eval_cases} / ${ready.gates.llm_eval_cases}</p>${(ready.speakers || []).map((s) => `<p><b>${esc(s.speaker_user_id)}</b>：accepted ${s.accepted_minutes || 0}分鐘（${s.accepted_clips || 0}段）｜v2 eligible ${s.eligible_clips || 0}段｜pending ${s.pending_minutes || 0}分鐘</p>`).join("") || "<p>暫無聲線資料。</p>"}`;
+      `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}｜固定Eval：${evalStatus}</p>${speakerStatus || "<p>暫無聲線資料。</p>"}`;
     window.inventory = inv;
     renderScriptInventory();
     $("manuscriptInventory").innerHTML =
@@ -458,11 +467,31 @@
       busy(false);
     }
   };
+  $("minorStatus").onchange = () => {
+    const isMinor = $("minorStatus").value === "minor";
+    $("guardianConsent").classList.toggle("hidden", !isMinor);
+    if (!isMinor) $("guardianConfirmed").checked = false;
+  };
   $("consentBtn").onclick = async () => {
-    if (!$("agree").checked) return toast("⚠️ 請先確認同意。");
+    const minorStatus = $("minorStatus").value;
+    if (!$("agree").checked) return toast("⚠️ 請先確認整體授權安排。");
+    if (!$("voiceCloningConfirmed").checked)
+      return toast("⚠️ 請明確確認聲線模型用途。");
+    if (!$("cloudProcessingConfirmed").checked)
+      return toast("⚠️ 請明確確認受控雲端處理用途。");
+    if (!minorStatus) return toast("⚠️ 請選擇錄音者是否未滿 18 歲。");
+    const isMinor = minorStatus === "minor";
+    if (isMinor && !$("guardianConfirmed").checked)
+      return toast("⚠️ 未成年錄音者必須確認已取得家長／學校授權。");
     await api("/api/ai-training/consent", {
       method: "POST",
-      body: '{"agreed":true}',
+      body: JSON.stringify({
+        agreed: true,
+        voice_cloning_confirmed: true,
+        cloud_processing_confirmed: true,
+        is_minor: isMinor,
+        guardian_confirmed: isMinor && $("guardianConfirmed").checked,
+      }),
     });
     load();
   };

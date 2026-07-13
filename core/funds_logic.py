@@ -24,7 +24,7 @@ AI_FUND_TARGET_DEFAULT = 500.0
 AI_FUND_LOW_BALANCE_DEFAULT = 100.0
 AI_FUND_PAYMENT_DEFAULT = "請按賽會指示付款，並提交交易編號供 AI基金管理員確認。"
 AI_TRANSACTION_TYPES = {"member_deposit", "provider_topup", "provider_refund", "member_refund", "adjustment"}
-AI_PROVIDERS = {"openrouter", "gemini", "openai", "general", "other"}
+AI_PROVIDERS = {"openrouter", "gemini", "openai", "custom", "general", "other"}
 AI_PAYMENT_METHODS = {"FPS", "現金", "Alipay", "PayMe", "其他"}
 AI_TRANSACTION_LABELS = {
     "member_deposit": "成員入數", "provider_topup": "AI provider 充值 / 帳單",
@@ -33,7 +33,7 @@ AI_TRANSACTION_LABELS = {
 }
 AI_PROVIDER_LABELS = {
     "general": "整體AI基金", "gemini": "Gemini", "openrouter": "OpenRouter",
-    "openai": "GPT", "other": "其他",
+    "openai": "GPT", "custom": "自家模型", "other": "其他",
 }
 AI_FEATURE_LABELS = {
     "speech_review": "練習發言", "strategy": "主線策劃", "web_research": "搵料易",
@@ -51,7 +51,7 @@ AI_USAGE_FEATURES = (
 )
 LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
 _AI_PRUNE_LOCK = threading.Lock()
-_AI_LAST_PRUNE = 0.0
+_AI_LAST_PRUNE = None
 
 
 def _now():
@@ -287,23 +287,36 @@ def delete_lateness(kind, row_id, db=None):
     return _resolve_db(db).execute_count(f"DELETE FROM {table} WHERE id=:id", {"id":int(row_id)})
 
 
-def _prune_ai_usage(db):
-    """Retain detailed token telemetry without relying on worker restarts."""
+def prune_ai_usage(db):
+    """Best-effort retention that never blocks the AI call being accounted."""
     global _AI_LAST_PRUNE
     monotonic_now = time.monotonic()
-    if monotonic_now - _AI_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+    if (
+        _AI_LAST_PRUNE is not None
+        and monotonic_now - _AI_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS
+    ):
         return
     with _AI_PRUNE_LOCK:
-        if monotonic_now - _AI_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS:
+        if (
+            _AI_LAST_PRUNE is not None
+            and monotonic_now - _AI_LAST_PRUNE < MAINTENANCE_PRUNE_INTERVAL_SECONDS
+        ):
             return
-        db.execute(
-            f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS} WHERE created_at<:cutoff",
-            {
-                "cutoff": datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-                - timedelta(days=AI_USAGE_RETENTION_DAYS),
-            },
-        )
+        try:
+            db.execute(
+                f"DELETE FROM {TABLE_AI_FUND_USAGE_LOGS} WHERE created_at<:cutoff",
+                {
+                    "cutoff": datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+                    - timedelta(days=AI_USAGE_RETENTION_DAYS),
+                },
+            )
+        except Exception:
+            # Throttle a permission/timeout failure instead of retrying the
+            # same maintenance DELETE on every user request.
+            _AI_LAST_PRUNE = monotonic_now
+            return False
         _AI_LAST_PRUNE = monotonic_now
+        return True
 
 
 def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
@@ -311,7 +324,7 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
     if feature not in AI_USAGE_FEATURES:
         raise ValueError("不支援的 AI 功能類型。")
     db = _resolve_db(db)
-    _prune_ai_usage(db)
+    prune_ai_usage(db)
     usage = usage or {}
     model_label = str(usage.get("model_label") or "Gemini 3.5 Flash")
     provider = str(usage.get("provider") or "gemini").lower()
