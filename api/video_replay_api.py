@@ -43,7 +43,7 @@ def data(request: Request, video_id: int | None = None):
 def comments(request: Request, video_id: int, page: int = 1):
     from core import media_logic as logic
     from schema import TABLE_VIDEO_COMMENTS
-    _user, db = _context(request); logic.ensure_video_interaction_tables(db); page,_,offset=bounds(page)
+    _user, db = _context(request); page,_,offset=bounds(page)
     params={"video_id":video_id}; total=scalar_count(db,f"SELECT COUNT(*) total FROM {TABLE_VIDEO_COMMENTS} WHERE video_id=:video_id",params)
     params.update(limit=PAGE_SIZE,offset=offset)
     frame=db.query(f"SELECT user_id,comment_text,created_at FROM {TABLE_VIDEO_COMMENTS} WHERE video_id=:video_id ORDER BY created_at DESC LIMIT :limit OFFSET :offset",params)

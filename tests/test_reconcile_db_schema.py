@@ -83,9 +83,44 @@ class DatabaseSchemaReconciliationTests(unittest.TestCase):
     def test_runtime_ddl_inventory_excludes_versioned_runner(self):
         inventory = reconciliation.runtime_ddl_inventory()
         sites = inventory["sites"]
-        self.assertTrue(any(site.startswith("api/auth_api.py:") for site in sites))
+        self.assertEqual(
+            {site.split(":", 1)[0] for site in sites},
+            {
+                "api/ai_training_api.py",
+                "core/config_store.py",
+                "core/r2_storage.py",
+                "deploy/proxy.py",
+            },
+        )
+        self.assertEqual(len(sites), 23)
+        self.assertEqual(
+            set(inventory["references"]),
+            reconciliation._RUNTIME_DDL_REFERENCE_ALLOWLIST,
+        )
+        self.assertEqual(
+            set(inventory["direct_statements"]),
+            {"ALTER TABLE", "CREATE EXTENSION"},
+        )
+        self.assertEqual(
+            set(inventory["indirect_statements"]),
+            {"ALTER TABLE", "CREATE INDEX", "CREATE TABLE"},
+        )
+        self.assertEqual(
+            inventory["policy_violations"],
+            {
+                "unexpected_files": [],
+                "unexpected_references": [],
+                "unexpected_direct_statements": [],
+                "unexpected_indirect_statements": [],
+                "unexpected_indexes": [],
+                "site_budget_exceeded_by": 0,
+            },
+        )
         self.assertFalse(any(site.startswith("core/db_migrations.py:") for site in sites))
-        self.assertEqual(inventory["indexes"], {})
+        self.assertEqual(
+            set(inventory["indexes"]),
+            {"idx_ai_coach_prepare_usage_user_created"},
+        )
 
 
 if __name__ == "__main__":

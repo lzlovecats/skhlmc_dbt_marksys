@@ -37,15 +37,48 @@ _ALTER_COLUMN = re.compile(
     re.IGNORECASE,
 )
 _RUNTIME_DDL = re.compile(
-    r"\b(?:CREATE|ALTER|DROP|TRUNCATE)\s+"
-    r"(?:TABLE|INDEX|VIEW|EXTENSION|POLICY|TYPE|SEQUENCE)\b",
+    r"\b(?P<verb>CREATE|ALTER|DROP|TRUNCATE)\s+"
+    r"(?:OR\s+REPLACE\s+)?"
+    r"(?P<object>TABLE|INDEX|VIEW|EXTENSION|POLICY|TYPE|SEQUENCE|FUNCTION|"
+    r"PROCEDURE|TRIGGER|SCHEMA)\b",
     re.IGNORECASE,
 )
 _CREATE_INDEX = re.compile(
-    r"\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+"
+    r"\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(?P<index>[A-Za-z_][A-Za-z0-9_$]*)\b",
     re.IGNORECASE,
 )
+_RUNTIME_DDL_FILE_ALLOWLIST = {
+    "api/ai_training_api.py",
+    "core/config_store.py",
+    "core/r2_storage.py",
+    "deploy/proxy.py",
+}
+_RUNTIME_DDL_REFERENCE_ALLOWLIST = {
+    "CREATE_AI_DATASET_SNAPSHOTS",
+    "CREATE_AI_DATASET_SNAPSHOT_ITEMS",
+    "CREATE_AI_EVAL_CASES",
+    "CREATE_AI_EVAL_RUNS",
+    "CREATE_AI_MODEL_VERSIONS",
+    "CREATE_AI_TRAINING_AUDIT",
+    "CREATE_APP_CONFIG",
+    "CREATE_BANDWIDTH_USAGE_LOGS",
+    "CREATE_PRACTICE_DAILY_USAGE",
+    "CREATE_R2_UPLOAD_INTENTS",
+    "CREATE_RAG_CHUNKS",
+    "CREATE_RAG_DOCUMENTS",
+    "MEDIA_R2_STARTUP_MIGRATIONS",
+    "RUNTIME_OWNED_STARTUP_DDL",
+}
+_RUNTIME_DDL_DIRECT_ALLOWLIST = {"ALTER TABLE", "CREATE EXTENSION"}
+_RUNTIME_DDL_INDIRECT_ALLOWLIST = {
+    "ALTER TABLE",
+    "CREATE INDEX",
+    "CREATE TABLE",
+}
+_RUNTIME_INDEX_ALLOWLIST = {"idx_ai_coach_prepare_usage_user_created"}
+_RUNTIME_DDL_SITE_BUDGET = 23
 _NON_COLUMN_PREFIXES = {
     "CHECK",
     "CONSTRAINT",
@@ -157,32 +190,98 @@ def declared_inventory() -> dict:
 def runtime_ddl_inventory() -> dict:
     sites = set()
     indexes: dict[str, set[str]] = {}
+    references: dict[str, set[str]] = {}
+    direct_statements: dict[str, set[str]] = {}
+    indirect_statements: dict[str, set[str]] = {}
     for directory in (ROOT / "api", ROOT / "core", ROOT / "deploy"):
-        for path in sorted(directory.glob("*.py")):
+        for path in sorted(directory.rglob("*.py")):
             if path == ROOT / "core" / "db_migrations.py":
                 continue
             source = path.read_text(encoding="utf-8")
-            relative = path.relative_to(ROOT)
+            relative = path.relative_to(ROOT).as_posix()
             for number, line in enumerate(source.splitlines(), start=1):
-                if _RUNTIME_DDL.search(line):
-                    sites.add(f"{relative}:{number}")
+                for match in _RUNTIME_DDL.finditer(line):
+                    site = f"{relative}:{number}"
+                    sites.add(site)
+                    signature = (
+                        f"{match.group('verb').upper()} "
+                        f"{match.group('object').upper()}"
+                    )
+                    direct_statements.setdefault(signature, set()).add(site)
             try:
                 tree = ast.parse(source)
             except SyntaxError:
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.Name) and node.id.startswith("CREATE_"):
-                    sites.add(f"{relative}:{node.lineno}")
+                if not isinstance(node, ast.Name):
+                    continue
+                value = getattr(bootstrap_schema, node.id, None)
+                is_create_reference = node.id.startswith("CREATE_")
+                is_ddl_collection = (
+                    isinstance(value, (list, tuple))
+                    and any(
+                        isinstance(item, str) and _RUNTIME_DDL.search(item)
+                        for item in value
+                    )
+                )
+                if not (is_create_reference or is_ddl_collection):
+                    continue
+                site = f"{relative}:{node.lineno}"
+                sites.add(site)
+                references.setdefault(node.id, set()).add(site)
+                if is_ddl_collection:
+                    for statement in value:
+                        if not isinstance(statement, str):
+                            continue
+                        for match in _RUNTIME_DDL.finditer(statement):
+                            signature = (
+                                f"{match.group('verb').upper()} "
+                                f"{match.group('object').upper()}"
+                            )
+                            indirect_statements.setdefault(
+                                signature, set()
+                            ).add(site)
+                        for match in _CREATE_INDEX.finditer(statement):
+                            indexes.setdefault(match.group("index"), set()).add(site)
             for match in _CREATE_INDEX.finditer(source):
                 number = source.count("\n", 0, match.start()) + 1
                 site = f"{relative}:{number}"
                 indexes.setdefault(match.group("index"), set()).add(site)
+    files = {site.split(":", 1)[0] for site in sites}
+    reference_names = set(references)
+    policy_violations = {
+        "unexpected_files": sorted(files - _RUNTIME_DDL_FILE_ALLOWLIST),
+        "unexpected_references": sorted(
+            reference_names - _RUNTIME_DDL_REFERENCE_ALLOWLIST
+        ),
+        "unexpected_direct_statements": sorted(
+            set(direct_statements) - _RUNTIME_DDL_DIRECT_ALLOWLIST
+        ),
+        "unexpected_indirect_statements": sorted(
+            set(indirect_statements) - _RUNTIME_DDL_INDIRECT_ALLOWLIST
+        ),
+        "unexpected_indexes": sorted(set(indexes) - _RUNTIME_INDEX_ALLOWLIST),
+        "site_budget_exceeded_by": max(0, len(sites) - _RUNTIME_DDL_SITE_BUDGET),
+    }
     return {
         "sites": sorted(sites),
+        "references": {
+            name: sorted(reference_sites)
+            for name, reference_sites in sorted(references.items())
+        },
+        "direct_statements": {
+            name: sorted(statement_sites)
+            for name, statement_sites in sorted(direct_statements.items())
+        },
+        "indirect_statements": {
+            name: sorted(statement_sites)
+            for name, statement_sites in sorted(indirect_statements.items())
+        },
         "indexes": {
             name: sorted(index_sites)
             for name, index_sites in sorted(indexes.items())
         },
+        "policy_violations": policy_violations,
     }
 
 
@@ -255,6 +354,10 @@ def build_report(snapshot: dict, declared: dict) -> dict:
         ),
         "runtime_ddl_site_count": len(ddl_sites),
         "runtime_ddl_sites": ddl_sites,
+        "runtime_ddl_references": ddl_inventory["references"],
+        "runtime_ddl_direct_statements": ddl_inventory["direct_statements"],
+        "runtime_ddl_indirect_statements": ddl_inventory["indirect_statements"],
+        "runtime_ddl_policy_violations": ddl_inventory["policy_violations"],
         "runtime_index_sites": ddl_inventory["indexes"],
         "runtime_indexes_present_in_production": sorted(
             runtime_index_names & production_indexes
@@ -302,6 +405,7 @@ def main(argv: list[str] | None = None) -> int:
         or report["column_name_drift"]
         or report["production_only_views"]
         or report["code_only_views"]
+        or any(report["runtime_ddl_policy_violations"].values())
     )
     return int(args.fail_on_drift and drift)
 

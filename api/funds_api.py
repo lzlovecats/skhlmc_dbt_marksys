@@ -76,7 +76,7 @@ def lateness_data(request: Request, year: int | None = None):
 def lateness_records(request: Request, year: int, page: int = 1, member: str | None = None):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_RECORDS
-    _, db = _context(request); logic._ensure_lateness(db); start, end = logic.fiscal_range(year)
+    _, db = _context(request); start, end = logic.fiscal_range(year)
     params = {"start": start.isoformat(), "end": end.isoformat()}; page, _, offset = bounds(page)
     member_clause = " AND member_user_id=:member" if str(member or "").strip() else ""
     if member_clause: params["member"] = str(member).strip()
@@ -114,7 +114,7 @@ def lateness_records(request: Request, year: int, page: int = 1, member: str | N
 def lateness_expenses(request: Request, year: int, page: int = 1):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_EXPENSES
-    _, db = _context(request); logic._ensure_lateness(db); start, end = logic.fiscal_range(year)
+    _, db = _context(request); start, end = logic.fiscal_range(year)
     params = {"start": start.isoformat(), "end": end.isoformat()}; page, _, offset = bounds(page)
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_LATENESS_FUND_EXPENSES} WHERE expense_date BETWEEN :start AND :end", params)
     params.update(limit=PAGE_SIZE, offset=offset)
@@ -125,7 +125,7 @@ def lateness_expenses(request: Request, year: int, page: int = 1):
 def lateness_summary(request: Request, year: int, page: int = 1):
     from core import funds_logic as logic
     from schema import TABLE_LATENESS_FUND_RECORDS
-    _,db=_context(request);logic._ensure_lateness(db);start,end=logic.fiscal_range(year);page,_,offset=bounds(page);params={"start":start.isoformat(),"end":end.isoformat()}
+    _,db=_context(request);start,end=logic.fiscal_range(year);page,_,offset=bounds(page);params={"start":start.isoformat(),"end":end.isoformat()}
     total=scalar_count(db,f"SELECT COUNT(DISTINCT member_user_id) total FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end",params);params.update(limit=PAGE_SIZE,offset=offset)
     rows=db.query(f"""WITH ranked AS (SELECT member_user_id,late_minutes,COALESCE(paid_amount,0) paid_amount,ROW_NUMBER() OVER(PARTITION BY member_user_id ORDER BY late_date,id) late_no FROM {TABLE_LATENESS_FUND_RECORDS} WHERE late_date BETWEEN :start AND :end), grouped AS (SELECT member_user_id,COUNT(*) late_count,SUM(late_minutes) total_late_minutes,SUM(late_no*late_minutes) penalty_amount,SUM(paid_amount) paid_amount FROM ranked GROUP BY member_user_id) SELECT DENSE_RANK() OVER(ORDER BY total_late_minutes DESC) late_rank,member_user_id,late_count,total_late_minutes,penalty_amount,paid_amount,paid_amount-penalty_amount balance FROM grouped ORDER BY total_late_minutes DESC,member_user_id LIMIT :limit OFFSET :offset""",params)
     return payload(logic._rows(rows),page,total)
@@ -298,7 +298,6 @@ def ai_transactions(request: Request, page: int = 1, status: str | None = None, 
     from core import funds_logic as logic
     from schema import TABLE_AI_FUND_TRANSACTIONS
     user, db = _context(request)
-    logic._ensure_ai(db)
     treasurer = logic.is_ai_treasurer(user, db=db)
     clauses, params = ([] if treasurer else ["created_by=:user"]), ({} if treasurer else {"user": user})
     if status: clauses.append("status=:status"); params["status"] = status
@@ -315,7 +314,6 @@ def ai_usage(request: Request, page: int = 1):
     from core import funds_logic as logic
     from schema import TABLE_AI_FUND_USAGE_LOGS
     user, db = _context(request)
-    logic._ensure_ai(db)
     treasurer = logic.is_ai_treasurer(user, db=db)
     where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
     page, _, offset = bounds(page); params["limit"] = PAGE_SIZE; params["offset"] = offset
@@ -338,7 +336,6 @@ def ai_usage_summary(request: Request, page: int = 1):
 def _ai_export_context(request):
     from core import funds_logic as logic
     user, db = _context(request)
-    logic._ensure_ai(db)
     return user, db, logic.is_ai_treasurer(user, db=db), logic
 
 

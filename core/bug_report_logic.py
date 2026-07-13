@@ -1,12 +1,11 @@
 """Validation and persistence for committee bug reports."""
 
 import re
-import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from core.vote_logic import _resolve_db
-from schema import CREATE_BUG_REPORTS, TABLE_BUG_REPORTS
+from schema import TABLE_BUG_REPORTS
 from system_limits import (
     BUG_REPORT_MAX_PER_USER_DAY, BUG_REPORT_MAX_TOTAL,
     BUG_REPORT_RATE_WINDOW_HOURS, BUG_REPORT_RECENT_LIMIT,
@@ -36,23 +35,6 @@ VAGUE_PATTERNS = [
     r"唔\s*得", r"有\s*問題", r"唔\s*work", r"唔\s*正常",
 ]
 MIN_STEPS_LEN = 15
-_schema_lock = threading.Lock()
-_schema_ready = False
-
-
-def ensure_bug_reports_table(db=None):
-    """Create the legacy-compatible table once per worker."""
-    global _schema_ready
-    if _schema_ready:
-        return
-    with _schema_lock:
-        if _schema_ready:
-            return
-        db = _resolve_db(db)
-        db.execute(CREATE_BUG_REPORTS)
-        _schema_ready = True
-
-
 def plain_len(text):
     return len(re.sub(r"\s+", "", text or ""))
 
@@ -82,7 +64,6 @@ def validate_report(affected_page, steps, expected, actual):
 
 def submit_report(user_id, affected_page, device_info, reproduction_steps, expected_result, actual_result, extra_notes, db=None):
     db = _resolve_db(db)
-    ensure_bug_reports_table(db)
     affected_page = (affected_page or "").strip()
     reproduction_steps = (reproduction_steps or "").strip()
     expected_result = (expected_result or "").strip()
@@ -127,7 +108,6 @@ def _format_time(value):
 
 def reports_for_user(user_id, db=None):
     db = _resolve_db(db)
-    ensure_bug_reports_table(db)
     reports = db.query(
         f"""
         SELECT id, affected_page, device_info, reproduction_steps, expected_result,

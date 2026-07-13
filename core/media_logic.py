@@ -6,7 +6,6 @@ import io
 import itertools
 import os
 import re
-import threading
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
@@ -15,13 +14,6 @@ from sqlalchemy import text
 
 from core.vote_logic import _resolve_db
 from schema import (
-    CREATE_MATCH_PHOTOS,
-    CREATE_MATCH_VIDEOS,
-    CREATE_VIDEO_CHAPTERS,
-    CREATE_VIDEO_COMMENTS,
-    CREATE_VIDEO_PROGRESS,
-    CREATE_VIDEO_VIEWS,
-    CREATE_VIDEO_VOTES,
     TABLE_MATCHES,
     TABLE_MATCH_PHOTOS,
     TABLE_MATCH_VIDEOS,
@@ -44,22 +36,6 @@ from system_limits import (
 HKT = ZoneInfo("Asia/Hong_Kong")
 SOURCE_EXISTING = "連結現有場次"
 SOURCE_STANDALONE = "手動輸入舊比賽"
-_MEDIA_SCHEMA_LOCK = threading.Lock()
-_MEDIA_SCHEMA_READY = set()
-
-
-def _run_media_ddl_once(db, schema_key, statements):
-    engine = getattr(db, "_engine", None)
-    cache_key = (engine, schema_key) if engine is not None else None
-    if cache_key is not None and cache_key in _MEDIA_SCHEMA_READY:
-        return
-    with _MEDIA_SCHEMA_LOCK:
-        if cache_key is not None and cache_key in _MEDIA_SCHEMA_READY:
-            return
-        for statement in statements:
-            db.execute(statement)
-        if cache_key is not None:
-            _MEDIA_SCHEMA_READY.add(cache_key)
 OTHER_ALBUM = "其他相片"
 CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "攻辯", "台下", "交互", "自由辯論", "反結", "正結"]
 CHAPTER_ORDER = {label: index for index, label in enumerate(CHAPTER_LABELS)}
@@ -157,49 +133,6 @@ def is_youtube_url(url):
     )
 
 
-def ensure_match_videos_table(db=None):
-    db = _resolve_db(db)
-    statements = [
-        CREATE_MATCH_VIDEOS,
-        f"ALTER TABLE {TABLE_MATCH_VIDEOS} ALTER COLUMN match_id DROP NOT NULL",
-    ]
-    statements.extend(
-        f"ALTER TABLE {TABLE_MATCH_VIDEOS} ADD COLUMN IF NOT EXISTS {column} TEXT"
-        for column in (
-            "match_label", "standalone_topic_text", "standalone_pro_team",
-            "standalone_con_team",
-        )
-    )
-    _run_media_ddl_once(db, "match-videos", statements)
-
-
-def ensure_video_interaction_tables(db=None):
-    db = _resolve_db(db)
-    ensure_match_videos_table(db)
-    _run_media_ddl_once(db, "video-interactions", (
-        CREATE_VIDEO_VIEWS, CREATE_VIDEO_COMMENTS, CREATE_VIDEO_VOTES,
-        CREATE_VIDEO_CHAPTERS, CREATE_VIDEO_PROGRESS,
-    ))
-
-
-def ensure_match_photos_table(db=None):
-    db = _resolve_db(db)
-    ensure_match_videos_table(db)
-    statements = [
-        CREATE_MATCH_PHOTOS,
-        f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS photo_date DATE",
-    ]
-    statements.extend(
-        f"ALTER TABLE {TABLE_MATCH_PHOTOS} ADD COLUMN IF NOT EXISTS {column} {data_type}"
-        for column, data_type in (
-            ("r2_key", "TEXT"), ("thumbnail_r2_key", "TEXT"),
-            ("byte_size", "INTEGER"), ("sha256", "TEXT"),
-            ("width", "INTEGER"), ("height", "INTEGER"),
-        )
-    )
-    _run_media_ddl_once(db, "match-photos", statements)
-
-
 def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT):
     return db.query(
         f"""
@@ -248,7 +181,6 @@ def _replay_record(row):
 
 def replay_data(user_id, selected_video_id=None, db=None):
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
     videos = [_replay_record(row) for _, row in _replay_rows(user_id, db).iterrows()]
     if not videos:
         return {"videos": [], "selected": None, "chapters": [], "comments": [], "my_vote": None, "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS}
@@ -392,7 +324,6 @@ def add_video(data, db=None):
     if errors:
         return {"ok": False, "errors": errors}
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
     if not count.empty and int(count.iloc[0]["n"] or 0) >= VIDEO_TOTAL_LIMIT:
         return {"ok": False, "message": f"片段總數已達 {VIDEO_TOTAL_LIMIT} 項保護上限，請先封存舊資料。"}
@@ -424,7 +355,6 @@ def _admin_video_record(row):
 
 def video_admin_data(selected_video_id=None, page=1, page_size=20, db=None):
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
     page_size = max(1, min(int(page_size or 20), 100))
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
     total = int(count.iloc[0]["n"] or 0) if not count.empty else 0
@@ -519,7 +449,6 @@ def import_videos(raw_text, parse_from_title=True, db=None):
     if len(rows) > VIDEO_IMPORT_MAX_ROWS:
         return {"ok": False, "message": f"每次最多匯入 {VIDEO_IMPORT_MAX_ROWS} 行，請分批處理。"}
     db = _resolve_db(db)
-    ensure_video_interaction_tables(db)
     total_frame = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
     total_videos = int(total_frame.iloc[0]["n"] or 0) if not total_frame.empty else 0
     if total_videos >= VIDEO_TOTAL_LIMIT:
@@ -562,7 +491,6 @@ def import_videos(raw_text, parse_from_title=True, db=None):
 
 def album_options(db=None):
     db = _resolve_db(db)
-    ensure_match_videos_table(db)
     rows = db.query(
         f"""SELECT DISTINCT ON (album_label) id AS match_video_id, album_label, match_date, match_time
         FROM (SELECT v.id, COALESCE(NULLIF(v.match_label, ''), NULLIF(v.match_id, ''), v.video_title) AS album_label,
@@ -583,7 +511,6 @@ def album_options(db=None):
 
 def photo_data(db=None):
     db = _resolve_db(db)
-    ensure_match_photos_table(db)
     options = album_options(db)
     return {"albums": options, "photos": [], "other_album": OTHER_ALBUM}
 
@@ -594,7 +521,6 @@ def register_r2_photos(user_id, album_label, match_video_id, photo_date,
     if not files or len(files) > PHOTO_BATCH_MAX_ITEMS:
         return {"ok": False, "message": f"每次必須上載一至{PHOTO_BATCH_MAX_ITEMS}張圖片。"}
     db = _resolve_db(db)
-    ensure_match_photos_table(db)
     parsed_date = None
     if clean_text(photo_date):
         try:
@@ -642,7 +568,6 @@ def register_r2_photos(user_id, album_label, match_video_id, photo_date,
 def photo_media(photo_id, db=None):
     """Return lightweight R2 metadata without fetching object bytes."""
     db = _resolve_db(db)
-    ensure_match_photos_table(db)
     rows = db.query(
         f"SELECT file_name,mime_type,r2_key,thumbnail_r2_key FROM {TABLE_MATCH_PHOTOS} WHERE id=:id",
         {"id": int(photo_id)},

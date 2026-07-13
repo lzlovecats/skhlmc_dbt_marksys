@@ -74,7 +74,7 @@ def data(request: Request):
 def photos(request: Request, page: int = 1, album: str = "全部", search: str = "", sort: str = "date_desc"):
     from core import media_logic as logic
     from schema import TABLE_MATCH_PHOTOS
-    _user, db = _context(request); logic.ensure_match_photos_table(db); page,_,offset=bounds(page)
+    _user, db = _context(request); page,_,offset=bounds(page)
     album = str(album or "")[:200]
     search = str(search or "")[:100]
     clauses=[];params={}
@@ -186,7 +186,6 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
         raise HTTPException(400, f"每次必須上載一至{PHOTO_BATCH_MAX_ITEMS}張圖片。")
     if any(len(token) > 20_000 for token in body.upload_tokens):
         raise HTTPException(400, "圖片上載憑證格式無效。")
-    logic.ensure_match_photos_table(db)
     now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
     if body.photo_date:
         try:

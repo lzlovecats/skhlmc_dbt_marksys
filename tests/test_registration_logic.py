@@ -5,7 +5,6 @@ import pandas as pd
 
 from core.registration_logic import (
     HKT,
-    ensure_registration_tables,
     save_registration_settings,
     submit_registration,
     update_registration_status,
@@ -57,20 +56,6 @@ class RegistrationDb:
 
 
 class RegistrationSubmissionTests(unittest.TestCase):
-    def test_table_ddl_runs_once_per_proxy_engine(self):
-        class Db:
-            def __init__(self):
-                self._engine = object()
-                self.executed = []
-
-            def execute(self, sql, params=None):
-                self.executed.append(sql)
-
-        db = Db()
-        ensure_registration_tables(db)
-        ensure_registration_tables(db)
-        self.assertEqual(len(db.executed), 2)
-
     def test_rejects_stale_or_tampered_edition(self):
         db = RegistrationDb(edition=4)
         result = submit_registration(VALID, 3, db=db)

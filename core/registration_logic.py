@@ -2,7 +2,6 @@
 
 import datetime as dt
 import re
-import threading
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -11,8 +10,6 @@ from core.auth_logic import append_login_record, hash_password, verify_password
 from core.config_store import get_config, set_config
 from core.vote_logic import _resolve_db
 from schema import (
-    CREATE_COMPETITION_REGISTRATIONS,
-    CREATE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_COMPETITION_REGISTRATIONS,
     TABLE_COMPETITION_REGISTRATION_SETTINGS,
 )
@@ -36,10 +33,6 @@ REQUIRED_FIELDS = {
     "聯絡人班別": "contact_class",
     "聯絡電話號碼": "contact_phone",
 }
-_ENSURE_LOCK = threading.Lock()
-_READY_ENGINES = set()
-
-
 def _now():
     return dt.datetime.now(HKT).replace(tzinfo=None)
 
@@ -74,24 +67,8 @@ def json_datetime(value):
     return value.isoformat() if value else None
 
 
-def ensure_registration_tables(db=None):
-    db = _resolve_db(db)
-    engine = getattr(db, "_engine", None)
-    cache_key = engine
-    if cache_key is not None and cache_key in _READY_ENGINES:
-        return
-    with _ENSURE_LOCK:
-        if cache_key is not None and cache_key in _READY_ENGINES:
-            return
-        db.execute(CREATE_COMPETITION_REGISTRATION_SETTINGS)
-        db.execute(CREATE_COMPETITION_REGISTRATIONS)
-        if cache_key is not None:
-            _READY_ENGINES.add(cache_key)
-
-
 def get_registration_settings(db=None):
     db = _resolve_db(db)
-    ensure_registration_tables(db)
     result = db.query(
         f"""
         SELECT competition_edition, registration_start, registration_end, updated_at
@@ -289,7 +266,6 @@ def save_registration_settings(competition_edition, registration_start, registra
         return {"ok": False, "message": "請輸入有效的報名開始及截止時間。"}
     if end <= start:
         return {"ok": False, "message": "報名截止時間必須遲於開始時間。"}
-    ensure_registration_tables(db)
     db.execute(
         f"""
         INSERT INTO {TABLE_COMPETITION_REGISTRATION_SETTINGS}

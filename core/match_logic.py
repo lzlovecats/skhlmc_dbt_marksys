@@ -3,7 +3,6 @@
 import datetime as dt
 import random
 import secrets
-import threading
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -11,7 +10,7 @@ from sqlalchemy import text
 from core.auth_logic import hash_password
 from core.vote_logic import _resolve_db
 from schema import (
-    CREATE_MATCH_ROSTER_LINKS, TABLE_DEBATERS, TABLE_MATCHES,
+    TABLE_DEBATERS, TABLE_MATCHES,
     TABLE_MATCH_ROSTER_LINKS, TABLE_TOPICS,
 )
 from system_limits import MATCH_INVENTORY_LIMIT
@@ -19,29 +18,11 @@ from system_limits import MATCH_INVENTORY_LIMIT
 HKT = ZoneInfo("Asia/Hong_Kong")
 TIME_SLOTS = [f"{hour:02d}:{minute:02d}" for hour in range(15, 19) for minute in range(0, 60, 10) if hour < 18 or minute == 0]
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
-_ENSURE_LOCK = threading.Lock()
-_READY_ENGINES = set()
-
-
 def _now(): return dt.datetime.now(HKT).replace(tzinfo=None)
 def _clean(value): return str(value or "").strip()
 def _has(value): return _clean(value).lower() not in ("", "nan", "nat", "none", "<na>")
 def _date(value): return value.strftime("%Y-%m-%d") if hasattr(value, "strftime") else _clean(value)[:10]
 def _time(value): return value.strftime("%H:%M") if hasattr(value, "strftime") else _clean(value)[:5]
-
-
-def ensure_roster_links(db=None):
-    db = _resolve_db(db)
-    engine = getattr(db, "_engine", None)
-    cache_key = engine
-    if cache_key is not None and cache_key in _READY_ENGINES:
-        return
-    with _ENSURE_LOCK:
-        if cache_key is not None and cache_key in _READY_ENGINES:
-            return
-        db.execute(CREATE_MATCH_ROSTER_LINKS)
-        if cache_key is not None:
-            _READY_ENGINES.add(cache_key)
 
 
 def _match_records(db, detail_match_id=None, compact=False):
@@ -78,7 +59,7 @@ def _match_records(db, detail_match_id=None, compact=False):
 
 
 def ensure_match_links(match_id, db=None):
-    db = _resolve_db(db); ensure_roster_links(db)
+    db = _resolve_db(db)
     now = _now()
     db.execute(
         f"""INSERT INTO {TABLE_MATCH_ROSTER_LINKS} (match_id, side, roster_token, created_at)
@@ -96,7 +77,7 @@ def ensure_match_links(match_id, db=None):
 
 
 def match_admin_data(selected_match_id=None, db=None, compact=False):
-    db = _resolve_db(db); ensure_roster_links(db)
+    db = _resolve_db(db)
     matches = _match_records(db, detail_match_id=selected_match_id, compact=compact)
     selected = _clean(selected_match_id) or (matches[0]["match_id"] if matches else "")
     if selected and selected not in {m["match_id"] for m in matches}: selected = matches[0]["match_id"] if matches else ""
@@ -211,7 +192,7 @@ def delete_match(match_id, db=None):
 
 
 def roster_by_token(token, db=None):
-    token = _clean(token); db = _resolve_db(db); ensure_roster_links(db)
+    token = _clean(token); db = _resolve_db(db)
     rows = db.query(f"SELECT l.match_id,l.side,l.roster_token,l.submitted_at,m.match_date,m.match_time,m.topic_text,m.pro_team,m.con_team FROM {TABLE_MATCH_ROSTER_LINKS} l JOIN {TABLE_MATCHES} m ON l.match_id=m.match_id WHERE l.roster_token=:token", {"token": token})
     if rows.empty: return None
     row = rows.iloc[0]; side = _clean(row["side"]); match_id = _clean(row["match_id"])

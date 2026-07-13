@@ -14,8 +14,6 @@ router = APIRouter(prefix="/api/committee", tags=["committee"])
 
 COOKIE_NAME = "committee_user"
 COOKIE_MAX_AGE = COMMITTEE_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60
-_notification_schema_lock = threading.Lock()
-_notification_schema_ready = False
 _notification_prune_lock = threading.Lock()
 _notification_last_prune = 0.0
 
@@ -54,20 +52,6 @@ def _current_notification():
     if noti_id is None or not title:
         return None
     return {"id": noti_id, "title": title, "content": "\n".join(lines[content_start:]).strip()}
-
-
-def _ensure_notification_reads(db):
-    """Keep lazy-deployment compatibility without running DDL per request."""
-    global _notification_schema_ready
-    if _notification_schema_ready:
-        return
-    with _notification_schema_lock:
-        if _notification_schema_ready:
-            return
-        from schema import CREATE_NOTIFICATION_READS
-
-        db.execute(CREATE_NOTIFICATION_READS)
-        _notification_schema_ready = True
 
 
 def _prune_notification_reads(db, now):
@@ -142,7 +126,6 @@ def notification(request: Request):
     if not notice:
         return {"notification": None}
     db = get_vote_db()
-    _ensure_notification_reads(db)
     seen = db.query(
         f"SELECT 1 FROM {TABLE_NOTIFICATION_READS} WHERE notification_id = :nid AND user_id = :uid",
         {"nid": notice["id"], "uid": user_id},
@@ -167,7 +150,6 @@ def notification_read(body: NotificationReadBody, request: Request):
     if not current or body.notification_id != current["id"]:
         raise HTTPException(400, "通知已更新，請重新載入")
     db = get_vote_db()
-    _ensure_notification_reads(db)
     now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
     db.execute(
         f"INSERT INTO {TABLE_NOTIFICATION_READS} "

@@ -9,9 +9,7 @@ from zoneinfo import ZoneInfo
 from core.config_store import get_config, get_configs, set_configs
 from core.vote_logic import _resolve_db
 from schema import (
-    CREATE_AI_FUND_TRANSACTIONS, CREATE_AI_FUND_USAGE_LOGS,
-    CREATE_LATENESS_FUND_EXPENSES, CREATE_LATENESS_FUND_PERIODS,
-    CREATE_LATENESS_FUND_RECORDS, TABLE_ACCOUNTS, TABLE_AI_FUND_TRANSACTIONS,
+    TABLE_ACCOUNTS, TABLE_AI_FUND_TRANSACTIONS,
     TABLE_AI_FUND_USAGE_LOGS, TABLE_LATENESS_FUND_EXPENSES,
     TABLE_LATENESS_FUND_PERIODS, TABLE_LATENESS_FUND_RECORDS,
 )
@@ -52,10 +50,6 @@ AI_USAGE_FEATURES = (
     "tts_script_analysis", "llm_review",
 )
 LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
-_LATENESS_SCHEMA_LOCK = threading.Lock()
-_LATENESS_SCHEMA_READY = False
-_AI_SCHEMA_LOCK = threading.Lock()
-_AI_SCHEMA_READY = False
 _AI_PRUNE_LOCK = threading.Lock()
 _AI_LAST_PRUNE = 0.0
 
@@ -89,20 +83,6 @@ def _json_value(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
-
-
-def _ensure_lateness(db):
-    """Create the lazily-supported ledger schema once per worker."""
-    global _LATENESS_SCHEMA_READY
-    if _LATENESS_SCHEMA_READY:
-        return
-    with _LATENESS_SCHEMA_LOCK:
-        if _LATENESS_SCHEMA_READY:
-            return
-        db.execute(CREATE_LATENESS_FUND_RECORDS)
-        db.execute(CREATE_LATENESS_FUND_EXPENSES)
-        db.execute(CREATE_LATENESS_FUND_PERIODS)
-        _LATENESS_SCHEMA_READY = True
 
 
 def fiscal_start(value):
@@ -193,7 +173,6 @@ def _lateness_totals(year, db):
 
 def lateness_data(selected_year=None, user_id=None, db=None):
     db = _resolve_db(db)
-    _ensure_lateness(db)
     years = {fiscal_start(_today_hk())}
     year_rows = db.query(
         f"""
@@ -262,13 +241,12 @@ def lateness_outstanding(year, db=None):
 
 
 def set_lateness_opening(year, amount, db=None):
-    db = _resolve_db(db); _ensure_lateness(db)
+    db = _resolve_db(db)
     db.execute(f"INSERT INTO {TABLE_LATENESS_FUND_PERIODS}(year_label,opening_balance,updated_at) VALUES(:year,:amount,:now) ON CONFLICT(year_label) DO UPDATE SET opening_balance=EXCLUDED.opening_balance,updated_at=EXCLUDED.updated_at", {"year": fiscal_label(year), "amount": _float(amount), "now": _now()})
 
 
 def carry_lateness_opening(year, db=None):
     db = _resolve_db(db)
-    _ensure_lateness(db)
     previous = _lateness_totals(int(year) - 1, db)
     amount = previous["opening"] + previous["received"] - previous["expenses"]
     set_lateness_opening(year, amount, db=db)
@@ -276,7 +254,7 @@ def carry_lateness_opening(year, db=None):
 
 
 def add_lateness_record(user_id, late_date, member_user_id, late_minutes, paid_amount, note, db=None):
-    db = _resolve_db(db); _ensure_lateness(db)
+    db = _resolve_db(db)
     member = str(member_user_id or "").strip()
     if not member or int(late_minutes or 0) < 1: raise ValueError("請選擇帳戶並輸入有效遲到分鐘。")
     paid = _float(paid_amount)
@@ -288,7 +266,7 @@ def add_lateness_record(user_id, late_date, member_user_id, late_minutes, paid_a
 
 def add_lateness_expense(user_id, expense_date, amount, note, db=None):
     if _float(amount) <= 0: raise ValueError("請輸入大於 0 的支出金額。")
-    db = _resolve_db(db); _ensure_lateness(db)
+    db = _resolve_db(db)
     db.execute(f"INSERT INTO {TABLE_LATENESS_FUND_EXPENSES}(expense_date,amount_hkd,note,created_by,created_at) VALUES(:date,:amount,:note,:user,:now)", {"date":_valid_date(expense_date, "支出日期"),"amount":_float(amount),"note":str(note or "").strip()[:2000],"user":user_id,"now":_now()})
 
 
@@ -307,40 +285,6 @@ def delete_lateness(kind, row_id, db=None):
         raise ValueError("不支援的基金紀錄類型。")
     table = tables[kind]
     return _resolve_db(db).execute_count(f"DELETE FROM {table} WHERE id=:id", {"id":int(row_id)})
-
-
-def _ensure_ai(db):
-    global _AI_SCHEMA_READY
-    if not _AI_SCHEMA_READY:
-        with _AI_SCHEMA_LOCK:
-            if not _AI_SCHEMA_READY:
-                db.execute(CREATE_AI_FUND_TRANSACTIONS)
-                db.execute(CREATE_AI_FUND_USAGE_LOGS)
-                db.execute(f"ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD COLUMN IF NOT EXISTS provider TEXT")
-                db.execute(f"ALTER TABLE {TABLE_AI_FUND_USAGE_LOGS} ADD COLUMN IF NOT EXISTS cost_source TEXT DEFAULT 'estimate'")
-                db.execute(f"""DO $$
-        DECLARE item RECORD;
-        BEGIN
-          PERFORM pg_advisory_xact_lock(hashtext('ai_fund_transaction_type_v2'));
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
-            WHERE t.relname='{TABLE_AI_FUND_TRANSACTIONS}' AND c.contype='c'
-              AND pg_get_constraintdef(c.oid) ILIKE '%provider_refund%'
-              AND pg_get_constraintdef(c.oid) ILIKE '%member_refund%'
-          ) THEN
-            FOR item IN SELECT c.conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
-              WHERE t.relname='{TABLE_AI_FUND_TRANSACTIONS}' AND c.contype='c'
-                AND pg_get_constraintdef(c.oid) ILIKE '%transaction_type%'
-            LOOP
-              EXECUTE format('ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} DROP CONSTRAINT %I',item.conname);
-            END LOOP;
-            UPDATE {TABLE_AI_FUND_TRANSACTIONS} SET transaction_type='provider_refund' WHERE transaction_type='refund';
-            ALTER TABLE {TABLE_AI_FUND_TRANSACTIONS} ADD CONSTRAINT chk_ai_fund_transaction_type
-              CHECK (transaction_type IN ('member_deposit','provider_topup','provider_refund','member_refund','adjustment'));
-          END IF;
-        END $$""")
-                _AI_SCHEMA_READY = True
-    _prune_ai_usage(db)
 
 
 def _prune_ai_usage(db):
@@ -367,7 +311,7 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
     if feature not in AI_USAGE_FEATURES:
         raise ValueError("不支援的 AI 功能類型。")
     db = _resolve_db(db)
-    _ensure_ai(db)
+    _prune_ai_usage(db)
     usage = usage or {}
     model_label = str(usage.get("model_label") or "Gemini 3.5 Flash")
     provider = str(usage.get("provider") or "gemini").lower()
@@ -420,7 +364,6 @@ def is_ai_treasurer(user_id, db=None):
 
 def ai_data(user_id, db=None):
     db = _resolve_db(db)
-    _ensure_ai(db)
     config = _configs(db, (
         "ai_fund_treasurers",
         "ai_fund_target_hkd",
@@ -510,7 +453,7 @@ def add_ai_transaction(user_id, transaction_type, amount, provider="general", pa
     method = str(payment_method or "").strip()
     if transaction_type == "member_deposit" and method not in AI_PAYMENT_METHODS:
         raise ValueError("不支援的付款方式。")
-    db = _resolve_db(db); _ensure_ai(db); provider = str(provider or "other").lower(); provider = provider if provider in AI_PROVIDERS else "other"; now = _now()
+    db = _resolve_db(db); provider = str(provider or "other").lower(); provider = provider if provider in AI_PROVIDERS else "other"; now = _now()
     db.execute(f"INSERT INTO {TABLE_AI_FUND_TRANSACTIONS}(transaction_type,status,provider,amount_hkd,payment_method,reference_no,note,created_by,created_at,confirmed_by,confirmed_at) VALUES(:type,:status,:provider,:amount,:method,:ref,:note,:user,:now,:confirmed_by,:confirmed_at)", {"type":str(transaction_type)[:40],"status":"confirmed" if confirmed else "pending","provider":str(provider or "")[:80],"amount":amount,"method":str(method or "")[:200],"ref":str(reference_no or "").strip()[:200],"note":str(note or "").strip()[:2000],"user":user_id,"now":now,"confirmed_by":user_id if confirmed else None,"confirmed_at":now if confirmed else None})
 
 
@@ -518,7 +461,6 @@ def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None)
     if status not in {"confirmed", "rejected"}:
         raise ValueError("不支援的狀態。")
     db = _resolve_db(db)
-    _ensure_ai(db)
     field = "confirmed" if status == "confirmed" else "rejected"
     now = _now()
     return db.execute_count(
@@ -536,7 +478,7 @@ def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None)
 
 
 def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
-    db = _resolve_db(db); _ensure_ai(db)
+    db = _resolve_db(db)
     where = "WHERE status='success'" if treasurer else "WHERE status='success' AND user_id=:user"
     params = {} if treasurer else {"user": user_id}
     paging = " LIMIT :limit OFFSET :offset" if limit is not None else ""
@@ -551,7 +493,7 @@ def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
 
 
 def ai_usage_summary_count(user_id, treasurer=False, db=None):
-    db = _resolve_db(db); _ensure_ai(db)
+    db = _resolve_db(db)
     where = "WHERE status='success'" if treasurer else "WHERE status='success' AND user_id=:user"
     params = {} if treasurer else {"user": user_id}
     result = db.query(f"""SELECT COUNT(*) AS n FROM (
@@ -565,7 +507,6 @@ def save_ai_admin(user_id, payload, db=None):
     db = _resolve_db(db)
     if not is_ai_treasurer(user_id, db=db):
         raise PermissionError("只有 AI基金管理員可更改設定。")
-    _ensure_ai(db)
     kind = payload.get("kind")
     if kind == "settings":
         target = _float(payload.get("target_hkd")); low = _float(payload.get("low_balance_hkd"))

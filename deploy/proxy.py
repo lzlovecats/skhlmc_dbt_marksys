@@ -28,12 +28,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from schema import (
-    CREATE_AI_FUND_USAGE_LOGS,
     CREATE_BANDWIDTH_USAGE_LOGS,
     CREATE_PRACTICE_DAILY_USAGE,
-    CREATE_PUSH_SUBSCRIPTIONS,
-    CREATE_VIDEO_PROGRESS,
-    CREATE_VIDEO_VIEWS,
     MEDIA_R2_STARTUP_MIGRATIONS,
     RUNTIME_OWNED_STARTUP_DDL,
     TABLE_AI_FUND_USAGE_LOGS,
@@ -263,24 +259,6 @@ app.include_router(ai_coach_router)
 app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 logger = logging.getLogger("skh_proxy")
-_DDL_LOCK = threading.Lock()
-_DDL_READY_ENGINES = set()
-
-
-def _run_proxy_ddl_once(conn, schema_key: str, statements) -> None:
-    """Run compatibility DDL once per real engine, while keeping fakes simple."""
-
-    engine = getattr(conn, "engine", None)
-    cache_key = (engine, schema_key) if engine is not None else None
-    if cache_key is not None and cache_key in _DDL_READY_ENGINES:
-        return
-    with _DDL_LOCK:
-        if cache_key is not None and cache_key in _DDL_READY_ENGINES:
-            return
-        for statement in statements:
-            conn.execute(text(statement))
-        if cache_key is not None:
-            _DDL_READY_ENGINES.add(cache_key)
 
 
 def _cache_headers(cache_control):
@@ -537,12 +515,6 @@ def _require_committee_user(request: Request):
     return user_id
 
 
-def _ensure_push_subscriptions_table(conn):
-    _run_proxy_ddl_once(conn, "push-subscriptions", (
-        CREATE_PUSH_SUBSCRIPTIONS,
-    ))
-
-
 def _validated_push_subscription(payload):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid push subscription")
@@ -572,13 +544,6 @@ def _bound_push_subscriptions(conn, user_id: str, now) -> None:
     conn.execute(text(f"""DELETE FROM {TABLE_PUSH_SUBSCRIPTIONS}
         WHERE is_active=FALSE AND updated_at<:cutoff"""),
         {"cutoff": now - datetime.timedelta(days=PUSH_INACTIVE_RETENTION_DAYS)})
-
-
-def _ensure_video_tracking_tables(conn):
-    _run_proxy_ddl_once(conn, "video-tracking", (
-        CREATE_VIDEO_VIEWS,
-        CREATE_VIDEO_PROGRESS,
-    ))
 
 
 @app.get("/manifest.json")
@@ -639,7 +604,6 @@ async def push_subscribe(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_push_subscriptions_table(conn)
         conn.execute(
             text(
                 f"INSERT INTO {TABLE_PUSH_SUBSCRIPTIONS} "
@@ -680,7 +644,6 @@ async def push_unsubscribe(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_push_subscriptions_table(conn)
         if endpoint:
             conn.execute(
                 text(
@@ -730,8 +693,6 @@ async def push_resubscribe(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_push_subscriptions_table(conn)
-
         # The old endpoint is the capability that identifies the owning member.
         # Never create an active orphan subscription when it is missing/unknown;
         # the authenticated page reconciliation will safely recover it later.
@@ -1072,7 +1033,6 @@ async def video_view(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_video_tracking_tables(conn)
         conn.execute(
             text(f"""INSERT INTO {TABLE_VIDEO_VIEWS} (video_id,user_id,viewed_at)
                 SELECT :video_id,:user_id,:viewed_at
@@ -1115,7 +1075,6 @@ async def video_progress(request: Request):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     with engine.begin() as conn:
-        _ensure_video_tracking_tables(conn)
         conn.execute(
             text(
                 f"""
@@ -1863,7 +1822,6 @@ def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
     global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
     with engine.begin() as conn:
-        conn.execute(text(CREATE_AI_FUND_USAGE_LOGS))
         user_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE user_id=:user AND feature=:feature AND status='success' AND created_at>=:start"""),
             {"user": user_id, "feature": feature, "start": user_start}).scalar() or 0)
@@ -1901,7 +1859,6 @@ def _reserve_solo_live_slot(claim: dict) -> str | None:
     marker = f"relay_session:{practice_id}"[:500]
     duration_minutes = max(0.5, int(claim.get("max_seconds") or 30) / 60)
     with engine.begin() as conn:
-        conn.execute(text(CREATE_AI_FUND_USAGE_LOGS))
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_quota'))"))
         already = conn.execute(text(f"""SELECT 1 FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE user_id=:user AND feature=:feature AND status='success'

@@ -2,14 +2,11 @@
 
 import datetime as dt
 import re
-import threading
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from schema import (
-    CREATE_COMPETITION_REGISTRATIONS,
-    CREATE_COMPETITION_REGISTRATION_SETTINGS,
     TABLE_ACCOUNTS,
     TABLE_LOGIN_RECORDS,
     TABLE_MATCHES,
@@ -38,29 +35,12 @@ RULES_ROLE_SECTIONS = {
     "賽會人員": "二、賽會人員",
     "參賽隊伍": "三、參賽隊伍",
 }
-_registration_schema_lock = threading.Lock()
-_registration_schema_ready = False
-
-
 def _get_configs(db, keys):
     return get_configs(db, keys)
 
 
 def _get_config(db, key):
     return get_config(db, key)
-
-
-def _ensure_registration_schema(db):
-    """Avoid issuing idempotent registration DDL on every public home request."""
-    global _registration_schema_ready
-    if _registration_schema_ready:
-        return
-    with _registration_schema_lock:
-        if _registration_schema_ready:
-            return
-        db.execute(CREATE_COMPETITION_REGISTRATION_SETTINGS)
-        db.execute(CREATE_COMPETITION_REGISTRATIONS)
-        _registration_schema_ready = True
 
 
 def is_maintenance_mode(db=None):
@@ -89,9 +69,6 @@ def get_registration_status(db=None):
     db = _resolve_db(db)
     now = dt.datetime.now(HKT).replace(tzinfo=None)
     try:
-        # Keep lazy compatibility for older deployments, but perform the DDL once
-        # per worker rather than on every visit to the public home page.
-        _ensure_registration_schema(db)
         result = db.query(
             """
             SELECT competition_edition, registration_start, registration_end, updated_at

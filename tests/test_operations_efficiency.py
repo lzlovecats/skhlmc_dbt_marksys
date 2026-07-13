@@ -86,8 +86,9 @@ class OperationsEfficiencyTests(unittest.TestCase):
             pd.DataFrame([{"balance": 80, "pending": 10, "recent_usage": 3}]),
             pd.DataFrame([{"user_id": "alice"}, {"user_id": "bob"}]),
         ])
-        with patch("core.funds_logic._ensure_ai"), patch(
-            "core.funds_logic._configs", return_value={"ai_fund_treasurers": ["alice"]}
+        with patch(
+            "core.funds_logic._configs",
+            return_value={"ai_fund_treasurers": ["alice"]},
         ):
             result = funds_logic.ai_data("alice", db)
         self.assertEqual(len(db.queries), 2)

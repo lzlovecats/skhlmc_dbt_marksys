@@ -7,7 +7,6 @@ from core.match_logic import (
     create_match,
     delete_match,
     draw_sides,
-    ensure_roster_links,
     match_admin_data,
     reopen_link,
     save_match,
@@ -100,20 +99,6 @@ class MatchLogicTests(unittest.TestCase):
         result = draw_sides("同一隊", " 同一隊 ")
         self.assertFalse(result["ok"])
         self.assertIn("不能相同", result["message"])
-
-    def test_roster_ddl_runs_once_per_proxy_engine(self):
-        class Db:
-            def __init__(self):
-                self._engine = object()
-                self.executed = []
-
-            def execute(self, sql, params=None):
-                self.executed.append(sql)
-
-        db = Db()
-        ensure_roster_links(db)
-        ensure_roster_links(db)
-        self.assertEqual(len(db.executed), 1)
 
     def test_new_match_payload_uses_current_date_and_time_defaults(self):
         data = match_admin_data(db=MatchDb())

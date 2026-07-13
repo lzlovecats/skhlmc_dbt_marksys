@@ -185,8 +185,9 @@ class MigrationParityRegressionTests(unittest.TestCase):
         self.assertNotIn('/shared/server-tables.js', html)
         for marker in ('usage-summary', 'transactions.csv', 'usage.csv', 'HTTPException(409', 'result or {}'):
             self.assertIn(marker, api)
-        for marker in ('AI_PAYMENT_METHODS', 'COALESCE(account_disabled,FALSE)=FALSE', 'def ai_usage_summary', '不能為負數', '_AI_SCHEMA_LOCK'):
+        for marker in ('AI_PAYMENT_METHODS', 'COALESCE(account_disabled,FALSE)=FALSE', 'def ai_usage_summary', '不能為負數', '_AI_PRUNE_LOCK'):
             self.assertIn(marker, core)
+        self.assertNotIn('_ensure_ai', core)
         self.assertNotIn('DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature', core)
         for marker in ("provider_refund", "member_refund", "Provider 退款予基金", "退款予委員"):
             self.assertIn(marker, html)

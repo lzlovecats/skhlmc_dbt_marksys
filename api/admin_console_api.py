@@ -276,9 +276,6 @@ def dev_collection(kind:str,request:Request,page:int=1):
         rows=_rows(db.query(f"SELECT user_id,COUNT(*) AS device_count FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE is_active=TRUE GROUP BY user_id ORDER BY user_id LIMIT :limit OFFSET :offset",{"limit":PAGE_SIZE,"offset":offset}))
         return payload(rows,page,total)
     if kind not in specs: raise HTTPException(404,"資料集不存在")
-    if kind=="bugs":
-        from core.bug_report_logic import ensure_bug_reports_table
-        ensure_bug_reports_table(db)
     table,order,cols=specs[kind]; total=scalar_count(db,f"SELECT COUNT(*) total FROM {table}")
     rows=_rows(db.query(f"SELECT {cols} FROM {table} ORDER BY {order} LIMIT :limit OFFSET :offset",{"limit":PAGE_SIZE,"offset":offset}))
     if kind=="accounts":
@@ -296,8 +293,6 @@ def update_bug(bug_id:int,body:BugUpdate,request:Request):
     if body.status=="fixed" and not body.fixed_version.strip(): raise HTTPException(400,"標記已修正時必須填寫修正版本")
     if body.status in closed and not body.reply.strip(): raise HTTPException(400,"請填寫回覆")
     db=_db()
-    from core.bug_report_logic import ensure_bug_reports_table
-    ensure_bug_reports_table(db)
     report=db.query(f"SELECT reporter_user_id FROM {TABLE_BUG_REPORTS} WHERE id=:id",{"id":bug_id})
     if report.empty: raise HTTPException(404,"Bug 回報不存在")
     now=_now(); db.execute(f"UPDATE {TABLE_BUG_REPORTS} SET status=:status,developer_reply=:reply,fixed_version=:version,updated_at=:now,resolved_at=:resolved WHERE id=:id",{"status":body.status,"reply":body.reply.strip(),"version":body.fixed_version.strip(),"now":now,"resolved":now if body.status in closed else None,"id":bug_id})

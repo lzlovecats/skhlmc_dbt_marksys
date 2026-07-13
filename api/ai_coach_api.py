@@ -296,8 +296,6 @@ def data(request: Request):
                                get_debate_timer_config, get_full_mock_sequence,
                                split_mock_into_sessions)
     db=get_vote_db()
-    from core.funds_logic import _ensure_ai
-    _ensure_ai(db)
     topics=db.query(f"SELECT topic_text,category,difficulty FROM {TABLE_TOPICS} ORDER BY category,topic_text LIMIT :topic_limit", {"topic_limit": AI_COACH_TOPIC_LIMIT})
     matches=db.query(f"SELECT match_id,topic_text,pro_team,con_team FROM {TABLE_MATCHES} ORDER BY match_id DESC LIMIT :match_limit", {"match_limit": AI_COACH_MATCH_LIMIT})
     balance=db.query("SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) balance FROM ai_fund_transactions WHERE status='confirmed'")
