@@ -1,19 +1,19 @@
 # 系統服務、成本及用量限制
 
-更新日期：2026-07-13
+更新日期：2026-07-14
 
-目前基線：Render production 為 **4.2.0**，實際版本仍以[`version.py`](../version.py)
-為準。R2 object verification已完成，148段錄音及45張相片均有R2 key；browser smoke、
-可還原backup及正式versioned migration完成前，不可永久移除兩個舊BYTEA columns。
+目前基線：Render production 為 **4.2.1**，實際版本仍以[`version.py`](../version.py)
+為準。Production migration head為`20260714_0001`；兩個legacy BYTEA columns已由
+versioned migration永久移除。45張相片、45張縮圖及148段錄音共238個R2 objects
+（122,687,464 bytes）已再次完成size、SHA、MIME及metadata驗證。
 
 此文件記錄 production architecture、固定月費、免費額度及系統內的保護限制。
 Provider 價格可隨時調整；付款前應以各 provider dashboard 及官方 pricing page
 為準。
 
-本文件的limit數字只係營運摘要。repo內唯一可執行來源係
-[`system_limits.py`](../system_limits.py)；查看實際生效值、environment override規則
-及merge後部署步驟見[系統 Limits 集中管理](SYSTEM_LIMITS.md)。修改數字時只改
-`system_limits.py`，避免文件、Render及程式各自漂移。
+本文件同時係唯一營運參考。Limit數字只係摘要；repo內唯一可執行來源係
+[`system_limits.py`](../system_limits.py)。修改數字時只改該file，避免文件、Render
+及程式各自漂移。
 
 ## 每月固定成本摘要
 
@@ -60,16 +60,17 @@ Browser ⇄ Render WebSocket ⇄ Google Gemini Live
 ```
 
 Cloudflare R2 不會降低 Gemini Live bandwidth；Gemini audio 仍然經 Render relay。
-網站custom domain及靜態edge cache部署步驟見
-[Cloudflare edge cache runbook](CLOUDFLARE_EDGE_CACHE_RUNBOOK.md)。
+網站custom domain及靜態edge cache屬optional；只可cache公開CSS、JS、manifest及圖示，
+不可對HTML、API、登入、WebSocket或private R2 URL使用`Cache Everything`。
 
 ## 2026-07 bandwidth 事故摘要
 
-Supabase database 約137.4MB；其中 TTS 錄音 BYTEA 約110.9MB，相片約8.0MB。
+事故發生時Supabase database 約137.4MB；其中 TTS 錄音 BYTEA 約110.9MB，相片約8.0MB。
 7月9至10日約11GB uncached egress，與當時 AI Training 開發及舊管理頁整批讀取
 `audio_data` 的時間吻合。約100次完整錄音 dataset 讀取已可產生11GB egress。
 舊相片頁每次 rerun 讀取全部 `image_data` 亦會增加流量，但按實際 table size
-只屬次要來源。
+只屬次要來源。2026-07-14兩個BYTEA columns已刪；PostgreSQL可能繼續保留可重用
+TOAST空間，未經maintenance評估不為追求dashboard數字而跑`VACUUM FULL`。
 
 ## 已實施限制
 
@@ -215,11 +216,44 @@ R2 media及YouTube影片保持browser直連，不能恢復經Render proxy binary
 
 保留至少1GB予一般 API、deploy health check、external AI HTTP requests及突發流量。
 
+## 設定、部署及Cloudflare操作
+
+查看當前process會採用的limits：
+
+```bash
+./venv/bin/python system_limits.py --json
+```
+
+Render environment同名值會override repo default；低於安全minimum會被提升，格式或
+threshold次序錯誤會令worker fail fast。固定值應盡量留在`system_limits.py`，只有有記錄
+的短期調整先用environment。Bandwidth dashboard snapshot三個值則必須留在Render：
+
+```text
+BANDWIDTH_MONTH_BASE_BYTES
+BANDWIDTH_BASELINE_AS_OF
+BANDWIDTH_BASELINE_TRACKED_BYTES
+```
+
+Production以`main`auto-deploy。先在`develop`完成review及驗證，再於低流量窗口合併／push
+一次到`main`；部署後核對版本、health、登入、media、Live、RAM、5xx及WebSocket close。
+
+R2 bucket必須保持private；browser CORS只加入正式origins及實際需要的`GET`、`HEAD`、
+`PUT`／headers。Object Lifecycle rule只匹配`pending/`，2日後delete；不可匹配
+`photos/`或`audio/tts/`。每日orphan檢查預設dry-run：
+
+```bash
+./venv/bin/python tools/cleanup_r2_orphans.py --older-than-hours 48
+```
+
+核對清單後先可加`--apply --confirm DELETE-R2-ORPHANS`。每月確認bucket、CORS、lifecycle、
+Class A/B、object count、R2 backup可還原及最近一次orphan結果。Runtime R2 token只需目標
+bucket Object Read & Write；不要為讀bucket admin設定而擴權。
+
 ## 每月檢查清單
 
 1. Render bandwidth、最大及平均 RAM。
 2. Supabase egress、cached egress、database size。
-3. `match_photos`／`tts_voice_recordings` 是否仍有新 BYTEA。
+3. `match_photos.image_data`／`tts_voice_recordings.audio_data`保持不存在；media rows均有R2 metadata。
 4. R2 storage、Class A／B operations、失敗 PUT／GET。
 5. Gemini及OpenRouter實際帳單與 `ai_fund_usage_logs`。
 6. 各類 Live session 次數、分鐘及估算 bytes。
