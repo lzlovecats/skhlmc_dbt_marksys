@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Migrate PostgreSQL BYTEA media to private Cloudflare R2 one row at a time.
 
-The default is deliberately non-destructive: R2 keys are written back but the
-legacy BYTEA remains available only for rollback verification; production does
-not read it as a fallback. Run a second verified
-pass with ``--delete-db-binary`` only after the R2-enabled application is live.
+The tool is deliberately non-destructive: R2 keys are written back but the
+legacy BYTEA remains available for the versioned finalization gate.  The old
+``--delete-db-binary`` option is accepted only to fail closed before any R2 or
+database access; destructive cleanup belongs to the migration ledger.
 """
 
 from __future__ import annotations
@@ -77,6 +77,8 @@ def _photo_thumbnail(data: bytes) -> tuple[bytes, int, int]:
 
 
 def migrate_photos(engine, limit: int, delete_binary: bool) -> tuple[int, int]:
+    if delete_binary:
+        raise RuntimeError("direct BYTEA deletion is disabled; use a versioned migration")
     with engine.begin() as conn:
         for ddl in PHOTO_DDL:
             conn.execute(text(ddl))
@@ -120,17 +122,13 @@ def migrate_photos(engine, limit: int, delete_binary: bool) -> tuple[int, int]:
             _verify(original_key, len(data), digest)
             if thumbnail_key:
                 _verify(thumbnail_key, len(thumbnail), thumb_sha)
-        if delete_binary:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "UPDATE match_photos SET image_data=NULL WHERE id=:id AND r2_key IS NOT NULL"
-                ), {"id": photo_id})
-            cleared += 1
-        print(f"photo {photo_id}: verified{', BYTEA cleared' if delete_binary else ''}")
+        print(f"photo {photo_id}: verified")
     return migrated, cleared
 
 
 def migrate_audio(engine, limit: int, delete_binary: bool) -> tuple[int, int]:
+    if delete_binary:
+        raise RuntimeError("direct BYTEA deletion is disabled; use a versioned migration")
     with engine.begin() as conn:
         for ddl in AUDIO_DDL:
             conn.execute(text(ddl))
@@ -162,21 +160,23 @@ def migrate_audio(engine, limit: int, delete_binary: bool) -> tuple[int, int]:
             migrated += 1
         else:
             _verify(key, len(data), digest)
-        if delete_binary:
-            with engine.begin() as conn:
-                conn.execute(text("""UPDATE tts_voice_recordings SET audio_data=NULL
-                    WHERE id=:id AND r2_key IS NOT NULL"""), {"id": record_id})
-            cleared += 1
-        print(f"audio {record_id}: verified{', BYTEA cleared' if delete_binary else ''}")
+        print(f"audio {record_id}: verified")
     return migrated, cleared
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--media", choices=("photos", "audio", "all"), default="all")
     parser.add_argument("--limit", type=int, default=10_000)
     parser.add_argument("--delete-db-binary", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.delete_db_binary:
+        print(
+            "--delete-db-binary is disabled; use a versioned migration. "
+            "No R2 or database access attempted.",
+            file=sys.stderr,
+        )
+        return 2
     if not r2_storage.configured():
         print("R2 is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
               "R2_SECRET_ACCESS_KEY and R2_BUCKET.", file=sys.stderr)
@@ -186,9 +186,9 @@ def main() -> int:
         print("Database is not configured.", file=sys.stderr)
         return 2
     if args.media in ("audio", "all"):
-        print("audio", migrate_audio(engine, args.limit, args.delete_db_binary))
+        print("audio", migrate_audio(engine, args.limit, False))
     if args.media in ("photos", "all"):
-        print("photos", migrate_photos(engine, args.limit, args.delete_db_binary))
+        print("photos", migrate_photos(engine, args.limit, False))
     return 0
 
 

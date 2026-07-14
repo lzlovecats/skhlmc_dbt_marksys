@@ -48,6 +48,7 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
                 ("20260713_0002", "lock_resource_guard_privileges"),
                 ("20260713_0003", "add_tts_consent_metadata"),
                 ("20260713_0004", "provision_ai_training_audit"),
+                ("20260714_0001", "drop_legacy_media_bytea"),
             ],
         )
 
@@ -125,6 +126,33 @@ class DatabaseMigrationCatalogTests(unittest.TestCase):
         self.assertIn("SEQUENCE ai_training_audit_id_seq", migration.up_sql)
         self.assertIn("refusing to drop non-empty", migration.down_sql)
         self.assertNotIn("CASCADE", migration.down_sql)
+
+    def test_legacy_media_drop_requires_complete_r2_metadata_and_is_irreversible(self):
+        _baseline, migrations = manager.load_catalog()
+        migration = migrations[4]
+        self.assertEqual(migration.name, "drop_legacy_media_bytea")
+        for table, legacy_column, r2_column in (
+            ("match_photos", "image_data", "r2_key"),
+            ("tts_voice_recordings", "audio_data", "r2_key"),
+        ):
+            self.assertIn(f"FROM public.{table}", migration.up_sql)
+            self.assertIn(f"BTRIM({r2_column})", migration.up_sql)
+            self.assertIn(f"DROP COLUMN {legacy_column}", migration.up_sql)
+        self.assertIn("BTRIM(thumbnail_r2_key)", migration.up_sql)
+        self.assertIn("LOCK TABLE public.match_photos", migration.up_sql)
+        self.assertIn("IN ACCESS EXCLUSIVE MODE", migration.up_sql)
+        self.assertIn("SET LOCAL lock_timeout = '5s'", migration.up_sql)
+        self.assertIn("COALESCE(byte_size, 0) <= 0", migration.up_sql)
+        self.assertIn("OCTET_LENGTH(image_data)", migration.up_sql)
+        self.assertIn("OCTET_LENGTH(audio_data)", migration.up_sql)
+        self.assertIn("^photos/original/", migration.up_sql)
+        self.assertIn("^photos/thumb/", migration.up_sql)
+        self.assertIn("^audio/tts/", migration.up_sql)
+        self.assertIn("audio_sha256", migration.up_sql)
+        self.assertNotIn("IF EXISTS", migration.up_sql.split("ALTER TABLE", 1)[1])
+        self.assertIn("irreversible", migration.down_sql)
+        self.assertIn("restore the pre-migration database/R2 backup", migration.down_sql)
+        self.assertNotIn("ADD COLUMN", migration.down_sql)
 
     def test_bootstrap_audit_table_revokes_browser_table_and_sequence_access(self):
         self.assertIn(LOCK_AI_TRAINING_AUDIT_PRIVILEGES, ALL_SCHEMAS)

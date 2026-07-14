@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from tools import finalize_r2_media as finalizer
+from tools import migrate_media_to_r2 as migrator
 
 
 class FinalizeR2ObjectTests(unittest.TestCase):
@@ -173,6 +174,23 @@ class _PagedEngine:
 
 
 class FinalizeR2SafetyTests(unittest.TestCase):
+    def test_legacy_migrator_delete_flag_is_disabled_before_external_access(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), patch.object(
+            migrator.r2_storage, "configured"
+        ) as configured, patch.object(migrator, "_get_db_engine") as get_engine:
+            status = migrator.main(["--delete-db-binary"])
+        self.assertEqual(status, 2)
+        configured.assert_not_called()
+        get_engine.assert_not_called()
+        self.assertIn("No R2 or database access", stderr.getvalue())
+
+    def test_legacy_migrator_direct_delete_calls_are_disabled(self):
+        for operation in (migrator.migrate_photos, migrator.migrate_audio):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaisesRegex(RuntimeError, "versioned migration"):
+                    operation(object(), 1, True)
+
     def test_apply_is_disabled_before_any_external_access(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), patch.object(
