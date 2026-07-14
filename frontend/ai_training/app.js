@@ -212,11 +212,18 @@
     $("resetSkipped").classList.toggle("hidden", !skipped.size);
   }
   async function load() {
+    const fallback = $("loadFallback");
+    fallback?.classList.remove("hidden");
+    if ($("loadFallbackTitle"))
+      $("loadFallbackTitle").textContent = "正在載入 AI 訓練頁面…";
+    if ($("loadFallbackMessage"))
+      $("loadFallbackMessage").textContent = "正在核對登入及訓練資料。";
     busy(true);
     try {
       data = await api("/api/ai-training/data");
       $("login").classList.add("hidden");
       $("app").classList.remove("hidden");
+      fallback?.classList.add("hidden");
       $("consentText").textContent = data.consent_text;
       $("rdPlan").innerHTML = SafeMarkdown.render(data.rd_plan || "");
       $("ttsBlocked").classList.toggle("hidden", data.is_allowed);
@@ -245,8 +252,20 @@
       loadCollections();
       if (data.is_admin) loadAdmin();
     } catch (e) {
-      if (e.message === "未登入") $("login").classList.remove("hidden");
-      else toast("⚠️ " + e.message);
+      $("app").classList.add("hidden");
+      if (e.message === "未登入") {
+        fallback?.classList.add("hidden");
+        $("login").classList.remove("hidden");
+      } else {
+        $("login").classList.add("hidden");
+        fallback?.classList.remove("hidden");
+        if ($("loadFallbackTitle"))
+          $("loadFallbackTitle").textContent = "AI 訓練頁面暫時未能載入";
+        if ($("loadFallbackMessage"))
+          $("loadFallbackMessage").textContent =
+            e.message + "。請重新載入；如問題持續，請通知 developer。";
+        toast("⚠️ " + e.message);
+      }
     } finally {
       busy(false);
     }

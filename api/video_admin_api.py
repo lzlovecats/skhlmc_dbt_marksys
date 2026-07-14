@@ -3,6 +3,8 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from system_limits import API_PAGE_SIZE
+
 router = APIRouter(prefix="/api/video-admin", tags=["video-admin"])
 
 
@@ -49,7 +51,7 @@ def _require_admin(request: Request):
 def data(request: Request, video_id: int | None = None, page: int = 1):
     from core import media_logic as logic
     _require_admin(request)
-    return logic.video_admin_data(video_id, page=page, page_size=20, db=_db())
+    return logic.video_admin_data(video_id, page=page, page_size=API_PAGE_SIZE, db=_db())
 
 
 @router.post("/videos")

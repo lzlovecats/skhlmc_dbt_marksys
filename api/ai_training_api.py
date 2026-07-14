@@ -5,8 +5,6 @@ import hashlib
 import json
 import logging
 import re
-import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -22,6 +20,10 @@ from sqlalchemy import text
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_BYTES, EXPORT_MAX_ROWS, jsonl_response, require_row_limit
 from core.ai_provider import post_json_bounded
+from core.media_probe import (
+    MediaProbeError, SUPPORTED_AUDIO_MIMES, audio_extension, probe_audio,
+)
+from core.rag import RAG_EMBED_SEMAPHORE
 from core.schema_features import DISABLED, PARTIAL, READY, feature_bundle_state, table_bundle_state
 
 from schema import (
@@ -45,8 +47,8 @@ from system_limits import (
     DATASET_SNAPSHOT_MAX_ITEMS, LLM_CONTENT_MAX_CHARS,
     LLM_REVIEW_CONCURRENCY, LLM_SUBMISSION_MAX_TOTAL,
     LLM_SUBMISSION_RATE_WINDOW_HOURS, LLM_SUBMISSIONS_PER_USER_DAY,
-    MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_AUDIO_BYTES, MEDIA_PROBE_TIMEOUT_SECONDS,
-    RAG_DOCUMENT_MAX_TOTAL, RAG_EMBED_CONCURRENCY,
+    MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_AUDIO_BYTES,
+    RAG_DOCUMENT_MAX_TOTAL,
     RAG_REINDEX_MAX_CHUNKS, RAG_REINDEX_MAX_DOCUMENTS,
     R2_BULK_LINK_TTL_SECONDS, R2_MEDIA_LINK_TTL_SECONDS,
     R2_OBJECT_CACHE_MAX_AGE_SECONDS, R2_UPLOAD_CLAIM_TTL_SECONDS,
@@ -62,16 +64,22 @@ CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 
 ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_reviewers"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
 ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE
-SUPPORTED_AUDIO_MIMES = {"audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"}
 MAX_AUDIO_MB = max(1, MAX_AUDIO_BYTES // (1024 * 1024))
 TTS_REVIEW_SEMAPHORE = asyncio.Semaphore(TTS_REVIEW_CONCURRENCY)
 LLM_REVIEW_SEMAPHORE = asyncio.Semaphore(LLM_REVIEW_CONCURRENCY)
-RAG_EMBED_SEMAPHORE = asyncio.Semaphore(RAG_EMBED_CONCURRENCY)
 RAG_EMBEDDING_MODEL = "gemini-embedding-2"
 RAG_EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
 _AI_TRAINING_AUDIT_LAST_PRUNE = None
 _AI_TRAINING_AUDIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
+AI_TRAINING_PROVIDER_PUBLIC_ERROR = "AI 服務暫時無法完成請求，請稍後再試。"
+
+
+async def _post_gemini_json(client, url, api_key, **kwargs):
+    """Call Gemini without placing the long-lived key in an exception URL."""
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers["x-goog-api-key"] = api_key
+    return await post_json_bounded(client, url, headers=headers, **kwargs)
 
 _OPTIONAL_SCHEMA_BUNDLES = {
     "dataset_model": (
@@ -280,44 +288,12 @@ def _rows(frame):
 
 
 def _probe_audio(audio: bytes, mime: str, claimed_duration: int) -> dict:
-    suffix = "." + _audio_ext(mime)
     try:
-        with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
-            handle.write(audio); handle.flush()
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries",
-                 "format=format_name,duration:stream=codec_type,sample_rate,channels",
-                 "-of", "json", handle.name],
-                capture_output=True, text=True, timeout=MEDIA_PROBE_TIMEOUT_SECONDS, check=False,
-            )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise HTTPException(503, "伺服器未能執行音訊格式驗證") from exc
-    if result.returncode != 0:
-        raise HTTPException(400, "錄音檔案損壞或實際格式不受支援")
-    try:
-        info = json.loads(result.stdout or "{}")
-        fmt = info.get("format") or {}
-        stream = next(x for x in (info.get("streams") or []) if x.get("codec_type") == "audio")
-        duration = float(fmt.get("duration") or 0)
-        sample_rate = int(stream.get("sample_rate") or 0)
-        channels = int(stream.get("channels") or 0)
-        format_name = str(fmt.get("format_name") or "")
-    except (ValueError, TypeError, StopIteration) as exc:
-        raise HTTPException(400, "錄音未包含可讀取的聲音軌") from exc
-    if not 1 <= duration <= TTS_MAX_DURATION_SECONDS + 0.5:
-        raise HTTPException(400, f"錄音實際長度必須為 1 至 {TTS_MAX_DURATION_SECONDS} 秒")
-    tolerance = max(2.0, duration * 0.2)
-    if abs(duration - int(claimed_duration or 0)) > tolerance:
-        raise HTTPException(400, "錄音實際長度與瀏覽器回報不符，請重新錄製")
-    expected = {
-        "audio/webm": ("webm", "matroska"), "audio/mp4": ("mov", "mp4"),
-        "audio/mpeg": ("mp3",), "audio/wav": ("wav",), "audio/ogg": ("ogg",),
-    }[mime]
-    if not any(name in format_name for name in expected):
-        raise HTTPException(400, "錄音宣稱格式與實際檔案格式不符")
-    return {"duration": round(duration, 3), "sample_rate": sample_rate,
-            "channels": channels, "format": format_name,
-            "sha256": hashlib.sha256(audio).hexdigest()}
+        return probe_audio(
+            audio, mime, claimed_duration, max_seconds=TTS_MAX_DURATION_SECONDS,
+        )
+    except MediaProbeError as exc:
+        raise HTTPException(503 if exc.service_unavailable else 400, str(exc)) from exc
 
 
 def _verified_r2_audio_claim(body, user):
@@ -453,7 +429,10 @@ def _require_rag_vector_schema(db):
 
 
 def _audio_ext(mime):
-    return {"audio/webm": "webm", "audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/wav": "wav", "audio/ogg": "ogg"}.get(mime, "webm")
+    try:
+        return audio_extension(mime)
+    except MediaProbeError:
+        return "webm"
 
 
 @lru_cache(maxsize=1)
@@ -913,7 +892,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         "只回覆 JSON：{\"passed\":true,\"matches_prompt\":true,\"speech_clarity\":\"clear\","
         "\"volume\":\"ok\",\"noise_level\":\"low\",\"clipping\":false,\"transcript\":\"\",\"problems\":[],\"note\":\"\"}"
     )
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     async with TTS_REVIEW_SEMAPHORE:
         try:
             audio = await asyncio.to_thread(
@@ -933,12 +912,12 @@ async def recording_quality_check(body: RecordingBody, request: Request):
                 str(user), aggregate_key=f"user={str(user)[:120]}",
             )
             async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-                response_data = await post_json_bounded(client, url, json=payload)
+                response_data = await _post_gemini_json(client, url, key, json=payload)
             raw = response_data["candidates"][0]["content"]["parts"][0]["text"]
             review = json.loads(raw)
         except Exception as exc:
-            _log_ai(user, db, "tts_review", False, error=str(exc))
-            raise HTTPException(502, f"AI 音質檢查失敗：{str(exc)[:160]}") from exc
+            _log_ai(user, db, "tts_review", False, error=AI_TRAINING_PROVIDER_PUBLIC_ERROR)
+            raise HTTPException(502, "AI 音質檢查暫時失敗，請稍後再試。") from exc
     _log_ai(user, db, "tts_review", True, response_data=response_data)
     passed = (
         bool(review.get("passed")) and bool(review.get("matches_prompt"))
@@ -991,14 +970,14 @@ async def llm(body: LlmBody, request: Request):
             raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查")
         prompt = "審核以下香港粵語辯論訓練文字，只回覆 JSON，含 passed(boolean), reason, relevance, quality, anonymization, permission_risk。\n" + normalized
         try:
-            url=f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+            url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
             async with LLM_REVIEW_SEMAPHORE:
                 async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-                    response_data = await post_json_bounded(client, url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0,"maxOutputTokens":2048}})
+                    response_data = await _post_gemini_json(client, url, key, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0,"maxOutputTokens":2048}})
             review=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
             _log_ai(user, db, "llm_review", True, response_data=response_data)
         except Exception as exc:
-            _log_ai(user, db, "llm_review", False, error=str(exc))
+            _log_ai(user, db, "llm_review", False, error=AI_TRAINING_PROVIDER_PUBLIC_ERROR)
             raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查") from exc
         if not bool(review.get("passed")): return {"ok":False,"status":"failed","message":review.get("reason") or "AI 預檢未通過", "review":review}
     params = {"user":user,"type":body.data_type,"title":body.title.strip() or None,
@@ -1197,19 +1176,19 @@ async def coverage_ai(request: Request):
         item = grouped.setdefault(row["script_id"], {"category":row["category"], "text":row["text"], "accepted":0, "pending":0})
         if row.get("status") in ("accepted", "pending"): item[row["status"]] = int(row.get("n") or 0)
     summary = "\n".join(f"[{x['category']}] {sid}｜accepted={x['accepted']}｜pending={x['pending']}｜{x['text']}" for sid,x in grouped.items()) or "（句庫為空）"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     coverage_prompt = build_tts_coverage_prompt(summary)[:AI_TRAINING_PROMPT_MAX_CHARS]
     body = {"systemInstruction":{"parts":[{"text":TTS_COVERAGE_SYSTEM_PROMPT}]}, "contents":[{"parts":[{"text":coverage_prompt}]}], "generationConfig":{"responseMimeType":"application/json","temperature":.4,"maxOutputTokens":2048}}
     try:
         async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-            response_data = await post_json_bounded(client, url, json=body)
+            response_data = await _post_gemini_json(client, url, key, json=body)
         analysis=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"])
         if not isinstance(analysis, dict): raise ValueError("AI 回覆格式不正確")
         _log_ai(user, db, "tts_script_analysis", True, response_data=response_data)
         return {"analysis": analysis}
     except Exception as exc:
-        _log_ai(user, db, "tts_script_analysis", False, error=str(exc))
-        raise HTTPException(502, f"AI 缺口分析失敗：{str(exc)[:160]}") from exc
+        _log_ai(user, db, "tts_script_analysis", False, error=AI_TRAINING_PROVIDER_PUBLIC_ERROR)
+        raise HTTPException(502, "AI 缺口分析暫時失敗，請稍後再試。") from exc
 
 
 @router.get("/inventory")
@@ -1285,19 +1264,19 @@ async def regenerate_suggestions(request: Request):
     locked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) in locked_ids) or "（暫時冇已錄音句子）"
     unlocked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) not in locked_ids) or "（暫時冇未錄音句子）"
     prompt = build_tts_regenerate_prompt(locked, unlocked)[:AI_TRAINING_PROMPT_MAX_CHARS]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5, "maxOutputTokens": 2048}}
     try:
         async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-            response_data = await post_json_bounded(client, url, json=payload)
+            response_data = await _post_gemini_json(client, url, key, json=payload)
         raw=response_data["candidates"][0]["content"]["parts"][0]["text"]
         plan=json.loads(raw)
         if not isinstance(plan, dict): raise ValueError("AI 回覆格式不正確")
         plan["deactivate_candidates"] = [x for x in (plan.get("deactivate_candidates") or []) if str(x.get("script_id")) not in locked_ids]
         _log_ai(user, db, "tts_script_analysis", True, response_data=response_data)
     except Exception as exc:
-        _log_ai(user, db, "tts_script_analysis", False, error=str(exc))
-        raise HTTPException(502, f"AI 重出句庫失敗：{str(exc)[:160]}") from exc
+        _log_ai(user, db, "tts_script_analysis", False, error=AI_TRAINING_PROVIDER_PUBLIC_ERROR)
+        raise HTTPException(502, "AI 重出句庫暫時失敗，請稍後再試。") from exc
     return {"plan": plan}
 
 
@@ -1678,8 +1657,8 @@ async def rag_reindex(body: RagReindexBody, request: Request):
 
             async def embed_chunk(chunk):
                 async with RAG_EMBED_SEMAPHORE:
-                    response_data = await post_json_bounded(client, endpoint,
-                        params={"key":api_key}, json={
+                    response_data = await _post_gemini_json(client, endpoint, api_key,
+                        json={
                         "content":{"parts":[{"text":chunk}]}, "outputDimensionality":768})
                     values = ((response_data.get("embedding") or {}).get("values") or [])
                     if len(values) != 768:

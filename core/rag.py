@@ -7,6 +7,7 @@ eligible for a result.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
@@ -14,15 +15,20 @@ import httpx
 from core.ai_provider import post_json_bounded
 from core.schema_features import READY, feature_bundle_state
 from schema import TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS
-from system_limits import RAG_CONTEXT_MAX_CHARS, RAG_PROVIDER_TIMEOUT_SECONDS
+from system_limits import (
+    RAG_CONTEXT_MAX_CHARS,
+    RAG_EMBED_CONCURRENCY,
+    RAG_PROVIDER_TIMEOUT_SECONDS,
+    RAG_SCHEMA_CHECK_TTL_SECONDS,
+)
 
 
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
 EMBEDDING_DIMENSION = 768
-RAG_SCHEMA_CHECK_TTL_SECONDS = 300
 _RAG_SCHEMA_CACHE = {"ready": False, "checked_at": 0.0}
 _RAG_SCHEMA_LOCK = threading.Lock()
+RAG_EMBED_SEMAPHORE = asyncio.Semaphore(RAG_EMBED_CONCURRENCY)
 
 
 def rag_schema_ready(db, *, force: bool = False) -> bool:
@@ -77,8 +83,11 @@ async def _embed(text_value: str, api_key: str) -> list[float]:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{EMBEDDING_MODEL}:embedContent"
     payload = {"content": {"parts": [{"text": text_value[:8000]}]},
                "outputDimensionality": EMBEDDING_DIMENSION}
-    async with httpx.AsyncClient(timeout=RAG_PROVIDER_TIMEOUT_SECONDS) as client:
-        data = await post_json_bounded(client, url, params={"key": api_key}, json=payload)
+    async with RAG_EMBED_SEMAPHORE:
+        async with httpx.AsyncClient(timeout=RAG_PROVIDER_TIMEOUT_SECONDS) as client:
+            data = await post_json_bounded(
+                client, url, headers={"x-goog-api-key": api_key}, json=payload,
+            )
     values = ((data.get("embedding") or {}).get("values") or [])
     if len(values) != EMBEDDING_DIMENSION:
         raise ValueError("Embedding dimension mismatch")

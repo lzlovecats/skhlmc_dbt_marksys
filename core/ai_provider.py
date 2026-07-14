@@ -11,6 +11,8 @@ from system_limits import (
     AI_PROVIDER_GEMINI_TIMEOUT_SECONDS, AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS,
     AI_PROVIDER_MAX_OUTPUT_TOKENS, AI_PROVIDER_PROMPT_MAX_CHARS,
     AI_PROVIDER_RESPONSE_MAX_BYTES, AI_PROVIDER_SOURCE_LIMIT,
+    OPENROUTER_WEB_SEARCH_MAX_RESULTS,
+    OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS,
 )
 
 
@@ -99,9 +101,16 @@ def _usage(data, provider, web_search=False):
         return {"input_tokens": max(0, prompt - audio), "output_tokens": output,
                 "audio_tokens": audio, "search_calls": int(web_search),
                 "cost_source": "gemini_usage_metadata"}
+    server_tools = _read(raw, "server_tool_use", "serverToolUse", default={}) or {}
+    try:
+        search_calls = int(_read(
+            server_tools, "web_search_requests", "webSearchRequests", default=0,
+        ) or 0)
+    except (TypeError, ValueError):
+        search_calls = 0
     return {"input_tokens": int(_read(raw, "prompt_tokens", "promptTokens", default=0) or 0),
             "output_tokens": int(_read(raw, "completion_tokens", "completionTokens", default=0) or 0),
-            "audio_tokens": 0, "search_calls": int(web_search),
+            "audio_tokens": 0, "search_calls": max(0, search_calls),
             "cost_source": "openrouter_response_usage"}
 
 
@@ -145,7 +154,11 @@ async def generate_text(config, system, user, *, api_key, audio_base64="", audio
             "max_tokens": AI_PROVIDER_MAX_OUTPUT_TOKENS}
         if web_search and config["provider"] == "openrouter":
             payload["tools"] = [{"type": "openrouter:web_search",
-                                 "parameters": {"search_context_size": "medium"}}]
+                                 "parameters": {
+                                     "max_results": OPENROUTER_WEB_SEARCH_MAX_RESULTS,
+                                     "max_total_results": OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS,
+                                     "search_context_size": "medium",
+                                 }}]
         endpoint = (config.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/") + "/chat/completions"
         async with httpx.AsyncClient(timeout=AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS) as client:
             data = await post_json_bounded(client, endpoint,
@@ -161,7 +174,9 @@ async def generate_text(config, system, user, *, api_key, audio_base64="", audio
                              "maxOutputTokens": AI_PROVIDER_MAX_OUTPUT_TOKENS}}
     if web_search:
         payload["tools"] = [{"google_search": {}}]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{config['model']}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{config['model']}:generateContent"
     async with httpx.AsyncClient(timeout=AI_PROVIDER_GEMINI_TIMEOUT_SECONDS) as client:
-        data = await post_json_bounded(client, url, json=payload)
+        data = await post_json_bounded(
+            client, url, headers={"x-goog-api-key": api_key}, json=payload,
+        )
     return _gemini_text(data, web_search), _usage(data, "gemini", web_search)

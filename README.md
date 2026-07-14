@@ -26,18 +26,21 @@
 ## 架構
 
 ```text
-frontend/*  ──same-origin HTTP/WebSocket──>  api/*
-                                                   └─> core/*
-deploy/proxy.py ── app組裝／static／Live rooms ───────┘
+frontend/*  ──same-origin HTTP／多人WebSocket──>  api/*
+                                                        └─> core/*
+deploy/proxy.py ── app組裝／static／多人Live rooms ───────┘
                     ├─ PostgreSQL / Supabase：結構化資料
                     ├─ Cloudflare R2：相片及錄音binary
                     └─ AI / TTS providers：按需外部請求
+
+Solo Gemini Live：Browser ──WebSocket（一次性ephemeral token）──> Google Gemini Live
 ```
 
 - `frontend/`：每頁可直接閱讀的HTML及共用browser assets；不用build step。
 - `api/`：HTTP payload、權限、pagination及response。
 - `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
-- `deploy/proxy.py`：FastAPI app、靜態路由、WebSocket relay/rooms及process runtime。
+- `deploy/proxy.py`：FastAPI app、靜態路由、多人Live WebSocket rooms及process runtime；
+  Solo Live只在此完成登入、地區、配額、prompt及一次性token簽發，audio不經Render。
 - `schema.py`：只供新、空database bootstrap；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理，runtime不再執行舊式retrofit清單。
 - 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
@@ -48,7 +51,8 @@ migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.m
 
 ## 資料及資源原則
 
-- Browser只call同源FastAPI，不直連Supabase Data API。
+- Browser業務API只call同源FastAPI，永不直連Supabase Data API；Solo Gemini Live以
+  短期一次性ephemeral token直連Google，長期provider key不會送到browser。
 - 相片及TTS錄音以短期presigned URL直接上／下載R2；Render及PostgreSQL只處理metadata，沒有BYTEA fallback。
 - List API在database層filter/count/page；大response、external HTTP、AI、TTS及upload均有code-level上限。
 - 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`已由migration `20260714_0002`退役。
@@ -82,7 +86,7 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
 
 | 功能 | Secrets |
 |---|---|
-| Gemini及Gemini Live | `GEMINI_API_KEY`, optional `LIVE_RELAY_WS_BASE` |
+| Gemini及Gemini Live | `GEMINI_API_KEY` |
 | OpenRouter models | `OPENROUTER_API_KEY` |
 | Azure TTS | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, optional voice/rate/output format |
 | Custom TTS | `TTS_PROVIDER=custom`, `CUSTOM_TTS_URL`, `CUSTOM_TTS_API_KEY`, `CUSTOM_TTS_MODEL_VERSION` |

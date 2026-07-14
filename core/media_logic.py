@@ -24,6 +24,7 @@ from schema import (
     TABLE_VIDEO_VOTES,
 )
 from system_limits import (
+    API_PAGE_SIZE,
     PHOTO_BATCH_MAX_ITEMS,
     VIDEO_COMMENT_MAX_PER_USER_DAY, VIDEO_COMMENT_MAX_PER_VIDEO,
     VIDEO_COMMENT_RATE_WINDOW_HOURS,
@@ -352,9 +353,9 @@ def _admin_video_record(row):
     return {"id": safe_int(row["id"]), "match_id": match_id or None, "match_label": clean_text(row.get("match_label")), "video_title": clean_text(row.get("video_title")), "youtube_url": clean_text(row.get("youtube_url")), "standalone_topic_text": clean_text(row.get("standalone_topic_text")), "standalone_pro_team": clean_text(row.get("standalone_pro_team")), "standalone_con_team": clean_text(row.get("standalone_con_team")), "is_visible": bool(row.get("is_visible")), "display_order": safe_int(row.get("display_order")), "match_display": format_value(row.get("match_display")), "topic_text": clean_text(row.get("topic_text")), "pro_team": clean_text(row.get("pro_team")), "con_team": clean_text(row.get("con_team")), "source_type": "現有場次" if match_id else "舊比賽", "created_at": json_time(row.get("created_at")), "updated_at": json_time(row.get("updated_at"))}
 
 
-def video_admin_data(selected_video_id=None, page=1, page_size=20, db=None):
+def video_admin_data(selected_video_id=None, page=1, page_size=API_PAGE_SIZE, db=None):
     db = _resolve_db(db)
-    page_size = max(1, min(int(page_size or 20), 100))
+    page_size = max(1, min(int(page_size or API_PAGE_SIZE), API_PAGE_SIZE))
     count = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_MATCH_VIDEOS}")
     total = int(count.iloc[0]["n"] or 0) if not count.empty else 0
     total_pages = max(1, (total + page_size - 1) // page_size)

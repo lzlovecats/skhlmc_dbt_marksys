@@ -2,8 +2,27 @@
 set -euo pipefail
 
 PROXY_PORT="${PORT:-8000}"
-read -r LIMIT_CONCURRENCY WS_MAX_SIZE MALLOC_ARENA_LIMIT MALLOC_TRIM_LIMIT \
-    <<<"$(python system_limits.py --startup)"
+UVICORN_LIMIT_CONCURRENCY=""
+UVICORN_WS_MAX_SIZE=""
+UVICORN_WS_MAX_QUEUE=""
+MALLOC_ARENA_LIMIT=""
+MALLOC_TRIM_LIMIT=""
+while IFS='=' read -r name value; do
+    case "$name" in
+        UVICORN_LIMIT_CONCURRENCY) UVICORN_LIMIT_CONCURRENCY="$value" ;;
+        UVICORN_WS_MAX_SIZE) UVICORN_WS_MAX_SIZE="$value" ;;
+        UVICORN_WS_MAX_QUEUE) UVICORN_WS_MAX_QUEUE="$value" ;;
+        MALLOC_ARENA_MAX) MALLOC_ARENA_LIMIT="$value" ;;
+        MALLOC_TRIM_THRESHOLD_) MALLOC_TRIM_LIMIT="$value" ;;
+        *) echo "Unknown system limit in startup contract: $name" >&2; exit 1 ;;
+    esac
+done < <(python system_limits.py --startup)
+
+: "${UVICORN_LIMIT_CONCURRENCY:?missing UVICORN_LIMIT_CONCURRENCY}"
+: "${UVICORN_WS_MAX_SIZE:?missing UVICORN_WS_MAX_SIZE}"
+: "${UVICORN_WS_MAX_QUEUE:?missing UVICORN_WS_MAX_QUEUE}"
+: "${MALLOC_ARENA_LIMIT:?missing MALLOC_ARENA_MAX}"
+: "${MALLOC_TRIM_LIMIT:?missing MALLOC_TRIM_THRESHOLD_}"
 
 # Memory tuning for the 512 MB instance.
 # Python's threaded runtime makes glibc malloc spawn one arena per thread
@@ -14,5 +33,6 @@ export MALLOC_ARENA_MAX="$MALLOC_ARENA_LIMIT"
 export MALLOC_TRIM_THRESHOLD_="$MALLOC_TRIM_LIMIT"
 
 exec uvicorn deploy.proxy:app --host 0.0.0.0 --port "$PROXY_PORT" \
-    --limit-concurrency "$LIMIT_CONCURRENCY" \
-    --ws-max-size "$WS_MAX_SIZE"
+    --limit-concurrency "$UVICORN_LIMIT_CONCURRENCY" \
+    --ws-max-size "$UVICORN_WS_MAX_SIZE" \
+    --ws-max-queue "$UVICORN_WS_MAX_QUEUE"

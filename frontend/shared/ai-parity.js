@@ -35,12 +35,19 @@
   let recordStopTimer = null;
   let audioBase64 = "";
   let audioMime = "audio/webm";
+  let audioDurationSeconds = 0;
   let timer = null;
   let timerStartedAt = 0;
   let firedBells = new Set();
 
-  const currentModel = () =>
-    meta?.models.find((model) => model.label === $("globalModel").value);
+  const modelByLabel = (label) =>
+    meta?.models.find((model) => model.label === label);
+  const currentModel = () => modelByLabel($("globalModel").value);
+  const effectiveSearchModel = (model) => {
+    if (model?.supports_web_search) return model;
+    const fallback = modelByLabel(meta?.default_model);
+    return fallback?.supports_web_search ? fallback : null;
+  };
   const hkd = (amount) => `HKD ${Number(amount || 0).toFixed(4)}`;
   const estimateText = (estimate) =>
     `US$${Number(estimate?.usd || 0).toFixed(4)} ≈ ${hkd(estimate?.hkd)} / 次`;
@@ -402,6 +409,7 @@
           blob.size > limits.audio_max_bytes
         ) {
           audioBase64 = "";
+          audioDurationSeconds = 0;
           $("record").textContent = "重新錄音";
           $("recordState").textContent = "錄音無效";
           toast(
@@ -418,6 +426,7 @@
           );
         }
         audioBase64 = btoa(binary);
+        audioDurationSeconds = duration;
         const preview = $("audioPreview");
         if (preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
         preview.src = URL.createObjectURL(blob);
@@ -462,10 +471,16 @@
   function syncModel() {
     const model = currentModel();
     if (!model) return;
+    const searchModel = effectiveSearchModel(model);
+    const searchReady = Boolean(searchModel?.available);
+    const searchEstimate = (feature) =>
+      searchModel
+        ? estimateText(searchModel.estimates[feature])
+        : "暫時未能估算";
     $("modelNote").textContent =
       `收費狀態：${model.pricing_label}。${model.note}`;
     $("modelEstimate").textContent =
-      `主線策劃 ${estimateText(model.estimates.strategy)}；發言分析 ${estimateText(model.estimates.speech_review)}；搵料及 Fact Check 已包括一次搜尋工具，估算為 ${estimateText(model.estimates.web_research)}。`;
+      `主線策劃 ${estimateText(model.estimates.strategy)}；發言分析 ${estimateText(model.estimates.speech_review)}；搵料及 Fact Check ${searchModel ? `會使用 ${searchModel.label}，已包括一次搜尋工具，估算為 ${searchEstimate("web_research")}` : "因搜尋模型不可用而暫停"}。`;
     $("strategyEstimate").textContent =
       `估算成本：${estimateText(model.estimates.strategy)}。`;
     const reviewEstimate = audioBase64
@@ -474,9 +489,9 @@
     $("reviewEstimate").textContent =
       `估算成本：${estimateText(reviewEstimate)}。`;
     $("researchEstimate").textContent =
-      `估算成本：${estimateText(model.estimates.web_research)}，按 1 次搜尋工具估算。`;
+      `估算成本：${searchEstimate("web_research")}，${searchModel ? `按 ${searchModel.label} 及 1 次搜尋工具估算` : "搜尋模型暫時不可用"}。`;
     $("factEstimate").textContent =
-      `估算成本：${estimateText(model.estimates.fact_check)}，按 1 次搜尋工具估算。`;
+      `估算成本：${searchEstimate("fact_check")}，${searchModel ? `按 ${searchModel.label} 及 1 次搜尋工具估算` : "搜尋模型暫時不可用"}。`;
     const warnings = [];
     if (model.is_premium)
       warnings.push("你正在使用高級模型。請確保不要濫用，避免資金用盡。");
@@ -500,17 +515,62 @@
       : '<div class="notice warn">⚠️ 呢個模型不支援錄音分析。如需錄音分析，請選擇支援錄音嘅模型（如 Gemini 系列）。</div>';
     const searchWarning = model.supports_web_search
       ? ""
-      : '<div class="notice warn">⚠️ 呢個模型不支援上網搜尋。請選擇收費模型以使用此功能。</div>';
-    $("researchWarning").innerHTML = searchWarning;
-    $("factWarning").innerHTML = searchWarning;
+      : searchModel
+        ? `<div class="notice warn">⚠️ ${esc(model.label)} 不支援上網搜尋；搵料及 Fact Check 會自動改用 ${esc(searchModel.label)}。下列估算已按替代模型顯示。</div>`
+        : '<div class="notice warn">⚠️ 呢個模型不支援上網搜尋，而預設搜尋模型亦不可用。請改選支援搜尋嘅模型。</div>';
+    const searchAvailabilityWarning = searchModel?.available
+      ? ""
+      : searchModel
+        ? `<div class="notice warn">⚠️ 未設定 ${esc(searchModel.api_key_name)}，${esc(searchModel.label)} 暫時未能執行搜尋。</div>`
+        : "";
+    $("researchWarning").innerHTML =
+      searchWarning + searchAvailabilityWarning;
+    $("factWarning").innerHTML =
+      searchWarning + searchAvailabilityWarning;
     const liveProviderWarning = model.label.startsWith("Gemini")
       ? ""
       : `<div class="notice warn">⚠️ 而家模型為 ${esc(model.label)}，不支援 Live；開始時會改用 Gemini Live。</div>`;
+    const liveResearchWarning = model.supports_web_search
+      ? searchAvailabilityWarning
+      : searchModel
+        ? `<div class="notice warn">⚠️ Live 賽前搵料會自動改用 ${esc(searchModel.label)}，估算成本為 ${esc(searchEstimate("web_research"))}。${searchModel.available ? "" : `未設定 ${esc(searchModel.api_key_name)}，相關練習暫時不可開始。`}</div>`
+        : '<div class="notice warn">⚠️ Live 賽前搵料所需嘅搜尋模型不可用，相關練習暫時不可開始。</div>';
     const ttsWarning = meta.azure_tts
       ? ""
-      : '<div class="notice warn">⚠️ 未設定 Azure TTS，AI 讀音會 fallback 用 Gemini Live 原生聲音。</div>';
-    $("liveWarnings").innerHTML = liveProviderWarning + ttsWarning;
-    $("mockWarnings").innerHTML = liveProviderWarning + ttsWarning;
+      : meta.server_tts_configured
+        ? '<div class="notice warn">⚠️ 本月 Render 傳輸量已達 3.5GB，Solo server TTS 已停用；AI 會直接播放 Gemini 原生聲音。</div>'
+        : '<div class="notice warn">⚠️ 未設定 Azure／custom server TTS，AI 讀音會 fallback 用 Gemini Live 原生聲音。</div>';
+    const country = meta.country_status || {
+      status: "unknown",
+      supported: true,
+    };
+    const countryWarning =
+      country.status === "blocked"
+        ? `<div class="notice warn">⚠️ ${esc(country.message || "請先連接至 Google 支援地區網絡／VPN，再按重新檢查。")}
+          <button id="liveCountryRetry" type="button">重新檢查</button></div>`
+        : country.status === "unknown"
+          ? `<div class="notice">ℹ️ ${esc(country.message || "地區資料不明，系統會允許嘗試直接連接 Google。")}</div>`
+          : "";
+    $("liveWarnings").innerHTML =
+      liveProviderWarning + liveResearchWarning + ttsWarning + countryWarning;
+    $("mockWarnings").innerHTML =
+      liveProviderWarning + liveResearchWarning + ttsWarning +
+      (country.status === "blocked"
+        ? `<div class="notice warn">⚠️ ${esc(country.message || "請先連接至 Google 支援地區網絡／VPN，再按重新檢查。")}
+          <button id="mockCountryRetry" type="button">重新檢查</button></div>`
+        : country.status === "unknown"
+          ? `<div class="notice">ℹ️ ${esc(country.message || "地區資料不明，系統會允許嘗試直接連接 Google。")}</div>`
+          : "");
+    [$("liveForm"), $("mockForm")].forEach((form) => {
+      const submit = form.querySelector("button.primary");
+      if (submit) submit.disabled = !country.supported || !searchReady;
+    });
+    [$("researchForm"), $("factForm")].forEach((form) => {
+      const submit = form.querySelector("button.primary");
+      if (submit) submit.disabled = !searchReady;
+    });
+    $("liveCountryRetry")?.addEventListener("click", () => location.reload());
+    $("mockCountryRetry")?.addEventListener("click", () => location.reload());
   }
 
   async function prepareLive(mode, topic, side, format, minutes) {
@@ -536,6 +596,7 @@
           format,
           minutes,
           brief_id: data.brief_id,
+          practice_id: data.practice_id,
           source: "coach",
         });
     } catch (error) {
@@ -745,6 +806,7 @@
         text: review.text,
         audio_base64: audioBase64,
         audio_mime: audioMime,
+        audio_duration_seconds: audioDurationSeconds,
       },
       "reviewResult",
       "downloadReview",

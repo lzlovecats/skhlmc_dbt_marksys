@@ -9,10 +9,33 @@ be used by any domain event without global request state.
 from concurrent.futures import ThreadPoolExecutor
 import json
 import re
+import threading
 
 from schema import TABLE_PUSH_SUBSCRIPTIONS
 from system_limits import PUSH_RECIPIENT_LIMIT, PUSH_SEND_CONCURRENCY
 
+
+_PUSH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=PUSH_SEND_CONCURRENCY, thread_name_prefix="web-push"
+)
+_PUSH_SUBMIT_SLOTS = threading.BoundedSemaphore(PUSH_SEND_CONCURRENCY)
+
+
+def _submit_push(deliver, item):
+    """Submit without allowing the process-global work queue to grow unbounded."""
+    _PUSH_SUBMIT_SLOTS.acquire()
+
+    def run():
+        try:
+            return deliver(item)
+        finally:
+            _PUSH_SUBMIT_SLOTS.release()
+
+    try:
+        return _PUSH_EXECUTOR.submit(run)
+    except BaseException:
+        _PUSH_SUBMIT_SLOTS.release()
+        raise
 
 
 def push_title_with_emoji(title):
@@ -122,15 +145,12 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
             return endpoint, False, str(exc)
 
     sent = 0
-    workers = min(PUSH_SEND_CONCURRENCY, len(deliveries))
-    results = []
-    if workers:
-        # Web Push is blocking network I/O.  A small bounded pool prevents one
-        # notification from occupying a Render request worker for up to
-        # ``recipient_count × timeout`` while avoiding an unbounded thread fanout.
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="web-push") as pool:
-            results = pool.map(deliver, deliveries)
-    for endpoint, ok, error in results:
+    # Every caller shares one pool. Submission slots also bound its work queue,
+    # so overlapping notifications cannot multiply threads or retain an
+    # unbounded number of payloads while providers are slow.
+    futures = [_submit_push(deliver, item) for item in deliveries]
+    for future in futures:
+        endpoint, ok, error = future.result()
         if ok:
             sent += 1
             db.execute(

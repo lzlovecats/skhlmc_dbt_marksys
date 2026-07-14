@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.middleware.gzip import GZipMiddleware
@@ -42,6 +42,7 @@ from core.config_store import (
     get_configs_from_connection,
     set_configs_on_connection,
 )
+from core.ai_provider import post_json_bounded
 from core.db_runtime import RuntimeDb, dispose_db_engine, get_db_engine
 from core.runtime_secrets import get_secret
 from debate_timing import (  # pure helpers, no side effects
@@ -82,10 +83,21 @@ from system_limits import (
     BANDWIDTH_LOG_RETENTION_DAYS, BANDWIDTH_STOP_LIVE_BYTES,
     BANDWIDTH_WARN_BYTES, CACHE_HTML_MAX_AGE_SECONDS, CACHE_HTML_STALE_SECONDS,
     CACHE_MANIFEST_MAX_AGE_SECONDS, CACHE_SHARED_MAX_AGE_SECONDS,
-    CACHE_SHARED_STALE_SECONDS, CACHE_STATIC_MAX_AGE_SECONDS, GEMINI_RELAY_MAX_BYTES,
-    GEMINI_RELAY_MAX_SECONDS, GEMINI_RELAY_MIN_SECONDS,
-    GEMINI_RELAY_SIGNATURE_TTL_SECONDS, GEMINI_WS_MAX_SIZE,
-    GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE, LIVE_FREE_MAX_MINUTES,
+    CACHE_SHARED_STALE_SECONDS, CACHE_STATIC_MAX_AGE_SECONDS,
+    GEMINI_WS_MAX_QUEUE, GEMINI_WS_MAX_SIZE,
+    GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE,
+    AI_PROVIDER_PROMPT_MAX_CHARS, AI_PROVIDER_RESPONSE_MAX_BYTES,
+    LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS,
+    LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS, LIVE_FREE_MAX_MINUTES,
+    LIVE_FREE_SESSION_MAX_SECONDS, LIVE_PRACTICE_CLAIM_MAX_CHARS,
+    LIVE_PRACTICE_CLAIM_TTL_SECONDS, LIVE_SYSTEM_PROMPT_MAX_CHARS,
+    LIVE_MOCK_OVERALL_GRACE_SECONDS,
+    LIVE_TOKEN_EXPIRY_GRACE_SECONDS, LIVE_TOKEN_LEDGER_DB_TIMEOUT_SECONDS,
+    LIVE_TOKEN_MINT_TIMEOUT_SECONDS,
+    LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS,
+    LIVE_TOKEN_RESPONSE_CACHE_MAX_ENTRIES,
+    LIVE_TOKEN_RESPONSE_CACHE_SAFETY_SECONDS,
+    LIVE_TOKEN_RESPONSE_CACHE_TTL_SECONDS,
     MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_HTTP_BODY_BYTES, MAX_ROOMS,
     MULTIPLAYER_FREE_MONTHLY_ROOMS,
     MULTIPLAYER_MOCK_MONTHLY_ROOMS, PRACTICE_LIVE_MAX_PER_HOUR,
@@ -94,12 +106,25 @@ from system_limits import (
     PUSH_ACTIVE_DEVICES_PER_USER, PUSH_ENDPOINT_MAX_CHARS,
     PUSH_INACTIVE_RETENTION_DAYS, PUSH_KEY_MAX_CHARS,
     PUSH_SUBSCRIPTION_MAX_BYTES,
-    REQUEST_BODY_BUFFER_CONCURRENCY, ROOM_EMPTY_GRACE_SECONDS,
+    REQUEST_BODY_BUFFER_CONCURRENCY, ROOM_AUDIO_FRAME_MAX_BYTES,
+    ROOM_AUDIO_RATE_BURST_MESSAGES, ROOM_AUDIO_RATE_MESSAGES_PER_SECOND,
+    ROOM_AUDIO_RATE_BURST_BYTES, ROOM_AUDIO_RATE_BYTES_PER_SECOND,
+    ROOM_CONTROL_RATE_BURST_MESSAGES, ROOM_CONTROL_RATE_MESSAGES_PER_SECOND,
+    ROOM_EMPTY_GRACE_SECONDS,
+    ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS,
+    ROOM_GEMINI_RESUME_DELAY_SECONDS, ROOM_GEMINI_RESUME_MAX_ATTEMPTS,
+    ROOM_GEMINI_SETUP_TIMEOUT_SECONDS,
     ROOM_JUDGEMENT_TIMEOUT_SECONDS,
     ROOM_MAX_AGE_SECONDS, ROOM_MAX_CAPACITY, ROOM_NATIVE_AUDIO_BUFFER_MAX_BYTES,
     ROOM_PENDING_TRANSCRIPT_MAX_CHARS, ROOM_TRANSCRIPT_ITEM_MAX_CHARS,
-    ROOM_TRANSCRIPT_MAX_ITEMS, ROOM_WS_SEND_TIMEOUT_SECONDS, SOLO_FREE_MONTHLY_LIMIT,
-    SOLO_MOCK_MONTHLY_LIMIT, TTS_CONCURRENCY, TTS_LEXICON_CACHE_TTL_SECONDS, TTS_LEXICON_LIMIT,
+    ROOM_TEST_AUDIO_ACK_TTL_MS, ROOM_TEST_AUDIO_COOLDOWN_MS,
+    ROOM_TEST_AUDIO_MAX_BYTES, ROOM_TEST_AUDIO_PENDING_MAX,
+    ROOM_TEST_RECEIVED_COOLDOWN_MS,
+    ROOM_TRANSCRIPT_MAX_ITEMS, ROOM_WS_SEND_TIMEOUT_SECONDS,
+    ROOM_WS_TEXT_MAX_BYTES,
+    SOLO_FREE_DAILY_LIMIT, SOLO_FREE_MONTHLY_LIMIT,
+    SOLO_MOCK_MONTHLY_LIMIT, SOLO_MOCK_WEEKLY_LIMIT,
+    TTS_CONCURRENCY, TTS_LEXICON_CACHE_TTL_SECONDS, TTS_LEXICON_LIMIT,
     TTS_MAX_RESPONSE_BYTES, TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
     TTS_PROVIDER_TIMEOUT_SECONDS, TTS_TEXT_MAX_CHARS, VIDEO_PROGRESS_MAX_SECONDS,
     VIDEO_VIEW_DEDUPE_HOURS,
@@ -109,10 +134,12 @@ from system_limits import (
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 CACHE_NO_CACHE = "no-cache"
-CACHE_HTML = f"public, max-age={CACHE_HTML_MAX_AGE_SECONDS}, stale-while-revalidate={CACHE_HTML_STALE_SECONDS}"
+CACHE_NO_STORE = "no-store"
+CACHE_HTML = f"private, max-age={CACHE_HTML_MAX_AGE_SECONDS}, stale-while-revalidate={CACHE_HTML_STALE_SECONDS}"
 CACHE_MANIFEST = f"public, max-age={CACHE_MANIFEST_MAX_AGE_SECONDS}"
 CACHE_STATIC = f"public, max-age={CACHE_STATIC_MAX_AGE_SECONDS}, immutable"
 CACHE_SHARED = f"public, max-age={CACHE_SHARED_MAX_AGE_SECONDS}, stale-while-revalidate={CACHE_SHARED_STALE_SECONDS}"
+CACHE_BELL = "public, max-age=86400, must-revalidate"
 
 @asynccontextmanager
 async def _lifespan(_app):
@@ -165,22 +192,67 @@ class RequestBodyLimitMiddleware:
         if scope.get("type") != "http":
             await self.inner(scope, receive, send)
             return
+        method = str(scope.get("method") or "").upper()
+        if method in {"GET", "HEAD"}:
+            await self.inner(scope, receive, send)
+            return
         headers = {key.lower(): value for key, value in scope.get("headers") or []}
+        content_length = headers.get(b"content-length")
         try:
-            declared = int(headers.get(b"content-length", b"0") or b"0")
+            declared = int(content_length or b"0")
         except ValueError:
             declared = self.max_bytes + 1
-        if declared > self.max_bytes:
+        if declared < 0 or declared > self.max_bytes:
             await self._reject(send)
             return
-
         # At most a few 5MB buffers may be assembled simultaneously.  This is
         # separate from Uvicorn's endpoint concurrency because the complete
         # request has to be verified before Pydantic/endpoint code can run.
-        async with self.buffer_slots:
+        # Keep the slot until the downstream handler and response have fully
+        # completed: replaying the body does not release the retained buffer.
+        await self.buffer_slots.acquire()
+        slot_held = True
+        try:
             buffered = []
             received = 0
-            while True:
+            complete = False
+            if content_length is None or declared == 0:
+                # ASGI servers may dechunk a request and omit transfer-encoding,
+                # and a malicious client may declare Content-Length: 0 while
+                # still sending bytes.  Both cases must acquire a slot before
+                # the first chunk. Release it only after proving that the first
+                # message is an empty terminal request.
+                first = await receive()
+                if (
+                    first.get("type") == "http.request"
+                    and not first.get("body")
+                    and not first.get("more_body", False)
+                ):
+                    self.buffer_slots.release()
+                    slot_held = False
+                    replayed = False
+
+                    async def replay_empty():
+                        nonlocal replayed
+                        if not replayed:
+                            replayed = True
+                            return first
+                        return {
+                            "type": "http.request", "body": b"", "more_body": False,
+                        }
+
+                    await self.inner(scope, replay_empty, send)
+                    return
+                buffered.append(first)
+                if first.get("type") == "http.request":
+                    received = len(first.get("body") or b"")
+                    complete = not first.get("more_body", False)
+                elif first.get("type") == "http.disconnect":
+                    complete = True
+            if received > self.max_bytes:
+                await self._reject(send)
+                return
+            while not complete:
                 message = await receive()
                 buffered.append(message)
                 if message.get("type") == "http.request":
@@ -189,21 +261,24 @@ class RequestBodyLimitMiddleware:
                         await self._reject(send)
                         return
                     if not message.get("more_body", False):
-                        break
+                        complete = True
                 elif message.get("type") == "http.disconnect":
-                    break
+                    complete = True
 
-        index = 0
+            index = 0
 
-        async def replay_receive():
-            nonlocal index
-            if index < len(buffered):
-                message = buffered[index]
-                index += 1
-                return message
-            return {"type": "http.request", "body": b"", "more_body": False}
+            async def replay_receive():
+                nonlocal index
+                if index < len(buffered):
+                    message = buffered[index]
+                    index += 1
+                    return message
+                return {"type": "http.request", "body": b"", "more_body": False}
 
-        await self.inner(scope, replay_receive, send)
+            await self.inner(scope, replay_receive, send)
+        finally:
+            if slot_held:
+                self.buffer_slots.release()
 
 
 app.add_middleware(
@@ -331,9 +406,10 @@ _relay_cookie_secret = None
 
 
 def _get_relay_cookie_secret():
-    """Read (and cache) the shared cookie_secret used to sign Gemini Live relay
-    tokens. Cached in-process because it rarely changes and this is hit on every
-    relay connection attempt."""
+    """Read and cache the shared signing secret used by authenticated claims.
+
+    The historic name is retained because R2 upload and review claims import it.
+    """
     global _relay_cookie_secret
     if _relay_cookie_secret is not None:
         return _relay_cookie_secret
@@ -350,41 +426,58 @@ def _get_relay_cookie_secret():
     return _relay_cookie_secret
 
 
-def _relay_b64(data: bytes) -> str:
+def _claim_b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _relay_b64decode(value: str) -> bytes:
+def _claim_b64decode(value: str) -> bytes:
     raw = value.encode("ascii")
     return base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
 
 
-def _sign_relay_token(
-    token: str, user_id: str, practice_kind: str, max_seconds: int,
-    practice_id: str,
+def _bounded_live_system_prompt(value: str) -> str:
+    return str(value or "")[:LIVE_SYSTEM_PROMPT_MAX_CHARS]
+
+
+def _sign_live_practice_claim(
+    user_id: str,
+    mode: str,
+    *,
+    practice_id: str = "",
+    session_seconds: list[int] | None = None,
+    system_prompt: str = "",
+    expires_at: int | None = None,
 ) -> str:
-    """Bind a relay token to its member, quota category and server deadline."""
+    """Sign a Solo launch/JIT-mint claim without exposing any server secret."""
     secret = _get_relay_cookie_secret()
-    if not secret or practice_kind not in ("solo_free", "solo_mock"):
+    if not secret or mode not in ("free", "mock") or not str(user_id or ""):
         return ""
+    identifier = str(practice_id or secrets.token_urlsafe(12))
+    expiry = int(expires_at or (time.time() + LIVE_PRACTICE_CLAIM_TTL_SECONDS))
     payload = {
-        "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+        "v": 1,
         "user_id": str(user_id),
-        "practice_kind": practice_kind,
-        "practice_id": str(practice_id),
-        "max_seconds": max(GEMINI_RELAY_MIN_SECONDS, min(int(max_seconds), GEMINI_RELAY_MAX_SECONDS)),
-        "exp": int(time.time()) + GEMINI_RELAY_SIGNATURE_TTL_SECONDS,
+        "mode": mode,
+        "practice_id": identifier,
+        "session_seconds": [int(value) for value in (session_seconds or [])],
+        "system_prompt": _bounded_live_system_prompt(system_prompt),
+        "exp": expiry,
     }
-    encoded = _relay_b64(json.dumps(
-        payload, sort_keys=True, separators=(",", ":"),
+    encoded = _claim_b64(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8"))
     signature = hmac.new(secret.encode(), encoded.encode("ascii"), hashlib.sha256).digest()
-    return f"{encoded}.{_relay_b64(signature)}"
+    return f"{encoded}.{_claim_b64(signature)}"
 
 
-def _verify_relay_signature(token: str, signed_claim: str) -> dict | None:
-    """Verify and return the server-authoritative Gemini relay claim."""
-    if not token or not signed_claim:
+def _verify_live_practice_claim(
+    signed_claim: str,
+    *,
+    expected_user_id: str = "",
+    expected_mode: str = "",
+) -> dict | None:
+    """Verify a short-lived Solo claim and all server-authoritative fields."""
+    if not signed_claim or len(str(signed_claim)) > LIVE_PRACTICE_CLAIM_MAX_CHARS:
         return None
     secret = _get_relay_cookie_secret()
     if not secret:
@@ -392,23 +485,56 @@ def _verify_relay_signature(token: str, signed_claim: str) -> dict | None:
     try:
         encoded, supplied = signed_claim.split(".", 1)
         expected = hmac.new(secret.encode(), encoded.encode("ascii"), hashlib.sha256).digest()
-        if not hmac.compare_digest(_relay_b64(expected), supplied):
+        if not hmac.compare_digest(_claim_b64(expected), supplied):
             return None
-        payload = json.loads(_relay_b64decode(encoded))
-        if payload.get("token_sha256") != hashlib.sha256(token.encode()).hexdigest():
+        payload = json.loads(_claim_b64decode(encoded))
+        if not isinstance(payload, dict) or int(payload.get("v") or 0) != 1:
             return None
-        if payload.get("practice_kind") not in ("solo_free", "solo_mock"):
+        user_id = str(payload.get("user_id") or "")
+        mode = str(payload.get("mode") or "")
+        practice_id = str(payload.get("practice_id") or "")
+        if mode not in ("free", "mock") or not user_id:
             return None
-        if not str(payload.get("user_id") or "") or not str(payload.get("practice_id") or ""):
+        if expected_user_id and user_id != str(expected_user_id):
             return None
-        if int(payload.get("exp") or 0) < int(time.time()):
+        if expected_mode and mode != expected_mode:
             return None
-        seconds = int(payload.get("max_seconds") or 0)
-        if not GEMINI_RELAY_MIN_SECONDS <= seconds <= GEMINI_RELAY_MAX_SECONDS:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{12,64}", practice_id):
             return None
+        expiry = int(payload.get("exp") or 0)
+        if expiry < int(time.time()) or expiry > int(time.time()) + LIVE_PRACTICE_CLAIM_TTL_SECONDS + 60:
+            return None
+        sessions = payload.get("session_seconds") or []
+        if not isinstance(sessions, list) or len(sessions) > 32:
+            return None
+        normalized_sessions = [int(value) for value in sessions]
+        if any(value < 1 or value > LIVE_FREE_SESSION_MAX_SECONDS for value in normalized_sessions):
+            return None
+        payload["session_seconds"] = normalized_sessions
+        system_prompt = payload.get("system_prompt") or ""
+        if not isinstance(system_prompt, str) or len(system_prompt) > LIVE_SYSTEM_PROMPT_MAX_CHARS:
+            return None
+        payload["system_prompt"] = system_prompt
         return payload
     except Exception:
         return None
+
+
+def _new_live_practice_claim(user_id: str, mode: str) -> str:
+    return _sign_live_practice_claim(user_id, mode)
+
+
+def _planned_live_practice_claim(
+    claim: dict, session_seconds: list[int], system_prompt: str,
+) -> str:
+    return _sign_live_practice_claim(
+        str(claim.get("user_id") or ""),
+        str(claim.get("mode") or ""),
+        practice_id=str(claim.get("practice_id") or ""),
+        session_seconds=session_seconds,
+        system_prompt=system_prompt,
+        expires_at=int(claim.get("exp") or 0),
+    )
 
 
 def _sign_committee_token(user_id: str):
@@ -959,9 +1085,12 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
 @app.post("/api/tts/azure")
 async def azure_tts(request: Request):
     user_id = _require_committee_user(request)
-    budget_error = _bandwidth_essential_gate_error()
+    budget_error = _bandwidth_live_gate_error()
     if budget_error:
-        raise HTTPException(status_code=429, detail=budget_error)
+        raise HTTPException(
+            status_code=429,
+            detail="本月 Render 傳輸量已達3.5GB，Solo server TTS已停用；請使用Gemini原生聲音。",
+        )
 
     try:
         payload = await request.json()
@@ -1295,7 +1424,7 @@ async def projector_set_state(request: Request):
 # dedicated-machine 日常練習 mode (PRACTICE_URL). It embeds the chairperson
 # 叮叮 timer (all formats) — pure client-side, no login — and links out to the
 # existing /ai-coach for AI practice (the kiosk browser stays logged in as the
-# appliance's own committee account, so the token-signed Gemini Live relay keeps
+# appliance's own committee account, so direct Gemini Live token minting keeps
 # working). No Streamlit page, schema, or existing route is touched.
 # ---------------------------------------------------------------------------
 
@@ -1431,28 +1560,41 @@ async def chairperson_page():
 
 @app.get("/ai-coach")
 async def ai_coach_page():
-    return FileResponse(BASE_DIR / "frontend" / "ai_coach" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "ai_coach" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    html = html.replace("__APP_VERSION__", APP_VERSION)
+    return Response(
+        content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
+    )
 
 
 @app.get("/ai-coach/room/{code}")
 async def ai_coach_room_page(code: str, request: Request):
-    _require_committee_user(request)
+    user_id = _require_committee_user(request)
     room = ROOMS.get((code or "").upper())
-    if not room or room.phase == "ended":
+    if not room:
         return _practice_error_page("房間不存在", "房間已結束或不存在。", "/ai-coach")
+    if room.phase == "ended" and user_id not in room.members:
+        return _practice_error_page("無權查看", "只有原房間成員可查看完場逐字稿。", "/ai-coach")
     html = (BASE_DIR / "templates" / "room_debate.html").read_text(encoding="utf-8")
     html = html.replace("__ROOM_CODE__", json.dumps(room.code))
     html = html.replace("__ROOM_WS_BASE__", json.dumps(_get_proxy_secret("ROOM_WS_BASE", "") or ""))
     html = html.replace("__MODE__", json.dumps(room.mode))
     html = html.replace("__BELL_SRC__", json.dumps(_practice_bell_src()))
-    return Response(content=html, media_type="text/html")
+    return Response(
+        content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_STORE)
+    )
 
 
 @app.get("/ai-training")
 async def ai_training_page():
     html = (BASE_DIR / "frontend" / "ai_training" / "index.html").read_text(encoding="utf-8")
     html = html.replace("__APP_VERSION__", APP_VERSION)
-    return Response(content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML))
+    # This shell and app.js share an exact consent/form DOM contract. Force
+    # revalidation so a browser holding the 4.2.1 immutable script cannot keep
+    # receiving a stale shell during the hotfix's stale-while-revalidate window.
+    return Response(content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_CACHE))
 
 
 @app.get("/ai-training/app.js")
@@ -1460,7 +1602,10 @@ async def ai_training_script():
     return FileResponse(
         BASE_DIR / "frontend" / "ai_training" / "app.js",
         media_type="text/javascript",
-        headers=_cache_headers(CACHE_STATIC),
+        # The script is tightly coupled to consent/form DOM. Revalidate even
+        # with a version query so a same-version hotfix cannot leave browsers
+        # executing an incompatible immutable script.
+        headers=_cache_headers(CACHE_NO_CACHE),
     )
 
 
@@ -1473,12 +1618,22 @@ async def db_management_page():
 @app.get("/dev-settings")
 @app.get("/dev_settings", include_in_schema=False)
 async def developer_settings_page():
-    return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "dev_settings" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    html = html.replace("__APP_VERSION__", APP_VERSION)
+    return Response(
+        content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
+    )
 
 
 @app.get("/dev-settings/lateness-managers.js")
 async def developer_lateness_managers_script():
-    return FileResponse(BASE_DIR / "frontend" / "dev_settings" / "lateness-managers.js", media_type="application/javascript", headers=_cache_headers(CACHE_STATIC))
+    return FileResponse(
+        BASE_DIR / "frontend" / "dev_settings" / "lateness-managers.js",
+        media_type="application/javascript",
+        headers=_cache_headers(CACHE_NO_CACHE),
+    )
 
 
 @app.get("/lateness-fund")
@@ -1493,10 +1648,24 @@ async def ai_fund_page():
     return FileResponse(BASE_DIR / "frontend" / "ai_fund" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
 
 
+@lru_cache(maxsize=1)
+def _practice_bell_version() -> str:
+    path = BASE_DIR / "assets" / "bell.mp3"
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12] if path.exists() else ""
+
+
 @app.get("/api/practice/bell")
-async def appliance_practice_bell():
-    return FileResponse(BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg",
-                        headers=_binary_cache_headers(CACHE_STATIC))
+async def appliance_practice_bell(request: Request):
+    version = _practice_bell_version()
+    if version and request.query_params.get("v") != version:
+        return RedirectResponse(
+            url=f"/api/practice/bell?v={version}", status_code=307,
+            headers=_cache_headers(CACHE_NO_CACHE),
+        )
+    return FileResponse(
+        BASE_DIR / "assets" / "bell.mp3", media_type="audio/mpeg",
+        headers=_binary_cache_headers(CACHE_BELL),
+    )
 
 
 @app.get("/api/practice/timer-config")
@@ -1532,10 +1701,10 @@ async def appliance_practice_timer_config(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Appliance AI free-debate practice (login-free kiosk page, committee-gated mint)
+# Appliance AI free-debate practice (committee-gated direct browser Live)
 #
 # The kiosk 練習頁 links here. Reuses the SAME Gemini Live engine
-# (templates/live_debate.html), prompt builder and relay as the committee AI
+# (templates/live_debate.html) and prompt builder as the committee AI
 # coach (ai_coach.py) so behaviour stays consistent — the only differences are a
 # big-text setup page and that the ephemeral-token mint happens here in the
 # proxy (which has no Streamlit `st.secrets`) instead of in ai_coach. Minting is
@@ -1554,22 +1723,108 @@ _PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
 _practice_live_hits: dict = {}
 _PRACTICE_LIVE_MAX_PER_HOUR = PRACTICE_LIVE_MAX_PER_HOUR
 _PRACTICE_LIVE_MIN_GAP_SEC = PRACTICE_LIVE_MIN_GAP_SECONDS
+SOLO_LIVE_TOKEN_ISSUE_LOCK = asyncio.Lock()
+_solo_live_token_response_cache: dict[
+    tuple[str, str, int, str], tuple[str, float]
+] = {}
+_solo_live_token_response_cache_lock = threading.Lock()
 _bandwidth_last_prune = None
 _bandwidth_prune_lock = threading.Lock()
 
+
+def _solo_live_claim_digest(claim: dict) -> str:
+    """Bind an ephemeral-token retry entry to its canonical Live constraints."""
+    canonical = {
+        "mode": str(claim.get("mode") or ""),
+        "session_seconds": [
+            int(value) for value in (claim.get("session_seconds") or [])
+        ],
+        "system_prompt": str(claim.get("system_prompt") or ""),
+    }
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _solo_live_token_cache_key(
+    claim: dict, session_index: int,
+) -> tuple[str, str, int, str]:
+    return (
+        str(claim.get("user_id") or ""),
+        str(claim.get("practice_id") or ""),
+        int(session_index),
+        _solo_live_claim_digest(claim),
+    )
+
+
+def _prune_solo_live_token_response_cache(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else float(now)
+    for key, (_token, expires_at) in list(_solo_live_token_response_cache.items()):
+        if expires_at <= current:
+            _solo_live_token_response_cache.pop(key, None)
+    while len(_solo_live_token_response_cache) > LIVE_TOKEN_RESPONSE_CACHE_MAX_ENTRIES:
+        oldest = min(
+            _solo_live_token_response_cache,
+            key=lambda key: _solo_live_token_response_cache[key][1],
+        )
+        _solo_live_token_response_cache.pop(oldest, None)
+
+
+def _get_cached_solo_live_token(claim: dict, session_index: int) -> str:
+    with _solo_live_token_response_cache_lock:
+        _prune_solo_live_token_response_cache()
+        entry = _solo_live_token_response_cache.get(
+            _solo_live_token_cache_key(claim, session_index),
+        )
+        return str(entry[0]) if entry else ""
+
+
+def _cache_solo_live_token(
+    claim: dict, session_index: int, token: str, *, ttl_seconds: float | None = None,
+) -> None:
+    """Cache only while the provider's one-minute start window is usable."""
+    ttl = (
+        float(LIVE_TOKEN_RESPONSE_CACHE_TTL_SECONDS)
+        if ttl_seconds is None else float(ttl_seconds)
+    )
+    if not token or ttl <= 0:
+        return
+    with _solo_live_token_response_cache_lock:
+        _prune_solo_live_token_response_cache()
+        key = _solo_live_token_cache_key(claim, session_index)
+        _solo_live_token_response_cache[key] = (
+            str(token),
+            time.monotonic() + min(
+                ttl, float(LIVE_TOKEN_RESPONSE_CACHE_TTL_SECONDS),
+            ),
+        )
+        _prune_solo_live_token_response_cache()
+
+
+def _clear_solo_live_token_response_cache() -> None:
+    """Test/restart helper; cached values are ephemeral tokens, never API keys."""
+    with _solo_live_token_response_cache_lock:
+        _solo_live_token_response_cache.clear()
+
 SOLO_LIMIT_MESSAGE = (
-    "由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，"
-    "每位委員每日只可進行一次單人自由辯論，並且每星期只可進行一次單人完整模擬練習。"
+    f"為控制 Gemini Live 用量並確保所有委員均能使用服務，每位委員每日最多可進行"
+    f"{SOLO_FREE_DAILY_LIMIT}次單人自由辯論，並且每星期最多可進行"
+    f"{SOLO_MOCK_WEEKLY_LIMIT}次單人完整模擬練習。"
     "你已使用此類別的練習限額，請於下一個限額週期再試。"
 )
 GLOBAL_LIVE_LIMIT_MESSAGE = (
-    "由於本月全系統的網絡傳輸量預算有限，Gemini Live練習名額已用完。"
+    "本月全系統的 Gemini Live 練習名額已用完。"
     "為確保一般系統功能維持正常，請於下月再試或聯絡系統管理員。"
+)
+SOLO_HK_COUNTRY_MESSAGE = (
+    "香港網絡暫時無法直接連接 Google Gemini Live。請先連接至 Google 支援地區"
+    "網絡／VPN，再按「重新檢查」。"
 )
 BANDWIDTH_STOP_MESSAGE = (
     f"由於本月全系統網絡傳輸量已達{BANDWIDTH_STOP_LIVE_BYTES / 1_000_000_000:g}GB"
-    "預算上限，系統已停止建立新的Gemini Live"
-    "練習及聯機房間。一般功能、R2媒體及管理功能維持正常。"
+    "預算上限，系統已停止Solo server TTS及新的聯機Live房間。"
+    "Solo瀏覽器直連Gemini、一般功能、R2媒體及管理功能維持正常。"
 )
 BANDWIDTH_ESSENTIAL_MESSAGE = (
     f"由於本月全系統網絡傳輸量已達{BANDWIDTH_ESSENTIAL_ONLY_BYTES / 1_000_000_000:g}GB"
@@ -1578,13 +1833,84 @@ BANDWIDTH_ESSENTIAL_MESSAGE = (
 )
 
 
-def _bandwidth_month_context():
-    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+def _solo_live_country_status(request: Request) -> dict:
+    """Use only Cloudflare's country code as a non-persistent Solo UX gate."""
+    raw = str(request.headers.get("CF-IPCountry") or "").strip().upper()
+    app_env = str(os.getenv("APP_ENV") or "").strip().lower()
+    service_name = str(os.getenv("RENDER_SERVICE_NAME") or "").strip().lower()
+    render_marker = bool(
+        str(os.getenv("RENDER") or "").strip()
+        or str(os.getenv("RENDER_SERVICE_ID") or "").strip()
+        or str(os.getenv("RENDER_EXTERNAL_HOSTNAME") or "").strip()
+        or str(os.getenv("EXTERNAL_HOSTNAME") or "").strip()
+    )
+    production_marker = (
+        render_marker
+        or app_env in {"production", "prod"}
+        or "production" in service_name
+        or service_name.endswith("-prod")
+    )
+    explicit_nonproduction = (
+        not production_marker
+        and (
+            app_env in {"local", "development", "dev", "test", "testing", "staging"}
+            or "staging" in service_name
+            or (not app_env and not service_name and not render_marker)
+        )
+    )
+    if not raw:
+        # Host is attacker-controlled on a direct origin request.  Only an
+        # explicit local/staging runtime marker may relax a missing CF header.
+        if not explicit_nonproduction:
+            return {
+                "code": "", "status": "blocked", "supported": False,
+                "message": "未能核實網絡地區，暫時不會簽發 Solo Live token。請重新檢查或聯絡管理員。",
+            }
+        return {
+            "code": "", "status": "unknown", "supported": True,
+            "message": "未收到地區資料；本地／測試環境會允許嘗試直接連線。",
+        }
+    if raw in {"XX", "T1"} or not re.fullmatch(r"[A-Z]{2}", raw):
+        if production_marker:
+            return {
+                "code": "", "status": "blocked", "supported": False,
+                "message": "未能核實網絡地區，暫時不會簽發 Solo Live token。請重新檢查或聯絡管理員。",
+            }
+        return {
+            "code": "", "status": "unknown", "supported": True,
+            "message": "地區資料不明，系統會允許嘗試直接連接 Google。",
+        }
+    if raw == "HK":
+        return {
+            "code": "HK", "status": "blocked", "supported": False,
+            "message": SOLO_HK_COUNTRY_MESSAGE,
+        }
+    return {"code": raw, "status": "supported", "supported": True, "message": ""}
+
+
+def _bandwidth_month_context(now: datetime.datetime | None = None):
+    hk = ZoneInfo("Asia/Hong_Kong")
+    if now is None:
+        now_hk = datetime.datetime.now(hk)
+    elif now.tzinfo is None:
+        now_hk = now.replace(tzinfo=hk)
+    else:
+        now_hk = now.astimezone(hk)
     start_hk = now_hk.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return (
         now_hk.strftime("%Y-%m"),
         start_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None),
     )
+
+
+def _bandwidth_write_context(now: datetime.datetime | None = None):
+    """Return one UTC write timestamp and its matching Hong Kong month start."""
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    now_utc = now.astimezone(datetime.timezone.utc)
+    return now_utc.replace(tzinfo=None), _bandwidth_month_context(now_utc)[1]
 
 
 def bandwidth_budget_status(*, notify: bool = False) -> dict:
@@ -1672,7 +1998,7 @@ def _send_bandwidth_warning_once(status: dict) -> None:
             get_vote_db(), _get_vapid(), "⚠️ 系統網絡傳輸量提示",
             f"本月全系統網絡傳輸量已達{BANDWIDTH_WARN_BYTES / 1_000_000_000:g}GB。"
             f"為控制營運預算，達{BANDWIDTH_STOP_LIVE_BYTES / 1_000_000_000:g}GB後"
-            "將停止新的Gemini Live及聯機房間。",
+            "將停止Solo server TTS及新的聯機Live房間；Solo browser直連仍可使用。",
             tag=f"bandwidth-warning-{status['period']}", url="/",
         )
     except Exception:
@@ -1690,7 +2016,7 @@ def record_bandwidth_usage(
     engine = _get_db_engine()
     if engine is None:
         return False
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    now, period_start = _bandwidth_write_context()
     source = str(source)[:80]
     user = str(user_id or "")[:200]
     details = str(details or "")[:500]
@@ -1699,7 +2025,7 @@ def record_bandwidth_usage(
         params = {
             "source": source, "user": user, "insert_user": user or None,
             "bytes": count, "details": details, "now": now,
-            "period_start": now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+            "period_start": period_start,
         }
         if aggregate_key:
             # A 30-second checkpoint must survive a Render crash, but one row per
@@ -1793,11 +2119,41 @@ def _solo_quota_boundaries(now_hk: datetime.datetime, is_mock: bool):
     )
 
 
+def _solo_quota_exempt(
+    exemptions, user_id: str, mode: str,
+    *, now_utc: datetime.datetime | None = None,
+) -> bool:
+    """Return a developer-granted, still-active per-user exemption.
+
+    Stored timestamps must be timezone-aware.  This helper never affects the
+    global monthly quota or any auth/country/bandwidth/rate safety gate.
+    """
+    if not isinstance(exemptions, dict):
+        return False
+    entry = exemptions.get(str(user_id))
+    if not isinstance(entry, dict):
+        return False
+    allowed_mode = str(entry.get("mode") or "")
+    if allowed_mode not in ("all", mode):
+        return False
+    try:
+        expiry = datetime.datetime.fromisoformat(
+            str(entry.get("expires_at") or "").replace("Z", "+00:00"),
+        )
+    except (TypeError, ValueError):
+        return False
+    if expiry.tzinfo is None:
+        return False
+    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    now = now.astimezone(datetime.timezone.utc)
+    expiry = expiry.astimezone(datetime.timezone.utc)
+    return now < expiry <= now + datetime.timedelta(days=30)
+
+
 def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     """Enforce persistent per-user and global quotas before minting Live tokens."""
-    budget_error = _bandwidth_live_gate_error()
-    if budget_error:
-        return budget_error
     engine = _get_db_engine()
     if engine is None:
         return "Database is not configured"
@@ -1805,94 +2161,425 @@ def _solo_live_quota_error(user_id: str, mode: str) -> str | None:
     is_mock = mode == "mock"
     feature = "full_mock_live" if is_mock else "free_debate_live"
     user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
+    user_limit = SOLO_MOCK_WEEKLY_LIMIT if is_mock else SOLO_FREE_DAILY_LIMIT
     global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
     with engine.begin() as conn:
-        user_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
+        exemptions = get_configs_from_connection(
+            conn, ("solo_quota_exemptions",),
+        ).get("solo_quota_exemptions") or {}
+        exempt = _solo_quota_exempt(
+            exemptions, user_id, mode,
+            now_utc=now_hk.astimezone(datetime.timezone.utc),
+        )
+        user_count = 0 if exempt else int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE user_id=:user AND feature=:feature AND status='success' AND created_at>=:start"""),
             {"user": user_id, "feature": feature, "start": user_start}).scalar() or 0)
         global_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE feature=:feature AND status='success' AND created_at>=:start"""),
             {"feature": feature, "start": month_start}).scalar() or 0)
-    if user_count >= 1:
+    if user_count >= user_limit:
         return SOLO_LIMIT_MESSAGE
     if global_count >= global_limit:
         return GLOBAL_LIVE_LIMIT_MESSAGE
     return None
 
 
-def _reserve_solo_live_slot(claim: dict) -> str | None:
-    """Consume a solo quota only after the upstream WebSocket has connected.
+def _solo_live_lifecycle_seconds(claim: dict) -> int:
+    """Return the one server-authoritative wall-clock budget for a practice."""
+    if str(claim.get("mode") or "") == "free":
+        return LIVE_FREE_SESSION_MAX_SECONDS
+    return (
+        sum(int(value) for value in (claim.get("session_seconds") or []))
+        + LIVE_MOCK_OVERALL_GRACE_SECONDS
+    )
 
-    All Mock chapter tokens share ``practice_id`` and therefore consume one
-    quota row.  An issued token that is never used creates no database record.
-    """
-    budget_error = _bandwidth_live_gate_error()
-    if budget_error:
-        return budget_error
+
+def _solo_live_ledger_marker(
+    claim: dict, started_at: int, deadline_at: int, issued: set[int],
+    *, last_issued_at: int,
+) -> str:
+    practice_id = str(claim.get("practice_id") or "")
+    prefix = f"direct_practice:{practice_id}"[:450]
+    tokens = ",".join(str(index) for index in sorted(issued))
+    return (
+        f"{prefix}|claim={_solo_live_claim_digest(claim)}"
+        f"|started={int(started_at)}|deadline={int(deadline_at)}"
+        f"|last_issued={int(last_issued_at)}|tokens={tokens}"
+    )
+
+
+def _parse_solo_live_ledger_state(claim: dict, value: str) -> dict | None:
+    """Parse and authenticate state kept in the existing usage-log marker."""
+    practice_id = str(claim.get("practice_id") or "")
+    prefix = f"direct_practice:{practice_id}"[:450]
+    raw = str(value or "")
+    if not raw.startswith(prefix + "|"):
+        return None
+    fields = {}
+    for part in raw[len(prefix) + 1:].split("|"):
+        key, separator, item = part.partition("=")
+        if separator and key not in fields:
+            fields[key] = item
+    try:
+        started_at = int(fields.get("started") or 0)
+        deadline_at = int(fields.get("deadline") or 0)
+        last_issued_at = int(fields.get("last_issued") or 0)
+        token_text = fields.get("tokens", "")
+        if token_text and any(not item.isdigit() for item in token_text.split(",")):
+            return None
+    except (TypeError, ValueError):
+        return None
+    issued = {
+        int(item) for item in fields.get("tokens", "").split(",")
+        if item.isdigit()
+    }
+    if (
+        started_at <= 0
+        or deadline_at <= started_at
+        or last_issued_at < started_at
+        or last_issued_at >= deadline_at
+    ):
+        return None
+    digest = str(fields.get("claim") or "")
+    return {
+        "started_at": started_at,
+        "deadline_at": deadline_at,
+        "last_issued_at": last_issued_at,
+        "issued": issued,
+        "lifecycle_matches": (
+            deadline_at - started_at == _solo_live_lifecycle_seconds(claim)
+        ),
+        "claim_matches": bool(digest) and hmac.compare_digest(
+            digest, _solo_live_claim_digest(claim),
+        ),
+    }
+
+
+def _solo_live_practice_state(claim: dict) -> dict | None:
     engine = _get_db_engine()
     if engine is None:
-        return "Database is not configured"
-    from core.funds_logic import prune_ai_usage
-
-    prune_ai_usage(get_vote_db())
+        return None
     user_id = str(claim.get("user_id") or "")
-    practice_kind = str(claim.get("practice_kind") or "")
     practice_id = str(claim.get("practice_id") or "")
-    is_mock = practice_kind == "solo_mock"
-    feature = "full_mock_live" if is_mock else "free_debate_live"
-    global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
-    now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
-    user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
-    now_utc = now_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-    marker = f"relay_session:{practice_id}"[:500]
-    duration_minutes = max(0.5, int(claim.get("max_seconds") or 30) / 60)
+    feature = "full_mock_live" if claim.get("mode") == "mock" else "free_debate_live"
+    marker = f"direct_practice:{practice_id}"[:450]
     with engine.begin() as conn:
+        row = conn.execute(text(f"""SELECT error_message FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE user_id=:user AND feature=:feature AND status='success'
+              AND LEFT(error_message,LENGTH(:marker))=:marker LIMIT 1"""), {
+            "user": user_id, "feature": feature, "marker": marker,
+        }).fetchone()
+    return _parse_solo_live_ledger_state(claim, row[0]) if row else None
+
+
+def _solo_live_gate_from_state(
+    claim: dict, session_index: int, state: dict | None, *, now_epoch: int,
+) -> str | None:
+    """Authorize only the next due Mock section inside one absolute deadline."""
+    if not state:
+        return "Mock初始練習尚未完成配額預留，請返回重新開始。"
+    if not state.get("claim_matches"):
+        return "練習憑證與已預留狀態不一致，請返回 AI Coach 重新開始。"
+    if not state.get("lifecycle_matches"):
+        return "練習時限狀態不一致，請返回 AI Coach 重新開始。"
+    issued = set(state.get("issued") or set())
+    index = int(session_index)
+    sessions = [int(value) for value in (claim.get("session_seconds") or [])]
+    if index < 0 or index >= len(sessions):
+        return "Mock環節編號與已預留狀態不一致，請返回重新開始。"
+    deadline_at = int(state.get("deadline_at") or 0)
+    required_remaining = (
+        sessions[index]
+        + LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS
+        + LIVE_TOKEN_EXPIRY_GRACE_SECONDS
+    )
+    if now_epoch + required_remaining > deadline_at:
+        return "整場 Mock 已達伺服器時限，剩餘時間不足以安全完成下一環節。"
+    if index in issued:
+        return "這一節連線憑證已簽發，但安全重試時限已過。請返回 AI Coach 重新開始練習。"
+    expected_issued = set(range(len(issued)))
+    if issued != expected_issued or index != len(issued):
+        return "Mock環節必須按伺服器記錄的次序逐節進行。"
+    scheduled_not_before = int(state.get("started_at") or 0) + sum(
+        sessions[:index]
+    )
+    chained_not_before = int(state.get("last_issued_at") or 0)
+    if index > 0:
+        chained_not_before += sessions[index - 1]
+    not_before = max(scheduled_not_before, chained_not_before)
+    if index > 0 and now_epoch < not_before:
+        remaining = max(1, not_before - now_epoch)
+        return f"下一節尚未到可簽發時間，請約{remaining}秒後再試。"
+    return None
+
+
+def _solo_live_token_gate(
+    claim: dict, session_index: int, *, now_epoch: int | None = None,
+) -> tuple[dict | None, str | None]:
+    state = _solo_live_practice_state(claim)
+    error = _solo_live_gate_from_state(
+        claim, session_index, state,
+        now_epoch=int(time.time()) if now_epoch is None else int(now_epoch),
+    )
+    return state, error
+
+
+def _set_solo_live_ledger_timeouts(conn) -> None:
+    """Bound every blocking DB step that follows a provider token mint."""
+    timeout = f"{LIVE_TOKEN_LEDGER_DB_TIMEOUT_SECONDS * 1000}ms"
+    conn.execute(
+        text("SELECT set_config('lock_timeout', :timeout, TRUE)"),
+        {"timeout": timeout},
+    )
+    conn.execute(
+        text("SELECT set_config('statement_timeout', :timeout, TRUE)"),
+        {"timeout": timeout},
+    )
+
+
+def _reserve_solo_live_slot(
+    claim: dict, *, report_created: bool = False, started_at: int | None = None,
+    before_insert=None, after_insert=None,
+) -> str | None | tuple[str | None, bool]:
+    """Atomically reserve one direct Solo practice before token disclosure.
+
+    All Mock sections share ``practice_id`` and therefore consume one quota row.
+    ``report_created`` lets the Start-time endpoint distinguish a new row from
+    an existing cross-worker winner.  When supplied, ``before_insert`` runs
+    only after the advisory lock and quota checks, so race losers never mint.
+    """
+    def result(error: str | None, created: bool):
+        return (error, created) if report_created else error
+
+    engine = _get_db_engine()
+    if engine is None:
+        return result("Database is not configured", False)
+    user_id = str(claim.get("user_id") or "")
+    mode = str(claim.get("mode") or "")
+    practice_id = str(claim.get("practice_id") or "")
+    if not user_id or mode not in ("free", "mock") or not practice_id:
+        return result("練習授權資料無效，請返回重新開始。", False)
+    is_mock = mode == "mock"
+    feature = "full_mock_live" if is_mock else "free_debate_live"
+    user_limit = SOLO_MOCK_WEEKLY_LIMIT if is_mock else SOLO_FREE_DAILY_LIMIT
+    global_limit = SOLO_MOCK_MONTHLY_LIMIT if is_mock else SOLO_FREE_MONTHLY_LIMIT
+    marker = f"direct_practice:{practice_id}"[:450]
+    lifecycle_started_at = int(time.time()) if started_at is None else int(started_at)
+    lifecycle_deadline_at = lifecycle_started_at + _solo_live_lifecycle_seconds(claim)
+    duration_seconds = sum(int(value) for value in (claim.get("session_seconds") or []))
+    duration_minutes = max(0.5, duration_seconds / 60)
+    with engine.begin() as conn:
+        _set_solo_live_ledger_timeouts(conn)
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_quota'))"))
+        now_hk = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
+        user_start, month_start = _solo_quota_boundaries(now_hk, is_mock)
+        now_utc = now_hk.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         already = conn.execute(text(f"""SELECT 1 FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE user_id=:user AND feature=:feature AND status='success'
-              AND error_message=:marker LIMIT 1"""), {
+              AND LEFT(error_message,LENGTH(:marker))=:marker LIMIT 1"""), {
             "user": user_id, "feature": feature, "marker": marker,
         }).fetchone()
         if already:
-            return None
-        user_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
+            return result(None, False)
+        exemptions = get_configs_from_connection(
+            conn, ("solo_quota_exemptions",),
+        ).get("solo_quota_exemptions") or {}
+        exempt = _solo_quota_exempt(
+            exemptions, user_id, mode,
+            now_utc=now_hk.astimezone(datetime.timezone.utc),
+        )
+        user_count = 0 if exempt else int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE user_id=:user AND feature=:feature AND status='success'
               AND created_at>=:start"""), {
             "user": user_id, "feature": feature, "start": user_start,
         }).scalar() or 0)
-        if user_count >= 1:
-            return SOLO_LIMIT_MESSAGE
+        if user_count >= user_limit:
+            return result(SOLO_LIMIT_MESSAGE, False)
         global_count = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_AI_FUND_USAGE_LOGS}
             WHERE feature=:feature AND status='success' AND created_at>=:start"""), {
             "feature": feature, "start": month_start,
         }).scalar() or 0)
         if global_count >= global_limit:
-            return GLOBAL_LIVE_LIMIT_MESSAGE
+            return result(GLOBAL_LIVE_LIMIT_MESSAGE, False)
+        if before_insert is not None:
+            provision_error = before_insert()
+            if provision_error:
+                return result(str(provision_error), False)
+        # The deadline is Start-anchored, but section cadence begins only once
+        # the provider token has actually returned under this advisory lock.
+        lifecycle_issued_at = int(time.time())
+        issued_marker = _solo_live_ledger_marker(
+            claim, lifecycle_started_at, lifecycle_deadline_at, {0},
+            last_issued_at=lifecycle_issued_at,
+        )
         conn.execute(text(f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}
             (user_id,feature,model_label,provider,estimated_cost_usd,
              estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,
-             search_calls,cost_source,status,error_message,created_at)
+            search_calls,cost_source,status,error_message,created_at)
             VALUES(:user,:feature,'Gemini Live','gemini',:usd,:hkd,0,0,
-                   :audio,0,'relay','success',:marker,:now)"""), {
+                   :audio,0,'gemini_live_token_reservation','success',:marker,:now)"""), {
             "user": user_id, "feature": feature,
             "usd": round(duration_minutes * 0.01, 4),
             "hkd": round(duration_minutes * 0.078, 4),
             "audio": int(duration_minutes * 60 * 25),
-            "marker": marker, "now": now_utc,
+            "marker": issued_marker, "now": now_utc,
         })
-    return None
+        if after_insert is not None:
+            delivery_error = after_insert()
+            if delivery_error:
+                conn.rollback()
+                return result(str(delivery_error), False)
+    return result(None, True)
+
+
+def _solo_live_practice_exists(claim: dict) -> bool:
+    """Detect an existing reservation by signed practice identity only.
+
+    The GET launch claim intentionally has no prompt/session plan, so its
+    digest cannot match the enriched claim stored after Start.  Identity-only
+    lookup is used solely to block reload/remint; JIT authorization remains
+    bound to the full authenticated digest in ``_solo_live_practice_state``.
+    """
+    engine = _get_db_engine()
+    if engine is None:
+        return False
+    user_id = str(claim.get("user_id") or "")
+    practice_id = str(claim.get("practice_id") or "")
+    mode = str(claim.get("mode") or "")
+    if not user_id or not practice_id or mode not in ("free", "mock"):
+        return False
+    feature = "full_mock_live" if mode == "mock" else "free_debate_live"
+    marker = f"direct_practice:{practice_id}"[:450]
+    with engine.begin() as conn:
+        row = conn.execute(text(f"""SELECT 1 FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE user_id=:user AND feature=:feature AND status='success'
+              AND LEFT(error_message,LENGTH(:marker))=:marker LIMIT 1"""), {
+            "user": user_id, "feature": feature, "marker": marker,
+        }).fetchone()
+    return bool(row)
+
+
+def _solo_live_practice_reserved(claim: dict) -> bool:
+    """Check that the initial Start-time token reservation exists."""
+    state = _solo_live_practice_state(claim)
+    return bool(
+        state and state.get("claim_matches") and state.get("lifecycle_matches")
+        and 0 in state.get("issued", set())
+    )
+
+
+def _solo_live_token_issued(claim: dict, session_index: int) -> bool:
+    """Persistently detect duplicate initial/JIT token disclosure."""
+    state = _solo_live_practice_state(claim)
+    return bool(
+        state and state.get("claim_matches")
+        and int(session_index) in state.get("issued", set())
+    )
+
+
+def _mark_solo_live_token_issued(
+    claim: dict, session_index: int, *, report_reason: bool = False,
+    before_update=None, after_update=None,
+) -> bool | tuple[bool, str | None, dict | None]:
+    """Atomically append one disclosed Mock section to its quota ledger marker."""
+    def result(ok: bool, error: str | None, state: dict | None):
+        return (ok, error, state) if report_reason else ok
+
+    engine = _get_db_engine()
+    if engine is None:
+        return result(False, "Database is not configured", None)
+    user_id = str(claim.get("user_id") or "")
+    practice_id = str(claim.get("practice_id") or "")
+    feature = "full_mock_live" if claim.get("mode") == "mock" else "free_debate_live"
+    marker = f"direct_practice:{practice_id}"[:450]
+    with engine.begin() as conn:
+        _set_solo_live_ledger_timeouts(conn)
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_token_issue'))"))
+        row = conn.execute(text(f"""SELECT error_message FROM {TABLE_AI_FUND_USAGE_LOGS}
+            WHERE user_id=:user AND feature=:feature AND status='success'
+              AND LEFT(error_message,LENGTH(:marker))=:marker LIMIT 1"""), {
+            "user": user_id, "feature": feature, "marker": marker,
+        }).fetchone()
+        if not row:
+            return result(False, "Mock初始練習尚未完成配額預留，請返回重新開始。", None)
+        state = _parse_solo_live_ledger_state(claim, row[0])
+        now_epoch = int(time.time())
+        gate_error = _solo_live_gate_from_state(
+            claim, session_index, state, now_epoch=now_epoch,
+        )
+        if gate_error:
+            return result(False, gate_error, state)
+        if before_update is not None:
+            provision_error = before_update()
+            if provision_error:
+                return result(False, str(provision_error), state)
+            now_epoch = int(time.time())
+            gate_error = _solo_live_gate_from_state(
+                claim, session_index, state, now_epoch=now_epoch,
+            )
+            if gate_error:
+                return result(False, gate_error, state)
+        issued = set(state["issued"])
+        index = int(session_index)
+        issued.add(index)
+        new_marker = _solo_live_ledger_marker(
+            claim, state["started_at"], state["deadline_at"], issued,
+            last_issued_at=now_epoch,
+        )
+        conn.execute(text(f"""UPDATE {TABLE_AI_FUND_USAGE_LOGS}
+            SET error_message=:new_marker
+            WHERE user_id=:user AND feature=:feature AND status='success'
+              AND LEFT(error_message,LENGTH(:marker))=:marker"""), {
+            "new_marker": new_marker, "user": user_id,
+            "feature": feature, "marker": marker,
+        })
+        if after_update is not None:
+            delivery_error = after_update()
+            if delivery_error:
+                conn.rollback()
+                return result(False, str(delivery_error), state)
+        state = {**state, "issued": issued}
+    state = {**state, "issued": issued, "last_issued_at": now_epoch}
+    return result(True, None, state)
 
 
 def _practice_bell_src() -> str:
     # Do not inline the 38KB MP3 into every generated live/room page.  The
     # versioned, edge-cacheable endpoint transfers it once per browser instead.
-    return "/api/practice/bell" if (BASE_DIR / "assets" / "bell.mp3").exists() else ""
+    version = _practice_bell_version()
+    return f"/api/practice/bell?v={version}" if version else ""
 
 
-def _mint_gemini_live_token(duration_minutes: float, start_delay_minutes: float = 0):
-    """Create a single-use Gemini Live ephemeral token. Reimplements
-    ai_coach_helpers.create_gemini_live_ephemeral_token without the Streamlit
-    dependency. Returns (token_name, None) or (None, error_message)."""
+def _script_safe_json(value) -> str:
+    """Serialize a JSON literal that cannot terminate an inline script block."""
+    return (
+        json.dumps(value, ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def _live_token_now_utc() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _mint_gemini_live_token(
+    duration_minutes: float,
+    start_delay_minutes: float = 0,
+    *,
+    system_prompt: str = "",
+    constrained_direct: bool = True,
+    absolute_expire_at: int | float | datetime.datetime | None = None,
+):
+    """Create a short-lived, single-use Gemini Live ephemeral token.
+
+    Solo browser tokens get a one-minute new-session window and a field-mask
+    constrained setup. Backend-owned multiplayer connections retain their
+    planned hand-off window and never disclose their token to a browser.
+    """
     api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
     if not api_key:
         return None, "未設定 GEMINI_API_KEY，未能開始練習。"
@@ -1902,38 +2589,103 @@ def _mint_gemini_live_token(duration_minutes: float, start_delay_minutes: float 
         return None, "伺服器未安裝 Gemini SDK。"
     token_minutes = max(3, math.ceil(float(duration_minutes)))
     start_delay = max(0, float(start_delay_minutes or 0))
-    now = datetime.datetime.now(datetime.timezone.utc)
-    # Later Mock tokens are minted together with section 1.  Keep each token
-    # valid until its planned hand-off; otherwise Google rejects the new Live
-    # session before that chapter begins.  Five minutes is a pause/transition
-    # allowance on top of the planned elapsed time.
-    new_session_expire = now + datetime.timedelta(minutes=start_delay + 5)
-    expire = now + datetime.timedelta(minutes=start_delay + token_minutes + 5)
-    try:
-        client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
-        token = client.auth_tokens.create(config={
-            "uses": 1,
-            "expire_time": expire,
-            "new_session_expire_time": new_session_expire,
-            "http_options": {"api_version": "v1alpha"},
+    now = _live_token_now_utc()
+    if constrained_direct:
+        new_session_expire = now + datetime.timedelta(
+            seconds=LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS,
+        )
+        expire = now + datetime.timedelta(
+            minutes=token_minutes,
+            seconds=(
+                LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS
+                + LIVE_TOKEN_EXPIRY_GRACE_SECONDS
+            ),
+        )
+        if absolute_expire_at is not None:
+            if isinstance(absolute_expire_at, datetime.datetime):
+                expire_cap = absolute_expire_at
+                if expire_cap.tzinfo is None:
+                    expire_cap = expire_cap.replace(tzinfo=datetime.timezone.utc)
+                else:
+                    expire_cap = expire_cap.astimezone(datetime.timezone.utc)
+            else:
+                expire_cap = datetime.datetime.fromtimestamp(
+                    float(absolute_expire_at), tz=datetime.timezone.utc,
+                )
+            expire = min(expire, expire_cap)
+            if expire <= new_session_expire + datetime.timedelta(
+                seconds=LIVE_TOKEN_EXPIRY_GRACE_SECONDS,
+            ):
+                return None, "本節剩餘安全連線時間不足，請返回重新開始練習。"
+    else:
+        # Existing server-owned room tokens are minted as one initial resource.
+        new_session_expire = now + datetime.timedelta(minutes=start_delay + 5)
+        expire = now + datetime.timedelta(minutes=start_delay + token_minutes + 5)
+    config = {
+        "uses": 1,
+        "expire_time": expire,
+        "new_session_expire_time": new_session_expire,
+        "http_options": {"api_version": "v1alpha"},
+    }
+    if constrained_direct:
+        config.update({
+            "live_connect_constraints": {
+                "model": FREE_DEBATE_LIVE_MODEL,
+                "config": {
+                    "response_modalities": ["AUDIO"],
+                    "system_instruction": {
+                        "parts": [{"text": _bounded_live_system_prompt(system_prompt)}],
+                    },
+                    "session_resumption": {},
+                    "context_window_compression": {
+                        "trigger_tokens": LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS,
+                        "sliding_window": {
+                            "target_tokens": LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS,
+                        },
+                    },
+                    "realtime_input_config": {
+                        "automatic_activity_detection": {"disabled": True},
+                    },
+                    "input_audio_transcription": {},
+                    "output_audio_transcription": {},
+                },
+            },
+            # An empty list asks google-genai for a field mask over only the
+            # explicit constraints above; browser speech settings may remain.
+            "lock_additional_fields": [],
         })
+    try:
+        client = genai.Client(api_key=api_key, http_options={
+            "api_version": "v1alpha",
+            "timeout": LIVE_TOKEN_MINT_TIMEOUT_SECONDS * 1000,
+        })
+        token = client.auth_tokens.create(config=config)
     except Exception as e:
-        logger.warning("Gemini Live token mint failed: %s", e)
+        # SDK errors may contain an authenticated request representation.
+        logger.warning("Gemini Live token mint failed (%s)", type(e).__name__)
         return None, "Gemini 未能建立練習連線，請稍後再試。"
     token_name = getattr(token, "name", None)
     if not token_name:
         return None, "Gemini 未回傳 token。"
+    if constrained_direct:
+        completed_at = _live_token_now_utc()
+        if completed_at >= new_session_expire or completed_at >= expire:
+            return None, "Gemini 建立練習連線逾時，請立即再試。"
     return token_name, None
 
 
 def _render_live_debate_html(
     token, prompt, live_minutes, bell_schedule, ai_starts, *, segments=None,
     tokens=None, session_labels=None, session_label="自由辯論",
-    relay_user_id="", relay_practice_kind="solo_free", relay_practice_id="",
-    relay_max_seconds_by_token=None,
+    practice_id="", session_max_seconds=LIVE_FREE_SESSION_MAX_SECONDS,
 ):
     """Server-render templates/live_debate.html the same way ai_coach does, so the
-    kiosk gets the identical Live engine for Free De and multi-session Mock."""
+    kiosk gets the identical Live engine for Free De and multi-session Mock.
+
+    ``token``/``tokens`` remain in the private call signature for compatibility
+    but are deliberately never injected: every section is minted by the
+    authenticated endpoint only after the user presses Start/Next.
+    """
     html = (BASE_DIR / "templates" / "live_debate.html").read_text(encoding="utf-8")
     # Rebrand the static UI copy BEFORE injecting the JSON payloads: the system
     # prompt, runtime prompts, segment labels and research brief legitimately
@@ -1941,43 +2693,33 @@ def _render_live_debate_html(
     # contract).
     if session_label != "自由辯論":
         html = html.replace("自由辯論", session_label)
-    relay_ws_base = _get_proxy_secret("LIVE_RELAY_WS_BASE", "") or ""
-    token_sigs = {}
-    if relay_ws_base:
-        # Mock reconnects with a fresh single-use token at every session boundary.
-        # Sign every token up front; signing only the first makes section 2 fail
-        # authentication whenever the Singapore relay is enabled.
-        seconds_by_token = relay_max_seconds_by_token or {}
-        default_seconds = max(30, min(int(float(live_minutes or 2.5) * 60), 30 * 60))
-        for live_token in dict.fromkeys([token, *(tokens or [])]):
-            sig = _sign_relay_token(
-                live_token, relay_user_id, relay_practice_kind,
-                int(seconds_by_token.get(live_token) or default_seconds),
-                relay_practice_id,
-            )
-            if sig:
-                token_sigs[live_token] = sig
     replacements = {
-        "__RELAY_WS_BASE__": json.dumps(relay_ws_base),
-        "__TOKEN_SIGS__": json.dumps(token_sigs),
-        "__LIVE_TOKEN__": json.dumps(token),
-        "__LIVE_MODEL__": json.dumps(FREE_DEBATE_LIVE_MODEL),
-        "__LIVE_PROMPT__": json.dumps(prompt, ensure_ascii=False),
-        "__LIVE_MINUTES__": json.dumps(float(live_minutes or 2.5)),
-        "__BELL_SRC__": json.dumps(_practice_bell_src()),
-        "__BELL_SCHEDULE__": json.dumps(bell_schedule or [], ensure_ascii=False),
-        "__MOCK_SEGMENTS__": json.dumps(segments or [], ensure_ascii=False),
-        "__MOCK_TOKENS__": json.dumps(tokens or [], ensure_ascii=False),
-        "__MOCK_SESSION_LABELS__": json.dumps(session_labels or [], ensure_ascii=False),
-        "__AI_STARTS__": json.dumps(bool(ai_starts)),
-        "__LIVE_PROMPTS__": json.dumps(LIVE_RUNTIME_PROMPTS, ensure_ascii=False),
+        "__LIVE_MODEL__": _script_safe_json(FREE_DEBATE_LIVE_MODEL),
+        "__LIVE_PROMPT__": _script_safe_json(prompt),
+        "__LIVE_MINUTES__": _script_safe_json(float(live_minutes or 2.5)),
+        "__BELL_SRC__": _script_safe_json(_practice_bell_src()),
+        "__BELL_SCHEDULE__": _script_safe_json(bell_schedule or []),
+        "__MOCK_SEGMENTS__": _script_safe_json(segments or []),
+        "__MOCK_SESSION_LABELS__": _script_safe_json(session_labels or []),
+        "__LIVE_PRACTICE_ID__": _script_safe_json(practice_id),
+        "__LIVE_TOKEN_URL__": _script_safe_json("/api/ai-coach/live-token"),
+        "__LIVE_CONTEXT_TRIGGER_TOKENS__": _script_safe_json(LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS),
+        "__LIVE_CONTEXT_TARGET_TOKENS__": _script_safe_json(LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS),
+        "__LIVE_SESSION_MAX_SECONDS__": _script_safe_json(int(session_max_seconds)),
+        "__AI_STARTS__": _script_safe_json(bool(ai_starts)),
+        "__LIVE_PROMPTS__": _script_safe_json(LIVE_RUNTIME_PROMPTS),
     }
-    for key, value in replacements.items():
-        html = html.replace(key, value)
-    return html
+    # Substitute the original template in one pass. Sequential ``str.replace``
+    # would rescan user-authored prompt text and corrupt it whenever a debate
+    # topic happened to contain one of the remaining placeholder names.
+    pattern = re.compile("|".join(re.escape(key) for key in replacements))
+    return pattern.sub(lambda match: replacements[match.group(0)], html)
 
 
-def _practice_error_page(title: str, message: str, back: str = "/practice/ai-debate") -> Response:
+def _practice_error_page(
+    title: str, message: str, back: str = "/practice/ai-debate", *, retry: bool = False,
+) -> Response:
+    retry_link = '<a href="">重新檢查</a>' if retry else ""
     body = f"""<!DOCTYPE html><html lang="zh-HK"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{xml_escape(title)}</title>
@@ -1992,8 +2734,11 @@ a{{display:inline-block;font-size:clamp(20px,2.4vw,30px);font-weight:800;color:#
 background:#3b82f6;border-radius:16px;padding:16px 44px;text-decoration:none}}
 </style></head><body><div class="box">
 <h1>{xml_escape(title)}</h1><p>{xml_escape(message)}</p>
-<a href="{xml_escape(back)}">◀ 返回</a></div></body></html>"""
-    return Response(content=body, media_type="text/html", status_code=200)
+{retry_link}<a href="{xml_escape(back)}">◀ 返回</a></div></body></html>"""
+    return Response(
+        content=body, media_type="text/html", status_code=200,
+        headers={"Cache-Control": CACHE_NO_STORE},
+    )
 
 
 @app.get("/practice/ai-debate")
@@ -2005,19 +2750,20 @@ async def appliance_ai_debate_page():
 
 @app.get("/practice/ai-debate/live")
 async def appliance_ai_debate_live(request: Request):
-    # Top-level same-origin navigation, so the committee cookie is sent. Check it
-    # directly (rather than _require_committee_user which raises a JSON 401) so we
-    # can render a friendly big-text page on the kiosk instead.
+    # Serialize same-process page rendering with the persistent used-claim
+    # check. Token issuance itself happens only at the authenticated Start-time
+    # endpoint and is protected by the same process lock plus a DB marker.
+    async with SOLO_LIVE_TOKEN_ISSUE_LOCK:
+        return await _appliance_ai_debate_live_locked(request)
+
+
+async def _appliance_ai_debate_live_locked(request: Request):
     user_id = _verify_committee_cookie(request)
     if not user_id:
         return _practice_error_page(
             "需要委員登入",
             "AI 辯論練習需要委員帳戶。請喺部機用委員帳戶登入一次（cookie 會記住），再返嚟開始。",
         )
-
-    rate_error = _practice_live_rate_check(user_id)
-    if rate_error:
-        return _practice_error_page("請稍等", rate_error)
 
     q = request.query_params
     topic = (q.get("topic") or "").strip()
@@ -2026,11 +2772,47 @@ async def appliance_ai_debate_live(request: Request):
     mode = (q.get("mode") or "free").strip()
     if mode not in ("free", "mock"):
         mode = "free"
-    quota_error = _solo_live_quota_error(user_id, mode)
-    if quota_error:
-        return _practice_error_page("練習限額已用完", quota_error)
+    country = _solo_live_country_status(request)
+    if not country["supported"]:
+        return _practice_error_page(
+            "請重新檢查網絡地區", country["message"], retry=True,
+        )
     if not topic:
         return _practice_error_page("未有辯題", "請先輸入辯題再開始。")
+
+    supplied_claim = str(q.get("practice_id") or "")
+    if supplied_claim:
+        launch_claim = _verify_live_practice_claim(
+            supplied_claim, expected_user_id=user_id, expected_mode=mode,
+        )
+        if not launch_claim:
+            return _practice_error_page("練習連結已失效", "請返回 AI Coach 重新開始練習。")
+    else:
+        supplied_claim = _new_live_practice_claim(user_id, mode)
+        if not supplied_claim:
+            return _practice_error_page("未能開始", "伺服器未能簽發練習授權，請稍後再試。")
+        return RedirectResponse(
+            url=str(request.url.include_query_params(practice_id=supplied_claim)),
+            status_code=307,
+            headers={"Cache-Control": CACHE_NO_STORE},
+        )
+
+    already_reserved = await asyncio.to_thread(_solo_live_practice_exists, launch_claim)
+    if already_reserved:
+        return _practice_error_page(
+            "練習憑證已簽發",
+            "為避免重複建立可計費連線，這個練習連結不可重新載入。練習頁會在連線中斷時自動用同一憑證及 session handle 恢復；如已關閉頁面，請返回 AI Coach 重新開始。",
+        )
+    # Rate/quota checks are authoritative at the Start-time token endpoint.
+    # Rendering this page must neither consume a rate-limit hit nor reserve a
+    # paid practice before the user explicitly presses Start.
+    quota_error = await asyncio.to_thread(_solo_live_quota_error, user_id, mode)
+    if quota_error:
+        return _practice_error_page("練習限額已用完", quota_error)
+    budget_error = _bandwidth_essential_gate_error()
+    if budget_error:
+        return _practice_error_page("本月網絡用量已達上限", budget_error)
+
     brief_id = q.get("brief_id")
     if side not in ("正方", "反方"):
         side = "正方"
@@ -2043,247 +2825,69 @@ async def appliance_ai_debate_live(request: Request):
             live_minutes = float(q.get("minutes") or 5)
         except (TypeError, ValueError):
             live_minutes = 5.0
-        live_minutes = min(10.0, max(0.5, live_minutes))
+        live_minutes = min(float(LIVE_FREE_MAX_MINUTES), max(0.5, live_minutes))
     else:
         live_minutes = 2.5
 
     if mode == "mock":
-        # Match the /api/ai-coach/mock-plan clamp ([2,10]) so the previewed
-        # sequence and the rendered practice never disagree.
         live_minutes = max(2.0, live_minutes)
-        segments = get_full_mock_sequence(debate_format, free_debate_minutes=live_minutes if debate_format == "聯中" else None)
+        segments = get_full_mock_sequence(
+            debate_format,
+            free_debate_minutes=live_minutes if debate_format == "聯中" else None,
+        )
         sessions = split_mock_into_sessions(segments)
         total_minutes = full_mock_total_seconds(segments) / 60
-        tokens=[]
-        relay_seconds = {}
-        planned_elapsed_minutes = 0.0
-        for session in sessions:
-            session_minutes = full_mock_total_seconds(session["segments"]) / 60
-            token,error=_mint_gemini_live_token(
-                max(3, session_minutes + 2), start_delay_minutes=planned_elapsed_minutes
-            )
-            if error:return _practice_error_page("未能開始",error)
-            tokens.append(token)
-            relay_seconds[token] = max(60, min(30 * 60, int(session["planned_seconds"]) + 120))
-            planned_elapsed_minutes += session_minutes
-        flat=[]
-        for index,session in enumerate(sessions):
-            flat.extend({**segment,"session":index} for segment in session["segments"])
         from api.ai_coach_api import consume_live_brief
         research_brief = consume_live_brief(brief_id, user_id)
-        prompt=build_full_mock_live_prompt(topic,side,debate_format,free_debate_minutes=live_minutes if debate_format=="聯中" else None,research_brief=research_brief)
-        html=_render_live_debate_html(
-            tokens[0],prompt,total_minutes,[],False,segments=flat,tokens=tokens,
-            session_labels=[s["label"] for s in sessions],session_label="Mock",
-            relay_user_id=user_id,relay_practice_kind="solo_mock",
-            relay_practice_id=secrets.token_urlsafe(12),
-            relay_max_seconds_by_token=relay_seconds,
+        prompt = _bounded_live_system_prompt(build_full_mock_live_prompt(
+            topic, side, debate_format,
+            free_debate_minutes=live_minutes if debate_format == "聯中" else None,
+            research_brief=research_brief,
+        ))
+        session_seconds = [int(session["planned_seconds"]) for session in sessions]
+        practice_claim = _planned_live_practice_claim(launch_claim, session_seconds, prompt)
+        flat = [
+            {**segment, "session": index}
+            for index, session in enumerate(sessions)
+            for segment in session["segments"]
+        ]
+        html = _render_live_debate_html(
+            "", prompt, total_minutes, [], False,
+            segments=flat, tokens=[],
+            session_labels=[session["label"] for session in sessions],
+            session_label="Mock", practice_id=practice_claim,
+            session_max_seconds=sum(session_seconds) + 10 * 60,
         )
-        return Response(content=html,media_type="text/html")
+        return Response(
+            content=html, media_type="text/html",
+            headers={"Cache-Control": CACHE_NO_STORE},
+        )
 
     bell_schedule = get_debate_timer_config(
         debate_format, free_debate_minutes=live_minutes,
     )["bell_schedules"].get("free", [])
-    token_minutes = max(3, math.ceil(live_minutes * 2 + 2))
-
-    token, mint_error = _mint_gemini_live_token(token_minutes)
-    if mint_error:
-        return _practice_error_page("未能開始", mint_error)
-
     from api.ai_coach_api import consume_live_brief
     research_brief = consume_live_brief(brief_id, user_id)
-    prompt = build_free_debate_live_prompt(topic, side, research_brief)
-    # Relay deadline is wall-clock from connect: besides both sides' speech
-    # (live_minutes each) it must also absorb AI reply latency, turn gaps and
-    # the closing feedback, so give the same style of allowance and cap as the
-    # Mock sessions above. The old bufferless 10-minute cap killed normal
-    # sessions mid-practice with the server time limit.
-    max_seconds = max(60, min(30 * 60, int(math.ceil(live_minutes * 2 * 60)) + 180))
-    html = _render_live_debate_html(
-        token, prompt, live_minutes, bell_schedule, side == "反方",
-        relay_user_id=user_id,relay_practice_kind="solo_free",
-        relay_practice_id=secrets.token_urlsafe(12),
-        relay_max_seconds_by_token={token: max_seconds},
+    prompt = _bounded_live_system_prompt(
+        build_free_debate_live_prompt(topic, side, research_brief),
     )
-    return Response(content=html, media_type="text/html")
+    speech_seconds = int(math.ceil(live_minutes * 2 * 60))
+    practice_claim = _planned_live_practice_claim(launch_claim, [speech_seconds], prompt)
+    html = _render_live_debate_html(
+        "", prompt, live_minutes, bell_schedule, side == "反方",
+        practice_id=practice_claim,
+        session_max_seconds=LIVE_FREE_SESSION_MAX_SECONDS,
+    )
+    return Response(
+        content=html, media_type="text/html",
+        headers={"Cache-Control": CACHE_NO_STORE},
+    )
 
 
 GEMINI_LIVE_WS_URL = (
     "wss://generativelanguage.googleapis.com/ws/"
     "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
 )
-
-
-@app.websocket("/gemini-live")
-async def gemini_live_relay(websocket: WebSocket):
-    # 香港（及其他受限地區）用戶嘅瀏覽器無法直連 Google Gemini Live WS，會被
-    # geo-block。呢個 relay 喺 Render(Singapore) 代連 Google，令 Google 睇到嘅
-    # 係受支援地區嘅 IP。瀏覽器只需連呢度，token 照舊用 ?access_token= query 傳，
-    # 唔使 subprotocol（同瀏覽器直連 Google 時一致）。
-    token = websocket.query_params.get("access_token", "")
-    sig = websocket.query_params.get("sig", "")
-    # 授權：只服務由本 app（用 cookie_secret 簽發）嘅 token，防止外人白嫖 relay
-    # 消耗連線／頻寬。喺 accept 之前 reject，唔會完成 WS handshake、亦唔會撥去
-    # Google。
-    relay_claim = _verify_relay_signature(token, sig)
-    if not relay_claim:
-        await websocket.close(code=1008)
-        return
-    if _bandwidth_live_gate_error():
-        await websocket.close(code=1008, reason="本月網絡傳輸量已達Live保護上限")
-        return
-
-    backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
-
-    try:
-        # Gemini 音訊 frame 可以大過 websockets 預設 1MB；提升到受控的4MB，
-        # 避免用 max_size=None 令異常 frame 無上限佔用 Starter RAM。
-        # ping_interval=None：避免 keepalive pong timeout 喺長時間等待時誤斷線。
-        backend = await websockets.connect(
-            backend_url, max_size=GEMINI_WS_MAX_SIZE, ping_interval=None
-        )
-    except Exception as e:
-        logger.exception("Gemini Live relay backend connect failed: %s", e)
-        await websocket.close(code=1011)
-        return
-
-    # Both browser and upstream handshakes must succeed before quota is spent.
-    try:
-        await websocket.accept()
-    except Exception:
-        await backend.close(code=1001, reason="browser disconnected before accept")
-        return
-    try:
-        quota_error = await asyncio.to_thread(_reserve_solo_live_slot, relay_claim)
-    except Exception as exc:
-        logger.exception("Gemini relay quota reservation failed: %s", exc)
-        await backend.close(code=1011, reason="quota service unavailable")
-        await websocket.close(code=1011, reason="練習限額服務暫時不可用")
-        return
-    if quota_error:
-        await backend.close(code=1008, reason="practice quota unavailable")
-        await websocket.close(code=1008, reason="練習限額已用完")
-        return
-
-    # The quota is consumed only after both the browser and upstream Gemini
-    # WebSocket connections have succeeded.
-
-    async with backend:
-        relayed_bytes = 0
-        bandwidth_flushed = 0
-        deadline_reached = False
-
-        def within_relay_budget(message) -> bool:
-            nonlocal relayed_bytes
-            relayed_bytes += len(message) if isinstance(message, bytes) else len(str(message).encode("utf-8"))
-            return relayed_bytes <= GEMINI_RELAY_MAX_BYTES
-
-        async def client_to_backend():
-            while True:
-                message = await websocket.receive()
-                if message.get("type") == "websocket.disconnect":
-                    await backend.close()
-                    break
-                elif "text" in message and message["text"] is not None:
-                    if not within_relay_budget(message["text"]):
-                        await backend.close(code=1008, reason="monthly bandwidth protection")
-                        break
-                    await backend.send(message["text"])
-                elif "bytes" in message and message["bytes"] is not None:
-                    if not within_relay_budget(message["bytes"]):
-                        await backend.close(code=1008, reason="monthly bandwidth protection")
-                        break
-                    await backend.send(message["bytes"])
-
-        async def backend_to_client():
-            async for message in backend:
-                if not within_relay_budget(message):
-                    await websocket.close(code=1008, reason="練習已達網絡傳輸量上限")
-                    break
-                if isinstance(message, bytes):
-                    await websocket.send_bytes(message)
-                else:
-                    await websocket.send_text(message)
-
-        async def enforce_deadline():
-            nonlocal deadline_reached
-            await asyncio.sleep(int(relay_claim["max_seconds"]))
-            deadline_reached = True
-            await backend.close(code=1008, reason="server practice time limit")
-            try:
-                await websocket.close(code=1008, reason="練習已達伺服器時間上限")
-            except RuntimeError:
-                pass
-
-        async def checkpoint_bandwidth():
-            nonlocal bandwidth_flushed
-            while True:
-                await asyncio.sleep(BANDWIDTH_CHECKPOINT_SECONDS)
-                snapshot = relayed_bytes
-                delta = max(0, snapshot - bandwidth_flushed)
-                if delta and await asyncio.to_thread(
-                    record_bandwidth_usage, "solo_gemini_relay", delta,
-                    str(relay_claim["user_id"]),
-                    aggregate_key=(f"practice={relay_claim['practice_kind']};"
-                                   f"id={relay_claim['practice_id']}"),
-                ):
-                    bandwidth_flushed = snapshot
-                if await asyncio.to_thread(_bandwidth_live_gate_error):
-                    await backend.close(code=1008, reason="monthly bandwidth protection")
-                    try:
-                        await websocket.close(code=1008, reason="本月Live網絡傳輸量已達保護上限")
-                    except RuntimeError:
-                        pass
-                    return
-
-        checkpoint_task = asyncio.create_task(checkpoint_bandwidth())
-        tasks = [
-            asyncio.create_task(client_to_backend()),
-            asyncio.create_task(backend_to_client()),
-            asyncio.create_task(enforce_deadline()),
-        ]
-        try:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            for task in done:
-                task.result()
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            logger.exception("Gemini Live relay failed: %s", e)
-        finally:
-            checkpoint_task.cancel()
-            try:
-                await checkpoint_task
-            except asyncio.CancelledError:
-                pass
-
-    final_delta = max(0, relayed_bytes - bandwidth_flushed)
-    if final_delta:
-        await asyncio.to_thread(
-            record_bandwidth_usage, "solo_gemini_relay", final_delta,
-            str(relay_claim["user_id"]),
-            aggregate_key=(f"practice={relay_claim['practice_kind']};"
-                           f"id={relay_claim['practice_id']}"),
-        )
-
-    # 把 Google 嘅 close code / reason 傳返畀瀏覽器，令前端 formatCloseMessage
-    # 對 token 過期(1008)等情況嘅提示照樣有效。1005/1006 唔可以明文送出，改用
-    # 合法碼；reason 限 123 bytes。
-    code = backend.close_code or 1000
-    if code in (1005, 1006):
-        code = 1011 if code == 1006 else 1000
-    reason = (backend.close_reason or "").encode("utf-8")[:123].decode("utf-8", "ignore")
-    try:
-        await websocket.close(code=code, reason=reason)
-    except TypeError:
-        try:
-            await websocket.close(code=code)
-        except RuntimeError:
-            pass
-    except RuntimeError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -2315,6 +2919,7 @@ ROOM_MAX_AGE_MS = ROOM_MAX_AGE_SECONDS * 1000
 ROOM_JUDGEMENT_MODELS = model_slugs_for_labels(ROOM_JUDGEMENT_MODEL_LABELS)
 
 ROOMS = {}  # code -> Room
+ROOMS_LOCK = asyncio.Lock()
 
 PRACTICE_DAILY_LIMIT_MESSAGE = (
     "由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，"
@@ -2388,12 +2993,12 @@ def _release_practice_daily_slot(user_id: str, structure: str, room_code: str) -
     engine = _get_db_engine()
     if engine is None:
         return
-    usage_date = datetime.datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
     with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('practice_room_monthly_quota'))"))
         conn.execute(text(f"""DELETE FROM {TABLE_PRACTICE_DAILY_USAGE}
-            WHERE user_id=:user AND practice_kind=:kind AND usage_date=:day AND room_code=:room"""), {
+            WHERE user_id=:user AND practice_kind=:kind AND room_code=:room"""), {
             "user": user_id, "kind": _practice_kind(structure),
-            "day": usage_date, "room": room_code,
+            "room": room_code,
         })
 
 
@@ -2479,11 +3084,23 @@ class RoomMember:
     def __init__(self, user_id, ws):
         self.user_id = user_id
         self.ws = ws
+        self.connection_generation = 1
         self.role = None          # "正方"/"反方" (A) or claimed side (B)
         self.position = None      # mode B mock: positions 1-4 assigned before start
         self.name = user_id
         self.connected = True
         self.joined_at = _now_ms()
+        self.last_test_audio_ms = 0
+        # One bucket follows the authenticated room member across reconnects;
+        # replacing a socket must not refresh an attacker's audio allowance.
+        self.audio_rate_tokens = float(ROOM_AUDIO_RATE_BURST_BYTES)
+        self.audio_rate_updated_ms = self.joined_at
+        self.audio_message_tokens = float(ROOM_AUDIO_RATE_BURST_MESSAGES)
+        self.audio_message_updated_ms = self.joined_at
+        self.control_rate_tokens = float(ROOM_CONTROL_RATE_BURST_MESSAGES)
+        self.control_rate_updated_ms = self.joined_at
+        self.pending_test_audio = {}
+        self.last_test_received_ms = 0
 
 
 class Room:
@@ -2495,7 +3112,10 @@ class Room:
         self.created_at = _now_ms()
         self.started_ms = None
         self.hard_deadline_ms = None
-        self.phase = "lobby"             # lobby | active | ended
+        self.ended_at_ms = None
+        self.ended_retain_until_ms = 0
+        self.phase = "lobby"             # lobby | starting | active | ending | ended
+        self.activation_ready = False
         self.debate_format = debate_format
         self.topic = topic
         self.structure = structure       # free | mock
@@ -2513,8 +3133,11 @@ class Room:
         self.precheck_results = {}
         self.members = {}                # user_id -> RoomMember
         self.transcript = []             # {speaker, side, seg, text}
+        self.transcript_revision = 0
         self.judgement = ""
+        self.judgement_revision = -1
         self.empty_since = None
+        self.terminal_requested = False
         self.creator_side = None         # mode A: side the host picked at create
         # mode B / judge (Gemini leg wired in phase 2)
         self.human_side = None           # 正方/反方 the humans take in mode B
@@ -2522,8 +3145,19 @@ class Room:
         self.gemini_session_index = 0
         self.gemini_ws = None
         self.gemini_task = None
+        self.gemini_resume_handle = ""
+        self.gemini_generation = 0
+        self.gemini_connect_epoch = 0
+        self.gemini_resume_attempts = 0
+        self.gemini_setup_future = None
+        self.gemini_turn_state = None
+        self.ai_audio_remainder_ms = 0.0
+        self.free_opening_ai_cued = False
+        self.free_opening_ai_complete = False
         self.tick_task = None
+        self.lifecycle_task = None
         self.judgement_task = None
+        self.empty_cleanup_task = None
         self.quota_users = []
         # Approximate Render egress for this room.  We count successful
         # websocket fan-out plus payloads sent from Render to Gemini, then write
@@ -2538,6 +3172,11 @@ class Room:
         # one call/turn), keeping Gemini native audio as fallback. Set at gemini start.
         self.tts_enabled = False
         self.lock = asyncio.Lock()
+        self.activation_lock = asyncio.Lock()
+        self.gemini_connect_lock = asyncio.Lock()
+        self.judgement_lock = asyncio.Lock()
+        self.segment_lock = asyncio.Lock()
+        self.end_complete_event = asyncio.Event()
 
     def position_labels(self):
         if self.debate_format == "聯中":
@@ -2588,9 +3227,16 @@ class Room:
         return None
 
     def expected_turn_side(self):
-        # Mode B: humans all share one side and the AI plays the other — there is
-        # no 正方-first-among-humans constraint, so any team member may open.
         if self.mode == "B":
+            # In Free mode 正方 still opens.  When the human team is 正方 every
+            # member shares that role; when AI is 正方 the server separately
+            # blocks humans until the AI's opening turn completes.
+            if (
+                self.structure == "free"
+                and self.human_side == "正方"
+                and not self.free_first_done
+            ):
+                return "正方"
             return None
         seg = self.current_segment()
         if self.phase == "active" and seg and seg.get("side") == "雙方" and not self.free_first_done:
@@ -2652,13 +3298,28 @@ def _record_room_bandwidth_once(room):
 
 def _gc_rooms():
     def dispose(code, room, reason):
-        _record_room_bandwidth_once(room)
-        ROOMS.pop(code, None)
+        if room.phase == "ended":
+            ROOMS.pop(code, None)
+            return
+        if room.terminal_requested:
+            return
+        # Registration checks this flag synchronously, closing the scheduling
+        # gap before the async terminal transition acquires activation_lock.
+        room.terminal_requested = True
         try:
-            asyncio.get_running_loop().create_task(_room_end(room, reason))
+            asyncio.get_running_loop().create_task(
+                _room_end_and_remove(room, reason),
+            )
         except RuntimeError:
             # Defensive fallback for a future synchronous maintenance caller.
-            for task in (room.tick_task, room.gemini_task, room.judgement_task):
+            ROOMS.pop(code, None)
+            room.phase = "ended"
+            _record_room_bandwidth_once(room)
+            for task in (
+                room.tick_task, room.lifecycle_task, room.gemini_task,
+                room.judgement_task,
+                room.empty_cleanup_task,
+            ):
                 if task is not None and not task.done():
                     task.cancel()
 
@@ -2667,14 +3328,23 @@ def _gc_rooms():
         room = ROOMS.get(code)
         if room is None:
             continue
+        if room.phase == "ended":
+            judgement_pending = (
+                room.judgement_task is not None
+                and not room.judgement_task.done()
+            )
+            if judgement_pending or now < room.ended_retain_until_ms:
+                continue
+            ROOMS.pop(code, None)
+            continue
         if now - room.created_at > ROOM_MAX_AGE_MS:
             dispose(code, room, "ttl")
             continue
         if any(m.connected for m in room.members.values()):
-            room.empty_since = None
+            _room_cancel_empty_cleanup(room)
         else:
             if room.empty_since is None:
-                room.empty_since = now
+                _room_schedule_empty_cleanup(room)
             elif now - room.empty_since > ROOM_EMPTY_GRACE_MS:
                 dispose(code, room, "empty")
 
@@ -2683,24 +3353,124 @@ def _active_room_count():
     return len([r for r in ROOMS.values() if r.phase != "ended"])
 
 
+def _room_prune_lobby_offline_members(room, *, limit=None):
+    """Drop a bounded batch of lobby ghosts before admitting another socket.
+
+    Active rooms retain offline members for reconnect.  Lobby members, however,
+    have no durable state yet; retaining failed sockets would let a long-lived
+    lobby's member dictionary grow even though capacity counts only connected
+    sockets.
+    """
+    if room.phase != "lobby":
+        return 0
+    batch = max(1, int(limit or ROOM_MAX_CAPACITY * 2))
+    removed = 0
+    for user_id, member in list(room.members.items()):
+        if removed >= batch:
+            break
+        if member.connected:
+            continue
+        room.members.pop(user_id, None)
+        room.precheck_results.pop(user_id, None)
+        removed += 1
+    return removed
+
+
+def _room_cancel_empty_cleanup(room):
+    room.empty_since = None
+    task = room.empty_cleanup_task
+    room.empty_cleanup_task = None
+    try:
+        current = asyncio.current_task()
+    except RuntimeError:
+        current = None
+    if (
+        task is not None and task is not current
+        and not task.done()
+    ):
+        task.cancel()
+
+
+async def _room_empty_cleanup_after_grace(room, marked_empty_ms):
+    try:
+        await asyncio.sleep(ROOM_EMPTY_GRACE_SECONDS)
+        async with room.lock:
+            still_empty = (
+                room.empty_since == marked_empty_ms
+                and not any(member.connected for member in room.members.values())
+                and room.phase not in ("ending", "ended")
+                and not room.terminal_requested
+            )
+            if still_empty:
+                room.terminal_requested = True
+        if not still_empty:
+            return
+        # End first so a socket that already captured this Room can no longer
+        # reconnect into an orphan between registry removal and phase change.
+        await _room_end_and_remove(room, "empty")
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if room.empty_cleanup_task is asyncio.current_task():
+            room.empty_cleanup_task = None
+
+
+def _room_schedule_empty_cleanup(room):
+    if room.empty_cleanup_task is not None and not room.empty_cleanup_task.done():
+        return
+    room.empty_since = _now_ms()
+    room.empty_cleanup_task = asyncio.create_task(
+        _room_empty_cleanup_after_grace(room, room.empty_since),
+    )
+
+
 async def _room_broadcast(room, msg, exclude=None):
     text = json.dumps(msg, ensure_ascii=False)
-    recipients = [m for m in list(room.members.values())
-                  if m.connected and not (exclude and m.user_id == exclude)]
+    recipients = [
+        (member, member.ws, member.connection_generation)
+        for member in list(room.members.values())
+        if member.connected and not (exclude and member.user_id == exclude)
+    ]
 
-    async def send(member):
+    async def send(member, websocket, generation):
         try:
             # A stalled mobile client must not block audio fan-out to everyone
             # else.  The next reconnect rehydrates room state and transcript.
             await asyncio.wait_for(
-                member.ws.send_text(text), timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+                websocket.send_text(text), timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
             )
             room.bandwidth_bytes += len(text.encode("utf-8"))
+            return None
         except Exception:
-            member.connected = False
+            return member, websocket, generation
 
     if recipients:
-        await asyncio.gather(*(send(member) for member in recipients))
+        results = await asyncio.gather(*(send(*recipient) for recipient in recipients))
+        failed = []
+        for result in results:
+            if result is None:
+                continue
+            member, websocket, generation = result
+            async with room.lock:
+                if (
+                    member.ws is not websocket
+                    or member.connection_generation != generation
+                    or not member.connected
+                ):
+                    continue
+                member.connected = False
+                if room.phase == "lobby":
+                    room.members.pop(member.user_id, None)
+                    room.precheck_results.pop(member.user_id, None)
+                failed.append(member)
+        for member in failed:
+            if room.active_turn_user == member.user_id:
+                await _room_handle_turn(room, member, False)
+        if (
+            failed and not room.connected_user_ids()
+            and not room.terminal_requested
+        ):
+            _room_schedule_empty_cleanup(room)
 
 
 async def _room_gemini_send(room, gws, payload):
@@ -2723,28 +3493,118 @@ async def _room_tick(room):
                 break
             seg = room.current_segment()
             seg_seconds = int((seg or {}).get("seconds") or 0)
-            if (seg and room.seg_started_ms and seg_seconds > 0
+            if (
+                room.structure == "free"
+                and seg and seg.get("side") == "雙方"
+                and seg_seconds > 0
+            ):
+                budget_ms = seg_seconds * 1000
+                active_side = room.active_turn_side
+                active_user = room.active_turn_user
+                active_used = room.side_elapsed_ms.get(active_side, 0)
+                if active_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
+                    active_used += max(0, now - room.active_turn_started_ms)
+                if active_user and active_used >= budget_ms:
+                    member = room.members.get(active_user)
+                    if member is not None:
+                        await _room_handle_turn(room, member, False)
+                if all(
+                    room.side_elapsed_ms.get(side, 0) >= budget_ms
+                    for side in ("正方", "反方")
+                ):
+                    await _room_end(room, "server_side_budgets_complete")
+                    break
+            elif (seg and room.seg_started_ms and seg_seconds > 0
                     and now - room.seg_started_ms >= seg_seconds * (2 if seg.get("side") == "雙方" else 1) * 1000):
                 if room.seg_index >= len(room.segments) - 1:
                     await _room_end(room, "server_segment_limit")
                     break
-                await _room_advance_segment(room, room.seg_index + 1)
-            if now - room.last_bandwidth_checkpoint_ms >= BANDWIDTH_CHECKPOINT_SECONDS * 1000:
-                await asyncio.to_thread(_checkpoint_room_bandwidth, room, False)
-                room.last_bandwidth_checkpoint_ms = now
-                if await asyncio.to_thread(_bandwidth_live_gate_error):
-                    await _room_end(room, "monthly_bandwidth_limit")
-                    break
+                current_index = room.seg_index
+                await _room_advance_segment(
+                    room, current_index + 1, expected_from=current_index,
+                )
             await _room_broadcast(room, room.state_msg())
     except asyncio.CancelledError:
         raise
     except Exception as e:
         logger.exception("room tick failed (%s): %s", room.code, e)
+        # Losing the only authoritative timer must never leave an active room
+        # running without deadline or segment enforcement.
+        try:
+            if room.phase == "active" and ROOMS.get(room.code) is room:
+                await _room_end(room, "server_timer_failure")
+        except Exception as cleanup_exc:
+            logger.exception(
+                "room tick safe-end failed (%s): %s",
+                room.code, cleanup_exc,
+            )
+
+
+async def _room_lifecycle(room):
+    """Enforce room TTL and egress gates in every non-terminal phase.
+
+    The active tick owns debate timers only.  Keeping lifecycle enforcement in
+    one creation-time task also covers a connected lobby/slow activation and
+    avoids duplicate bandwidth checkpoints once a room becomes active.
+    """
+    try:
+        while (
+            ROOMS.get(room.code) is room
+            and room.phase not in ("ending", "ended")
+            and not room.terminal_requested
+        ):
+            remaining_ms = ROOM_MAX_AGE_MS - (_now_ms() - room.created_at)
+            if remaining_ms <= 0:
+                await _room_end(room, "ttl")
+                return
+            await asyncio.sleep(min(
+                float(BANDWIDTH_CHECKPOINT_SECONDS),
+                max(0.05, remaining_ms / 1000),
+            ))
+            if (
+                ROOMS.get(room.code) is not room
+                or room.phase in ("ending", "ended")
+                or room.terminal_requested
+            ):
+                return
+            now = _now_ms()
+            if now - room.created_at >= ROOM_MAX_AGE_MS:
+                await _room_end(room, "ttl")
+                return
+            await asyncio.to_thread(_checkpoint_room_bandwidth, room, False)
+            room.last_bandwidth_checkpoint_ms = now
+            if await asyncio.to_thread(_bandwidth_live_gate_error):
+                await _room_end(room, "monthly_bandwidth_limit")
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("room lifecycle failed (%s): %s", room.code, exc)
+        try:
+            if (
+                ROOMS.get(room.code) is room
+                and room.phase not in ("ending", "ended")
+                and not room.terminal_requested
+            ):
+                await _room_end(room, "server_lifecycle_failure")
+        except Exception as cleanup_exc:
+            logger.exception(
+                "room lifecycle safe-end failed (%s): %s",
+                room.code, cleanup_exc,
+            )
+    finally:
+        if room.lifecycle_task is asyncio.current_task():
+            room.lifecycle_task = None
 
 
 def _room_ensure_tick(room):
     if room.tick_task is None or room.tick_task.done():
         room.tick_task = asyncio.create_task(_room_tick(room))
+
+
+def _room_ensure_lifecycle(room):
+    if room.lifecycle_task is None or room.lifecycle_task.done():
+        room.lifecycle_task = asyncio.create_task(_room_lifecycle(room))
 
 
 def _room_precheck_msg(room, msg_type="precheck_status"):
@@ -2757,117 +3617,364 @@ def _room_precheck_msg(room, msg_type="precheck_status"):
     }
 
 
+def _room_connected_roster_signature(room):
+    return tuple(
+        (member.user_id, member.connection_generation)
+        for member in room.members.values() if member.connected
+    )
+
+
+def _room_precheck_snapshot_matches(room, check_id, roster_signature):
+    if not check_id or room.precheck_id != check_id:
+        return False
+    if _room_connected_roster_signature(room) != tuple(roster_signature or ()):
+        return False
+    users = [user_id for user_id, _generation in roster_signature or ()]
+    return bool(
+        users
+        and all(user_id in room.precheck_results for user_id in users)
+        and all(room.precheck_results[user_id].get("ok") for user_id in users)
+    )
+
+
 def _room_mint_gemini_tokens(room) -> str | None:
     if room.mode != "B" or room.gemini is None:
         return None
     durations = list(room.gemini.get("session_minutes") or [])
     if not durations:
-        durations = [min(12.0, full_mock_total_seconds(room.segments) / 60 + 2)]
-    tokens = []
-    planned_elapsed = 0.0
-    for duration in durations:
-        token, error = _mint_gemini_live_token(
-            max(3, float(duration)), start_delay_minutes=planned_elapsed,
-        )
-        if error:
-            return error
-        tokens.append(token)
-        planned_elapsed += max(0.0, float(duration) - 2)
-    room.gemini["tokens"] = tokens
+        durations = [max(3.0, full_mock_total_seconds(room.segments) / 60 + 2)]
+    # Mint only the immediately-needed session.  Later Mock sections are minted
+    # just in time under gemini_connect_lock so their one-use start window cannot
+    # expire during a long 聯中 practice.
+    token, error = _mint_gemini_live_token(
+        max(3, float(durations[0])), constrained_direct=False,
+    )
+    if error:
+        return error
+    room.gemini["tokens"] = [token] + [""] * (len(durations) - 1)
     return None
 
 
-async def _room_start_active(room) -> str | None:
-    users = room.connected_user_ids()
-    try:
-        reserved = await asyncio.to_thread(
-            _reserve_room_practice_slots, users, room.structure, room.code,
-        )
-    except Exception as exc:
-        logger.exception("room quota reservation failed (%s): %s", room.code, exc)
-        return "練習限額暫時未能確認，未有扣除限額，請稍後再試。"
-    if not reserved:
-        return PRACTICE_DAILY_LIMIT_MESSAGE
-    room.quota_users = users
-    try:
-        mint_error = await asyncio.to_thread(_room_mint_gemini_tokens, room)
-    except Exception as exc:
-        logger.exception("room token mint failed (%s): %s", room.code, exc)
-        mint_error = "AI 對手暫時未能建立，未有扣除練習限額。"
-    if mint_error:
-        await asyncio.to_thread(
-            _release_room_practice_slots, users, room.structure, room.code,
-        )
-        room.quota_users = []
-        return mint_error
-    room.phase = "active"
-    room.seg_index = 0
-    room.started_ms = _now_ms()
-    room.seg_started_ms = room.started_ms
-    total_seconds = full_mock_total_seconds(room.segments)
-    if room.structure == "free":
-        total_seconds = min(10 * 60, total_seconds)
-    room.hard_deadline_ms = room.started_ms + max(30, int(total_seconds)) * 1000
-    room.side_elapsed_ms = {"正方": 0, "反方": 0}
+def _room_failed_activation_state(room):
+    """Restore a retryable lobby after any start failure."""
+    if room.phase not in ("ending", "ended") and not room.terminal_requested:
+        room.phase = "lobby"
+    room.started_ms = None
+    room.seg_started_ms = None
+    room.hard_deadline_ms = None
+    room.precheck_id = None
+    room.precheck_results = {}
     room.active_turn_user = None
     room.active_turn_side = None
     room.active_turn_started_ms = None
-    room.free_first_done = False
-    room.precheck_id = None
-    room.precheck_results = {}
-    gemini_ready = await _room_start_gemini_if_needed(room)
-    if room.mode == "B" and not gemini_ready:
-        room.phase = "lobby"
-        room.started_ms = None
-        room.hard_deadline_ms = None
+    room.activation_ready = False
+    if room.gemini is not None:
         room.gemini["tokens"] = []
+
+
+async def _room_rollback_activation(
+    room, users, released_message, *, close_gemini=False,
+):
+    """Reset a failed activation even when quota release itself fails.
+
+    A database outage during rollback must not strand the in-memory room in
+    ``starting``.  When release cannot be confirmed we retain the affected user
+    list for diagnostics/retry and return wording that does not falsely promise
+    that today's slot was restored.
+    """
+    if close_gemini:
+        try:
+            await _room_close_gemini(room)
+        except Exception as exc:
+            logger.warning(
+                "room activation upstream cleanup failed (%s, %s)",
+                room.code, type(exc).__name__,
+            )
+    released = False
+    try:
         await asyncio.to_thread(
-            _release_room_practice_slots, users, room.structure, room.code,
+            _release_room_practice_slots,
+            users, room.structure, room.code,
         )
-        room.quota_users = []
-        return "AI 對手連線失敗，未有扣除練習限額；請重新測試後再開始。"
-    _room_ensure_tick(room)
-    await _room_broadcast(room, room.state_msg())
-    return None
+        released = True
+    except Exception as exc:
+        logger.warning(
+            "room quota rollback failed (%s, %s)",
+            room.code, type(exc).__name__,
+        )
+    finally:
+        async with room.lock:
+            room.quota_users = [] if released else list(users)
+            _room_failed_activation_state(room)
+    if released:
+        return released_message
+    return (
+        "房間未能開始；練習限額回滾暫時未能確認，"
+        "今日名額可能仍被佔用，請稍後再試或聯絡管理員。"
+    )
+
+
+async def _room_start_active(
+    room, *, expected_precheck_id=None, expected_roster_signature=None,
+) -> str | None:
+    # Multiple final precheck messages can arrive in the same event-loop tick.
+    # Only the activation owner may reserve quota, mint or connect upstream.
+    async with room.activation_lock:
+        async with room.lock:
+            if room.terminal_requested:
+                return "房間正在結束，未有扣除練習限額。"
+            if room.phase == "active":
+                return None
+            if expected_precheck_id is not None and (
+                room.phase != "lobby"
+                or not _room_precheck_snapshot_matches(
+                    room, expected_precheck_id, expected_roster_signature,
+                )
+            ):
+                return "開始前檢查已失效，請由主持重新開始連線測試。"
+            if room.phase not in ("lobby", "starting"):
+                return "房間目前狀態不可開始練習。"
+            room.phase = "starting"
+
+        budget_error = await asyncio.to_thread(_bandwidth_live_gate_error)
+        if budget_error:
+            _room_failed_activation_state(room)
+            return budget_error
+
+        # Revalidate the authoritative roster after the last precheck message.
+        # A socket may have disconnected while the 3.5 GB gate ran.
+        async with room.lock:
+            start_error = _room_start_blocker(room)
+            users = room.connected_user_ids()
+            roster_signature = _room_connected_roster_signature(room)
+            precheck_changed = bool(
+                expected_precheck_id is not None
+                and not _room_precheck_snapshot_matches(
+                    room, expected_precheck_id, expected_roster_signature,
+                )
+            )
+        if start_error or precheck_changed:
+            _room_failed_activation_state(room)
+            return start_error or (
+                "成員名單或連線在檢查後有變，未有扣除練習限額；"
+                "請重新進行連線測試。"
+            )
+        try:
+            reserved = await asyncio.to_thread(
+                _reserve_room_practice_slots, users, room.structure, room.code,
+            )
+        except Exception as exc:
+            logger.warning(
+                "room quota reservation failed (%s, %s)",
+                room.code, type(exc).__name__,
+            )
+            _room_failed_activation_state(room)
+            return "練習限額暫時未能確認，未有扣除限額，請稍後再試。"
+        if not reserved:
+            _room_failed_activation_state(room)
+            return PRACTICE_DAILY_LIMIT_MESSAGE
+        room.quota_users = users
+        # The transactional reservation itself runs in a worker thread. A
+        # reconnect/disconnect during that await invalidates the precheck; roll
+        # the reservation back before minting a single-use provider token.
+        async with room.lock:
+            roster_changed = (
+                room.phase != "starting"
+                or room.terminal_requested
+                or _room_connected_roster_signature(room) != roster_signature
+                or bool(_room_start_blocker(room))
+                or (
+                    expected_precheck_id is not None
+                    and not _room_precheck_snapshot_matches(
+                        room, expected_precheck_id, expected_roster_signature,
+                    )
+                )
+            )
+        if roster_changed:
+            return await _room_rollback_activation(room, users, (
+                "成員名單在配額確認期間有變，已撤銷扣除；"
+                "請重新進行連線測試。"
+            ))
+        try:
+            mint_error = await asyncio.to_thread(_room_mint_gemini_tokens, room)
+        except Exception as exc:
+            logger.warning(
+                "room token mint failed (%s, %s)", room.code, type(exc).__name__,
+            )
+            mint_error = "AI 對手暫時未能建立，未有扣除練習限額。"
+        if mint_error:
+            return await _room_rollback_activation(room, users, mint_error)
+
+        # Token minting yields to a worker thread. Recheck before the upstream
+        # connect, but deliberately retain ``starting`` so browsers cannot send
+        # debate audio while setupComplete is still pending.
+        roster_changed = False
+        async with room.lock:
+            roster_changed = (
+                room.phase != "starting"
+                or room.terminal_requested
+                or _room_connected_roster_signature(room) != roster_signature
+                or bool(_room_start_blocker(room))
+            )
+            if not roster_changed:
+                room.seg_index = 0
+                room.started_ms = _now_ms()
+                room.seg_started_ms = room.started_ms
+                total_seconds = full_mock_total_seconds(room.segments)
+                # Preserve the pre-existing multiplayer Free hard stop. Solo's
+                # separate browser-direct session owns the 30-minute deadline.
+                if room.structure == "free":
+                    total_seconds = min(10 * 60, total_seconds)
+                room.hard_deadline_ms = (
+                    room.started_ms + max(30, int(total_seconds)) * 1000
+                )
+                room.side_elapsed_ms = {"正方": 0, "反方": 0}
+                room.active_turn_user = None
+                room.active_turn_side = None
+                room.active_turn_started_ms = None
+                room.free_first_done = False
+                room.free_opening_ai_cued = False
+                room.free_opening_ai_complete = False
+                room.ai_audio_remainder_ms = 0.0
+                room.gemini_turn_state = None
+        if roster_changed:
+            return await _room_rollback_activation(
+                room, users,
+                "成員名單在開始前有變，已撤銷扣除；請重新進行連線測試。",
+            )
+        gemini_ready = await _room_start_gemini_if_needed(room)
+        if room.mode == "B" and not gemini_ready:
+            return await _room_rollback_activation(
+                room, users,
+                "AI 對手連線失敗，已撤銷扣除；請重新測試後再開始。",
+                close_gemini=True,
+            )
+
+        # setupComplete can take several seconds.  A final lock-protected roster
+        # check closes the disconnect window and atomically publishes active.
+        async with room.lock:
+            roster_changed = (
+                room.phase != "starting"
+                or room.terminal_requested
+                or _room_connected_roster_signature(room) != roster_signature
+                or bool(_room_start_blocker(room))
+                or (room.mode == "B" and room.gemini_ws is None)
+            )
+            if not roster_changed:
+                room.phase = "active"
+                room.activation_ready = False
+                room.precheck_id = None
+                room.precheck_results = {}
+        if roster_changed:
+            return await _room_rollback_activation(
+                room, users,
+                "成員名單在開始前有變，已撤銷扣除；請重新進行連線測試。",
+                close_gemini=True,
+            )
+        if room.mode == "B":
+            announced = await _room_announce_gemini_ready(room, initial=True)
+            if not announced:
+                return await _room_rollback_activation(
+                    room, users,
+                    "AI 對手未能開始第一段發言，已撤銷扣除；請重新測試。",
+                    close_gemini=True,
+                )
+        async with room.lock:
+            roster_changed = (
+                room.phase != "active"
+                or room.terminal_requested
+                or _room_connected_roster_signature(room) != roster_signature
+                or bool(_room_start_blocker(room))
+                or (room.mode == "B" and room.gemini_ws is None)
+            )
+            if not roster_changed:
+                room.activation_ready = True
+        if roster_changed:
+            return await _room_rollback_activation(
+                room, users,
+                "成員在開始提示期間離線，已撤銷扣除；請重新測試。",
+                close_gemini=True,
+            )
+        _room_ensure_tick(room)
+        await _room_broadcast(room, room.state_msg())
+        return None
 
 
 async def _room_begin_precheck(room):
-    start_error = _room_start_blocker(room)
+    async with room.lock:
+        if room.phase != "lobby":
+            return
+        start_error = _room_start_blocker(room)
+        if not start_error and room.precheck_id:
+            return
+        if not start_error:
+            room.precheck_id = secrets.token_hex(6)
+            room.precheck_results = {}
     if start_error:
         await _room_broadcast(room, {"type": "error", "message": start_error})
         return
-    room.precheck_id = secrets.token_hex(6)
-    room.precheck_results = {}
     await _room_broadcast(room, _room_precheck_msg(room, "precheck_request"))
     await _room_broadcast(room, _room_precheck_msg(room))
 
 
-async def _room_handle_precheck_result(room, member, msg):
-    if room.phase != "lobby" or not room.precheck_id:
-        return
-    if msg.get("check_id") != room.precheck_id:
-        return
-    room.precheck_results[member.user_id] = {
-        "ok": bool(msg.get("ok")),
-        "message": str(msg.get("message") or "")[:800],
-    }
-    await _room_broadcast(room, _room_precheck_msg(room))
+async def _room_reset_precheck_if_current(room, check_id):
+    """Atomically make a completed failed check retryable by the host."""
+    async with room.lock:
+        if room.phase != "lobby" or room.precheck_id != check_id:
+            return
+        room.precheck_id = None
+        room.precheck_results = {}
 
-    users = room.connected_user_ids()
-    if not users or any(u not in room.precheck_results for u in users):
+
+async def _room_handle_precheck_result(room, member, msg):
+    async with room.lock:
+        if room.phase != "lobby" or not room.precheck_id:
+            return
+        if msg.get("check_id") != room.precheck_id:
+            return
+        room.precheck_results[member.user_id] = {
+            "ok": bool(msg.get("ok")),
+            "message": str(msg.get("message") or "")[:800],
+        }
+        users = room.connected_user_ids()
+        ready = bool(
+            users
+            and all(user in room.precheck_results for user in users)
+            and all(room.precheck_results[user].get("ok") for user in users)
+        )
+        complete = bool(
+            users and all(user in room.precheck_results for user in users)
+        )
+        completed_precheck_id = room.precheck_id
+        completed_roster_signature = _room_connected_roster_signature(room)
+        status_msg = _room_precheck_msg(room)
+        failed_msg = {**status_msg, "type": "precheck_failed"}
+    await _room_broadcast(room, status_msg)
+
+    if not complete:
         return
-    if all(room.precheck_results[u].get("ok") for u in users):
+    if ready:
         start_error = _room_start_blocker(room)
         if start_error:
+            await _room_reset_precheck_if_current(
+                room, completed_precheck_id,
+            )
             await _room_broadcast(room, {"type": "error", "message": start_error})
-            await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
+            await _room_broadcast(room, failed_msg)
             return
-        activation_error = await _room_start_active(room)
+        activation_error = await _room_start_active(
+            room, expected_precheck_id=completed_precheck_id,
+            expected_roster_signature=completed_roster_signature,
+        )
         if activation_error:
+            await _room_reset_precheck_if_current(
+                room, completed_precheck_id,
+            )
             await _room_broadcast(room, {"type": "error", "message": activation_error})
-            await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
+            await _room_broadcast(room, failed_msg)
     else:
-        await _room_broadcast(room, _room_precheck_msg(room, "precheck_failed"))
+        await _room_reset_precheck_if_current(room, completed_precheck_id)
+        await _room_broadcast(room, failed_msg)
 
 
 def _room_start_blocker(room):
@@ -2901,80 +4008,319 @@ def _audio_fields(msg):
     return msg.get("data"), msg.get("mimeType")
 
 
+def _validated_room_pcm(data, mime, *, max_bytes):
+    """Return canonical PCM base64 only for a small, strict inbound frame."""
+    if not isinstance(data, str) or mime != "audio/pcm;rate=16000":
+        return None
+    if len(data) > ((int(max_bytes) + 2) // 3) * 4:
+        return None
+    try:
+        decoded = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not decoded or len(decoded) > int(max_bytes):
+        return None
+    return base64.b64encode(decoded).decode("ascii")
+
+
+def _room_member_audio_rate_allowed(member, canonical_data, *, now_ms=None):
+    """Consume decoded PCM bytes from a reconnect-stable member token bucket."""
+    if not isinstance(canonical_data, str):
+        return False
+    padding = 2 if canonical_data.endswith("==") else (
+        1 if canonical_data.endswith("=") else 0
+    )
+    decoded_bytes = max(0, (len(canonical_data) * 3) // 4 - padding)
+    now = _now_ms() if now_ms is None else int(now_ms)
+    previous = int(member.audio_rate_updated_ms)
+    elapsed_ms = max(0, now - previous)
+    member.audio_rate_tokens = min(
+        float(ROOM_AUDIO_RATE_BURST_BYTES),
+        float(member.audio_rate_tokens)
+        + elapsed_ms * float(ROOM_AUDIO_RATE_BYTES_PER_SECOND) / 1000,
+    )
+    member.audio_rate_updated_ms = max(previous, now)
+    if decoded_bytes <= 0 or decoded_bytes > member.audio_rate_tokens:
+        return False
+    member.audio_rate_tokens -= decoded_bytes
+    return True
+
+
+def _room_member_audio_message_rate_allowed(member, *, now_ms=None):
+    """Bound valid and invalid audio-shaped messages before base64 validation."""
+    now = _now_ms() if now_ms is None else int(now_ms)
+    previous = int(member.audio_message_updated_ms)
+    elapsed_ms = max(0, now - previous)
+    member.audio_message_tokens = min(
+        float(ROOM_AUDIO_RATE_BURST_MESSAGES),
+        float(member.audio_message_tokens)
+        + elapsed_ms * float(ROOM_AUDIO_RATE_MESSAGES_PER_SECOND) / 1000,
+    )
+    member.audio_message_updated_ms = max(previous, now)
+    if member.audio_message_tokens < 1:
+        return False
+    member.audio_message_tokens -= 1
+    return True
+
+
+def _room_member_control_rate_allowed(member, *, now_ms=None):
+    """Consume one reconnect-stable token for a non-audio client message."""
+    now = _now_ms() if now_ms is None else int(now_ms)
+    previous = int(member.control_rate_updated_ms)
+    elapsed_ms = max(0, now - previous)
+    member.control_rate_tokens = min(
+        float(ROOM_CONTROL_RATE_BURST_MESSAGES),
+        float(member.control_rate_tokens)
+        + elapsed_ms * float(ROOM_CONTROL_RATE_MESSAGES_PER_SECOND) / 1000,
+    )
+    member.control_rate_updated_ms = max(previous, now)
+    if member.control_rate_tokens < 1:
+        return False
+    member.control_rate_tokens -= 1
+    return True
+
+
 # --- Gemini leg (mode B): server-owned Gemini Live sessions per room ---------
 #
 # The server (not any browser) owns the single upstream Gemini Live socket, so
 # the ephemeral token never leaves the server, the whole team shares one AI
 # context, and a member dropping does not kill the AI. Same connect/pump shape
-# as gemini_live_relay above; here the proxy is the client. Render's Singapore
-# egress means no geo-block, so no relay hop is needed for this leg.
+# Here the proxy itself is the authenticated Gemini client. Render's egress is
+# only used for multiplayer; Solo audio never crosses this server.
 
-async def _room_start_gemini_if_needed(room):
+async def _room_start_gemini_if_needed(
+    room, *, resume=False, expected_generation=None,
+):
     if room.mode != "B" or room.gemini is None:
         return True
-    if room.gemini_ws is not None:
-        return True
-    tokens = room.gemini.get("tokens") or []
-    session_index = min(room.gemini_session_index, max(0, len(tokens) - 1))
-    token = tokens[session_index] if tokens else ""
-    model = room.gemini.get("model") or ""
-    prompt = room.gemini.get("prompt") or ""
-    if not token or not model:
-        await _room_broadcast(room, {"type": "error",
-                                     "message": "未有 AI 連線資料，AI 對手未能啟動。"})
-        return False
+    async with room.gemini_connect_lock:
+        connect_epoch = room.gemini_connect_epoch
+        requested_session_index = room.gemini_session_index
 
-    backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
-    try:
-        gws = await websockets.connect(
-            backend_url, max_size=GEMINI_WS_MAX_SIZE, ping_interval=None
-        )
-    except Exception as e:
-        logger.exception("room Gemini connect failed (%s): %s", room.code, e)
-        await _room_broadcast(room, {"type": "error",
-                                     "message": "AI 對手連線失敗，請重新建立房間。"})
-        return False
+        def connection_is_current():
+            phase = getattr(room, "phase", "active")
+            allowed_phases = {"active"} if resume else {"starting", "active"}
+            return (
+                phase in allowed_phases
+                and not getattr(room, "terminal_requested", False)
+                and room.gemini_connect_epoch == connect_epoch
+                and room.gemini_session_index == requested_session_index
+                and (
+                    expected_generation is None
+                    or room.gemini_generation == expected_generation
+                )
+            )
 
-    room.gemini_ws = gws
-    # Decide once per session whether to re-voice the AI via server-side TTS.
-    # Off by default when the provider is unconfigured or ROOM_TTS_ENABLED=0, so
-    # the room degrades to Gemini native "Kore" audio (existing behaviour).
-    room.tts_enabled = (
-        tts_provider_configured()
-        and _get_proxy_secret("ROOM_TTS_ENABLED", "1").strip() != "0"
-    )
-    if session_index and room.transcript:
-        recent = room.transcript[-24:]
-        continuity = "\n".join(
-            f"{item.get('side') or item.get('speaker')}：{item.get('text')}"
-            for item in recent if item.get("text")
-        )
-        if continuity:
-            prompt += "\n\n## 上一節接力內容\n以下係之前環節逐字稿，請延續同一場辯論：\n" + continuity
-    setup = {
-        "setup": {
-            "model": "models/" + model,
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}
+        if (
+            expected_generation is not None
+            and room.gemini_generation != expected_generation
+        ):
+            return False
+        if room.gemini_ws is not None:
+            return True
+        if not connection_is_current():
+            return False
+        tokens = list(room.gemini.get("tokens") or [])
+        durations = list(room.gemini.get("session_minutes") or [])
+        required_slots = max(1, len(durations), room.gemini_session_index + 1)
+        if len(tokens) < required_slots:
+            tokens.extend([""] * (required_slots - len(tokens)))
+        session_index = min(room.gemini_session_index, max(0, len(tokens) - 1))
+        token = tokens[session_index] if tokens else ""
+        model = room.gemini.get("model") or ""
+        resume_handle = room.gemini_resume_handle if resume else ""
+        if not token and not resume:
+            duration = (
+                durations[session_index]
+                if session_index < len(durations)
+                else max(3.0, full_mock_total_seconds(room.segments) / 60 + 2)
+            )
+            token, mint_error = await asyncio.to_thread(
+                _mint_gemini_live_token,
+                max(3, float(duration)),
+                constrained_direct=False,
+            )
+            if mint_error or not token or not connection_is_current():
+                await _room_broadcast(room, {
+                    "type": "error",
+                    "message": "下一節 AI 連線憑證未能建立，房間會安全結束。",
+                })
+                return False
+            tokens[session_index] = token
+            room.gemini["tokens"] = tokens
+        if not token or not model or (resume and not resume_handle):
+            await _room_broadcast(room, {
+                "type": "error",
+                "message": "未有可恢復的 AI 連線資料，房間會安全結束。",
+            })
+            return False
+
+        backend_url = f"{GEMINI_LIVE_WS_URL}?access_token={quote_plus(token)}"
+        try:
+            gws = await websockets.connect(
+                backend_url,
+                max_size=GEMINI_WS_MAX_SIZE,
+                max_queue=GEMINI_WS_MAX_QUEUE,
+                compression=None,
+                ping_interval=None,
+            )
+        except Exception as exc:
+            # The URL contains an ephemeral credential; log type only.
+            logger.warning(
+                "room Gemini connect failed (%s, %s)",
+                room.code, type(exc).__name__,
+            )
+            return False
+
+        if not connection_is_current():
+            await gws.close()
+            return False
+
+        prompt = room.gemini.get("prompt") or ""
+        if session_index and room.transcript and not resume:
+            recent = room.transcript[-24:]
+            continuity = "\n".join(
+                f"{item.get('side') or item.get('speaker')}：{item.get('text')}"
+                for item in recent if item.get("text")
+            )
+            if continuity:
+                prompt += (
+                    "\n\n## 上一節接力內容\n"
+                    "以下係之前環節逐字稿，請延續同一場辯論：\n" + continuity
+                )
+        prompt = _bounded_live_system_prompt(prompt)
+        setup = {
+            "setup": {
+                "model": "models/" + model,
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {"voiceName": "Kore"},
+                        },
+                    },
                 },
+                "systemInstruction": {"parts": [{"text": prompt}]},
+                "realtimeInputConfig": {
+                    "automaticActivityDetection": {"disabled": True},
+                },
+                "inputAudioTranscription": {},
+                "outputAudioTranscription": {},
+                "contextWindowCompression": {
+                    "triggerTokens": LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS,
+                    "slidingWindow": {
+                        "targetTokens": LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS,
+                    },
+                },
+                "sessionResumption": (
+                    {"handle": resume_handle} if resume else {}
+                ),
             },
-            "systemInstruction": {"parts": [{"text": prompt}]},
-            "realtimeInputConfig": {"automaticActivityDetection": {"disabled": True}},
-            "inputAudioTranscription": {},
-            "outputAudioTranscription": {},
         }
-    }
-    try:
-        await _room_gemini_send(room, gws, setup)
-    except Exception as e:
-        logger.exception("room Gemini setup failed (%s): %s", room.code, e)
-        room.gemini_ws = None
-        await gws.close()
-        return False
-    room.gemini_task = asyncio.create_task(_room_gemini_pump(room, gws))
-    return True
+        try:
+            await _room_gemini_send(room, gws, setup)
+        except Exception as exc:
+            logger.warning(
+                "room Gemini setup failed (%s, %s)",
+                room.code, type(exc).__name__,
+            )
+            try:
+                await gws.close()
+            except Exception:
+                pass
+            return False
+
+        if not connection_is_current():
+            await gws.close()
+            return False
+
+        room.gemini_generation += 1
+        generation = room.gemini_generation
+        room.gemini_ws = gws
+        setup_future = asyncio.get_running_loop().create_future()
+        room.gemini_setup_future = setup_future
+        room.tts_enabled = (
+            tts_provider_configured()
+            and _get_proxy_secret("ROOM_TTS_ENABLED", "1").strip() != "0"
+        )
+        room.gemini_task = asyncio.create_task(
+            _room_gemini_pump(room, gws, generation, resuming=resume),
+        )
+        try:
+            setup_complete = await asyncio.wait_for(
+                asyncio.shield(setup_future),
+                timeout=ROOM_GEMINI_SETUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            await _room_close_gemini(room)
+            raise
+        except asyncio.TimeoutError:
+            setup_complete = False
+            await _room_broadcast(room, {
+                "type": "error",
+                "message": "AI 連線設定逾時，未收到完成確認。",
+            })
+        finally:
+            if room.gemini_setup_future is setup_future:
+                room.gemini_setup_future = None
+        if (
+            not setup_complete
+            or room.gemini_ws is not gws
+            or room.gemini_generation != generation
+        ):
+            await _room_close_gemini(room)
+            return False
+        return True
+
+
+async def _room_resume_gemini(
+    room, generation, reason, *, session_index=None, connect_epoch=None,
+):
+    expected_session = (
+        room.gemini_session_index if session_index is None else session_index
+    )
+    expected_epoch = (
+        room.gemini_connect_epoch if connect_epoch is None else connect_epoch
+    )
+
+    def still_current():
+        return (
+            room.phase == "active"
+            and room.gemini_generation == generation
+            and room.gemini_session_index == expected_session
+            and room.gemini_connect_epoch == expected_epoch
+        )
+
+    if not still_current():
+        return
+    if not room.gemini_resume_handle:
+        await _room_broadcast(room, {
+            "type": "error",
+            "message": "AI 連線中斷，而且未收到可恢復代碼；房間會安全結束。",
+        })
+        await _room_end(room, "ai_connection_lost")
+        return
+    for attempt in range(
+        room.gemini_resume_attempts + 1,
+        ROOM_GEMINI_RESUME_MAX_ATTEMPTS + 1,
+    ):
+        room.gemini_resume_attempts = attempt
+        if ROOM_GEMINI_RESUME_DELAY_SECONDS:
+            await asyncio.sleep(ROOM_GEMINI_RESUME_DELAY_SECONDS * attempt)
+        if not still_current():
+            return
+        if await _room_start_gemini_if_needed(
+            room, resume=True, expected_generation=generation,
+        ):
+            await _room_broadcast(room, {
+                "type": "ai_reconnected", "reason": reason,
+            })
+            return
+    await _room_broadcast(room, {
+        "type": "error",
+        "message": "AI 對手重新連線失敗，房間會安全結束；請返回建立新房間。",
+    })
+    await _room_end(room, "ai_reconnect_failed")
 
 
 # --- Server-side TTS for the room (mode B) -----------------------------------
@@ -2992,7 +4338,10 @@ _TTS_SENTENCE_END = "。！？!?…\n"
 def _tts_new_turn_state():
     # pending: transcript not yet synthesized; native: raw serverContents with
     # audio held in reserve for fallback; fallback: Azure gave up this turn.
-    return {"pending": "", "native": [], "native_bytes": 0, "fallback": False}
+    return {
+        "pending": "", "native": [], "native_bytes": 0,
+        "fallback": False, "transcript_seen": False,
+    }
 
 
 def _tts_take_sentences(buf, force=False):
@@ -3047,8 +4396,11 @@ async def _room_tts_synth(room, chunk, state):
     flip to native-audio fallback. Returns False once fallback is active."""
     try:
         audio_bytes, mime = await _synthesize_tts(chunk)
-    except Exception as e:
-        logger.info("room TTS synth failed (%s), using native audio: %s", room.code, e)
+    except Exception as exc:
+        logger.info(
+            "room TTS synth failed (%s, %s); using native audio",
+            room.code, type(exc).__name__,
+        )
         await _room_tts_fallback(room, state)
         return False
     b64 = base64.b64encode(audio_bytes).decode("ascii")
@@ -3076,24 +4428,190 @@ async def _room_pump_tts(room, sc, state, final=False):
             if state["native_bytes"] > ROOM_NATIVE_AUDIO_BUFFER_MAX_BYTES:
                 await _room_tts_fallback(room, state)
                 return
-        await _room_broadcast(room, {"type": "serverContent", "serverContent": _strip_audio_parts(sc)})
         ot = sc.get("outputTranscription") or {}
         if ot.get("text"):
+            state["transcript_seen"] = True
             state["pending"] = (state["pending"] + str(ot["text"]))[-ROOM_PENDING_TRANSCRIPT_MAX_CHARS:]
+        if (
+            final and state["native"] and not state["fallback"]
+            and not state["transcript_seen"]
+        ):
+            # Replay the native audio before forwarding turnComplete; otherwise
+            # clients may tear down playback as soon as they see the final flag.
+            await _room_tts_fallback(room, state)
+            await _room_broadcast(
+                room,
+                {"type": "serverContent", "serverContent": _strip_audio_parts(sc)},
+            )
+            return
+        stripped_message = {
+            "type": "serverContent", "serverContent": _strip_audio_parts(sc),
+        }
+        if not final:
+            await _room_broadcast(room, stripped_message)
         chunks, state["pending"] = _tts_take_sentences(state["pending"], force=final)
         for chunk in chunks:
             if not await _room_tts_synth(room, chunk, state):
                 break
+        if final:
+            await _room_broadcast(room, stripped_message)
 
 
-async def _room_gemini_pump(room, gws):
+def _pcm_audio_bytes_and_rate(data, mime_type):
+    mime = str(mime_type or "")
+    if not re.match(r"^audio/(?:pcm|l16)\b", mime, re.IGNORECASE):
+        return b"", 0, 0
+    rate_match = re.search(r"rate=(\d+)", mime, re.IGNORECASE)
+    channels_match = re.search(r"channels=(\d+)", mime, re.IGNORECASE)
+    rate = int(rate_match.group(1)) if rate_match else 24_000
+    channels = int(channels_match.group(1)) if channels_match else 1
+    if not 8_000 <= rate <= 192_000 or not 1 <= channels <= 8:
+        return b"", 0, 0
+    try:
+        raw = base64.b64decode(str(data or ""), validate=False)
+    except Exception:
+        return b"", 0, 0
+    return raw, rate, channels
+
+
+def _room_limit_and_account_ai_audio(room, sc):
+    """Clamp Mode-B Free AI PCM to its authoritative per-side budget."""
+    seg = room.current_segment()
+    if (
+        room.mode != "B"
+        or not seg
+        or seg.get("side") != "雙方"
+        or room.phase not in ("starting", "active")
+    ):
+        return sc, False, True
+    ai_side = "反方" if room.human_side == "正方" else "正方"
+    budget_ms = max(0, int(seg.get("seconds") or 0) * 1000)
+    if not budget_ms:
+        return sc, False, True
+    used_before = min(budget_ms, float(room.side_elapsed_ms.get(ai_side, 0)))
+    prior_fraction = float(room.ai_audio_remainder_ms or 0.0)
+    remaining_ms = max(0.0, budget_ms - used_before - prior_fraction)
+    model_turn = sc.get("modelTurn")
+    if not isinstance(model_turn, dict):
+        return sc, False, remaining_ms > 0
+
+    changed = False
+    forwarded_audio = False
+    new_parts = []
+    counted_ms = 0.0
+    for original in model_turn.get("parts") or []:
+        part = dict(original)
+        inline = part.get("inlineData") or {}
+        data = inline.get("data")
+        raw, rate, channels = _pcm_audio_bytes_and_rate(
+            data, inline.get("mimeType"),
+        ) if data else (b"", 0, 0)
+        if data and (not raw or not rate):
+            changed = True
+            part.pop("inlineData", None)
+            if part:
+                new_parts.append(part)
+            continue
+        if not raw or not rate:
+            new_parts.append(part)
+            continue
+        bytes_per_second = rate * channels * 2
+        allowed = min(
+            len(raw),
+            max(0, int((remaining_ms - counted_ms) * bytes_per_second / 1000)),
+        )
+        if allowed <= 0:
+            changed = True
+            part.pop("inlineData", None)
+            if part:
+                new_parts.append(part)
+            continue
+        forwarded_audio = True
+        if allowed < len(raw):
+            changed = True
+            clipped = dict(inline)
+            clipped["data"] = base64.b64encode(raw[:allowed]).decode("ascii")
+            part["inlineData"] = clipped
+        new_parts.append(part)
+        counted_ms += allowed * 1000 / bytes_per_second
+
+    exact_ms = used_before + prior_fraction + counted_ms
+    if budget_ms - exact_ms < 0.001:
+        room.side_elapsed_ms[ai_side] = budget_ms
+        room.ai_audio_remainder_ms = 0.0
+    else:
+        room.side_elapsed_ms[ai_side] = int(exact_ms)
+        room.ai_audio_remainder_ms = exact_ms - int(exact_ms)
+    exhausted = room.side_elapsed_ms.get(ai_side, 0) >= budget_ms
+    newly_exhausted = exhausted and used_before < budget_ms
+    if changed:
+        new_sc = dict(sc)
+        new_turn = dict(model_turn)
+        new_turn["parts"] = new_parts
+        new_sc["modelTurn"] = new_turn
+        sc = new_sc
+    return sc, newly_exhausted, forwarded_audio
+
+
+async def _room_cue_ai_free_opening(room):
+    gws = room.gemini_ws
+    if gws is None:
+        return False
+    try:
+        await _room_gemini_send(room, gws, {"clientContent": {
+            "turns": [{
+                "role": "user",
+                "parts": [{"text": (
+                    "自由辯論由正方先開始。你是正方，請立即作第一輪精簡、有內容的粵語發言，"
+                    "然後停下等待反方回應。"
+                )}],
+            }],
+            "turnComplete": True,
+        }})
+        await _room_broadcast(
+            room, {"type": "speaking", "user_id": "AI", "speaking": True},
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def _room_announce_gemini_ready(room, *, initial=False):
+    await _room_broadcast(room, {"type": "ai_ready"})
+    ai_side = "反方" if room.human_side == "正方" else "正方"
+    if room.structure == "mock" and initial:
+        segment = room.current_segment()
+        if segment and segment.get("side") == ai_side:
+            return await _room_cue_ai_segment(room, segment)
+    elif (
+        room.structure == "free"
+        and ai_side == "正方"
+        and not room.free_opening_ai_cued
+    ):
+        if not await _room_cue_ai_free_opening(room):
+            return False
+        room.free_opening_ai_cued = True
+    return True
+
+
+async def _room_gemini_pump(room, gws, generation, *, resuming=False):
     """Read the room's Gemini Live socket and fan its serverContent out to every
     member. When room.tts_enabled, re-voice the AI via server-side TTS (synced,
     shared, with native-audio fallback); otherwise forward native audio verbatim.
     Also accumulate the AI's transcript into room.transcript so 評判 covers the AI."""
+    pump_session_index = room.gemini_session_index
+    pump_connect_epoch = room.gemini_connect_epoch
     ai_side = "反方" if room.human_side == "正方" else "正方"
-    ai_buffer = {"text": ""}
-    tts_state = _tts_new_turn_state()
+    carry = room.gemini_turn_state
+    if not isinstance(carry, dict):
+        carry = {"ai_text": "", "tts": _tts_new_turn_state()}
+        room.gemini_turn_state = carry
+    ai_buffer = {"text": str(carry.get("ai_text") or "")}
+    tts_state = carry.get("tts")
+    if not isinstance(tts_state, dict):
+        tts_state = _tts_new_turn_state()
+        carry["tts"] = tts_state
+    resume_reason = "upstream_closed"
     try:
         async for raw in gws:
             if isinstance(raw, bytes):
@@ -3105,33 +4623,101 @@ async def _room_gemini_pump(room, gws):
                 msg = json.loads(raw)
             except Exception:
                 continue
+            update = msg.get("sessionResumptionUpdate")
+            if isinstance(update, dict):
+                handle = str(update.get("newHandle") or "")
+                if update.get("resumable") and handle:
+                    if (
+                        room.gemini_ws is gws
+                        and room.gemini_generation == generation
+                    ):
+                        room.gemini_resume_handle = handle
+                elif update.get("resumable") is False and (
+                    room.gemini_ws is gws
+                    and room.gemini_generation == generation
+                ):
+                    room.gemini_resume_handle = ""
+                continue
+            if "goAway" in msg:
+                resume_reason = "go_away"
+                await _room_broadcast(room, {
+                    "type": "ai_reconnecting",
+                    "message": "AI 連線將重設，正在安全恢復同一場對話。",
+                })
+                break
             # NB: Gemini sends setupComplete as an empty object {}, which is
             # falsy in Python — must test membership, not truthiness.
             if "setupComplete" in msg:
-                await _room_broadcast(room, {"type": "ai_ready"})
-                # Mock: if the opening segment belongs to the AI, cue it now that
-                # the session is ready (connect happened before this).
-                if room.structure == "mock":
-                    seg0 = room.current_segment()
-                    if seg0 and seg0.get("side") == ai_side:
-                        await _room_cue_ai_segment(room, seg0)
+                room.gemini_resume_attempts = 0
+                setup_future = room.gemini_setup_future
+                if (
+                    room.gemini_ws is gws
+                    and room.gemini_generation == generation
+                    and setup_future is not None
+                    and not setup_future.done()
+                ):
+                    setup_future.set_result(True)
+                # Initial activation keeps phase=starting until the roster is
+                # revalidated.  Do not emit/cue any AI output before that atomic
+                # publish; resumption already occurs in an active room.
+                if room.phase == "active":
+                    announced = await _room_announce_gemini_ready(
+                        room, initial=not resuming,
+                    )
+                    if not announced:
+                        await _room_broadcast(room, {
+                            "type": "error",
+                            "message": "AI 未能恢復本節發言，房間會安全結束。",
+                        })
+                        await _room_end(room, "ai_ready_cue_failed")
+                        return
                 continue
             sc = msg.get("serverContent")
             if sc is None:
                 continue
+            sc, ai_budget_reached, forwarded_ai_audio = (
+                _room_limit_and_account_ai_audio(room, sc)
+            )
             turn_complete = bool(sc.get("turnComplete"))
-            if room.tts_enabled:
+            seg = room.current_segment()
+            ai_budget_exhausted = bool(
+                seg and seg.get("side") == "雙方"
+                and room.side_elapsed_ms.get(ai_side, 0)
+                >= int((seg.get("seconds") or 0) * 1000)
+            )
+            if room.tts_enabled and (forwarded_ai_audio or not ai_budget_exhausted):
                 await _room_pump_tts(room, sc, tts_state, final=turn_complete)
             else:
-                await _room_broadcast(room, {"type": "serverContent", "serverContent": sc})
+                await _room_broadcast(
+                    room,
+                    {"type": "serverContent", "serverContent": _strip_audio_parts(sc)
+                     if room.tts_enabled else sc},
+                )
+            if ai_budget_reached:
+                try:
+                    # Manual activity start is the Live API barge-in signal and
+                    # stops further model audio without closing the resumable session.
+                    await _room_gemini_send(
+                        room, gws, {"realtimeInput": {"activityStart": {}}},
+                    )
+                except Exception:
+                    pass
+                await _room_broadcast(room, {
+                    "type": "side_budget_exhausted", "side": ai_side,
+                    "message": f"{ai_side}已用完本節發言時間。",
+                })
+                await _room_broadcast(room, room.state_msg())
             ot = sc.get("outputTranscription") or {}
             if ot.get("text"):
                 ai_buffer["text"] = (ai_buffer["text"] + str(ot["text"]))[-ROOM_PENDING_TRANSCRIPT_MAX_CHARS:]
+                carry["ai_text"] = ai_buffer["text"]
             if turn_complete:
                 if room.tts_enabled:
                     tts_state = _tts_new_turn_state()
+                    carry["tts"] = tts_state
                 text_value = ai_buffer["text"].strip()
                 ai_buffer["text"] = ""
+                carry["ai_text"] = ""
                 if text_value:
                     item = {
                         "speaker": "AI", "side": ai_side, "seg": room.seg_index,
@@ -3140,20 +4726,47 @@ async def _room_gemini_pump(room, gws):
                     }
                     room.transcript.append(item)
                     room.transcript = room.transcript[-ROOM_TRANSCRIPT_MAX_ITEMS:]
+                    room.transcript_revision += 1
                     await _room_broadcast(room, {"type": "transcript", "item": item})
+                if (
+                    room.structure == "free"
+                    and ai_side == "正方"
+                    and room.free_opening_ai_cued
+                    and not room.free_opening_ai_complete
+                ):
+                    room.free_opening_ai_complete = True
+                    room.free_first_done = True
                 await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
                                              "speaking": False})
     except asyncio.CancelledError:
         raise
-    except Exception as e:
-        logger.info("room Gemini pump ended (%s): %s", room.code, e)
+    except Exception as exc:
+        resume_reason = "unexpected_close"
+        logger.info(
+            "room Gemini pump ended (%s, %s)", room.code, type(exc).__name__,
+        )
     finally:
-        if room.gemini_ws is gws:
+        is_current = (
+            room.gemini_ws is gws
+            and room.gemini_generation == generation
+        )
+        if is_current:
+            setup_future = room.gemini_setup_future
+            if setup_future is not None and not setup_future.done():
+                setup_future.set_result(False)
             room.gemini_ws = None
+            if room.gemini_task is asyncio.current_task():
+                room.gemini_task = None
         try:
             await gws.close()
         except Exception:
             pass
+        if is_current and room.phase == "active":
+            await _room_resume_gemini(
+                room, generation, resume_reason,
+                session_index=pump_session_index,
+                connect_epoch=pump_connect_epoch,
+            )
 
 
 async def _room_forward_audio_to_gemini(room, member, data, mime):
@@ -3170,11 +4783,19 @@ async def _room_forward_audio_to_gemini(room, member, data, mime):
 
 
 async def _room_close_gemini(room):
+    room.gemini_connect_epoch += 1
+    setup_future = room.gemini_setup_future
+    room.gemini_setup_future = None
+    if setup_future is not None and not setup_future.done():
+        setup_future.set_result(False)
     task = room.gemini_task
     room.gemini_task = None
     ws = room.gemini_ws
     room.gemini_ws = None
-    if task is not None and not task.done():
+    if (
+        task is not None and task is not asyncio.current_task()
+        and not task.done()
+    ):
         task.cancel()
     if ws is not None:
         try:
@@ -3202,7 +4823,7 @@ async def _room_cue_ai_segment(room, seg):
     _room_handle_audio / _room_handle_turn.)"""
     gws = room.gemini_ws
     if gws is None or not seg:
-        return
+        return False
     ai_side = "反方" if room.human_side == "正方" else "正方"
     context = _human_transcript_since_last_ai(room)
     ctx = f"\n\n對手（{room.human_side}）剛才的發言重點：\n{context}" if context else ""
@@ -3223,8 +4844,9 @@ async def _room_cue_ai_segment(room, seg):
         }})
         await _room_broadcast(room, {"type": "speaking", "user_id": "AI",
                                      "speaking": True})
+        return True
     except Exception:
-        pass
+        return False
 
 
 async def _room_on_segment_enter(room):
@@ -3239,53 +4861,181 @@ async def _room_on_segment_enter(room):
     if target_session != room.gemini_session_index:
         await _room_close_gemini(room)
         room.gemini_session_index = target_session
-        await _room_start_gemini_if_needed(room)
+        room.gemini_resume_handle = ""
+        room.gemini_resume_attempts = 0
+        room.gemini_turn_state = None
+        connected = False
+        for attempt in range(1, ROOM_GEMINI_RESUME_MAX_ATTEMPTS + 1):
+            if attempt > 1 and ROOM_GEMINI_RESUME_DELAY_SECONDS:
+                await asyncio.sleep(ROOM_GEMINI_RESUME_DELAY_SECONDS * attempt)
+            if room.phase != "active" or room.gemini_session_index != target_session:
+                return
+            connected = await _room_start_gemini_if_needed(room)
+            if connected:
+                break
+            # A one-use token may have been consumed by a failed handshake.
+            # Clear only this planned section so the retry mints a fresh JIT token.
+            tokens = list(room.gemini.get("tokens") or [])
+            if target_session < len(tokens):
+                tokens[target_session] = ""
+                room.gemini["tokens"] = tokens
+        if not connected:
+            await _room_broadcast(room, {
+                "type": "error",
+                "message": "下一節 AI 連線未能建立，房間會安全結束。",
+            })
+            await _room_end(room, "ai_section_connect_failed")
         return
     ai_side = "反方" if room.human_side == "正方" else "正方"
     if seg.get("side") == ai_side:
-        await _room_cue_ai_segment(room, seg)
+        if not await _room_cue_ai_segment(room, seg):
+            await _room_broadcast(room, {
+                "type": "error",
+                "message": "AI 未能開始本節發言，房間會安全結束。",
+            })
+            await _room_end(room, "ai_segment_cue_failed")
 
 
-async def _room_advance_segment(room, index: int):
+async def _room_advance_segment(room, index: int, *, expected_from=None):
     """Move the authoritative server timer without trusting client clocks."""
-    now = _now_ms()
-    if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
-        room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
-    room.seg_index = max(0, min(int(index), len(room.segments) - 1))
-    room.seg_started_ms = now
-    room.active_turn_user = None
-    room.active_turn_side = None
-    room.active_turn_started_ms = None
-    room.free_first_done = False
-    if room.current_segment() and room.current_segment().get("side") == "雙方":
-        room.side_elapsed_ms = {"正方": 0, "反方": 0}
-    await _room_broadcast(room, room.state_msg())
-    await _room_on_segment_enter(room)
+    async with room.segment_lock:
+        if room.phase != "active" or not room.activation_ready:
+            return
+        if expected_from is not None and room.seg_index != expected_from:
+            return
+        now = _now_ms()
+        if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
+            room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
+        room.seg_index = max(0, min(int(index), len(room.segments) - 1))
+        room.seg_started_ms = now
+        room.active_turn_user = None
+        room.active_turn_side = None
+        room.active_turn_started_ms = None
+        room.free_first_done = False
+        room.free_opening_ai_cued = False
+        room.free_opening_ai_complete = False
+        room.ai_audio_remainder_ms = 0.0
+        if room.current_segment() and room.current_segment().get("side") == "雙方":
+            room.side_elapsed_ms = {"正方": 0, "反方": 0}
+        await _room_broadcast(room, room.state_msg())
+        await _room_on_segment_enter(room)
+        if room.phase == "active" and room.seg_index == max(
+            0, min(int(index), len(room.segments) - 1),
+        ):
+            # Handoff/setup latency is not debate speech time.
+            room.seg_started_ms = _now_ms()
+            await _room_broadcast(room, room.state_msg())
 
 
 async def _room_end(room, reason: str = "host"):
-    if room.phase == "ended":
-        return
-    room.phase = "ended"
+    # Serialize the terminal transition with activation.  Otherwise a host end
+    # arriving while quota/token work is in flight can be overwritten by the
+    # activation coroutine setting the room back to ``active``.
+    room.terminal_requested = True
+    async with room.activation_lock:
+        if room.phase in ("ending", "ended"):
+            return
+        room.phase = "ending"
     current = asyncio.current_task()
     if room.tick_task is not None and room.tick_task is not current and not room.tick_task.done():
         room.tick_task.cancel()
-    if room.judgement_task is not None and room.judgement_task is not current and not room.judgement_task.done():
-        room.judgement_task.cancel()
+    if (
+        room.lifecycle_task is not None
+        and room.lifecycle_task is not current
+        and not room.lifecycle_task.done()
+    ):
+        room.lifecycle_task.cancel()
+    _room_cancel_empty_cleanup(room)
     await _room_close_gemini(room)
-    await _room_broadcast(room, {"type": "ended", "reason": reason})
-    await asyncio.to_thread(_record_room_bandwidth_once, room)
-    sockets = [member.ws for member in room.members.values() if member.connected]
-    if sockets:
-        await asyncio.gather(*(
-            socket.close(code=1000, reason="practice ended") for socket in sockets
-        ), return_exceptions=True)
+    # Final transcript judgement is a single shared provider call.  Preserve an
+    # in-flight request, or start one before clients are told the room ended.
+    if (
+        room.transcript
+        and room.judgement_revision != room.transcript_revision
+    ):
+        existing = room.judgement_task
+        if existing is None or existing.done():
+            task = asyncio.create_task(_room_request_judgement(room))
+        else:
+            # Queue a final-revision request behind the in-flight lock.  It will
+            # reuse the result if that request already covered this revision.
+            task = asyncio.create_task(_room_request_judgement(room))
+        room.judgement_task = task
+        if task is not current:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                await _room_broadcast(room, {
+                    "type": "judgement_pending",
+                    "message": "完場評判仍在處理，可稍後重新開啟逐字稿查看結果。",
+                })
+            except Exception as exc:
+                logger.warning(
+                    "room final judgement failed (%s, %s)",
+                    room.code, type(exc).__name__,
+                )
+    room.phase = "ended"
+    room.ended_at_ms = _now_ms()
+    room.ended_retain_until_ms = max(
+        room.ended_retain_until_ms,
+        room.ended_at_ms + ROOM_EMPTY_GRACE_MS,
+    )
+    try:
+        await _room_broadcast(room, {"type": "ended", "reason": reason})
+        try:
+            await asyncio.to_thread(_record_room_bandwidth_once, room)
+        except Exception as exc:
+            logger.warning(
+                "room final bandwidth checkpoint failed (%s, %s)",
+                room.code, type(exc).__name__,
+            )
+        sockets = [member.ws for member in room.members.values() if member.connected]
+        if sockets:
+            await asyncio.gather(*(
+                socket.close(code=1000, reason="practice ended") for socket in sockets
+            ), return_exceptions=True)
+    finally:
+        room.end_complete_event.set()
+
+
+async def _room_end_and_remove(room, reason):
+    """Finish a GC/empty room while retaining its member-only result window."""
+    await _room_end(room, reason)
+    if room.phase != "ended":
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(room.end_complete_event.wait()),
+                timeout=ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS + 5,
+            )
+        except asyncio.TimeoutError:
+            return
+    if room.phase == "ended":
+        room.ended_retain_until_ms = max(
+            room.ended_retain_until_ms,
+            _now_ms() + ROOM_EMPTY_GRACE_MS,
+        )
 
 
 # --- message handling ------------------------------------------------------
 
+def _parse_room_client_text(value) -> dict | None:
+    """Reject oversized/non-object room messages before business dispatch."""
+    if not isinstance(value, str) or len(value) > ROOM_WS_TEXT_MAX_BYTES:
+        return None
+    if len(value.encode("utf-8")) > ROOM_WS_TEXT_MAX_BYTES:
+        return None
+    try:
+        message = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return message if isinstance(message, dict) else None
+
+
 async def _room_handle_audio(room, member, msg):
-    if room.phase != "active":
+    if room.phase != "active" or not room.activation_ready:
         return
     seg = room.current_segment()
     if not seg or seg.get("side") == "準備":
@@ -3297,8 +5047,8 @@ async def _room_handle_audio(room, member, msg):
     active = room.active_speaker()
     if active is not None and member.user_id != active:
         return  # defense-in-depth: drop non-active speaker's audio
-    if room.active_turn_user and room.active_turn_user != member.user_id:
-        return  # only the accepted active turn may send audio
+    if room.active_turn_user != member.user_id:
+        return  # audio always requires a server-accepted active turn
     if room.is_open_free_segment() and member.role in room.side_elapsed_ms:
         used = room.side_elapsed_ms.get(member.role, 0)
         if room.active_turn_side == member.role and room.active_turn_started_ms is not None:
@@ -3306,7 +5056,12 @@ async def _room_handle_audio(room, member, msg):
         if used >= int((seg.get("seconds") or 0) * 1000):
             return
     data, mime = _audio_fields(msg)
-    if not data:
+    data = _validated_room_pcm(
+        data, mime, max_bytes=ROOM_AUDIO_FRAME_MAX_BYTES,
+    )
+    if data is None:
+        return
+    if not _room_member_audio_rate_allowed(member, data):
         return
     await _room_broadcast(
         room,
@@ -3322,10 +5077,23 @@ async def _room_handle_audio(room, member, msg):
 
 
 async def _room_handle_turn(room, member, speaking):
-    if room.phase != "active":
+    if room.phase != "active" or not room.activation_ready:
         return
     now = _now_ms()
     if speaking:
+        if not member.connected:
+            return
+        if (
+            room.mode == "B"
+            and room.structure == "free"
+            and room.human_side == "反方"
+            and not room.free_opening_ai_complete
+        ):
+            await member.ws.send_text(json.dumps({
+                "type": "turn_rejected",
+                "message": "自由辯論由正方先發言，請先等待 AI 完成開場。",
+            }, ensure_ascii=False))
+            return
         if room.active_turn_user == member.user_id:
             return
         if room.active_turn_user and room.active_turn_user != member.user_id:
@@ -3365,7 +5133,15 @@ async def _room_handle_turn(room, member, speaking):
         if room.active_turn_user != member.user_id:
             return
         if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
-            room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
+            elapsed = max(0, now - room.active_turn_started_ms)
+            if room.is_open_free_segment():
+                limit_ms = int((room.current_segment() or {}).get("seconds") or 0) * 1000
+                room.side_elapsed_ms[room.active_turn_side] = min(
+                    limit_ms,
+                    room.side_elapsed_ms.get(room.active_turn_side, 0) + elapsed,
+                )
+            else:
+                room.side_elapsed_ms[room.active_turn_side] += elapsed
         if (room.current_segment() or {}).get("side") == "雙方" and room.active_turn_side == "正方":
             room.free_first_done = True
         room.active_turn_user = None
@@ -3380,9 +5156,12 @@ async def _room_handle_turn(room, member, speaking):
     if room.mode == "B" and room.is_open_free_segment() and room.gemini_ws is not None:
         try:
             key = "activityStart" if speaking else "activityEnd"
-            await _room_gemini_send(
-                room, room.gemini_ws, {"realtimeInput": {key: {}}},
-            )
+            ai_side = "反方" if room.human_side == "正方" else "正方"
+            ai_limit = int((room.current_segment() or {}).get("seconds") or 0) * 1000
+            if speaking or room.side_elapsed_ms.get(ai_side, 0) < ai_limit:
+                await _room_gemini_send(
+                    room, room.gemini_ws, {"realtimeInput": {key: {}}},
+                )
         except Exception:
             pass
     # Mock structure: after a human finishes a 雙方 (free-debate) turn, cue the AI
@@ -3393,6 +5172,13 @@ async def _room_handle_turn(room, member, speaking):
 
 
 async def _room_handle_transcript(room, member, msg):
+    if room.phase != "active" or not room.activation_ready:
+        return
+    # Browser speech recognition is accepted only from the authoritative active
+    # speaker.  This prevents an idle member from poisoning/evicting the bounded
+    # judgement transcript with fabricated entries.
+    if room.active_turn_user != member.user_id:
+        return
     text_value = str(msg.get("text") or "").strip()
     if not text_value:
         return
@@ -3406,18 +5192,46 @@ async def _room_handle_transcript(room, member, msg):
     }
     room.transcript.append(item)
     room.transcript = room.transcript[-ROOM_TRANSCRIPT_MAX_ITEMS:]
+    room.transcript_revision += 1
     await _room_broadcast(room, {"type": "transcript", "item": item})
 
 
 async def _room_request_judgement(room):
+    async with room.judgement_lock:
+        try:
+            if (
+                room.judgement
+                and getattr(room, "judgement_revision", -1)
+                == getattr(room, "transcript_revision", 0)
+            ):
+                await _room_broadcast(
+                    room, {"type": "judgement", "text": room.judgement},
+                )
+                return
+            await _room_request_judgement_unlocked(room)
+        finally:
+            # A final judgement may complete after _room_end's bounded wait.
+            # Give members a full retrieval window from that late completion,
+            # instead of letting the next room-create GC immediately erase it.
+            if getattr(room, "phase", "active") in ("ending", "ended"):
+                room.ended_retain_until_ms = max(
+                    getattr(room, "ended_retain_until_ms", 0),
+                    _now_ms() + ROOM_EMPTY_GRACE_MS,
+                )
+
+
+async def _room_request_judgement_unlocked(room):
+    target_revision = getattr(room, "transcript_revision", 0)
     budget_error = _bandwidth_essential_gate_error()
     if budget_error:
         room.judgement = budget_error
+        room.judgement_revision = target_revision
         await _room_broadcast(room, {"type": "judgement", "text": budget_error})
         return
     if not room.transcript:
         result = "暫時未有逐字稿，AI 評判未能判定哪一方勝出。請先完成發言，或使用支援語音轉文字的瀏覽器。"
         room.judgement = result
+        room.judgement_revision = target_revision
         await _room_broadcast(room, {"type": "judgement", "text": result})
         return
 
@@ -3425,6 +5239,7 @@ async def _room_request_judgement(room):
     if not api_key:
         result = "未設定 GEMINI_API_KEY，暫時無法使用 AI 評判。"
         room.judgement = result
+        room.judgement_revision = target_revision
         await _room_broadcast(room, {"type": "judgement", "text": result})
         return
 
@@ -3434,7 +5249,7 @@ async def _room_request_judgement(room):
         room.debate_format,
         room.structure,
         room.transcript,
-    )
+    )[:AI_PROVIDER_PROMPT_MAX_CHARS]
     payload = {
         "contents": [{
             "role": "user",
@@ -3443,6 +5258,7 @@ async def _room_request_judgement(room):
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200},
     }
     last_error = ""
+    result = ""
     try:
         async with httpx.AsyncClient(timeout=ROOM_JUDGEMENT_TIMEOUT_SECONDS) as client:
             for model in ROOM_JUDGEMENT_MODELS:
@@ -3450,30 +5266,41 @@ async def _room_request_judgement(room):
                     "https://generativelanguage.googleapis.com/v1beta/models/"
                     f"{model}:generateContent"
                 )
-                resp = await client.post(
-                    url,
-                    params={"key": api_key},
-                    json=payload,
-                )
-                if resp.status_code != 200:
-                    try:
-                        err_data = resp.json()
-                        err_msg = err_data.get("error", {}).get("message") or resp.text
-                    except Exception:
-                        err_msg = resp.text
-                    last_error = f"{model} HTTP {resp.status_code}: {str(err_msg)[:220]}"
+                try:
+                    data = await post_json_bounded(
+                        client, url, max_bytes=AI_PROVIDER_RESPONSE_MAX_BYTES,
+                        headers={"x-goog-api-key": api_key}, json=payload,
+                    )
+                except httpx.TimeoutException:
+                    last_error = f"{model}：AI服務逾時"
                     logger.warning("Room judgement Gemini failed %s", last_error)
                     continue
-                data = resp.json()
+                except httpx.HTTPStatusError as exc:
+                    last_error = f"{model}：AI服務HTTP {exc.response.status_code}錯誤"
+                    logger.warning("Room judgement Gemini failed %s", last_error)
+                    continue
+                except ValueError as exc:
+                    detail = str(exc)
+                    if "exceeds server limit" in detail:
+                        detail = "AI回應超過2MiB伺服器上限"
+                    elif "empty" in detail:
+                        detail = "AI回應為空"
+                    else:
+                        detail = "AI回應格式無效"
+                    last_error = f"{model}：{detail}"
+                    logger.warning("Room judgement Gemini failed %s", last_error)
+                    continue
+                candidates = data.get("candidates") or []
+                if not candidates or not isinstance(candidates[0], dict):
+                    last_error = f"{model}：AI未有回傳候選結果"
+                    continue
                 parts = (
-                    data.get("candidates", [{}])[0]
-                    .get("content", {})
-                    .get("parts", [])
+                    (candidates[0].get("content") or {}).get("parts") or []
                 )
                 result = "\n".join(str(p.get("text", "")) for p in parts).strip()
                 if result:
                     break
-                last_error = f"{model}: empty response"
+                last_error = f"{model}：AI回應為空"
             else:
                 result = (
                     "AI 評判暫時失敗。"
@@ -3481,28 +5308,43 @@ async def _room_request_judgement(room):
                     + "\n請檢查 GEMINI_API_KEY、模型權限或稍後再試。"
                 )
     except Exception as e:
-        logger.exception("Room judgement failed: %s", e)
+        # Provider exceptions can include request URLs or headers.  Neither the
+        # room transcript nor server logs should ever receive those details.
+        logger.warning("Room judgement failed (%s)", type(e).__name__)
         result = (
             "AI 評判暫時無法連線。"
-            f"\n原因：{type(e).__name__}: {str(e)[:220]}"
+            "\n原因：上游服務連線錯誤。"
             "\n請檢查伺服器網絡或 GEMINI_API_KEY。"
         )
 
     room.judgement = result
+    room.judgement_revision = target_revision
     await _room_broadcast(room, {"type": "judgement", "text": result})
 
 
-async def _room_handle_message(room, member, msg):
+async def _room_handle_message(
+    room, member, msg, *, websocket=None, generation=None,
+):
+    if websocket is not None and (
+        member.ws is not websocket
+        or member.connection_generation != generation
+        or not member.connected
+    ):
+        return
     mtype = msg.get("type")
     if mtype == "audio" or "realtimeInput" in msg:
+        if not _room_member_audio_message_rate_allowed(member):
+            return
         await _room_handle_audio(room, member, msg)
+        return
+    if not _room_member_control_rate_allowed(member):
         return
 
     is_host = member.user_id == room.created_by
 
     if mtype == "claim_role":
         side = msg.get("side")
-        if room.mode == "A" and side in ("正方", "反方"):
+        if room.phase == "lobby" and room.mode == "A" and side in ("正方", "反方"):
             if all(m.role != side or m.user_id == member.user_id
                    for m in room.members.values()):
                 member.role = side
@@ -3567,7 +5409,10 @@ async def _room_handle_message(room, member, msg):
         return
 
     if mtype == "request_judgement" and is_host:
-        if room.judgement:
+        if (
+            room.judgement
+            and room.judgement_revision == room.transcript_revision
+        ):
             await member.ws.send_text(json.dumps({
                 "type": "judgement", "text": room.judgement,
             }, ensure_ascii=False))
@@ -3576,9 +5421,18 @@ async def _room_handle_message(room, member, msg):
         return
 
     if mtype == "test_ping":
+        client_ts = msg.get("client_ts")
+        if (
+            isinstance(client_ts, bool)
+            or not isinstance(client_ts, (int, float))
+            or not math.isfinite(client_ts)
+            or client_ts < 0
+            or client_ts > 10**16
+        ):
+            return
         await member.ws.send_text(json.dumps({
             "type": "test_pong",
-            "client_ts": msg.get("client_ts"),
+            "client_ts": client_ts,
             "server_now_ms": _now_ms(),
         }, ensure_ascii=False))
         return
@@ -3588,28 +5442,153 @@ async def _room_handle_message(room, member, msg):
         return
 
     if mtype == "test_audio":
+        if room.phase != "lobby":
+            return
         data, mime = _audio_fields(msg)
-        if data:
-            await _room_broadcast(
-                room,
-                {"type": "test_audio", "from": member.user_id, "data": data,
-                 "mimeType": mime or "audio/pcm;rate=16000"},
-                exclude=member.user_id,
+        # The real 0.7-second test tone is 22,400 bytes. Reject large or
+        # malformed payloads before fan-out so a lobby cannot amplify arbitrary
+        # near-frame-limit base64 blobs to every peer.
+        data = _validated_room_pcm(
+            data, mime, max_bytes=ROOM_TEST_AUDIO_MAX_BYTES,
+        )
+        if data is None:
+            return
+        now = _now_ms()
+        if now - member.last_test_audio_ms < ROOM_TEST_AUDIO_COOLDOWN_MS:
+            return
+        member.last_test_audio_ms = now
+        # A lobby can otherwise stay connected forever and amplify small input
+        # into per-peer egress without the active debate tick ever running.
+        try:
+            await asyncio.to_thread(_checkpoint_room_bandwidth, room, False)
+            room.last_bandwidth_checkpoint_ms = now
+            budget_error = await asyncio.to_thread(_bandwidth_live_gate_error)
+        except Exception as exc:
+            logger.warning(
+                "room lobby bandwidth check failed (%s, %s)",
+                room.code, type(exc).__name__,
             )
+            await _room_end(room, "server_lifecycle_failure")
+            return
+        if budget_error:
+            await _room_end(room, "monthly_bandwidth_limit")
+            return
+        test_id = secrets.token_hex(8)
+        expires_ms = now + ROOM_TEST_AUDIO_ACK_TTL_MS
+        for recipient in list(room.members.values()):
+            if not recipient.connected or recipient.user_id == member.user_id:
+                continue
+            for pending_id, (_source, expiry) in list(
+                recipient.pending_test_audio.items()
+            ):
+                if expiry < now:
+                    recipient.pending_test_audio.pop(pending_id, None)
+            while len(recipient.pending_test_audio) >= ROOM_TEST_AUDIO_PENDING_MAX:
+                recipient.pending_test_audio.pop(
+                    next(iter(recipient.pending_test_audio)), None,
+                )
+            recipient.pending_test_audio[test_id] = (
+                member.user_id, expires_ms,
+            )
+        await _room_broadcast(
+            room,
+            {"type": "test_audio", "from": member.user_id,
+             "test_id": test_id,
+             "data": data,
+             "mimeType": mime},
+            exclude=member.user_id,
+        )
         return
 
     if mtype == "test_received":
+        if room.phase != "lobby":
+            return
+        now = _now_ms()
+        if now - member.last_test_received_ms < ROOM_TEST_RECEIVED_COOLDOWN_MS:
+            return
+        source = msg.get("source")
+        test_id = msg.get("test_id")
+        if not isinstance(source, str) or not isinstance(test_id, str):
+            return
+        pending = member.pending_test_audio.get(test_id)
+        if pending is None:
+            return
+        expected_source, expires_ms = pending
+        source_member = room.members.get(expected_source)
+        if (
+            source != expected_source
+            or source == member.user_id
+            or now > expires_ms
+            or source_member is None
+            or not source_member.connected
+        ):
+            return
+        member.pending_test_audio.pop(test_id, None)
+        member.last_test_received_ms = now
         await _room_broadcast(
             room,
             {"type": "test_received", "from": member.user_id,
-             "source": msg.get("source")},
+             "source": expected_source},
         )
         return
 
     if mtype == "chat":
+        if room.phase in ("ending", "ended"):
+            return
         await _room_broadcast(room, {"type": "chat", "from": member.user_id,
                                      "text": str(msg.get("text", ""))[:500]})
         return
+
+
+def _build_room_plan(
+    code, mode, user_id, debate_format, topic, structure, free_minutes,
+    capacity, payload,
+):
+    """Build one lobby without mutating the global room registry."""
+    room = Room(
+        code, mode, user_id, debate_format, topic, structure,
+        free_minutes, capacity,
+    )
+    if mode == "A":
+        side = payload.get("side")
+        room.creator_side = side if side in ("正方", "反方") else "正方"
+        return room
+
+    human_side = payload.get("human_side")
+    room.human_side = human_side if human_side in ("正方", "反方") else "正方"
+    prompt = (
+        build_full_mock_live_prompt(
+            topic, room.human_side, debate_format,
+            free_debate_minutes=free_minutes if debate_format == "聯中" else None,
+        )
+        if structure == "mock"
+        else build_free_debate_live_prompt(topic, room.human_side, "")
+    )
+    if structure == "mock":
+        sessions = split_mock_into_sessions(room.segments)
+        room.segments = [
+            {**segment, "session": session_index}
+            for session_index, session in enumerate(sessions)
+            for segment in session["segments"]
+        ]
+        session_labels = [session["label"] for session in sessions]
+        session_minutes = [
+            max(3, full_mock_total_seconds(session["segments"]) / 60 + 2)
+            for session in sessions
+        ]
+    else:
+        session_labels = []
+        session_minutes = [
+            min(
+                float(LIVE_FREE_MAX_MINUTES) + 2,
+                full_mock_total_seconds(room.segments) / 60 + 2,
+            )
+        ]
+    room.gemini = {
+        "tokens": [], "prompt": prompt, "model": FREE_DEBATE_LIVE_MODEL,
+        "session_labels": session_labels, "session_minutes": session_minutes,
+    }
+    return room
 
 
 @app.post("/api/room/create")
@@ -3618,10 +5597,6 @@ async def room_create(request: Request):
     budget_error = _bandwidth_live_gate_error()
     if budget_error:
         raise HTTPException(status_code=429, detail=budget_error)
-    _gc_rooms()
-    if _active_room_count() >= MAX_ROOMS:
-        raise HTTPException(status_code=429, detail="太多練習房，請稍後再試")
-
     try:
         payload = await request.json()
     except Exception:
@@ -3663,52 +5638,30 @@ async def room_create(request: Request):
         except Exception:
             capacity = ROOM_MAX_CAPACITY
 
-    code = None
-    for _ in range(20):
-        candidate = "".join(secrets.choice(ROOM_CODE_ALPHABET) for _ in range(ROOM_CODE_LEN))
-        if candidate not in ROOMS:
-            code = candidate
-            break
-    if code is None:
-        raise HTTPException(status_code=503, detail="未能產生房間代碼，請再試。")
-
-    room = Room(code, mode, user_id, debate_format, topic, structure, free_minutes, capacity)
-    if mode == "A":
-        side = payload.get("side")
-        room.creator_side = side if side in ("正方", "反方") else "正方"
-    else:
-        hs = payload.get("human_side")
-        room.human_side = hs if hs in ("正方", "反方") else "正方"
-        # Lobby creation stores only a server-side plan.  Quota reservation and
-        # Gemini token minting happen after every connected member passes the
-        # precheck, so abandoned lobbies cost neither quota nor provider token.
-        prompt = (
-            build_full_mock_live_prompt(topic, room.human_side, debate_format,
-                                        free_debate_minutes=free_minutes if debate_format == "聯中" else None)
-            if structure == "mock"
-            else build_free_debate_live_prompt(topic, room.human_side, "")
+    async with ROOMS_LOCK:
+        _gc_rooms()
+        if _active_room_count() >= MAX_ROOMS:
+            raise HTTPException(status_code=429, detail="太多練習房，請稍後再試")
+        code = None
+        for _ in range(20):
+            candidate = "".join(
+                secrets.choice(ROOM_CODE_ALPHABET) for _ in range(ROOM_CODE_LEN)
+            )
+            if candidate not in ROOMS:
+                code = candidate
+                break
+        if code is None:
+            raise HTTPException(status_code=503, detail="未能產生房間代碼，請再試。")
+        room = _build_room_plan(
+            code, mode, user_id, debate_format, topic, structure,
+            free_minutes, capacity, payload,
         )
-        if structure == "mock":
-            sessions = split_mock_into_sessions(room.segments)
-            room.segments = [
-                {**segment, "session": session_index}
-                for session_index, session in enumerate(sessions)
-                for segment in session["segments"]
-            ]
-            session_labels = [session["label"] for session in sessions]
-            session_minutes = [
-                max(3, full_mock_total_seconds(session["segments"]) / 60 + 2)
-                for session in sessions
-            ]
-        else:
-            session_labels = []
-            session_minutes = [min(float(LIVE_FREE_MAX_MINUTES) + 2, full_mock_total_seconds(room.segments) / 60 + 2)]
-        room.gemini = {
-            "tokens": [], "prompt": prompt, "model": FREE_DEBATE_LIVE_MODEL,
-            "session_labels": session_labels, "session_minutes": session_minutes,
-        }
-    ROOMS[code] = room
-    return {"ok": True, "code": code, "mode": mode}
+        ROOMS[code] = room
+        _room_ensure_lifecycle(room)
+    return JSONResponse(
+        {"ok": True, "code": code, "mode": mode},
+        headers={"Cache-Control": CACHE_NO_STORE},
+    )
 
 
 @app.get("/api/room/{code}")
@@ -3717,14 +5670,14 @@ async def room_info(code: str, request: Request):
     room = ROOMS.get((code or "").upper())
     if not room or room.phase == "ended":
         raise HTTPException(status_code=404, detail="房間不存在或已結束")
-    return {
+    return JSONResponse({
         "ok": True, "code": room.code, "mode": room.mode, "phase": room.phase,
         "debate_format": room.debate_format, "topic": room.topic,
         "structure": room.structure, "capacity": room.capacity,
         "human_side": room.human_side, "roster": room.roster(),
         "position_labels": room.position_labels(),
         "required_positions": room.required_positions(),
-    }
+    }, headers={"Cache-Control": CACHE_NO_STORE})
 
 
 @app.post("/api/room/{code}/leave")
@@ -3733,27 +5686,98 @@ async def room_leave(code: str, request: Request):
     room = ROOMS.get((code or "").upper())
     if room and user_id in room.members:
         m = room.members[user_id]
+        if m.connected and room.active_turn_user == user_id:
+            await _room_handle_turn(room, m, False)
         m.connected = False
         try:
             await m.ws.close()
         except Exception:
             pass
+        if room.phase == "lobby":
+            room.members.pop(user_id, None)
+            room.precheck_results.pop(user_id, None)
         await _room_broadcast(room, {
             "type": "roster", "roster": room.roster(),
             "position_labels": room.position_labels(),
             "required_positions": room.required_positions(),
         })
-    return {"ok": True}
+        if not room.connected_user_ids():
+            _room_schedule_empty_cleanup(room)
+    return JSONResponse(
+        {"ok": True}, headers={"Cache-Control": CACHE_NO_STORE},
+    )
 
 
 @app.get("/api/room/{code}/transcript")
 async def room_transcript(code: str, request: Request):
-    _require_committee_user(request)
+    user_id = _require_committee_user(request)
     room = ROOMS.get((code or "").upper())
     if not room:
         raise HTTPException(status_code=404, detail="房間不存在")
-    return {"ok": True, "topic": room.topic, "debate_format": room.debate_format,
-            "transcript": room.transcript}
+    if user_id not in room.members:
+        raise HTTPException(status_code=403, detail="只有房間成員可查看逐字稿")
+    return JSONResponse({
+        "ok": True, "topic": room.topic, "debate_format": room.debate_format,
+        "phase": room.phase,
+        "transcript": room.transcript, "judgement": room.judgement,
+        "transcript_revision": room.transcript_revision,
+        "judgement_revision": room.judgement_revision,
+        "judgement_pending": bool(
+            room.transcript
+            and room.judgement_revision != room.transcript_revision
+        ),
+    }, headers={"Cache-Control": CACHE_NO_STORE})
+
+
+async def _room_register_socket(room, user_id, websocket):
+    """Atomically enforce lobby capacity and replace a stale member socket."""
+    stale_websocket = None
+    async with room.lock:
+        if room.phase in ("ending", "ended") or room.terminal_requested:
+            return None, "房間已結束。", 1008
+        _room_prune_lobby_offline_members(room)
+        existing = room.members.get(user_id)
+        if existing is None:
+            if room.phase != "lobby":
+                return None, "練習開始後不可加入新成員。", 1008
+            if len(room.connected_user_ids()) >= room.capacity:
+                return None, "房間已滿", 1013
+            member = RoomMember(user_id, websocket)
+            if room.mode == "A":
+                if user_id == room.created_by and room.creator_side:
+                    member.role = room.creator_side
+                else:
+                    taken = {m.role for m in room.members.values() if m.connected}
+                    for side in ("正方", "反方"):
+                        if side not in taken:
+                            member.role = side
+                            break
+            else:
+                member.role = room.human_side
+            room.members[user_id] = member
+        else:
+            if not existing.connected and len(room.connected_user_ids()) >= room.capacity:
+                return None, "房間已滿", 1013
+            if existing.position and any(
+                m.connected and m.user_id != existing.user_id
+                and m.position == existing.position
+                for m in room.members.values()
+            ):
+                existing.position = None
+            if existing.ws is not websocket:
+                stale_websocket = existing.ws
+                existing.connection_generation += 1
+                room.precheck_results.pop(user_id, None)
+            existing.ws = websocket
+            existing.connected = True
+            member = existing
+        _room_cancel_empty_cleanup(room)
+    if stale_websocket is not None:
+        try:
+            await stale_websocket.close(code=1000, reason="connection replaced")
+        except Exception:
+            pass
+    return member, "", 0
 
 
 @app.websocket("/room/{code}")
@@ -3773,88 +5797,70 @@ async def room_ws(websocket: WebSocket, code: str):
 
     await websocket.accept()
 
-    existing = room.members.get(user_id)
-    if existing is None:
-        if room.phase != "lobby":
-            try:
-                await websocket.send_text(json.dumps(
-                    {"type": "error", "message": "練習開始後不可加入新成員。"},
-                    ensure_ascii=False,
-                ))
-            except Exception:
-                pass
-            await websocket.close(code=1008)
-            return
-        if len([m for m in room.members.values() if m.connected]) >= room.capacity:
-            try:
-                await websocket.send_text(json.dumps(
-                    {"type": "error", "message": "房間已滿"}, ensure_ascii=False))
-            except Exception:
-                pass
-            await websocket.close(code=1013)
-            return
-        member = RoomMember(user_id, websocket)
-        if room.mode == "A":
-            if user_id == room.created_by and room.creator_side:
-                member.role = room.creator_side
-            else:
-                taken = {m.role for m in room.members.values()}
-                for s in ("正方", "反方"):
-                    if s not in taken:
-                        member.role = s
-                        break
-        else:
-            member.role = room.human_side
-        room.members[user_id] = member
-    else:
-        # reconnect: replace the stale socket, keep the role
-        if not existing.connected and len([m for m in room.members.values() if m.connected]) >= room.capacity:
-            try:
-                await websocket.send_text(json.dumps(
-                    {"type": "error", "message": "房間已滿"}, ensure_ascii=False))
-            except Exception:
-                pass
-            await websocket.close(code=1013)
-            return
-        if existing.position and any(
-                m.connected and m.user_id != existing.user_id and m.position == existing.position
-                for m in room.members.values()):
-            existing.position = None
-        existing.ws = websocket
-        existing.connected = True
-        member = existing
-    room.empty_since = None
-
-    await websocket.send_text(json.dumps({
-        "type": "roster", "you": user_id, "mode": room.mode,
-        "roster": room.roster(), "topic": room.topic,
-        "debate_format": room.debate_format, "structure": room.structure,
-        "position_labels": room.position_labels(),
-        "required_positions": room.required_positions(),
-        "is_host": user_id == room.created_by,
-        "transcript": room.transcript,
-        "judgement": room.judgement,
-    }, ensure_ascii=False))
-    await websocket.send_text(json.dumps(room.state_msg(), ensure_ascii=False))
-    await _room_broadcast(room, {
-        "type": "roster", "roster": room.roster(),
-        "position_labels": room.position_labels(),
-        "required_positions": room.required_positions(),
-    }, exclude=user_id)
+    member, registration_error, close_code = await _room_register_socket(
+        room, user_id, websocket,
+    )
+    if registration_error:
+        try:
+            await websocket.send_text(json.dumps(
+                {"type": "error", "message": registration_error}, ensure_ascii=False,
+            ))
+        except Exception:
+            pass
+        await websocket.close(code=close_code)
+        return
+    socket_generation = member.connection_generation
 
     try:
+        await websocket.send_text(json.dumps({
+            "type": "roster", "you": user_id, "mode": room.mode,
+            "roster": room.roster(), "topic": room.topic,
+            "debate_format": room.debate_format, "structure": room.structure,
+            "position_labels": room.position_labels(),
+            "required_positions": room.required_positions(),
+            "is_host": user_id == room.created_by,
+            "transcript": room.transcript,
+            "judgement": room.judgement,
+        }, ensure_ascii=False))
+        await websocket.send_text(json.dumps(room.state_msg(), ensure_ascii=False))
+        await _room_broadcast(room, {
+            "type": "roster", "roster": room.roster(),
+            "position_labels": room.position_labels(),
+            "required_positions": room.required_positions(),
+        }, exclude=user_id)
         while True:
             raw = await websocket.receive()
+            if (
+                member.ws is not websocket
+                or member.connection_generation != socket_generation
+            ):
+                break
             if raw.get("type") == "websocket.disconnect":
                 break
             text = raw.get("text")
             if text is None:
-                continue
-            try:
-                msg = json.loads(text)
-            except Exception:
-                continue
-            await _room_handle_message(room, member, msg)
+                # Room clients have no binary protocol.  Closing prevents an
+                # authenticated peer from repeatedly making Uvicorn retain
+                # large binary frames without touching either member bucket.
+                await websocket.close(code=1009, reason="text JSON required")
+                break
+            # A valid 64 KiB PCM frame is under 90 KiB after base64 + JSON.
+            # The parser helper rejects larger/non-object messages before they
+            # can use the 4 MiB Uvicorn ceiling as an allocation budget.
+            if (
+                len(text) > ROOM_WS_TEXT_MAX_BYTES
+                or len(text.encode("utf-8")) > ROOM_WS_TEXT_MAX_BYTES
+            ):
+                await websocket.close(code=1009, reason="room message too large")
+                break
+            msg = _parse_room_client_text(text)
+            if msg is None:
+                await websocket.close(code=1007, reason="invalid room JSON")
+                break
+            await _room_handle_message(
+                room, member, msg,
+                websocket=websocket, generation=socket_generation,
+            )
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -3864,14 +5870,31 @@ async def room_ws(websocket: WebSocket, code: str):
         # its disconnect event.  Only the currently registered socket may mark
         # the member offline; otherwise the old loop drops the new connection
         # and audio appears to disappear until another reconnect happens.
-        if member.ws is websocket:
-            member.connected = False
-            await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
-            await _room_broadcast(room, {
-                "type": "roster", "roster": room.roster(),
-                "position_labels": room.position_labels(),
-                "required_positions": room.required_positions(),
-            })
+        if (
+            member.ws is websocket
+            and member.connection_generation == socket_generation
+        ):
+            if room.active_turn_user == user_id:
+                await _room_handle_turn(room, member, False)
+            async with room.lock:
+                is_current = (
+                    member.ws is websocket
+                    and member.connection_generation == socket_generation
+                )
+                if is_current:
+                    member.connected = False
+                    if room.phase == "lobby":
+                        room.members.pop(user_id, None)
+                        room.precheck_results.pop(user_id, None)
+            if is_current:
+                await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
+                await _room_broadcast(room, {
+                    "type": "roster", "roster": room.roster(),
+                    "position_labels": room.position_labels(),
+                    "required_positions": room.required_positions(),
+                })
+                if not room.connected_user_ids() and not room.terminal_requested:
+                    _room_schedule_empty_cleanup(room)
         _gc_rooms()
 
 
