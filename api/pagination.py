@@ -1,6 +1,7 @@
 """Small, consistent pagination helpers for JSON collection endpoints."""
 
 import math
+from decimal import Decimal
 
 from system_limits import API_PAGE_SIZE
 
@@ -22,6 +23,17 @@ def json_safe(value):
         return {key: json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [json_safe(item) for item in value]
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return None
+        exponent = value.as_tuple().exponent
+        return int(value) if isinstance(exponent, int) and exponent >= 0 else float(value)
+    value_type = type(value)
+    if (
+        value_type.__module__.startswith("pandas.")
+        and value_type.__name__ in {"NAType", "NaTType"}
+    ):
+        return None
     if hasattr(value, "item"):
         try:
             return json_safe(value.item())

@@ -180,6 +180,12 @@
       !resetPage,
     );
   }
+  function syncRecordingExport() {
+    const speaker = $("speakerFilter").value.trim();
+    $("recordExport").href =
+      "/api/ai-training/export/recordings.json" +
+      (speaker ? "?speaker=" + encodeURIComponent(speaker) : "");
+  }
   function chooseScript() {
     const mode = $("scriptType").value,
       all = data.scripts.filter((s) => s.script_type === mode),
@@ -335,6 +341,21 @@
           `<p><b>${esc(speaker.speaker_user_id)}</b>：accepted ${speaker.accepted_minutes || 0}分鐘（${speaker.accepted_clips || 0}段）｜現行授權 eligible ${speaker.eligible_clips || 0}段｜pending ${speaker.pending_minutes || 0}分鐘</p>`,
       )
       .join("");
+    const speakerFilter = $("speakerFilter"),
+      selectedSpeaker = speakerFilter.value,
+      speakers = (ready.speakers || []).map((speaker) =>
+        String(speaker.speaker_user_id || "").trim(),
+      ),
+      speakerOptions = speakers
+        .filter(Boolean)
+        .map((speaker) => `<option value="${esc(speaker)}">${esc(speaker)}</option>`)
+        .join("");
+    speakerFilter.innerHTML =
+      '<option value="">全部錄音者</option>' + speakerOptions;
+    speakerFilter.value = speakers.includes(selectedSpeaker)
+      ? selectedSpeaker
+      : "";
+    syncRecordingExport();
     $("readinessSummary").innerHTML =
       `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}｜固定Eval：${evalStatus}</p>${speakerStatus || "<p>暫無聲線資料。</p>"}`;
     window.inventory = inv;
@@ -638,11 +659,8 @@
       ? submitLlm(true)
       : toast("⚠️ 請先確認資料適合提交。");
   $("recordFilter").onchange = () => loadRecordings(true);
-  $("speakerFilter").oninput = () => {
-    const speaker = $("speakerFilter").value.trim();
-    $("recordExport").href =
-      "/api/ai-training/export/recordings.json" +
-      (speaker ? "?speaker=" + encodeURIComponent(speaker) : "");
+  $("speakerFilter").onchange = () => {
+    syncRecordingExport();
     loadRecordings(true);
   };
   $("lexiconForm").onsubmit = (e) =>
