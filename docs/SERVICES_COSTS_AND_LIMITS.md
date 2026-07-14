@@ -184,11 +184,8 @@ BANDWIDTH_BASELINE_TRACKED_BYTES=<該刻bandwidth_usage_logs本月累計bytes>
 計算為`baseline + max(0, tracked_now - tracked_snapshot)`。缺少snapshot時會沿用
 保守舊算法，可能高估但不會低估；`baseline_as_of`不是當月時會忽略舊baseline。
 
-AI Coach／TTS送往provider的錄音bytes、Render回傳的TTS audio，以及所有CSV／JSONL export bytes亦會寫入同一
-bandwidth tracker。其他保護限制：HTTP request body 5MB、AI Coach分析錄音2MB／60秒、同時最多三個
-AI Coach request、同時最多兩個
-聯機房、單條Gemini relay 96MB、相片每次5張／每人每日20張／全系統每月500張、
-錄音每段2MB／60秒、TTS音質檢查同時最多2個。
+AI Coach／TTS送往provider的錄音bytes、Render回傳的TTS audio，以及所有CSV／JSONL
+export bytes亦會寫入同一bandwidth tracker。個別功能限額見上文「已實施限制」。
 
 ## Repo-wide RAM／storage保護
 

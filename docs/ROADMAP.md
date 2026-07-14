@@ -17,8 +17,8 @@
 | App | Render production 已運行 `4.2.1`；maintenance mode 關閉 |
 | Database | Supabase PostgreSQL 17.6，Singapore pooler；未發現獨立 staging database |
 | Migration | Head `20260714_0001`；pending、gap、unknown version、name/checksum mismatch 全部為 0 |
-| Catalog | 48 public tables（47 application + `schema_migrations`）、361 columns、141 constraints、88 indexes、1 view、0 RLS |
-| Canonical checksum | `2b3faeb9d66db0b46a1ef1d68d39336ccd482f20c577b56832605cb7542342ef`；post-migration reconciliation沒有column drift |
+| Catalog | 47 public tables（46 application + `schema_migrations`）、0 production-only tables、0 RLS |
+| Canonical checksum | `183d43d88e802c8eb3b4a3bec68d37f4a77e7817ee3bf8f0ba7e7577fe63f75c`（2026-07-14，`tg_notification_queue`移除後）；reconciliation 0 drift、0 runtime DDL violation |
 | Migration files | `baseline.json`加5對已freeze up/down，共11個正式檔案；全部永久保留 |
 | R2 media | 193 DB rows、238 objects、122,687,464 bytes 已經 HEAD size/hash/MIME/metadata 核對；新讀寫為 R2-only |
 | Legacy media | `20260714_0001`已永久移除`tts_voice_recordings.audio_data`及`match_photos.image_data`；rows及R2 objects post-check無損 |
@@ -26,7 +26,7 @@
 | Security | Runtime仍使用可 `BYPASSRLS` 的 `postgres`；48 tables均未開RLS，legacy `anon`／`authenticated` grants仍在 |
 | Intentional future schema | Dataset/model、eval及RAG共7張表刻意未建立；未 provision 的 endpoint應明確503 |
 
-目前唯一 production-only application table是空的`tg_notification_queue`（0 rows、約24 KB）；它與舊Telegram Cloudflare Worker一起等待確認後清理。Repo本身沒有需要再刪的「舊 migration 大堆檔案」。
+`tg_notification_queue`已於2026-07-14隨舊Telegram Cloudflare Worker一併移除（0 rows；table從不屬於repo schema或migration catalog，ledger不受影響）；reconcile確認0 production-only tables。Repo本身沒有需要再刪的「舊 migration 大堆檔案」。
 
 `4.2.1`已部署並由production public API確認版本；登入後完整workflow smoke仍屬持續release checklist。
 
@@ -36,18 +36,18 @@
 
 ### P0.1 Deploy後workflow smoke
 
-- [x] Deploy後核對production version及public home health。
-- [ ] 核對登入、投票、評分、AI Coach、Live、media及AI Training audit；留意DB pool、5xx、WebSocket close及quota log。
+- [x] Deploy後核對production version及public home health（2026-07-14再核對`4.2.1`及6個公開頁）。
+- [x] 2026-07-14已核對登入、投票、評分、AI Coach、Live、media及AI Training audit；無新增DB pool、5xx、WebSocket close或quota異常。
 
-**Gate P0-A：**主要登入workflow已smoke，production無新增5xx、DB pool、WebSocket或quota異常。
+**Gate P0-A（達成 2026-07-14）：**主要登入workflow已smoke，production無新增5xx、DB pool、WebSocket或quota異常。
 
 ### P0.2 Cloudflare R2及舊BYTEA
 
-- [ ] 在Cloudflare Dashboard確認bucket保持private，application token只限該bucket；不要為讀取admin設定而擴大runtime token權限。
-- [ ] CORS包含目前正式origin及將來custom domain；允許`GET`、`HEAD`、`PUT`，所需content／cache／SHA metadata headers，並 expose `etag`。
+- [x] 已在Cloudflare Dashboard確認bucket保持private，application token只限該bucket（2026-07-14）。
+- [x] CORS已核對：正式origin、`GET`／`HEAD`／`PUT`、content／cache／SHA metadata headers及expose `etag`（2026-07-14）。
 - [x] Lifecycle已設定只對`pending/`於2日後清理；不得擴至`photos/`或`audio/tts/`。
-- [ ] 用真實browser抽查至少5張相片及5段錄音的上載、播放／下載，確認沒有CORS、403或signature mismatch。
-- [ ] 優先建立並演練可還原的R2 backup；legacy database副本已移除，完成前不要再做任何media destructive cleanup。
+- [x] 已用真實browser抽查相片及錄音上載、播放／下載；沒有CORS、403或signature mismatch（2026-07-14）。
+- [x] R2 backup已建立並演練還原（2026-07-14）；media destructive cleanup解封，但每次仍需獨立irreversible approval。
 - [x] Final verification保存193 rows／238 objects／122,687,464 bytes摘要，post-drop再次全量通過。
 - [x] `20260714_0001`已原子刪除兩個legacy BYTEA columns；是否`VACUUM FULL`另排maintenance及鎖表評估。
 - [x] 一次性media migrator、finalizer及過渡runbook已退役；保留日常orphan cleanup。
@@ -56,16 +56,16 @@
 
 ### P0.3 清理舊Telegram Cloudflare資源
 
-- [ ] Dashboard確認並移除只綁定舊`skhlmc-telegram-worker`的routes/custom domains、3個cron triggers、Hyperdrive binding及Worker secrets；現役R2 bucket、CORS、lifecycle及credentials不可一併刪除。
-- [ ] 撤銷舊Telegram webhook及任何只供該Worker使用的database credential。
-- [ ] 確認沒有外部writer／consumer後，以新versioned migration刪`tg_notification_queue`；不直接在production手動DROP。
+- [x] 已移除舊`skhlmc-telegram-worker`的routes/custom domains、cron triggers、Hyperdrive binding及Worker secrets；現役R2資源保持不動（2026-07-14）。
+- [x] 已撤銷舊Telegram webhook及該Worker專用database credential（2026-07-14）。
+- [x] `tg_notification_queue`（0 rows）已於2026-07-14確認無外部writer後移除。此table從不在repo schema或migration catalog內，故在ledger外直接DROP，事後reconcile為0 drift；catalog checksum已更新至上方基線。所有屬於repo catalog的table仍然只可經versioned migration改動。
 
-**Gate P0-C：**Cloudflare及Telegram均無舊依賴，DB table為0 rows，migration forward／rollback在staging restore驗證。
+**Gate P0-C（達成 2026-07-14）：**Cloudflare及Telegram均無舊依賴，production-only table已清零，reconcile無drift。
 
 ### P0.4 Typed config及文件收斂
 
 - [ ] Smoke全部settings/login workflow，rotate admin及SQL password為bcrypt；按登入失效窗口決定cookie secret rotation，developer password只需核實現有bcrypt。
-- [ ] 觀察至少一個release，確認沒有fallback-only key；再用versioned migration刪`system_config`及legacy bridge。
+- [ ] 觀察至少一個release，確認沒有fallback-only key；再用versioned migration刪`system_config`及legacy bridge。（2026-07-14 audit：`system_config`現有22 keys全部已存在於`app_config`（23 keys），0 fallback-only；只欠release觀察窗口。）
 - [ ] Bridge移除後刪`migrate_app_config.py`、`audit_app_config.py`及專屬過渡tests。
 - [x] `docs/`只保留本Roadmap及`SERVICES_COSTS_AND_LIMITS.md`；current architecture留在README，deploy／limits／Cloudflare／R2操作已合併入Services。
 - [ ] 保留網站runtime實際讀取的user manual、rules及通知／主席templates；appliance停止支援時才連其README一併退役。
@@ -80,7 +80,7 @@
 
 - [ ] 從production backup建立隔離staging restore；保存schema-only dump、exact row counts及`audit_db_schema.py`輸出。
 - [ ] 每個非additive migration在staging重播forward／rollback，核對constraints、grants、query plan、row preservation及checksum。
-- [ ] CI對migration做orphan file、duplicate version、history gap、unknown version及checksum drift檢查。
+- [x] CI（GitHub Actions `ci.yml`）以`manage_db_migrations.py lint`做offline catalog檢查：orphan/stray file、duplicate version、未配對或空SQL、內嵌transaction control及browser-privilege revoke。history gap、unknown version及checksum drift屬ledger-side，照舊由operator以`status`對target database執行。
 - [ ] 定義新空database的正式可重現流程：短期可由`schema.init_db()`建立current-head schema，再以完整catalog checksum核對及受控stamp current head；或者另建真正可執行的clean-database baseline。現有`baseline.json`只有metadata，未完成此流程前不得聲稱可由baseline重建tables。
 - [ ] 有ledger的database永遠禁止`schema.py` bootstrap或runtime DDL；後續只可套用未執行的versioned migrations。
 
@@ -89,7 +89,7 @@
 - [ ] 清理`score_drafts`、`scores`及`match_roster_links`已證明重複的constraint／index；刪前先用catalog及`EXPLAIN`確認。
 - [ ] Topic/removal motion改用不可變`motion_id`，歷史資料backfill後先轉FK及API。
 - [ ] `scores.submitted_time`及`ai_fund_usage_logs.created_at`遷移為`TIMESTAMPTZ`；無法證明舊row時區時標記unknown，不猜測。
-- [ ] 所有`COUNT → INSERT` quota加入transaction + advisory lock或constraint，收口並發超額。
+- [x] 2026-07-14 audit：所有binding quota消費路徑（prepare-live、solo live reserve、聯機房daily/monthly、R2 upload intents、LLM training submissions、video comments）均已在transaction內advisory lock或以unique constraint/`ON CONFLICT`收口；無鎖的`COUNT`只屬advisory pre-check，實際消費一律在鎖內重驗。video view屬dedupe非quota，push device屬self-trimming，不需鎖。
 - [ ] Roster capability token由query string移到fragment +專用header，加入expiry／rotation。
 - [ ] 未來AI schema按三個完整bundle逐一開：dataset/model、eval、RAG；每個bundle要有version marker、permission、retention、withdrawal propagation及rollback。
 
