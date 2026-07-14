@@ -27,7 +27,6 @@ _EXTENSIONS = {
     "audio/wav": "wav", "audio/ogg": "ogg",
 }
 
-
 class MediaProbeError(ValueError):
     """A safe validation error suitable for returning to an authenticated user."""
 
@@ -48,10 +47,31 @@ def audio_extension(mime: str) -> str:
     return _EXTENSIONS[canonical_audio_mime(mime)]
 
 
+def _decoded_duration_seconds(source_path: str, max_seconds: float) -> float:
+    """Measure audio by bounded PCM decode when live WebM has no duration tag."""
+    sample_rate = 16_000
+    bytes_per_sample = 2
+    decode_limit = float(max_seconds) + 1.0
+    result = subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-i", source_path, "-map", "0:a:0", "-vn", "-sn", "-dn",
+            "-ac", "1", "-ar", str(sample_rate), "-t", f"{decode_limit:g}",
+            "-f", "s16le", "pipe:1",
+        ],
+        capture_output=True,
+        timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise MediaProbeError("錄音檔案損壞或實際格式不受支援")
+    return len(result.stdout or b"") / (sample_rate * bytes_per_sample)
+
+
 def probe_audio(
     audio: bytes,
     mime: str,
-    claimed_duration: float,
+    claimed_duration: float | None,
     *,
     max_seconds: float,
 ) -> dict:
@@ -61,12 +81,14 @@ def probe_audio(
     function writes the already-bounded payload to a temporary file.
     """
     canonical_mime = canonical_audio_mime(mime)
-    try:
-        claimed = float(claimed_duration)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise MediaProbeError("錄音長度資料無效，請重新錄製") from exc
-    if not 1 <= claimed <= float(max_seconds):
-        raise MediaProbeError(f"錄音長度必須為 1 至 {int(max_seconds)} 秒")
+    claimed = None
+    if claimed_duration is not None:
+        try:
+            claimed = float(claimed_duration)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise MediaProbeError("錄音長度資料無效，請重新錄製") from exc
+        if not 1 <= claimed <= float(max_seconds):
+            raise MediaProbeError(f"錄音長度必須為 1 至 {int(max_seconds)} 秒")
 
     try:
         with tempfile.NamedTemporaryFile(suffix="." + audio_extension(canonical_mime)) as handle:
@@ -75,7 +97,7 @@ def probe_audio(
             result = subprocess.run(
                 [
                     "ffprobe", "-v", "error", "-show_entries",
-                    "format=format_name,duration:stream=codec_type,sample_rate,channels",
+                    "format=format_name,duration:stream=codec_type,sample_rate,channels,duration",
                     "-of", "json", handle.name,
                 ],
                 capture_output=True,
@@ -83,35 +105,38 @@ def probe_audio(
                 timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
                 check=False,
             )
+            if result.returncode != 0:
+                raise MediaProbeError("錄音檔案損壞或實際格式不受支援")
+            try:
+                info = json.loads(result.stdout or "{}")
+                fmt = info.get("format") or {}
+                stream = next(
+                    item for item in (info.get("streams") or [])
+                    if item.get("codec_type") == "audio"
+                )
+                duration = float(fmt.get("duration") or stream.get("duration") or 0)
+                sample_rate = int(stream.get("sample_rate") or 0)
+                channels = int(stream.get("channels") or 0)
+                format_names = {
+                    item.strip().lower()
+                    for item in str(fmt.get("format_name") or "").split(",")
+                    if item.strip()
+                }
+            except (ValueError, TypeError, StopIteration, OverflowError) as exc:
+                raise MediaProbeError("錄音未包含可讀取的聲音軌") from exc
+            if duration <= 0:
+                duration = _decoded_duration_seconds(handle.name, max_seconds)
+    except MediaProbeError:
+        raise
     except (OSError, subprocess.SubprocessError) as exc:
         raise MediaProbeError(
             "伺服器未能執行音訊格式驗證", service_unavailable=True,
         ) from exc
 
-    if result.returncode != 0:
-        raise MediaProbeError("錄音檔案損壞或實際格式不受支援")
-    try:
-        info = json.loads(result.stdout or "{}")
-        fmt = info.get("format") or {}
-        stream = next(
-            item for item in (info.get("streams") or [])
-            if item.get("codec_type") == "audio"
-        )
-        duration = float(fmt.get("duration") or 0)
-        sample_rate = int(stream.get("sample_rate") or 0)
-        channels = int(stream.get("channels") or 0)
-        format_names = {
-            item.strip().lower()
-            for item in str(fmt.get("format_name") or "").split(",")
-            if item.strip()
-        }
-    except (ValueError, TypeError, StopIteration, OverflowError) as exc:
-        raise MediaProbeError("錄音未包含可讀取的聲音軌") from exc
-
     if not 1 <= duration <= float(max_seconds):
         raise MediaProbeError(f"錄音實際長度必須為 1 至 {int(max_seconds)} 秒")
     tolerance = max(2.0, duration * 0.2)
-    if abs(duration - claimed) > tolerance:
+    if claimed is not None and abs(duration - claimed) > tolerance:
         raise MediaProbeError("錄音實際長度與瀏覽器回報不符，請重新錄製")
     if not format_names.intersection(_FORMAT_NAMES[canonical_mime]):
         raise MediaProbeError("錄音宣稱格式與實際檔案格式不符")
