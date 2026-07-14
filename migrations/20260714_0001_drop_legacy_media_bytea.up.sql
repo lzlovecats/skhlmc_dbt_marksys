@@ -49,10 +49,14 @@ BEGIN
        OR audio_data IS NULL
        OR size_bytes <> OCTET_LENGTH(audio_data);
 
-    IF unsafe_photos <> 0 OR unsafe_audio <> 0 THEN
+    IF unsafe_photos <> 0 THEN
         RAISE EXCEPTION
-            'refusing legacy media drop: % unsafe photos, % unsafe recordings',
-            unsafe_photos, unsafe_audio;
+            'refusing legacy media drop because one or more photos are unsafe';
+    END IF;
+
+    IF unsafe_audio <> 0 THEN
+        RAISE EXCEPTION
+            'refusing legacy media drop because one or more recordings are unsafe';
     END IF;
 END
 $migration$;
