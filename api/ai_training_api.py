@@ -57,8 +57,8 @@ from system_limits import (
 )
 
 router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
-CONSENT_VERSION = "tts_voice_v3_2026_07"
-CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 TTS、讀音檢查及建立可生成近似本人聲音的語音模型；資料可交由受控雲端 GPU／AI 服務處理，但不會公開原始錄音或 checkpoint。我可撤回未來使用；撤回後錄音不再納入新資料集，使用過該錄音的 checkpoint會被停止部署並安排排除資料重訓。未成年錄音者須另有家長／學校授權。"
+CONSENT_VERSION = "tts_voice_v4_2026_07"
+CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 TTS、讀音檢查及建立可生成近似本人聲音的語音模型；資料可交由受控雲端 GPU／AI 服務處理，但不會公開原始錄音或 checkpoint。我可撤回未來使用；撤回後錄音不再納入新資料集，使用過該錄音的 checkpoint會被停止部署並安排排除資料重訓。"
 ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_reviewers"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
 ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE
@@ -88,8 +88,6 @@ class ConsentBody(BaseModel):
     agreed: bool
     voice_cloning_confirmed: bool
     cloud_processing_confirmed: bool
-    is_minor: bool
-    guardian_confirmed: bool
 
 
 class RecordingBody(BaseModel):
@@ -679,8 +677,6 @@ def consent(body: ConsentBody, request: Request):
     if not body.agreed: raise HTTPException(400, "必須同意錄音用途及授權安排")
     if not body.voice_cloning_confirmed or not body.cloud_processing_confirmed:
         raise HTTPException(400, "必須確認聲線模型及受控雲端處理用途")
-    if body.is_minor and not body.guardian_confirmed:
-        raise HTTPException(400, "未成年錄音者必須確認已取得家長／學校授權")
     changed = False
     with db.transaction() as conn:
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {
@@ -710,7 +706,7 @@ def consent(body: ConsentBody, request: Request):
                           OR {TABLE_TTS_VOICE_CONSENTS}.guardian_confirmed IS DISTINCT FROM EXCLUDED.guardian_confirmed
                        RETURNING 1"""),
                    {"user":user,"version":CONSENT_VERSION,"consent":CONSENT_TEXT,"now":datetime.now(),
-                    "minor":body.is_minor,"guardian":body.guardian_confirmed})
+                    "minor":False,"guardian":False})
         stored = conn.execute(text(f"""SELECT consent_text
             FROM {TABLE_TTS_VOICE_CONSENTS}
             WHERE user_id=:user AND consent_version=:version"""),
@@ -724,8 +720,8 @@ def consent(body: ConsentBody, request: Request):
         if changed:
             _audit(db, user, "consent_granted", "tts_consent", CONSENT_VERSION,
                    {
-                       "is_minor": body.is_minor,
-                       "guardian_confirmed": body.guardian_confirmed,
+                       "is_minor": False,
+                       "guardian_confirmed": False,
                        "consent_text_sha256": hashlib.sha256(
                            CONSENT_TEXT.encode("utf-8")
                        ).hexdigest(),

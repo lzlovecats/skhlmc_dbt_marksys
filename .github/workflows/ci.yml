@@ -1,0 +1,33 @@
+name: ci
+
+# Release gates (README「發布前驗證」): syntax checks, the offline migration
+# catalog lint, and the minimal offline regression suite in tests/ (each test
+# maps to a real shipped failure mode). Ledger-side drift checks (unknown
+# versions, gaps, checksum drift) need the target database — operators run
+# `manage_db_migrations.py status` for those.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install --quiet -r requirements.txt pytest
+      - name: Python syntax gate
+        run: git ls-files '*.py' | xargs python -m compileall -q
+      - name: JavaScript syntax gate
+        run: |
+          set -e
+          for f in $(git ls-files 'frontend/**/*.js'); do node --check "$f"; done
+      - name: Migration hygiene gate (offline)
+        run: python tools/manage_db_migrations.py lint
+      - name: Regression suite (offline)
+        run: python -m pytest -q tests

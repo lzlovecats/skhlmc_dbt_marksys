@@ -467,30 +467,18 @@
       busy(false);
     }
   };
-  $("minorStatus").onchange = () => {
-    const isMinor = $("minorStatus").value === "minor";
-    $("guardianConsent").classList.toggle("hidden", !isMinor);
-    if (!isMinor) $("guardianConfirmed").checked = false;
-  };
   $("consentBtn").onclick = async () => {
-    const minorStatus = $("minorStatus").value;
     if (!$("agree").checked) return toast("⚠️ 請先確認整體授權安排。");
     if (!$("voiceCloningConfirmed").checked)
       return toast("⚠️ 請明確確認聲線模型用途。");
     if (!$("cloudProcessingConfirmed").checked)
       return toast("⚠️ 請明確確認受控雲端處理用途。");
-    if (!minorStatus) return toast("⚠️ 請選擇錄音者是否未滿 18 歲。");
-    const isMinor = minorStatus === "minor";
-    if (isMinor && !$("guardianConfirmed").checked)
-      return toast("⚠️ 未成年錄音者必須確認已取得家長／學校授權。");
     await api("/api/ai-training/consent", {
       method: "POST",
       body: JSON.stringify({
         agreed: true,
         voice_cloning_confirmed: true,
         cloud_processing_confirmed: true,
-        is_minor: isMinor,
-        guardian_confirmed: isMinor && $("guardianConfirmed").checked,
       }),
     });
     load();

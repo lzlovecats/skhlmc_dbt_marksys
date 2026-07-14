@@ -42,16 +42,18 @@ deploy/proxy.py ── app組裝／static／Live rooms ───────┘
 - 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
-詳細domain/table地圖、production database audit及架構債見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。未完成的RLS、自家TTS、自家LLM、migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
+Production目前為46張public tables，migration head `20260714_0002`；
+media binary只存private R2，database只保存metadata。未完成的RLS、自家TTS、自家LLM、
+migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## 資料及資源原則
 
 - Browser只call同源FastAPI，不直連Supabase Data API。
 - 相片及TTS錄音以短期presigned URL直接上／下載R2；Render及PostgreSQL只處理metadata，沒有BYTEA fallback。
 - List API在database層filter/count/page；大response、external HTTP、AI、TTS及upload均有code-level上限。
-- 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`只在遷移窗口作read fallback。
+- 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`已由migration `20260714_0002`退役。
 - 新password寫入只存bcrypt hash；成功使用legacy plaintext credential登入時會即時升級，但production仍應主動rotate。
-- `system_config`、`app_config`及內部`schema_migrations`均不可經Database console存取。
+- `app_config`及內部`schema_migrations`均不可經Database console存取。
 
 ## 本機啟動
 
@@ -139,15 +141,23 @@ Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](d
 ./venv/bin/python tools/reconcile_db_schema.py
 ```
 
-## 測試
+## 發布前驗證
 
 ```bash
-./venv/bin/python -m pytest
 ./venv/bin/python -m compileall -q api core deploy
 git diff --check
+./venv/bin/python tools/manage_db_migrations.py lint
+./venv/bin/python -m pytest -q tests
 ```
 
-Release/resource gates會檢查production不引用舊UI runtime、HTML保持可讀縮排、API pagination/resource boundaries及重要安全限制。涉及R2或database destructive操作的工具預設dry-run；不要把測試成功視為production data mutation批准。
+GitHub Actions（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）會對每個
+push／PR跑同一批gate。
+
+`tests/`只保留最小offline regression suite（無database、無網絡、秒級）：每個
+test對應一種真實發生過或會直接影響賽果／quota／費用的失敗模式，修bug時在此加
+對應case，不追求coverage數字。發布前另跑相關production smoke；涉及R2或database
+destructive操作的工具預設dry-run，任何驗證成功都不等於production data mutation
+批准。
 
 ## Database domains
 
@@ -160,23 +170,20 @@ Production資料分為：
 - AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions及private audit；eval/RAG/model lifecycle仍未provision；
 - finance/operations：AI fund、lateness fund、bug reports及resource accounting。
 
-完整逐表保留理由、production drift及待處理indexes/FKs見[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+Production exact baseline、已知drift及待處理indexes/FKs見[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## 營運文件
 
-- [`docs/SYSTEM_LIMITS.md`](docs/SYSTEM_LIMITS.md)：限額來源及deploy overrides
-- [`docs/SERVICES_COSTS_AND_LIMITS.md`](docs/SERVICES_COSTS_AND_LIMITS.md)：外部服務、費用及容量
-- [`docs/R2_MEDIA_MIGRATION_RUNBOOK.md`](docs/R2_MEDIA_MIGRATION_RUNBOOK.md)：R2 migration/finalization
-- [`docs/CLOUDFLARE_EDGE_CACHE_RUNBOOK.md`](docs/CLOUDFLARE_EDGE_CACHE_RUNBOOK.md)：edge cache
+- [`docs/SERVICES_COSTS_AND_LIMITS.md`](docs/SERVICES_COSTS_AND_LIMITS.md)：外部服務、費用、限額、deploy及R2／Cloudflare操作
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)：所有未完成工程的單一路線圖
 
 ## 維護規則
 
 1. 業務規則只放`core/`；API不複製threshold/formula，HTML不自行決定權限。
 2. 新SQL必須parameterized，list query有界，寫入同一業務動作用transaction。
-3. 新table/column/index/RLS要有versioned migration、rollback及permission tests。
+3. 新table/column/index/RLS要有versioned migration、rollback及可重現permission驗證。
 4. HTML source保持正常縮排，不提交minified inline document；共用樣式/行為放`frontend/shared/`。
 5. Runtime需要的assets才放`assets/`；計劃更新`docs/ROADMAP.md`，不再新增散落migration diary。
-6. 修bug附regression test；資源改動同時更新`system_limits.py`及對應docs。
+6. 修bug附可重現驗證步驟，並在`tests/`加入對應regression case。資源改動同時更新`system_limits.py`及對應docs。
 
 Maintained by lzlovecats and contributors.

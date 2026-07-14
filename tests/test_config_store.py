@@ -1,85 +1,61 @@
-import unittest
+"""Typed config coercion — these values gate logins and maintenance mode."""
 
 import pandas as pd
+import pytest
 
-from core.config_store import config_spec, get_config, get_configs, set_config
+from core.config_store import ConfigSpec, _coerce, config_spec, get_config
 
 
-class FakeConfigDb:
-    def __init__(self, typed=None, legacy=None):
-        self.typed = dict(typed or {})
-        self.legacy = dict(legacy or {})
-        self.queries = []
-        self.executions = []
+class _FailingDb:
+    def query(self, *args, **kwargs):
+        raise RuntimeError("no database in the regression suite")
 
-    @staticmethod
-    def _requested(params):
-        return [value for key, value in sorted((params or {}).items()) if key.startswith("key_")]
+
+class _FrameDb:
+    def __init__(self, frame):
+        self._frame = frame
 
     def query(self, sql, params=None):
-        self.queries.append((sql, params or {}))
-        source = self.typed if "FROM app_config" in sql else self.legacy
-        if " IN (" in sql:
-            keys = self._requested(params)
-            return pd.DataFrame(
-                [{"key": key, "value": source[key]} for key in keys if key in source]
-            )
-        key = (params or {}).get("key")
-        return pd.DataFrame([] if key not in source else [{"value": source[key]}])
-
-    def execute(self, sql, params=None):
-        self.executions.append((sql, params or {}))
+        return self._frame
 
 
-class ConfigStoreTests(unittest.TestCase):
-    def test_batch_read_uses_typed_values_then_one_legacy_fallback(self):
-        db = FakeConfigDb(
-            typed={"maintenance_mode": True, "ai_fund_target_hkd": 800},
-            legacy={"tts_recording_allowed_users": '["member-a","member-b"]'},
-        )
-
-        values = get_configs(
-            db,
-            ["maintenance_mode", "ai_fund_target_hkd", "tts_recording_allowed_users"],
-        )
-
-        self.assertEqual(values["maintenance_mode"], True)
-        self.assertEqual(values["ai_fund_target_hkd"], 800)
-        self.assertEqual(values["tts_recording_allowed_users"], ["member-a", "member-b"])
-        self.assertEqual(len(db.queries), 2)
-        self.assertIn("FROM app_config", db.queries[0][0])
-        self.assertIn("FROM system_config", db.queries[1][0])
-
-    def test_single_read_falls_back_to_legacy_and_coerces_boolean(self):
-        db = FakeConfigDb(legacy={"maintenance_mode": "yes"})
-        self.assertIs(get_config(db, "maintenance_mode"), True)
-        self.assertEqual(len(db.queries), 2)
-
-    def test_registered_secret_is_classified_and_serialized(self):
-        db = FakeConfigDb()
-        set_config(db, "cookie_secret", "private-value")
-        self.assertEqual(len(db.executions), 1)
-        params = db.executions[0][1]
-        self.assertEqual(params["namespace"], "auth")
-        self.assertIs(params["is_secret"], True)
-        self.assertEqual(params["value_type"], "string")
-        self.assertEqual(params["value"], '"private-value"')
-
-    def test_unknown_runtime_write_is_rejected(self):
-        db = FakeConfigDb()
-        with self.assertRaises(KeyError):
-            set_config(db, "unclassified_setting", "value")
-        self.assertEqual(db.executions, [])
-
-    def test_known_array_rejects_wrong_shape(self):
-        db = FakeConfigDb()
-        with self.assertRaises(ValueError):
-            set_config(db, "login_disabled_accounts", {"member": True})
-
-    def test_prefix_resource_keys_are_classified(self):
-        spec = config_spec("bandwidth_3gb_push_2026-07")
-        self.assertEqual((spec.namespace, spec.value_type), ("resource", "number"))
+def test_boolean_coercion_accepts_common_forms_and_rejects_junk():
+    spec = ConfigSpec("runtime", "boolean")
+    assert _coerce("true", spec) is True
+    assert _coerce("0", spec) is False
+    assert _coerce("", spec) is False
+    with pytest.raises(ValueError):
+        _coerce("maybe", spec)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_number_coercion_keeps_integers_and_rejects_booleans():
+    spec = ConfigSpec("finance", "number")
+    assert _coerce("4", spec) == 4
+    assert isinstance(_coerce("4", spec), int)
+    assert _coerce("3.5", spec) == 3.5
+    with pytest.raises(ValueError):
+        _coerce(True, spec)
+
+
+def test_collection_coercion_enforces_shape():
+    assert _coerce('["a"]', ConfigSpec("access", "array")) == ["a"]
+    assert _coerce("", ConfigSpec("access", "array")) == []
+    with pytest.raises(ValueError):
+        _coerce('{"a":1}', ConfigSpec("access", "array"))
+
+
+def test_unknown_keys_are_rejected_unless_explicitly_legacy():
+    with pytest.raises(KeyError):
+        config_spec("made_up_key")
+    assert config_spec("made_up_key", allow_legacy=True).namespace == "legacy"
+    assert config_spec("bandwidth_3gb_push_x").namespace == "resource"
+
+
+def test_get_config_returns_default_when_store_is_unreachable():
+    assert get_config(_FailingDb(), "maintenance_mode", default=False) is False
+    assert get_config(_FailingDb(), "ai_fund_low_balance_hkd", default=100) == 100
+
+
+def test_get_config_reads_typed_value():
+    db = _FrameDb(pd.DataFrame([{"value": True}]))
+    assert get_config(db, "maintenance_mode", default=False) is True

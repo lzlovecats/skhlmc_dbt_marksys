@@ -40,7 +40,6 @@ from schema import (
 )
 from core.config_store import (
     get_configs_from_connection,
-    migrate_legacy_config,
     set_configs_on_connection,
 )
 from core.db_runtime import RuntimeDb, dispose_db_engine, get_db_engine
@@ -118,7 +117,6 @@ CACHE_SHARED = f"public, max-age={CACHE_SHARED_MAX_AGE_SECONDS}, stale-while-rev
 @asynccontextmanager
 async def _lifespan(_app):
     try:
-        run_safe_startup_migrations()
         yield
     finally:
         dispose_db_engine()
@@ -288,22 +286,6 @@ def _get_vapid():
 def _get_db_engine():
     """Compatibility wrapper for API code and existing test patch points."""
     return get_db_engine()
-
-
-def run_safe_startup_migrations():
-    """Apply small, idempotent compatibility migrations before serving traffic."""
-    engine = _get_db_engine()
-    if engine is None:
-        logger.warning("Skipping startup migrations: database is not configured")
-        return
-    with engine.begin() as conn:
-        config_result = migrate_legacy_config(conn)
-        if config_result["unknown"]:
-            logger.warning(
-                "Migrated %s unregistered legacy config keys; classify them before "
-                "removing system_config",
-                config_result["unknown"],
-            )
 
 
 def get_vote_db():

@@ -236,6 +236,22 @@ def explicit_transaction_control(sql: str) -> str | None:
     return None
 
 
+def stray_files(directory: Path, allowed_names: set[str]) -> list[str]:
+    """Return entries that are neither allowed manifests nor valid pair members.
+
+    ``discover_migrations`` already rejects malformed ``*.sql`` names; this
+    catches everything else (stale notes, editor droppings, nested folders) so
+    an offline hygiene gate can keep ``migrations/`` byte-exact.
+    """
+    strays = []
+    for path in sorted(directory.iterdir()):
+        if path.name in allowed_names:
+            continue
+        if path.is_dir() or not _MIGRATION_FILE.fullmatch(path.name):
+            strays.append(path.name)
+    return strays
+
+
 def discover_migrations(directory: Path) -> list[Migration]:
     if not directory.is_dir():
         raise ValueError(f"migration directory does not exist: {directory}")
@@ -277,6 +293,17 @@ def discover_migrations(directory: Path) -> list[Migration]:
                 raise ValueError(
                     f"migration {version}_{name}.{direction}.sql contains {control}; "
                     "the runner owns transaction boundaries"
+                )
+            if "%" in sql:
+                # The runner executes migration files through exec_driver_sql,
+                # and psycopg2 applies printf-style interpolation to the raw
+                # statement text — a literal percent anywhere in the file
+                # (RAISE placeholders, LIKE patterns, even comments) fails at
+                # apply time with a TypeError. Reject it at lint time instead.
+                raise ValueError(
+                    f"migration {version}_{name}.{direction}.sql contains a "
+                    "literal percent character, which exec_driver_sql cannot "
+                    "execute safely"
                 )
         result.append(
             Migration(

@@ -49,16 +49,15 @@ _CREATE_INDEX = re.compile(
     r"(?P<index>[A-Za-z_][A-Za-z0-9_$]*)\b",
     re.IGNORECASE,
 )
-_RUNTIME_DDL_FILE_ALLOWLIST = {
-    "core/config_store.py",
-}
-_RUNTIME_DDL_REFERENCE_ALLOWLIST = {
-    "CREATE_APP_CONFIG",
-}
+# The last allowed runtime DDL site (config_store's app_config bootstrap)
+# retired with the system_config bridge in 20260714_0002; a ledgered database
+# now has zero acceptable runtime DDL.
+_RUNTIME_DDL_FILE_ALLOWLIST: set[str] = set()
+_RUNTIME_DDL_REFERENCE_ALLOWLIST: set[str] = set()
 _RUNTIME_DDL_DIRECT_ALLOWLIST: set[str] = set()
 _RUNTIME_DDL_INDIRECT_ALLOWLIST: set[str] = set()
 _RUNTIME_INDEX_ALLOWLIST: set[str] = set()
-_RUNTIME_DDL_SITE_BUDGET = 1
+_RUNTIME_DDL_SITE_BUDGET = 0
 _NON_COLUMN_PREFIXES = {
     "CHECK",
     "CONSTRAINT",
