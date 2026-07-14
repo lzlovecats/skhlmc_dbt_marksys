@@ -3,10 +3,13 @@ import datetime
 import inspect
 import pathlib
 from urllib.parse import parse_qs, urlparse
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+from fastapi import HTTPException
+
 from api import ai_coach_api, ai_training_api
+from ai_model_config import AI_MODEL_OPTIONS, DEFAULT_AI_MODEL
 from core import r2_storage
 from deploy import proxy
 from schema import (
@@ -200,6 +203,78 @@ class MediaSchemaTests(unittest.TestCase):
         self.assertIn("伺服器集中設定", training)
         self.assertIn('id="photoLimitSummary"', photos)
 
+
+class AiCoachFallbackAccountingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_custom_run_fallback_records_the_model_actually_used(self):
+        custom = {
+            "provider": "custom",
+            "api_key": "CUSTOM_LLM_API_KEY",
+        }
+        generate = AsyncMock(side_effect=[
+            HTTPException(502, "custom unavailable"),
+            ("fallback answer", {"input_tokens": 7, "output_tokens": 3}),
+        ])
+        usage = unittest.mock.Mock()
+        db = object()
+        body = ai_coach_api.CoachRequest(
+            feature="fact_check",
+            model_label="自家辯論 LLM",
+            text="核對內容",
+        )
+
+        with patch("api.ai_coach_api._context", return_value="member"), \
+             patch("deploy.proxy.get_vote_db", return_value=db), \
+             patch("deploy.proxy._bandwidth_essential_gate_error", return_value=None), \
+             patch("deploy.proxy._get_proxy_secret", return_value="configured"), \
+             patch("api.ai_coach_api._config", return_value=custom), \
+             patch("api.ai_coach_api._message", return_value=("system", "user")), \
+             patch("api.ai_coach_api._generate", new=generate), \
+             patch("api.ai_coach_api._usage", new=usage):
+            result = await ai_coach_api.run(body, object())
+
+        self.assertEqual(result["markdown"], "fallback answer")
+        self.assertEqual(generate.await_count, 2)
+        args = usage.call_args.args
+        self.assertEqual(args[3], DEFAULT_AI_MODEL)
+        self.assertIs(args[4], AI_MODEL_OPTIONS[DEFAULT_AI_MODEL])
+        self.assertTrue(args[5])
+
+    async def test_prepare_live_records_default_search_model_after_fallback(self):
+        class Db:
+            def __init__(self):
+                self.executed = []
+
+            def execute(self, sql, params=None):
+                self.executed.append((sql, params))
+
+        db = Db()
+        usage = unittest.mock.Mock()
+        custom = {
+            "provider": "custom",
+            "supports_web_search": False,
+        }
+        body = ai_coach_api.LivePrepareRequest(
+            topic="測試辯題",
+            model_label="自家辯論 LLM",
+        )
+
+        with patch("api.ai_coach_api._context", return_value="member"), \
+             patch("deploy.proxy.get_vote_db", return_value=db), \
+             patch("deploy.proxy._solo_live_quota_error", return_value=None), \
+             patch("deploy.proxy._get_proxy_secret", return_value=""), \
+             patch("api.ai_coach_api._reserve_prepare_live", return_value=None), \
+             patch("api.ai_coach_api._config", return_value=custom), \
+             patch("api.ai_coach_api._message", return_value=("system", "user")), \
+             patch("core.rag.retrieve_rag_context", new=AsyncMock(return_value="")), \
+             patch("api.ai_coach_api._generate", new=AsyncMock(return_value=("brief", {}))), \
+             patch("api.ai_coach_api._usage", new=usage):
+            result = await ai_coach_api.prepare_live(body, object())
+
+        self.assertTrue(result["research_ready"])
+        args = usage.call_args.args
+        self.assertEqual(args[3], DEFAULT_AI_MODEL)
+        self.assertIs(args[4], AI_MODEL_OPTIONS[DEFAULT_AI_MODEL])
+        self.assertTrue(args[5])
 
 class RequestBodyLimitTests(unittest.IsolatedAsyncioTestCase):
     async def test_chunked_body_is_rejected_by_actual_bytes(self):

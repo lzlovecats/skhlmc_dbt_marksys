@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Verify durable R2 media before permanently dropping legacy BYTEA columns.
+"""Verify durable R2 media before a versioned migration drops legacy BYTEA.
 
-Dry-run is the default. Verification uses bounded keyset batches and releases
-the database connection before issuing R2 HEAD requests. The destructive step
-requires both ``--apply`` and the exact versioned confirmation phrase.
+This tool is verification-only. It uses bounded keyset batches and releases
+the database connection before issuing R2 HEAD requests. Production DDL must
+go through the immutable migration ledger; the legacy ``--apply`` flag is
+accepted only to fail closed before any R2 or database access.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from system_limits import (
 from version import APP_VERSION
 
 
-CONFIRMATION = f"{APP_VERSION}-R2-VERIFIED"
 EXPECTED_CACHE_CONTROL = f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 PHOTO_SQL = """SELECT id,r2_key,thumbnail_r2_key,
@@ -204,27 +204,16 @@ def legacy_columns(engine) -> dict[str, bool]:
         }
 
 
-def drop_legacy_columns(engine) -> list[str]:
-    """Drop both legacy columns atomically, with a short table-lock timeout."""
-    dropped: list[str] = []
-    with engine.begin() as conn:
-        conn.execute(text("SET LOCAL lock_timeout = '5s'"))
-        conn.execute(text("SET LOCAL statement_timeout = '60s'"))
-        if _column_exists(conn, "match_photos", "image_data"):
-            conn.execute(text("ALTER TABLE match_photos DROP COLUMN image_data"))
-            dropped.append("match_photos.image_data")
-        if _column_exists(conn, "tts_voice_recordings", "audio_data"):
-            conn.execute(text("ALTER TABLE tts_voice_recordings DROP COLUMN audio_data"))
-            dropped.append("tts_voice_recordings.audio_data")
-    return dropped
+def drop_legacy_columns(_engine) -> list[str]:
+    """Fail closed: destructive schema changes belong to versioned migrations."""
+    raise RuntimeError(
+        "direct BYTEA drop is disabled; create and apply a versioned migration"
+    )
 
 
 def build_report(
     verified: dict[str, dict[str, int]],
     columns: dict[str, bool],
-    *,
-    applied: bool = False,
-    dropped: list[str] | None = None,
 ) -> dict:
     totals = {
         key: sum(int(section[key]) for section in verified.values())
@@ -232,13 +221,13 @@ def build_report(
     }
     return {
         "app_version": APP_VERSION,
-        "mode": "apply" if applied else "dry-run",
+        "mode": "verification",
         "verified": verified,
         "totals": totals,
         "legacy_columns_present": columns,
         "drop_required": any(columns.values()),
-        "ready_to_drop": True,
-        "dropped": sorted(dropped or []),
+        "object_verification_passed": True,
+        "requires_browser_backup_gates": True,
     }
 
 
@@ -251,20 +240,24 @@ def _print_report(report: dict, as_json: bool) -> None:
         "verified "
         f"rows={totals['rows']} objects={totals['objects']} bytes={totals['bytes']}"
     )
-    if report["mode"] == "apply":
-        dropped = ", ".join(report["dropped"]) or "none (already finalized)"
-        print(f"legacy BYTEA columns dropped: {dropped}")
-    else:
-        print(
-            "dry-run only; use --apply --confirm "
-            f"{CONFIRMATION} after backup and production playback verification"
-        )
+    print(
+        "verification only; after browser and backup gates, drop legacy columns "
+        "with a versioned migration"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--confirm", default="")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="disabled legacy flag; exits before external access",
+    )
+    parser.add_argument(
+        "--confirm",
+        default="",
+        help="accepted only for compatibility with the disabled legacy flag",
+    )
     parser.add_argument(
         "--json",
         action="store_true",
@@ -275,9 +268,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.apply and args.confirm != CONFIRMATION:
+    if args.apply:
         print(
-            "confirmation phrase does not match; no R2 or database access attempted",
+            "--apply is disabled; use a versioned migration after verification. "
+            "No R2 or database access attempted.",
             file=sys.stderr,
         )
         return 2
@@ -302,22 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    if not args.apply:
-        _print_report(build_report(verified, columns), args.json)
-        return 0
-
-    try:
-        dropped = drop_legacy_columns(engine)
-    except Exception as exc:
-        print(
-            f"legacy column drop failed and was rolled back: {type(exc).__name__}",
-            file=sys.stderr,
-        )
-        return 1
-    _print_report(
-        build_report(verified, columns, applied=True, dropped=dropped),
-        args.json,
-    )
+    _print_report(build_report(verified, columns), args.json)
     return 0
 
 

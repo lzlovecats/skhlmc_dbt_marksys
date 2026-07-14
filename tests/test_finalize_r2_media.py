@@ -173,35 +173,28 @@ class _PagedEngine:
 
 
 class FinalizeR2SafetyTests(unittest.TestCase):
-    def test_invalid_apply_confirmation_attempts_no_external_access(self):
+    def test_apply_is_disabled_before_any_external_access(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), patch.object(
             finalizer.r2_storage, "configured"
         ) as configured, patch.object(finalizer, "_get_db_engine") as get_engine:
-            status = finalizer.main(["--apply", "--confirm", "wrong"])
+            status = finalizer.main([
+                "--apply", "--confirm", f"{finalizer.APP_VERSION}-R2-VERIFIED",
+            ])
         self.assertEqual(status, 2)
         configured.assert_not_called()
         get_engine.assert_not_called()
-        self.assertIn("no R2 or database access", stderr.getvalue())
+        self.assertIn("No R2 or database access", stderr.getvalue())
 
-    def test_drops_legacy_columns_atomically_with_short_lock_timeout(self):
+    def test_direct_drop_helper_is_disabled(self):
         columns = {
             ("match_photos", "image_data"),
             ("tts_voice_recordings", "audio_data"),
         }
         connection = _Connection(columns)
-        dropped = finalizer.drop_legacy_columns(_Engine(connection))
-        sql = "\n".join(connection.statements)
-        self.assertEqual(
-            dropped,
-            ["match_photos.image_data", "tts_voice_recordings.audio_data"],
-        )
-        self.assertIn("SET LOCAL lock_timeout = '5s'", sql)
-        self.assertIn("SET LOCAL statement_timeout = '60s'", sql)
-        self.assertIn("ALTER TABLE match_photos DROP COLUMN image_data", sql)
-        self.assertIn(
-            "ALTER TABLE tts_voice_recordings DROP COLUMN audio_data", sql
-        )
+        with self.assertRaisesRegex(RuntimeError, "versioned migration"):
+            finalizer.drop_legacy_columns(_Engine(connection))
+        self.assertEqual(connection.statements, [])
 
     def test_dry_run_report_contains_aggregates_not_object_keys(self):
         report = finalizer.build_report(
@@ -216,7 +209,10 @@ class FinalizeR2SafetyTests(unittest.TestCase):
         )
         encoded = finalizer.json.dumps(report, sort_keys=True)
         self.assertEqual(report["totals"], {"rows": 5, "objects": 7, "bytes": 1000})
-        self.assertTrue(report["ready_to_drop"])
+        self.assertEqual(report["mode"], "verification")
+        self.assertTrue(report["object_verification_passed"])
+        self.assertTrue(report["requires_browser_backup_gates"])
+        self.assertNotIn("ready_to_drop", report)
         self.assertNotIn("r2_key", encoded)
         self.assertNotIn("photos/original", encoded)
 
