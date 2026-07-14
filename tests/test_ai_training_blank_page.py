@@ -3,6 +3,8 @@
 import asyncio
 
 import deploy.proxy as proxy
+from api import ai_training_api
+from core import r2_storage
 from version import APP_VERSION
 
 
@@ -33,3 +35,42 @@ def test_ai_training_script_revalidates_and_keeps_adult_only_consent():
     assert "minorStatus" not in page + script
     assert "guardianConfirmed" not in page + script
     assert '$("loadFallback")' in script
+
+
+def test_training_data_survives_optional_usage_telemetry_outage(monkeypatch):
+    class EmptyFrame:
+        def to_dict(self, *, orient):
+            assert orient == "records"
+            return []
+
+    class Db:
+        def query(self, _sql, _params=None):
+            return EmptyFrame()
+
+    refresh_values = []
+
+    def storage_failure(_db, *, refresh=False):
+        refresh_values.append(refresh)
+        raise RuntimeError("R2 status unavailable")
+
+    monkeypatch.setattr(ai_training_api, "_ctx", lambda _request: ("member", Db()))
+    monkeypatch.setattr(ai_training_api, "_users", lambda _db, _key: [])
+    monkeypatch.setattr(
+        ai_training_api, "_has_active_voice_consent", lambda _db, _user: False
+    )
+    monkeypatch.setattr(ai_training_api, "_load_ai_roadmap", lambda: "")
+    monkeypatch.setattr(
+        proxy,
+        "bandwidth_budget_status",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("bandwidth unavailable")),
+    )
+    monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "storage_budget_status", storage_failure)
+
+    result = ai_training_api.data(None)
+
+    assert result["user_id"] == "member"
+    assert result["bandwidth_budget"] == {"unavailable": True}
+    assert result["recording_storage_ready"] is True
+    assert result["storage_budget"] == {"unavailable": True}
+    assert refresh_values == [False]
