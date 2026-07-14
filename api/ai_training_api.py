@@ -1336,7 +1336,11 @@ def export_recording_manifest(request: Request, speaker: str = ""):
             expires=R2_BULK_LINK_TTL_SECONDS,
         )
         manifest.append(row)
-    return {"storage": "r2", "expires_seconds": R2_BULK_LINK_TTL_SECONDS, "items": manifest}
+    return json_safe({
+        "storage": "r2",
+        "expires_seconds": R2_BULK_LINK_TTL_SECONDS,
+        "items": manifest,
+    })
 
 
 @router.get("/export/llm.jsonl")
