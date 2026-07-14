@@ -41,6 +41,8 @@ Solo Gemini Live：Browser ──WebSocket（一次性ephemeral token）──> 
 - `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
 - `deploy/proxy.py`：FastAPI app、靜態路由、多人Live WebSocket rooms及process runtime；
   Solo Live只在此完成登入、地區、配額、prompt及一次性token簽發，audio不經Render。
+- 多人Live的實時audio現時仍經Render；未來將media plane搬離Render、保留低流量
+  control plane的工程及gate見[`docs/ROADMAP.md` P0.1](docs/ROADMAP.md)；此項仍未實作。
 - `schema.py`：只供新、空database bootstrap；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理，runtime不再執行舊式retrofit清單。
 - 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
