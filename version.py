@@ -5,4 +5,4 @@ read this constant, so the version shown to users and the default
 ``fixed_version`` for bug reports stay in sync without a database setting.
 """
 
-APP_VERSION = "4.3.2"
+APP_VERSION = "4.3.3"
