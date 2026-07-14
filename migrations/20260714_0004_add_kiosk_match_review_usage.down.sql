@@ -5,10 +5,11 @@ SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 
 ALTER TABLE public.ai_fund_usage_logs
-    DROP CONSTRAINT ai_fund_usage_logs_feature_check;
+    DROP CONSTRAINT IF EXISTS ai_fund_usage_logs_feature_check,
+    DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature;
 
 ALTER TABLE public.ai_fund_usage_logs
-    ADD CONSTRAINT ai_fund_usage_logs_feature_check
+    ADD CONSTRAINT chk_ai_fund_usage_feature
     CHECK (feature IN (
         'speech_review',
         'strategy',

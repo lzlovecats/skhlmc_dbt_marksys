@@ -730,14 +730,23 @@ def test_usage_schema_and_migration_register_kiosk_review():
     funds_source = (ROOT / "core" / "funds_logic.py").read_text(
         encoding="utf-8"
     )
-    migration = (
+    migration_up = (
         ROOT
         / "migrations"
         / "20260714_0004_add_kiosk_match_review_usage.up.sql"
     ).read_text(encoding="utf-8")
+    migration_down = (
+        ROOT
+        / "migrations"
+        / "20260714_0004_add_kiosk_match_review_usage.down.sql"
+    ).read_text(encoding="utf-8")
     assert "'kiosk_match_review'" in schema_source
     assert '"kiosk_match_review"' in funds_source
-    assert "kiosk_match_review" in migration
+    assert "kiosk_match_review" in migration_up
+    assert "DROP CONSTRAINT IF EXISTS chk_ai_fund_usage_feature" in migration_up
+    assert "DROP CONSTRAINT IF EXISTS ai_fund_usage_logs_feature_check" in migration_up
+    assert "ADD CONSTRAINT ai_fund_usage_logs_feature_check" in migration_up
+    assert "ADD CONSTRAINT chk_ai_fund_usage_feature" in migration_down
     assert '"kiosk_match_review": "AI評判易（Kiosk）"' in funds_source
     ai_fund_source = (ROOT / "frontend" / "ai_fund" / "index.html").read_text(
         encoding="utf-8"
