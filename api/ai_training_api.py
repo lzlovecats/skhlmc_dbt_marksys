@@ -300,10 +300,10 @@ def _rows(frame):
     return [dict(row) for row in frame.to_dict(orient="records")]
 
 
-def _probe_audio(audio: bytes, mime: str, claimed_duration: int) -> dict:
+def _probe_audio(audio: bytes, mime: str) -> dict:
     try:
         return probe_audio(
-            audio, mime, claimed_duration, max_seconds=TTS_MAX_DURATION_SECONDS,
+            audio, mime, None, max_seconds=TTS_MAX_DURATION_SECONDS,
         )
     except MediaProbeError as exc:
         raise HTTPException(503 if exc.service_unavailable else 400, str(exc)) from exc
@@ -319,8 +319,6 @@ def _verified_r2_audio_claim(body, user):
 
     if not r2_storage.configured():
         raise HTTPException(503, "Cloudflare R2 尚未完成設定，錄音功能已暫停")
-    if not 1 <= int(body.duration_seconds or 0) <= TTS_MAX_DURATION_SECONDS:
-        raise HTTPException(400, f"錄音長度必須為 1 至 {TTS_MAX_DURATION_SECONDS} 秒")
     claim = r2_storage.verify_upload_claim(
         body.r2_upload_token or "", _get_relay_cookie_secret() or ""
     )
@@ -809,7 +807,7 @@ def recording(body: RecordingBody, request: Request):
     # Always derive technical metadata from the verified object. Never trust a
     # browser-supplied probe, duration, transcript or provider verdict.
     audio = r2_storage.download_bytes(pending_r2_key, MAX_AUDIO_BYTES)
-    probe = _probe_audio(audio, mime, body.duration_seconds)
+    probe = _probe_audio(audio, mime)
     size_bytes = int(claim["byte_size"])
     audio_sha = claim["sha256"]
     trusted_review = {"manual_review": True}
@@ -834,8 +832,10 @@ def recording(body: RecordingBody, request: Request):
             r2_storage.promote(pending_r2_key, r2_key)
         except Exception as exc:
             raise HTTPException(502, "R2錄音由暫存區轉入正式儲存失敗") from exc
+    measured_duration = float(probe.get("duration") or 0)
+    stored_duration = max(1, min(TTS_MAX_DURATION_SECONDS, round(measured_duration)))
     params = {"user":user,"script":body.script_id,"prompt":script.iloc[0]["text"],
-              "r2_key":r2_key or None,"mime":mime,"ext":_audio_ext(mime),"size":size_bytes,"duration":int(body.duration_seconds),
+              "r2_key":r2_key or None,"mime":mime,"ext":_audio_ext(mime),"size":size_bytes,"duration":stored_duration,
               "sha":audio_sha,"measured":probe.get("duration"),"sample_rate":probe.get("sample_rate"),
               "channels":probe.get("channels"),"detected":probe.get("format"),"review_status":review_status,
               "review_json":_bounded_json_param(trusted_review, "錄音AI審核結果"),
@@ -926,7 +926,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
             )
         except Exception as exc:
             raise HTTPException(502, "未能從R2讀取錄音作音質檢查") from exc
-        probe = _probe_audio(audio, mime, body.duration_seconds)
+        probe = _probe_audio(audio, mime)
         payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode("ascii")}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0, "maxOutputTokens": 2048}}
         try:
             from deploy.proxy import record_bandwidth_usage
