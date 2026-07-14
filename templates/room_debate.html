@@ -493,6 +493,8 @@
         recognitionFinal = "",
         recognitionStopping = false;
       let transcriptItems = [];
+      let transcriptRefreshTimer = 0;
+      let transcriptRecoveryAttempts = 0;
       let precheckActive = false,
         activePrecheckId = null;
       let networkTestStartedAt = 0,
@@ -558,6 +560,56 @@
       function renderTranscript(list) {
         transcriptItems = (list || []).filter((item) => item && item.text);
         renderTranscriptBySide();
+      }
+      function scheduleTranscriptRefresh(delay = 2000) {
+        if (transcriptRefreshTimer || transcriptRecoveryAttempts >= 15) return;
+        transcriptRecoveryAttempts += 1;
+        transcriptRefreshTimer = setTimeout(() => {
+          transcriptRefreshTimer = 0;
+          loadTranscriptSnapshot();
+        }, delay);
+      }
+      async function loadTranscriptSnapshot() {
+        if (!ROOM_CODE) return false;
+        try {
+          const response = await fetch(
+            "/api/room/" + encodeURIComponent(ROOM_CODE) + "/transcript",
+            { credentials: "same-origin", cache: "no-store" },
+          );
+          if (!response.ok) {
+            if (transcriptRecoveryAttempts) scheduleTranscriptRefresh();
+            return false;
+          }
+          const data = await response.json();
+          renderTranscript(data.transcript || []);
+          if (data.judgement) {
+            $("judgement").textContent = data.judgement;
+          } else if (data.judgement_pending) {
+            $("judgement").textContent = "AI 評判正在整理結果…";
+          }
+          if (
+            data.judgement_pending &&
+            (data.phase === "ending" || data.phase === "ended")
+          ) {
+            scheduleTranscriptRefresh();
+          } else {
+            transcriptRecoveryAttempts = 0;
+          }
+          if (data.phase === "ended") {
+            phase = "ended";
+            setConn("練習已結束；完場逐字稿已載入。");
+            applyState({ phase: "ended", seg_index: 0, seg_total: 0 });
+            return true;
+          }
+        } catch (e) {
+          if (
+            phase === "ending" || phase === "ended" ||
+            transcriptRecoveryAttempts
+          ) {
+            scheduleTranscriptRefresh();
+          }
+        }
+        return false;
       }
 
       function wsBase() {
@@ -1301,19 +1353,26 @@
           ws = null;
           const retryable = ev.code !== 1008 && ev.code !== 1013;
           const delay = Math.min(12000, 1000 * Math.pow(2, reconnectAttempt++));
-          setConn(
-            "連線中斷（" +
-              ev.code +
-              "）。" +
-              (retryable
-                ? Math.ceil(delay / 1000) + " 秒後重試…"
-                : "房間不存在或尚未登入。"),
-          );
-          if (retryable && !reconnectTimer)
-            reconnectTimer = setTimeout(() => {
-              reconnectTimer = 0;
-              connect();
-            }, delay);
+          loadTranscriptSnapshot().then((ended) => {
+            if (ended) return;
+            setConn(
+              "連線中斷（" +
+                ev.code +
+                "）。" +
+                (retryable
+                  ? Math.ceil(delay / 1000) + " 秒後重試…"
+                  : "房間不存在、已結束或尚未登入。"),
+            );
+            if (!retryable) {
+              transcriptRecoveryAttempts = 0;
+              scheduleTranscriptRefresh();
+            }
+            if (retryable && !reconnectTimer)
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = 0;
+                connect();
+              }, delay);
+          });
         };
         ws.onerror = () => {
           setConn("連線錯誤。");
@@ -1389,7 +1448,11 @@
               log((msg.from || "對方") + " 發出測試聲");
               if (ws && ws.readyState === WebSocket.OPEN)
                 ws.send(
-                  JSON.stringify({ type: "test_received", source: msg.from }),
+                  JSON.stringify({
+                    type: "test_received",
+                    source: msg.from,
+                    test_id: msg.test_id,
+                  }),
                 );
             }
             break;
@@ -1436,6 +1499,8 @@
             break;
           case "judgement_pending":
             $("judgement").textContent = "AI 評判正在整理結果…";
+            if (phase === "ending" || phase === "ended")
+              scheduleTranscriptRefresh();
             break;
           case "judgement":
             $("judgement").textContent = msg.text || "AI 評判沒有回傳內容。";
@@ -1447,6 +1512,7 @@
             setConn("練習已結束。");
             phase = "ended";
             applyState({ phase: "ended", seg_index: 0, seg_total: 0 });
+            loadTranscriptSnapshot();
             break;
           case "error":
             log("⚠️ " + (msg.message || "錯誤"));
@@ -1539,7 +1605,9 @@
         if (ws && ws.readyState === WebSocket.OPEN)
           ws.send(JSON.stringify({ type: "heartbeat" }));
       }, 15000);
-      connect();
+      loadTranscriptSnapshot().then((ended) => {
+        if (!ended) connect();
+      });
     </script>
   </body>
 </html>

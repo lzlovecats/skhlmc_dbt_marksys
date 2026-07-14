@@ -190,7 +190,7 @@
         min-height: 22px;
       }
       .timer-box {
-        width: 190px;
+        width: 250px;
         border: 1px solid var(--border);
         border-radius: 16px;
         display: flex;
@@ -206,9 +206,22 @@
       }
       .timer-value {
         margin-top: 4px;
-        font-size: clamp(32px, 4vw, 48px);
+        font-size: clamp(25px, 3vw, 38px);
         font-weight: 800;
         font-variant-numeric: tabular-nums;
+      }
+      .timer-secondary {
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: clamp(14px, 1.25vw, 17px);
+        font-variant-numeric: tabular-nums;
+      }
+      .timer-secondary strong {
+        color: var(--text);
       }
       .meter {
         height: 12px;
@@ -439,14 +452,12 @@
         .timer-box {
           order: -1;
           width: 100%;
-          min-height: 3.5rem;
-          flex-direction: row;
-          justify-content: space-between;
+          min-height: 6.5rem;
           border-radius: 8px;
         }
         .timer-value {
           margin: 0;
-          font-size: 32px;
+          font-size: 28px;
         }
         .talk-btn {
           min-height: 72px;
@@ -524,8 +535,14 @@
           <div class="talk-hint" id="talkHint">自由辯論準備好後可以開始。</div>
         </div>
         <div class="timer-box">
-          <div class="timer-label">已用發言時間</div>
+          <div class="timer-label">你方已用／每邊上限</div>
           <div class="timer-value" id="remaining">--:--</div>
+          <div class="timer-secondary">
+            <span>AI 已用</span><strong id="aiRemaining">--:--</strong>
+          </div>
+          <div class="timer-secondary">
+            <span>整節尚餘</span><strong id="deadlineRemaining">--:--</strong>
+          </div>
         </div>
       </div>
       <div class="meter"><div class="meter-fill" id="meter"></div></div>
@@ -574,7 +591,6 @@
       </div>
     </div>
     <script>
-      const LIVE_TOKEN = __LIVE_TOKEN__;
       const MODEL = __LIVE_MODEL__;
       const SYSTEM_PROMPT = __LIVE_PROMPT__;
       const SESSION_MINUTES = __LIVE_MINUTES__;
@@ -587,16 +603,21 @@
         1,
         Math.round(Number(SESSION_MINUTES || 2.5) * 60),
       );
-      const SCHEDULE_END_SECONDS = BELL_SCHEDULE.length
-        ? Number(BELL_SCHEDULE[BELL_SCHEDULE.length - 1].t || SPEECH_SECONDS)
-        : SPEECH_SECONDS;
-      const SPEECH_TIMER_SECONDS = BELL_SCHEDULE.length
-        ? SCHEDULE_END_SECONDS
-        : SPEECH_SECONDS;
+      const USER_PCM_SAMPLE_RATE = 16000;
+      const USER_PCM_SAMPLE_LIMIT = SPEECH_SECONDS * USER_PCM_SAMPLE_RATE;
       const MOCK_SEGMENTS = __MOCK_SEGMENTS__ || [];
       const MOCK_MODE = MOCK_SEGMENTS.length > 0;
-      const MOCK_TOKENS = __MOCK_TOKENS__ || [];
       const MOCK_SESSION_LABELS = __MOCK_SESSION_LABELS__ || [];
+      const LIVE_PRACTICE_ID = __LIVE_PRACTICE_ID__;
+      const LIVE_TOKEN_URL = __LIVE_TOKEN_URL__;
+      const CONTEXT_TRIGGER_TOKENS = Number(
+        __LIVE_CONTEXT_TRIGGER_TOKENS__,
+      );
+      const CONTEXT_TARGET_TOKENS = Number(__LIVE_CONTEXT_TARGET_TOKENS__);
+      const FREE_SESSION_MAX_SECONDS = Number(__LIVE_SESSION_MAX_SECONDS__);
+      const SETUP_COMPLETE_TIMEOUT_MS = 15000;
+      const TOKEN_FETCH_TIMEOUT_MS = 12000;
+      const SESSION_HANDOFF_CLOSE_TIMEOUT_MS = 2000;
       const AI_STARTS = __AI_STARTS__;
       const LIVE_PROMPTS = __LIVE_PROMPTS__ || {};
       const LIVE_SOURCE =
@@ -610,21 +631,10 @@
           k in map ? map[k] : m,
         );
       }
-      // 如果設定咗 relay（Render/Singapore），瀏覽器會連 relay 而唔係直連 Google，
-      // 令香港等受限地區都用得。未設定時 fallback 直連 Google（本地開發用）。
-      const RELAY_WS_BASE = __RELAY_WS_BASE__;
-      const DIRECT_WS_BASE =
+      const WS_BASE =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
-      const WS_BASE = RELAY_WS_BASE || DIRECT_WS_BASE;
-      // relay 模式下附上 server 簽發嘅 HMAC sig，令 relay 只服務本 app 發出嘅 token。
-      const TOKEN_SIGS = __TOKEN_SIGS__ || {};
       function buildWsUrl(token) {
-        let url = WS_BASE + "?access_token=" + encodeURIComponent(token);
-        if (RELAY_WS_BASE) {
-          const sig = TOKEN_SIGS[token] || "";
-          if (sig) url += "&sig=" + encodeURIComponent(sig);
-        }
-        return url;
+        return WS_BASE + "?access_token=" + encodeURIComponent(token);
       }
 
       let ws = null;
@@ -645,11 +655,22 @@
       let recordTimer = null;
       let waitTimer = null;
       let speechTimer = null;
-      let speechElapsed = 0;
-      let speechStartedAt = 0;
-      let speechRunning = false;
+      let userSpeechElapsed = 0;
+      let userSpeechStartedAt = 0;
+      let userPcmSamplesSent = 0;
+      let aiSpeechElapsed = 0;
       let speechEnded = false;
+      let overallStartedAt = 0;
+      let hardDeadlineReached = false;
+      let hardDeadlineTimer = null;
+      let hasStartedOnce = false;
       let firedBells = new Set();
+      let reconnectTimer = null;
+      let setupWatchdogTimer = null;
+      let reconnectAttempts = 0;
+      let goAwayReconnectTimer = null;
+      let handoffCloseTimer = null;
+      let sessionResumptionHandles = {};
       let userLine = null;
       let aiLine = null;
       let activeAiLine = null;
@@ -659,6 +680,7 @@
       let responsePurpose = null;
       let feedbackPromptQueued = false;
       let retryPromptQueued = false;
+      let discardServerResponseUntilTurnSent = false;
       let bellBuffer = null;
       let bellLoading = null;
       let bellCtx = null;
@@ -673,9 +695,14 @@
       let currentTtsUrl = "";
       let ttsFallbackActive = false;
       let nativeAudioParts = [];
+      let nativeFallbackBoundary = 0;
       let ttsWarningShown = false;
       let ttsReceivedText = false;
       let ttsGeneration = 0;
+      let ttsPlayedAnyAudio = false;
+      let nativePcmSources = new Set();
+      let tokenFetchController = null;
+      let tokenFetchTimeout = null;
 
       const startBtn = document.getElementById("startBtn");
       const stopBtn = document.getElementById("stopBtn");
@@ -689,6 +716,10 @@
       const logEl = document.getElementById("log");
       const meterEl = document.getElementById("meter");
       const remainingEl = document.getElementById("remaining");
+      const aiRemainingEl = document.getElementById("aiRemaining");
+      const deadlineRemainingEl = document.getElementById(
+        "deadlineRemaining",
+      );
       const talkHintEl = document.getElementById("talkHint");
       const hintTextEl = document.getElementById("hintText");
 
@@ -865,9 +896,64 @@
         }
       }
 
-      function getSpeechElapsed() {
-        if (!speechRunning) return speechElapsed;
-        return speechElapsed + (Date.now() - speechStartedAt) / 1000;
+      function getUserSpeechElapsed() {
+        if (!isRecording || !userSpeechStartedAt) return userSpeechElapsed;
+        return (
+          userSpeechElapsed + (Date.now() - userSpeechStartedAt) / 1000
+        );
+      }
+
+      function commitUserSpeechTime() {
+        if (!userSpeechStartedAt) return;
+        userSpeechElapsed = Math.min(
+          SPEECH_SECONDS,
+          userSpeechElapsed + (Date.now() - userSpeechStartedAt) / 1000,
+        );
+        userSpeechStartedAt = 0;
+      }
+
+      function getOverallElapsed() {
+        if (!overallStartedAt) return 0;
+        return Math.max(0, (Date.now() - overallStartedAt) / 1000);
+      }
+
+      function expireFreeHardDeadline() {
+        hardDeadlineTimer = null;
+        if (!overallStartedAt || hardDeadlineReached) return;
+        hardDeadlineReached = true;
+        // A timed-out initial token retry is still the same lifecycle. Force
+        // the next Start click back to setup instead of granting another 30m.
+        hasStartedOnce = true;
+        stopLive(
+          false,
+          "整節已達 " +
+            formatTime(FREE_SESSION_MAX_SECONDS) +
+            " 上限，連線已安全關閉。",
+        );
+      }
+
+      function startFreeHardDeadline() {
+        if (!(FREE_SESSION_MAX_SECONDS > 0)) {
+          throw new Error("整節時間上限設定無效，請聯絡管理員。");
+        }
+        if (!overallStartedAt) {
+          overallStartedAt = Date.now();
+          hardDeadlineReached = false;
+        }
+        if (hardDeadlineTimer || hardDeadlineReached) return;
+        const remainingMs = Math.max(
+          0,
+          FREE_SESSION_MAX_SECONDS * 1000 -
+            (Date.now() - overallStartedAt),
+        );
+        deadlineRemainingEl.textContent = formatTime(
+          Math.ceil(remainingMs / 1000),
+        );
+        if (remainingMs <= 0) {
+          expireFreeHardDeadline();
+          return;
+        }
+        hardDeadlineTimer = setTimeout(expireFreeHardDeadline, remainingMs);
       }
 
       function fireBellOnce(key, rings) {
@@ -876,56 +962,93 @@
         playBell(rings);
       }
 
-      function updateSpeechTimer() {
-        if (MOCK_MODE) return;
-        const elapsed = Math.min(getSpeechElapsed(), SPEECH_TIMER_SECONDS);
-        remainingEl.textContent = formatTime(Math.floor(elapsed));
+      function updateSideBells(side, elapsed) {
+        if (elapsed <= 0) return;
         if (BELL_SCHEDULE.length) {
           BELL_SCHEDULE.forEach((bell, index) => {
             if (elapsed >= Number(bell.t || 0)) {
-              fireBellOnce("schedule-" + index, Number(bell.rings || 1));
+              fireBellOnce(
+                side + "-schedule-" + index,
+                Number(bell.rings || 1),
+              );
             }
           });
-        } else {
-          if (elapsed >= 0) fireBellOnce("start", 1);
-          if (SPEECH_SECONDS > 30 && elapsed >= SPEECH_SECONDS - 30) {
-            fireBellOnce("warning", 1);
-          }
+          return;
         }
-        if (elapsed >= SPEECH_TIMER_SECONDS && !speechEnded) {
-          speechEnded = true;
-          speechElapsed = SPEECH_TIMER_SECONDS;
-          pauseSpeechTimer();
-          if (!BELL_SCHEDULE.length) fireBellOnce("end", 2);
-          prepareFinalFeedback("自由辯論發言時間已到。");
+        fireBellOnce(side + "-start", 1);
+        if (SPEECH_SECONDS > 30 && elapsed >= SPEECH_SECONDS - 30) {
+          fireBellOnce(side + "-warning", 1);
+        }
+        if (elapsed >= SPEECH_SECONDS) fireBellOnce(side + "-end", 2);
+      }
+
+      function finishFreeDebateForBudget(reason) {
+        if (speechEnded || feedbackPromptShown || finalFeedbackRequested) return;
+        speechEnded = true;
+        if (isRecording) endTurn();
+        prepareFinalFeedback(reason);
+      }
+
+      function updateSpeechTimer() {
+        if (MOCK_MODE) return;
+        const userElapsed = Math.min(getUserSpeechElapsed(), SPEECH_SECONDS);
+        const aiElapsed = Math.min(aiSpeechElapsed, SPEECH_SECONDS);
+        const overallRemaining = Math.max(
+          0,
+          FREE_SESSION_MAX_SECONDS - getOverallElapsed(),
+        );
+        remainingEl.textContent =
+          formatTime(Math.floor(userElapsed)) +
+          " / " +
+          formatTime(SPEECH_SECONDS);
+        aiRemainingEl.textContent =
+          formatTime(Math.floor(aiElapsed)) +
+          " / " +
+          formatTime(SPEECH_SECONDS);
+        deadlineRemainingEl.textContent = formatTime(
+          Math.ceil(overallRemaining),
+        );
+        updateSideBells("user", userElapsed);
+        updateSideBells("ai", aiElapsed);
+        if (userElapsed >= SPEECH_SECONDS) {
+          commitUserSpeechTime();
+          finishFreeDebateForBudget("你方已用完本節發言時間。");
+          return;
+        }
+        if (aiElapsed >= SPEECH_SECONDS) {
+          finishFreeDebateForBudget("AI 已用完本節發言時間。");
+          return;
+        }
+        if (
+          FREE_SESSION_MAX_SECONDS > 0 &&
+          overallRemaining <= 0 &&
+          !hardDeadlineReached
+        ) {
+          hardDeadlineReached = true;
+          stopLive(
+            false,
+            "整節已達 " +
+              formatTime(FREE_SESSION_MAX_SECONDS) +
+              " 上限，連線已安全關閉。",
+          );
         }
       }
 
       function startSpeechTimer() {
         if (MOCK_MODE) return;
-        speechElapsed = 0;
-        speechStartedAt = Date.now();
-        speechRunning = true;
-        speechEnded = false;
-        firedBells.clear();
         updateSpeechTimer();
+        if (speechTimer) clearInterval(speechTimer);
         speechTimer = setInterval(updateSpeechTimer, 250);
       }
 
       function pauseSpeechTimer() {
         if (MOCK_MODE) return;
-        if (speechRunning) {
-          speechElapsed = Math.min(getSpeechElapsed(), SPEECH_TIMER_SECONDS);
-        }
-        speechRunning = false;
         updateSpeechTimer();
       }
 
       function resumeSpeechTimer() {
         if (MOCK_MODE) return;
-        if (speechEnded || speechElapsed >= SPEECH_TIMER_SECONDS) return;
-        speechStartedAt = Date.now();
-        speechRunning = true;
+        if (speechEnded) return;
         updateSpeechTimer();
       }
 
@@ -939,10 +1062,15 @@
       let currentSessionIdx = 0;
       let switchingSession = false;
       let reconnectingSession = false;
+      let pendingSessionHandoff = false;
+      let tokenHandoffInFlight = false;
+      let tokenHandoffGeneration = 0;
+      let pendingTokenHandoffRecovery = null;
       let pendingMockSegIdx = 0;
       let pendingAnnounceSeg = null;
       let sessionContextNote = "";
       let transcriptLog = [];
+      let liveSessionTokens = [];
       const mockBar = document.getElementById("mockBar");
       const mockProgressEl = document.getElementById("mockProgress");
       const mockStageEl = document.getElementById("mockStage");
@@ -953,6 +1081,94 @@
       const mockPrevBtn = document.getElementById("mockPrev");
       const mockToggleBtn = document.getElementById("mockToggle");
       const mockNextBtn = document.getElementById("mockNext");
+
+      function mockSessionCount() {
+        const segmentCount = MOCK_SEGMENTS.reduce(
+          (highest, segment) =>
+            Math.max(highest, Number(segment.session || 0) + 1),
+          0,
+        );
+        return Math.max(segmentCount, MOCK_SESSION_LABELS.length, 1);
+      }
+
+      async function getLiveSessionToken(sessionIdx, expectedSessionEpoch) {
+        if (liveSessionTokens[sessionIdx])
+          return liveSessionTokens[sessionIdx];
+        if (!LIVE_TOKEN_URL || !LIVE_PRACTICE_ID) {
+          throw new Error("未能取得連線憑證，請返回 AI Coach 重新開始。");
+        }
+        if (tokenFetchController) tokenFetchController.abort();
+        const controller = new AbortController();
+        tokenFetchController = controller;
+        tokenFetchTimeout = setTimeout(
+          () => controller.abort(),
+          TOKEN_FETCH_TIMEOUT_MS,
+        );
+        try {
+          let response;
+          try {
+            response = await fetch(LIVE_TOKEN_URL, {
+              method: "POST",
+              credentials: "same-origin",
+              cache: "no-store",
+              signal: controller.signal,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                practice_id: LIVE_PRACTICE_ID,
+                session_index: sessionIdx,
+              }),
+            });
+          } catch (error) {
+            if (
+              expectedSessionEpoch !== sessionEpoch ||
+              manualStopping ||
+              tokenFetchController !== controller
+            )
+              return "";
+            if (controller.signal.aborted)
+              throw new Error(
+                "準備連線逾時，請立即重試；系統會沿用同一憑證。",
+              );
+            throw new Error("網絡中斷，未能準備連線，請立即重試。");
+          }
+          if (
+            expectedSessionEpoch !== sessionEpoch ||
+            manualStopping ||
+            controller.signal.aborted
+          )
+            return "";
+          let payload = {};
+          try {
+            payload = await response.json();
+          } catch (error) {
+            if (controller.signal.aborted)
+              throw new Error(
+                "準備連線逾時，請立即重試；系統會沿用同一憑證。",
+              );
+          }
+          if (
+            expectedSessionEpoch !== sessionEpoch ||
+            manualStopping ||
+            controller.signal.aborted
+          )
+            return "";
+          if (!response.ok) {
+            throw new Error(
+              payload.detail || "未能準備連線，請稍後重試。",
+            );
+          }
+          const token = String(payload.token || "").trim();
+          if (!token) throw new Error("伺服器未有回傳連線憑證。");
+          liveSessionTokens[sessionIdx] = token;
+          return token;
+        } finally {
+          if (tokenFetchController === controller) {
+            tokenFetchController = null;
+            if (tokenFetchTimeout) clearTimeout(tokenFetchTimeout);
+            tokenFetchTimeout = null;
+          }
+        }
+      }
 
       function mockSideClass(side) {
         if (side === "正方") return "pro";
@@ -966,8 +1182,25 @@
         return mockElapsed + (Date.now() - mockStartTs) / 1000;
       }
 
+      function mockSegmentDuration(seg) {
+        const perSide = Math.max(0, Number((seg && seg.seconds) || 0));
+        return seg && seg.side === "雙方" ? perSide * 2 : perSide;
+      }
+
+      function mockBellEvents(seg) {
+        const perSide = Math.max(0, Number((seg && seg.seconds) || 0));
+        return ((seg && seg.bells) || []).map((bell) => {
+          const originalTime = Number(bell.t || 0);
+          const time =
+            seg && seg.side === "雙方" && originalTime > 0
+              ? originalTime + perSide
+              : originalTime;
+          return { ...bell, t: time };
+        });
+      }
+
       function renderMockBells(seg) {
-        const sched = seg.bells || [];
+        const sched = mockBellEvents(seg);
         mockBellsEl.innerHTML =
           "<h4>本段鈴聲</h4>" +
           sched
@@ -981,6 +1214,9 @@
                     " — " +
                     Number(b.rings || 1) +
                     " 叮") +
+                (seg.side === "雙方" && Number(b.t || 0) > 0
+                  ? "（雙方合計 " + formatTime(Number(b.t || 0)) + "）"
+                  : "") +
                 "</div>",
             )
             .join("");
@@ -998,13 +1234,13 @@
       function updateMockTimer() {
         const seg = MOCK_SEGMENTS[mockIndex];
         if (!seg) return;
-        const cap = Number(seg.seconds || 0);
+        const cap = mockSegmentDuration(seg);
         const raw = getMockElapsed();
         const shown = cap > 0 ? Math.min(raw, cap) : raw;
         mockTimerEl.textContent = formatTime(Math.floor(shown));
         mockTimerEl.className =
           "mock-timer" + (cap > 0 && raw >= cap ? " overtime" : "");
-        (seg.bells || []).forEach((b, i) => {
+        mockBellEvents(seg).forEach((b, i) => {
           if (raw >= Number(b.t || 0)) {
             fireBellOnce("mock-" + mockIndex + "-" + i, Number(b.rings || 1));
             const el = document.getElementById("mb-" + i);
@@ -1023,7 +1259,7 @@
       function mockResume() {
         const seg = MOCK_SEGMENTS[mockIndex];
         if (!seg) return;
-        const cap = Number(seg.seconds || 0);
+        const cap = mockSegmentDuration(seg);
         if (cap > 0 && mockElapsed >= cap) return;
         mockStartTs = Date.now();
         mockRunning = true;
@@ -1077,15 +1313,22 @@
           const wordMin = Math.round((segSecs / 60) * 250);
           const wordMax = Math.round((segSecs / 60) * 300);
           resetAiAudioForTurn(true);
-          sendTextTurn(
-            fillTemplate(LIVE_PROMPTS.segment_announce, {
-              label: seg.label || "",
-              side: seg.side || "",
-              secs: segSecs,
-              word_min: wordMin,
-              word_max: wordMax,
-            }),
-          );
+          let announcePrompt = fillTemplate(LIVE_PROMPTS.segment_announce, {
+            label: seg.label || "",
+            side: seg.side || "",
+            secs: segSecs,
+            word_min: wordMin,
+            word_max: wordMax,
+          });
+          if (sessionContextNote) {
+            announcePrompt =
+              "以下係上一節逐字摘要。請延續同一場辯論，不要當作新對話：\n" +
+              sessionContextNote +
+              "\n\n" +
+              announcePrompt;
+            sessionContextNote = "";
+          }
+          sendTextTurn(announcePrompt);
         } catch (e) {
           isWaiting = false;
           clearWaitTimer();
@@ -1093,9 +1336,32 @@
         }
       }
 
+      function canMockPrev(index) {
+        if (index <= 0 || !MOCK_SEGMENTS[index]) return false;
+        return (
+          Number(MOCK_SEGMENTS[index - 1].session || 0) ===
+          Number(MOCK_SEGMENTS[index].session || 0)
+        );
+      }
+
+      function clearMockSegmentBellKeys(index) {
+        const prefix = "mock-" + index + "-";
+        Array.from(firedBells).forEach((key) => {
+          if (String(key).startsWith(prefix)) firedBells.delete(key);
+        });
+      }
+
       function applyMockSegment(index, autostart) {
         stopMockTicking();
-        mockIndex = Math.max(0, Math.min(index, MOCK_SEGMENTS.length - 1));
+        const targetIndex = Math.max(
+          0,
+          Math.min(index, MOCK_SEGMENTS.length - 1),
+        );
+        // Every explicit navigation is a fresh entry. Reset only the target
+        // segment's bell keys, so Prev→Next replays its schedule while the Set
+        // still prevents apply/update/resume from double-ringing this entry.
+        clearMockSegmentBellKeys(targetIndex);
+        mockIndex = targetIndex;
         const seg = MOCK_SEGMENTS[mockIndex];
         mockElapsed = 0;
         mockRunning = false;
@@ -1104,10 +1370,17 @@
         mockStageEl.textContent = seg.label || "";
         mockSideEl.textContent = seg.side || "—";
         mockSideEl.className = "mock-side " + mockSideClass(seg.side);
-        mockPrevBtn.disabled = mockIndex === 0;
+        mockPrevBtn.disabled = !canMockPrev(mockIndex);
         mockNextBtn.textContent =
           mockIndex >= MOCK_SEGMENTS.length - 1 ? "完成 Mock" : "下一段";
-        mockNoteEl.textContent = "逐段跟賽制響叮；按「下一段」進入下一環節。";
+        mockNoteEl.textContent =
+          seg.side === "雙方"
+            ? "本段總計 " +
+              formatTime(mockSegmentDuration(seg)) +
+              "（每邊 " +
+              formatTime(Number(seg.seconds || 0)) +
+              "）；按「下一段」進入下一環節。"
+            : "逐段跟賽制響叮；按「下一段」進入下一環節。";
         renderMockBells(seg);
         updateMockToggleBtn();
         updateMockTimer();
@@ -1133,7 +1406,7 @@
         const nextIdx = mockIndex + 1;
         const curSession = Number(MOCK_SEGMENTS[mockIndex].session || 0);
         const nextSession = Number(MOCK_SEGMENTS[nextIdx].session || 0);
-        if (nextSession !== curSession && MOCK_TOKENS.length > 1) {
+        if (nextSession !== curSession) {
           switchToSession(nextSession, nextIdx);
         } else {
           applyMockSegment(nextIdx, true);
@@ -1156,7 +1429,113 @@
         return text;
       }
 
-      function switchToSession(sessionIdx, segIdx) {
+      function recoverMockAfterAbortedHandoff(
+        handoffGeneration,
+        resumeTimer,
+      ) {
+        if (
+          handoffGeneration !== tokenHandoffGeneration ||
+          manualStopping ||
+          hardDeadlineReached ||
+          !micReady ||
+          pendingSessionHandoff ||
+          feedbackPromptShown ||
+          finalFeedbackRequested
+        ) {
+          if (handoffGeneration === tokenHandoffGeneration)
+            pendingTokenHandoffRecovery = null;
+          return;
+        }
+        pendingTokenHandoffRecovery = {
+          generation: handoffGeneration,
+          resumeTimer: Boolean(resumeTimer),
+        };
+        // A GoAway/network reconnect may have made the token fetch stale.  Do
+        // not unlock the current section until that old session is usable
+        // again; onConnectionResumed() will finish this recovery.
+        if (
+          reconnectingSession ||
+          !ws ||
+          ws.readyState !== WebSocket.OPEN
+        )
+          return;
+        const recovery = pendingTokenHandoffRecovery;
+        pendingTokenHandoffRecovery = null;
+        mockPrevBtn.disabled = !canMockPrev(mockIndex);
+        mockToggleBtn.disabled = false;
+        mockNextBtn.disabled = false;
+        if (recovery.resumeTimer) mockResume();
+      }
+
+      async function switchToSession(sessionIdx, segIdx) {
+        if (
+          pendingSessionHandoff ||
+          reconnectingSession ||
+          tokenHandoffInFlight
+        )
+          return;
+        const handoffEpoch = sessionEpoch;
+        const handoffGeneration = ++tokenHandoffGeneration;
+        tokenHandoffInFlight = true;
+        pendingTokenHandoffRecovery = null;
+        const resumeCurrentSegmentOnFailure = mockRunning;
+        if (resumeCurrentSegmentOnFailure) mockElapsed = getMockElapsed();
+        mockRunning = false;
+        stopMockTicking();
+        setTalkEnabled(false);
+        mockNextBtn.disabled = true;
+        setState(
+          "準備下一節",
+          "正在安全準備第 " +
+            (sessionIdx + 1) +
+            " / " +
+            mockSessionCount() +
+            " 節連線…",
+          "wait",
+          true,
+        );
+        try {
+          const token = await getLiveSessionToken(sessionIdx, handoffEpoch);
+          if (
+            !token ||
+            handoffEpoch !== sessionEpoch ||
+            manualStopping
+          ) {
+            recoverMockAfterAbortedHandoff(
+              handoffGeneration,
+              resumeCurrentSegmentOnFailure,
+            );
+            return;
+          }
+        } catch (error) {
+          if (handoffEpoch !== sessionEpoch || manualStopping) {
+            recoverMockAfterAbortedHandoff(
+              handoffGeneration,
+              resumeCurrentSegmentOnFailure,
+            );
+            return;
+          }
+          setState("錯誤", error.message, "error", false);
+          setSubstatus("目前章節仍然保留，可按「下一段」再次嘗試。");
+          addLine("系統", error.message, false);
+          mockNextBtn.disabled = false;
+          setTalkEnabled(true);
+          if (resumeCurrentSegmentOnFailure) mockResume();
+          return;
+        } finally {
+          // Epoch may change while fetch is settling. Clear our own flag even
+          // then, but never clear a newer lifecycle/handoff owned generation.
+          if (handoffGeneration === tokenHandoffGeneration)
+            tokenHandoffInFlight = false;
+        }
+        if (handoffEpoch !== sessionEpoch || manualStopping) {
+          recoverMockAfterAbortedHandoff(
+            handoffGeneration,
+            resumeCurrentSegmentOnFailure,
+          );
+          return;
+        }
+        pendingTokenHandoffRecovery = null;
         stopActiveRecording();
         clearWaitTimer();
         resetAiAudioForTurn(true);
@@ -1169,16 +1548,12 @@
         currentSessionIdx = sessionIdx;
         pendingMockSegIdx = segIdx;
         sessionContextNote = buildTranscriptContext();
-        mockRunning = false;
-        stopMockTicking();
-        setTalkEnabled(false);
-        mockNextBtn.disabled = true;
         setState(
           "連接下一節",
           "正在連接第 " +
             (sessionIdx + 1) +
             " / " +
-            MOCK_TOKENS.length +
+            mockSessionCount() +
             " 節…",
           "wait",
           true,
@@ -1188,7 +1563,7 @@
           "接力連接第 " +
             (sessionIdx + 1) +
             " / " +
-            MOCK_TOKENS.length +
+            mockSessionCount() +
             " 節：" +
             (MOCK_SESSION_LABELS[sessionIdx] || "") +
             "…",
@@ -1196,6 +1571,8 @@
         );
         switchingSession = true;
         reconnectingSession = true;
+        pendingSessionHandoff = true;
+        sessionResumptionHandles[currentSessionIdx] = "";
         if (
           ws &&
           (ws.readyState === WebSocket.OPEN ||
@@ -1203,17 +1580,42 @@
         ) {
           try {
             ws.close();
+            // A browser/network stack may not promptly dispatch `close`.
+            // Keep the new token's one-minute start window usable by making
+            // the old callbacks stale and opening the prepared section after
+            // a short bounded wait.
+            if (handoffCloseTimer) clearTimeout(handoffCloseTimer);
+            handoffCloseTimer = setTimeout(() => {
+              handoffCloseTimer = null;
+              if (
+                handoffEpoch !== sessionEpoch ||
+                handoffGeneration !== tokenHandoffGeneration ||
+                manualStopping ||
+                !switchingSession ||
+                currentSessionIdx !== sessionIdx
+              )
+                return;
+              switchingSession = false;
+              openSessionWs();
+            }, SESSION_HANDOFF_CLOSE_TIMEOUT_MS);
           } catch (e) {
+            switchingSession = false;
             openSessionWs();
           }
         } else {
+          switchingSession = false;
           openSessionWs();
         }
       }
 
       function onSessionReconnected() {
+        clearGoAwayReconnectTimer();
         switchingSession = false;
         reconnectingSession = false;
+        pendingSessionHandoff = false;
+        reconnectAttempts = 0;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
         isRecording = false;
         isWaiting = false;
         userLine = null;
@@ -1259,8 +1661,13 @@
           activeAiLine
         )
           return;
-        if (mockIndex === 0) return;
-        applyMockSegment(mockIndex - 1, false);
+        if (!canMockPrev(mockIndex)) {
+          setSubstatus("上一段屬於另一節 Google session，不能跨節返回。");
+          return;
+        }
+        const targetIndex = mockIndex - 1;
+        applyMockSegment(targetIndex, false);
+        announceSegmentToAi(MOCK_SEGMENTS[targetIndex]);
       }
 
       function startMockSequence() {
@@ -1273,15 +1680,24 @@
         announceSegmentToAi(MOCK_SEGMENTS[0]);
       }
 
-      function clearTimers() {
+      function clearTimers(preserveHardDeadline) {
         if (recordTimer) clearInterval(recordTimer);
         if (waitTimer) clearTimeout(waitTimer);
         if (speechTimer) clearInterval(speechTimer);
+        if (hardDeadlineTimer && !preserveHardDeadline)
+          clearTimeout(hardDeadlineTimer);
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (setupWatchdogTimer) clearTimeout(setupWatchdogTimer);
+        clearGoAwayReconnectTimer();
+        if (handoffCloseTimer) clearTimeout(handoffCloseTimer);
         stopMockTicking();
         recordTimer = null;
         waitTimer = null;
         speechTimer = null;
-        speechRunning = false;
+        if (!preserveHardDeadline) hardDeadlineTimer = null;
+        reconnectTimer = null;
+        setupWatchdogTimer = null;
+        handoffCloseTimer = null;
         mockRunning = false;
       }
 
@@ -1337,6 +1753,41 @@
         return pcm;
       }
 
+      function boundUserPcmFrame(pcm) {
+        if (MOCK_MODE) return { pcm, budgetReached: false };
+        // Keep an integer sample ledger as well as the wall-clock speech bank.
+        // ScriptProcessor callbacks are whole frames, so the pre-callback time
+        // check alone can otherwise admit one frame beyond the per-side cap.
+        const sentRemaining = Math.max(
+          0,
+          USER_PCM_SAMPLE_LIMIT - userPcmSamplesSent,
+        );
+        const wallRemaining = Math.max(
+          0,
+          Math.floor(
+            (SPEECH_SECONDS - getUserSpeechElapsed()) *
+              USER_PCM_SAMPLE_RATE,
+          ),
+        );
+        const acceptedLength = Math.min(
+          pcm.length,
+          sentRemaining,
+          wallRemaining,
+        );
+        const acceptedPcm =
+          acceptedLength === pcm.length
+            ? pcm
+            : pcm.subarray(0, acceptedLength);
+        userPcmSamplesSent += acceptedLength;
+        return {
+          pcm: acceptedPcm,
+          budgetReached:
+            acceptedLength < pcm.length ||
+            userPcmSamplesSent >= USER_PCM_SAMPLE_LIMIT ||
+            acceptedLength >= wallRemaining,
+        };
+      }
+
       function bytesToBase64(bytes) {
         let binary = "";
         const chunk = 0x8000;
@@ -1357,8 +1808,11 @@
         ttsPlaying = false;
         ttsFallbackActive = false;
         nativeAudioParts = [];
+        nativeFallbackBoundary = 0;
         ttsReceivedText = false;
+        ttsPlayedAnyAudio = false;
         resolveTtsDrain();
+        if (stopCurrent) stopScheduledNativePcm();
         if (stopCurrent && currentTtsAudio) {
           try {
             currentTtsAudio.pause();
@@ -1373,6 +1827,20 @@
         currentTtsAudio = null;
         currentTtsUrl = "";
         if (stopCurrent && outputCtx) playAt = outputCtx.currentTime;
+      }
+
+      function stopScheduledNativePcm() {
+        nativePcmSources.forEach((source) => {
+          try {
+            source.stop();
+          } catch (e) {}
+          try {
+            source.disconnect();
+          } catch (e) {}
+        });
+        nativePcmSources.clear();
+        if (outputCtx) playAt = outputCtx.currentTime;
+        else playAt = 0;
       }
 
       function resolveTtsDrain() {
@@ -1434,15 +1902,22 @@
         processTtsQueue();
       }
 
-      function playNativeAudioParts() {
+      function playNativeAudioParts(startIndex) {
         if (!nativeAudioParts.length) return;
-        const parts = nativeAudioParts.slice();
+        const safeStart = Math.max(
+          0,
+          Math.min(Number(startIndex || 0), nativeAudioParts.length),
+        );
+        const parts = nativeAudioParts.slice(safeStart);
         nativeAudioParts = [];
+        nativeFallbackBoundary = 0;
         parts.forEach((part) => playPcm(part.data, part.mimeType));
       }
 
       function activateNativeTtsFallback(message) {
         if (ttsFallbackActive) return;
+        const partialServerTtsPlayed = ttsPlayedAnyAudio;
+        const safeNativeRemainderStart = nativeFallbackBoundary;
         ttsFallbackActive = true;
         ttsQueue = [];
         ttsPending = 0;
@@ -1460,14 +1935,25 @@
         }
         currentTtsAudio = null;
         currentTtsUrl = "";
-        if (!ttsWarningShown) {
+        if (partialServerTtsPlayed) {
+          // Azure text audio and Gemini PCM have no shared timestamps. The only
+          // no-duplicate boundary we can prove is PCM received after the last
+          // fully played Azure clip. Preserve/play that remainder plus all
+          // future PCM; overlapping earlier PCM is not replayed, and the full
+          // transcript remains visible instead of silently hiding the tradeoff.
+          setHint(
+            "Azure TTS 中途停止；為免重播已聽內容，只會播放可安全分辨的餘下 Gemini 聲音，完整文字仍會保留。",
+          );
+        } else if (!ttsWarningShown) {
           ttsWarningShown = true;
           setHint(
             message ||
               "Azure TTS 暫時未能播放，今輪會改用 Gemini Live 原生聲音。",
           );
         }
-        playNativeAudioParts();
+        playNativeAudioParts(
+          partialServerTtsPlayed ? safeNativeRemainderStart : 0,
+        );
         resolveTtsDrain();
       }
 
@@ -1497,7 +1983,11 @@
             body: JSON.stringify({ text }),
           });
           if (!resp.ok) {
-            if (resp.status === 503 || resp.status === 401)
+            if (
+              resp.status === 503 ||
+              resp.status === 401 ||
+              resp.status === 429
+            )
               azureTtsSessionDisabled = true;
             throw new Error("Azure TTS HTTP " + resp.status);
           }
@@ -1533,23 +2023,36 @@
           currentTtsAudio = audio;
           currentTtsUrl = url;
           audio.onended = () => {
+            // Everything received up to this point overlaps a fully spoken
+            // Azure prefix; later buffered PCM is the safe native remainder.
+            if (ttsPlayedAnyAudio)
+              nativeFallbackBoundary = nativeAudioParts.length;
             URL.revokeObjectURL(url);
             if (currentTtsAudio === audio) currentTtsAudio = null;
             if (currentTtsUrl === url) currentTtsUrl = "";
             resolve();
           };
           audio.onerror = () => {
+            if (Number(audio.currentTime || 0) > 0) {
+              ttsPlayedAnyAudio = true;
+              nativeFallbackBoundary = nativeAudioParts.length;
+            }
             URL.revokeObjectURL(url);
             if (currentTtsAudio === audio) currentTtsAudio = null;
             if (currentTtsUrl === url) currentTtsUrl = "";
             reject(new Error("TTS audio playback failed"));
           };
-          audio.play().catch((e) => {
-            URL.revokeObjectURL(url);
-            if (currentTtsAudio === audio) currentTtsAudio = null;
-            if (currentTtsUrl === url) currentTtsUrl = "";
-            reject(e);
-          });
+          audio
+            .play()
+            .then(() => {
+              ttsPlayedAnyAudio = true;
+            })
+            .catch((e) => {
+              URL.revokeObjectURL(url);
+              if (currentTtsAudio === audio) currentTtsAudio = null;
+              if (currentTtsUrl === url) currentTtsUrl = "";
+              reject(e);
+            });
         });
       }
 
@@ -1563,6 +2066,83 @@
           samples[i] = view.getInt16(i * 2, true) / 32768;
         }
         return samples;
+      }
+
+      function decodedBase64ByteLength(base64) {
+        const clean = String(base64 || "").replace(/\s/g, "");
+        if (!clean) return 0;
+        const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+        return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
+      }
+
+      function pcmAudioDurationSeconds(base64, mimeType) {
+        const mime = String(mimeType || "");
+        if (!/^audio\/(?:pcm|l16)\b/i.test(mime)) return 0;
+        const sampleRateMatch = mime.match(/rate=(\d+)/i);
+        const channelsMatch = mime.match(/channels=(\d+)/i);
+        const sampleRate = sampleRateMatch
+          ? parseInt(sampleRateMatch[1], 10)
+          : 24000;
+        const channels = channelsMatch ? parseInt(channelsMatch[1], 10) : 1;
+        if (!(sampleRate > 0) || !(channels > 0)) return 0;
+        return decodedBase64ByteLength(base64) / (sampleRate * channels * 2);
+      }
+
+      function accountAiPcmAudio(base64, mimeType) {
+        if (
+          MOCK_MODE ||
+          feedbackPromptShown ||
+          finalFeedbackRequested ||
+          responsePurpose === "feedback"
+        )
+          return true;
+        const duration = pcmAudioDurationSeconds(base64, mimeType);
+        if (!(duration > 0)) return false;
+        const nextElapsed = aiSpeechElapsed + duration;
+        if (nextElapsed >= SPEECH_SECONDS) {
+          // Do not play the boundary-crossing provider frame. Live PCM arrives
+          // in small chunks, so dropping at most one chunk keeps provider
+          // output at or below the per-side hard budget.
+          aiSpeechElapsed = SPEECH_SECONDS;
+          updateSpeechTimer();
+          return false;
+        }
+        aiSpeechElapsed = nextElapsed;
+        updateSpeechTimer();
+        return true;
+      }
+
+      function processAiModelTurnParts(parts) {
+        if (!Array.isArray(parts)) return;
+        for (const part of parts) {
+          if (!part || typeof part !== "object") continue;
+          if (part.inlineData && part.inlineData.data) {
+            if (
+              !accountAiPcmAudio(
+                part.inlineData.data,
+                part.inlineData.mimeType,
+              )
+            ) {
+              // accountAiPcmAudio() may synchronously enter the feedback state.
+              // Stop this batch here: later parts must not see that state and
+              // become newly eligible for native queuing/playback.
+              break;
+            }
+            if (
+              azureTtsEnabled &&
+              !azureTtsSessionDisabled &&
+              !ttsFallbackActive
+            ) {
+              nativeAudioParts.push({
+                data: part.inlineData.data,
+                mimeType: part.inlineData.mimeType,
+              });
+            } else {
+              playPcm(part.inlineData.data, part.inlineData.mimeType);
+            }
+          }
+          if (part.text) appendLineText(aiLine, part.text);
+        }
       }
 
       function playPcm(base64, mimeType) {
@@ -1579,6 +2159,13 @@
         const src = outputCtx.createBufferSource();
         src.buffer = buffer;
         src.connect(outputCtx.destination);
+        nativePcmSources.add(src);
+        src.onended = () => {
+          nativePcmSources.delete(src);
+          try {
+            src.disconnect();
+          } catch (e) {}
+        };
         // A tiny queue absorbs Live/WebSocket burst jitter without adding a
         // perceptible turn delay.  It prevents the intermittent chopped replies
         // reported on longer Free De and Mock sessions.
@@ -1644,6 +2231,11 @@
           nextProcessor.onaudioprocess = (event) => {
             if (!isRecording) return;
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (!MOCK_MODE && getUserSpeechElapsed() >= SPEECH_SECONDS) {
+              commitUserSpeechTime();
+              finishFreeDebateForBudget("你方已用完本節發言時間。");
+              return;
+            }
             const raw = event.inputBuffer.getChannelData(0);
             let peak = 0;
             for (let i = 0; i < raw.length; i++)
@@ -1655,16 +2247,30 @@
               16000,
             );
             const pcm = floatTo16BitPCM(downsampled);
-            ws.send(
-              JSON.stringify({
-                realtimeInput: {
-                  audio: {
-                    data: bytesToBase64(new Uint8Array(pcm.buffer)),
-                    mimeType: "audio/pcm;rate=16000",
+            const boundedPcm = boundUserPcmFrame(pcm);
+            if (boundedPcm.pcm.length) {
+              ws.send(
+                JSON.stringify({
+                  realtimeInput: {
+                    audio: {
+                      data: bytesToBase64(
+                        new Uint8Array(
+                          boundedPcm.pcm.buffer,
+                          boundedPcm.pcm.byteOffset,
+                          boundedPcm.pcm.byteLength,
+                        ),
+                      ),
+                      mimeType: "audio/pcm;rate=16000",
+                    },
                   },
-                },
-              }),
-            );
+                }),
+              );
+            }
+            if (boundedPcm.budgetReached) {
+              userSpeechElapsed = SPEECH_SECONDS;
+              userSpeechStartedAt = 0;
+              updateSpeechTimer();
+            }
           };
           nextSource.connect(nextProcessor);
           // Keep the processing graph alive without routing the mic to speakers.
@@ -1700,6 +2306,15 @@
       }
 
       function sendSetup() {
+        if (
+          !(CONTEXT_TRIGGER_TOKENS > 0) ||
+          !(CONTEXT_TARGET_TOKENS > 0) ||
+          CONTEXT_TARGET_TOKENS >= CONTEXT_TRIGGER_TOKENS
+        ) {
+          throw new Error("Live context 壓縮設定無效，請聯絡管理員。");
+        }
+        const resumptionHandle =
+          sessionResumptionHandles[currentSessionIdx] || "";
         ws.send(
           JSON.stringify({
             setup: {
@@ -1718,6 +2333,13 @@
               realtimeInputConfig: {
                 automaticActivityDetection: { disabled: true },
               },
+              contextWindowCompression: {
+                triggerTokens: CONTEXT_TRIGGER_TOKENS,
+                slidingWindow: { targetTokens: CONTEXT_TARGET_TOKENS },
+              },
+              sessionResumption: resumptionHandle
+                ? { handle: resumptionHandle }
+                : {},
               inputAudioTranscription: {},
               outputAudioTranscription: {},
             },
@@ -1726,13 +2348,8 @@
       }
 
       function buildSystemInstruction() {
-        if (MOCK_MODE && sessionContextNote) {
-          return (
-            SYSTEM_PROMPT +
-            "\n\n## 之前環節摘要（你要記住並延續，唔好當作新對話）\n" +
-            sessionContextNote
-          );
-        }
+        // The ephemeral token is locked to this exact server-authored prompt.
+        // Mock hand-off context is sent as the first text turn after setup.
         return SYSTEM_PROMPT;
       }
 
@@ -1744,6 +2361,8 @@
           if (!(await startMic(expectedSessionEpoch))) return;
           if (liveRunIsStale(expectedSessionEpoch)) return;
           micReady = true;
+          reconnectingSession = false;
+          reconnectAttempts = 0;
           if (MOCK_MODE) {
             setState("準備好", "Mock 已準備好。", "ready", false);
             setSubstatus("按下開始錄音，完成發言後再按下送出。");
@@ -1826,6 +2445,22 @@
         retryPromptQueued = false;
         closeStatusLocked = false;
         manualStopping = false;
+        hasStartedOnce = true;
+        userSpeechElapsed = 0;
+        userSpeechStartedAt = 0;
+        userPcmSamplesSent = 0;
+        aiSpeechElapsed = 0;
+        speechEnded = false;
+        firedBells.clear();
+        reconnectAttempts = 0;
+        sessionResumptionHandles = {};
+        startFreeHardDeadline();
+        // A preserved deadline may expire synchronously on a retry (for
+        // example, after the timer callback was delayed in a background tab).
+        // expireFreeHardDeadline() performs the cleanup and clears this start
+        // timestamp; do not let the now-expired lifecycle continue to mint a
+        // token or open a fresh socket.
+        if (!overallStartedAt) return;
         const startEpoch = ++sessionEpoch;
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -1841,6 +2476,9 @@
           await nextOutputCtx.resume();
           if (liveRunIsStale(startEpoch)) return;
           await prepareBell();
+          if (liveRunIsStale(startEpoch)) return;
+          const token = await getLiveSessionToken(0, startEpoch);
+          if (!token || liveRunIsStale(startEpoch)) return;
         } catch (e) {
           if (liveRunIsStale(startEpoch)) return;
           throw e;
@@ -1851,19 +2489,239 @@
       }
 
       function currentToken() {
-        if (MOCK_MODE && MOCK_TOKENS.length)
-          return MOCK_TOKENS[
-            Math.min(currentSessionIdx, MOCK_TOKENS.length - 1)
-          ];
-        return LIVE_TOKEN;
+        return liveSessionTokens[currentSessionIdx] || "";
+      }
+
+      function googleDurationMs(value) {
+        if (typeof value === "number" && Number.isFinite(value))
+          return Math.max(0, value * 1000);
+        if (typeof value === "string") {
+          const match = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)s$/);
+          return match ? Number(match[1]) * 1000 : 0;
+        }
+        if (value && typeof value === "object") {
+          const seconds = Number(value.seconds || 0);
+          const nanos = Number(value.nanos || 0);
+          return Math.max(0, seconds * 1000 + nanos / 1e6);
+        }
+        return 0;
+      }
+
+      function currentResumptionHandle() {
+        return sessionResumptionHandles[currentSessionIdx] || "";
+      }
+
+      function clearSetupWatchdog(expectedSessionEpoch) {
+        if (
+          expectedSessionEpoch !== undefined &&
+          expectedSessionEpoch !== sessionEpoch
+        )
+          return;
+        if (setupWatchdogTimer) clearTimeout(setupWatchdogTimer);
+        setupWatchdogTimer = null;
+      }
+
+      function startSetupWatchdog(expectedSessionEpoch) {
+        clearSetupWatchdog();
+        setupWatchdogTimer = setTimeout(() => {
+          setupWatchdogTimer = null;
+          if (
+            expectedSessionEpoch !== sessionEpoch ||
+            manualStopping ||
+            hardDeadlineReached
+          )
+            return;
+          const message =
+            "Gemini Live 連線設定逾時，未收到 Google 完成設定確認。";
+          if (pendingSessionHandoff || !currentResumptionHandle()) {
+            failLiveConnection(message + " 請返回重新建立練習。");
+            return;
+          }
+          reconnectingSession = true;
+          setState("設定逾時", message + " 正在保留狀態並重新連線…", "wait", true);
+          setSubstatus("發言預算、鈴聲、逐字稿及章節進度不會重設。");
+          try {
+            if (
+              ws &&
+              (ws.readyState === WebSocket.OPEN ||
+                ws.readyState === WebSocket.CONNECTING)
+            ) {
+              ws.close(4000, "setup timeout");
+              return;
+            }
+          } catch (error) {}
+          scheduleSessionReconnect("Live 設定逾時，正在自動恢復…", 0);
+        }, SETUP_COMPLETE_TIMEOUT_MS);
+      }
+
+      function failLiveConnection(message) {
+        setState("錯誤", message, "error", false);
+        setSubstatus("本節狀態未能再恢復，請重新建立練習。");
+        setTalkEnabled(false);
+        showRetry(false);
+        startBtn.disabled = false;
+        startBtn.textContent = MOCK_MODE ? "重新建立Mock" : "重新建立自由辯論";
+        stopBtn.disabled = true;
+        cleanupMedia(true);
+      }
+
+      function scheduleSessionReconnect(reason, delayMs) {
+        if (manualStopping || hardDeadlineReached || pendingSessionHandoff)
+          return;
+        if (!currentResumptionHandle()) {
+          failLiveConnection(
+            "Gemini 連線中斷，而且未收到可恢復連線憑證；請重新建立練習。",
+          );
+          return;
+        }
+        if (reconnectTimer) return;
+        reconnectingSession = true;
+        talkBtn.disabled = true;
+        setState(
+          "重新連線",
+          reason || "正在恢復 Gemini Live 連線…",
+          "wait",
+          true,
+        );
+        setSubstatus("發言時間、鈴聲、逐字稿及目前 Mock 章節會全部保留。");
+        const reconnectSessionIdx = currentSessionIdx;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          if (
+            manualStopping ||
+            reconnectSessionIdx !== currentSessionIdx ||
+            pendingSessionHandoff
+          )
+            return;
+          reconnectAttempts += 1;
+          if (reconnectAttempts > 4) {
+            failLiveConnection("Gemini Live 多次重新連線失敗，請檢查網絡後重新建立練習。");
+            return;
+          }
+          openSessionWs();
+        }, Math.max(0, Number(delayMs || 0)));
+      }
+
+      function clearGoAwayReconnectTimer() {
+        if (goAwayReconnectTimer) clearTimeout(goAwayReconnectTimer);
+        goAwayReconnectTimer = null;
+      }
+
+      function scheduleGoAwayReconnect(timeLeft) {
+        if (manualStopping || pendingSessionHandoff) return;
+        clearGoAwayReconnectTimer();
+        const goAwaySessionEpoch = sessionEpoch;
+        const timeLeftMs = googleDurationMs(timeLeft);
+        const delay = Math.max(0, Math.min(5000, timeLeftMs - 1500));
+        setState(
+          "保持連線",
+          "Google 即將更新連線，系統會自動接力。",
+          "wait",
+          true,
+        );
+        setSubstatus("目前時間、鈴聲、逐字稿及發言預算不會重設。");
+        const scheduledTimer = setTimeout(() => {
+          // A cleared timer can already be queued in the browser event loop.
+          // Never let that stale callback clear or close a newer session.
+          if (goAwayReconnectTimer !== scheduledTimer) return;
+          goAwayReconnectTimer = null;
+          if (
+            goAwaySessionEpoch !== sessionEpoch ||
+            manualStopping ||
+            pendingSessionHandoff
+          )
+            return;
+          if (!currentResumptionHandle()) {
+            failLiveConnection(
+              "Google 要求更新連線，但未提供可恢復憑證；請重新建立練習。",
+            );
+            return;
+          }
+          reconnectingSession = true;
+          try {
+            if (
+              ws &&
+              (ws.readyState === WebSocket.OPEN ||
+                ws.readyState === WebSocket.CONNECTING)
+            ) {
+              ws.close(1000, "session resumption");
+              return;
+            }
+          } catch (error) {}
+          scheduleSessionReconnect("正在按 Google 指示恢復連線…", 0);
+        }, delay);
+        goAwayReconnectTimer = scheduledTimer;
+      }
+
+      function onConnectionResumed() {
+        clearGoAwayReconnectTimer();
+        reconnectingSession = false;
+        reconnectAttempts = 0;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        if (pendingTokenHandoffRecovery) {
+          recoverMockAfterAbortedHandoff(
+            pendingTokenHandoffRecovery.generation,
+            pendingTokenHandoffRecovery.resumeTimer,
+          );
+        }
+        addLine("系統", "Gemini Live 連線已恢復，所有計時及進度已保留。", false);
+        if (feedbackPromptShown || finalFeedbackRequested) {
+          setTalkEnabled(false);
+          showFeedbackButton(feedbackPromptShown && !finalFeedbackRequested);
+          setState(
+            finalFeedbackRequested ? "總結評價" : "等待評價",
+            finalFeedbackRequested
+              ? "連線已恢復，正在等待 AI 總結評價。"
+              : "連線已恢復，請按「要求 AI 評價」。",
+            "wait",
+            Boolean(finalFeedbackRequested),
+          );
+          return;
+        }
+        if (isRecording) {
+          if (!MOCK_MODE) userSpeechStartedAt = Date.now();
+          try {
+            ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+          } catch (error) {}
+          talkBtn.disabled = false;
+          setState("正在聽", "連線已恢復，請繼續發言。", "listen", false);
+          return;
+        }
+        if (isWaiting || responsePurpose !== null || activeAiLine) {
+          setState("等待 AI", "連線已恢復，繼續等待 AI 回覆。", "wait", true);
+          startWaitTimer();
+          return;
+        }
+        setState("準備好", "連線已恢復，輪到你。", "ready", false);
+        setSubstatus("按下開始錄音，完成發言後再按下送出。");
+        setTalkEnabled(true);
       }
 
       function openSessionWs() {
+        clearGoAwayReconnectTimer();
         const openedSessionEpoch = ++sessionEpoch;
-        ws = new WebSocket(buildWsUrl(currentToken()));
+        const openedSessionIdx = currentSessionIdx;
+        const token = currentToken();
+        if (!token) {
+          failLiveConnection("未能取得 Gemini Live 連線憑證。");
+          return;
+        }
+        try {
+          ws = new WebSocket(buildWsUrl(token));
+        } catch (error) {
+          failLiveConnection("瀏覽器未能建立 Gemini Live 連線：" + error.message);
+          return;
+        }
+        startSetupWatchdog(openedSessionEpoch);
         ws.onopen = () => {
           if (openedSessionEpoch !== sessionEpoch) return;
-          sendSetup();
+          try {
+            sendSetup();
+          } catch (error) {
+            failLiveConnection("未能送出 Gemini Live 設定：" + error.message);
+            return;
+          }
           if (!feedbackPromptShown && !finalFeedbackRequested)
             setState("連線中", "已連線，等待 Gemini Live 設定...", "wait", true);
         };
@@ -1881,10 +2739,36 @@
             console.error("[Live] JSON parse error:", e, data);
             return;
           }
-          if (switchingSession && !msg.setupComplete) return;
-          if (msg.setupComplete) {
-            if (MOCK_MODE && micReady) {
+          if (
+            pendingSessionHandoff &&
+            openedSessionIdx !== currentSessionIdx
+          )
+            return;
+          const setupComplete = Object.prototype.hasOwnProperty.call(
+            msg,
+            "setupComplete",
+          );
+          const resumptionUpdate = msg.sessionResumptionUpdate;
+          if (
+            resumptionUpdate &&
+            resumptionUpdate.resumable &&
+            resumptionUpdate.newHandle
+          ) {
+            sessionResumptionHandles[openedSessionIdx] =
+              resumptionUpdate.newHandle;
+          } else if (
+            resumptionUpdate &&
+            resumptionUpdate.resumable === false
+          ) {
+            sessionResumptionHandles[openedSessionIdx] = "";
+          }
+          if (msg.goAway) scheduleGoAwayReconnect(msg.goAway.timeLeft);
+          if (setupComplete) {
+            clearSetupWatchdog(openedSessionEpoch);
+            if (pendingSessionHandoff && MOCK_MODE && micReady) {
               onSessionReconnected();
+            } else if (reconnectingSession && micReady) {
+              onConnectionResumed();
             } else {
               prepareMicAfterSetup(openedSessionEpoch);
             }
@@ -1896,7 +2780,15 @@
               userLine = addLine("你", "正在轉錄...", true, "pending");
             appendLineText(userLine, sc.inputTranscription.text);
           }
-          if (sc.interrupted) playAt = outputCtx ? outputCtx.currentTime : 0;
+          if (sc.interrupted) resetAiAudioForTurn(true);
+          if (
+            discardServerResponseUntilTurnSent &&
+            (sc.outputTranscription ||
+              sc.modelTurn ||
+              sc.generationComplete ||
+              sc.turnComplete)
+          )
+            return;
           if (sc.outputTranscription && sc.outputTranscription.text) {
             if (beginAiResponse()) {
               appendLineText(aiLine, sc.outputTranscription.text);
@@ -1905,23 +2797,7 @@
           }
           if (sc.modelTurn && sc.modelTurn.parts) {
             if (beginAiResponse()) {
-              sc.modelTurn.parts.forEach((part) => {
-                if (part.inlineData && part.inlineData.data) {
-                  if (
-                    azureTtsEnabled &&
-                    !azureTtsSessionDisabled &&
-                    !ttsFallbackActive
-                  ) {
-                    nativeAudioParts.push({
-                      data: part.inlineData.data,
-                      mimeType: part.inlineData.mimeType,
-                    });
-                  } else {
-                    playPcm(part.inlineData.data, part.inlineData.mimeType);
-                  }
-                }
-                if (part.text) appendLineText(aiLine, part.text);
-              });
+              processAiModelTurnParts(sc.modelTurn.parts);
             }
           }
           if (sc.generationComplete && !isDiscardingNormalResponse()) {
@@ -1978,18 +2854,20 @@
           console.error("WS error:", ev);
           if (switchingSession) return;
           setState(
-            "錯誤",
-            "Gemini Live 連線發生錯誤。請檢查網絡後重新開始。",
-            "error",
-            false,
+            "連線不穩",
+            "Gemini Live 網絡暫時不穩，正在等待恢復…",
+            "wait",
+            true,
           );
-          setSubstatus(
-            "如果已經完成發言但沒有回應，請停止後重新開始自由辯論。",
-          );
+          setSubstatus("如 Google 關閉連線，系統會用最新 handle 自動恢復。");
         };
         ws.onclose = (ev) => {
           if (openedSessionEpoch !== sessionEpoch) return;
+          clearGoAwayReconnectTimer();
+          clearSetupWatchdog(openedSessionEpoch);
           if (switchingSession) {
+            if (handoffCloseTimer) clearTimeout(handoffCloseTimer);
+            handoffCloseTimer = null;
             switchingSession = false;
             openSessionWs();
             return;
@@ -2000,18 +2878,31 @@
             cleanupMedia(false);
             return;
           }
-          startBtn.disabled = false;
-          stopBtn.disabled = true;
-          setTalkEnabled(false);
-          showRetry(false);
           if (manualStopping) {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            setTalkEnabled(false);
+            showRetry(false);
             setState("完成", "自由辯論已停止。", "", false);
             setSubstatus("如要繼續，請重新開始自由辯論。");
-          } else {
-            setState("錯誤", message, "error", false);
-            setSubstatus("請重新開始自由辯論。");
+            cleanupMedia(false);
+            return;
           }
-          cleanupMedia(false);
+          if (currentResumptionHandle()) {
+            if (isRecording && !MOCK_MODE) commitUserSpeechTime();
+            const retryDelay = Math.min(
+              2000,
+              250 * Math.pow(2, reconnectAttempts),
+            );
+            scheduleSessionReconnect(
+              reconnectingSession
+                ? "正在恢復 Gemini Live 連線…"
+                : "Live 連線中斷，正在自動恢復…",
+              retryDelay,
+            );
+            return;
+          }
+          failLiveConnection(message);
         };
       }
 
@@ -2023,13 +2914,13 @@
           lower.includes("not supported") ||
           lower.includes("unsupported")
         ) {
-          return "Gemini Live 暫時未能連線（地區限制）。系統應已經 relay 轉駁，請稍後重新開始；若持續失敗請聯絡開發者。";
+          return "目前網絡地區未獲 Google Gemini Live 支援。請先連接至 Google 支援地區網絡／VPN，再重新檢查及建立練習。";
         }
         if (lower.includes("token") || ev.code === 1008) {
-          return "Live token 可能已過期或無效，請重新開始自由辯論。";
+          return "一次性 Live 憑證可能已過期或無效，請重新建立練習。";
         }
         if (ev.code === 1006) {
-          return "Live 連線中斷，請檢查網絡後重新開始；若持續失敗請聯絡開發者。";
+          return "Live 連線意外中斷，而且未能恢復。請檢查網絡後重新建立練習。";
         }
         return (
           "自由辯論已結束（code " +
@@ -2041,6 +2932,10 @@
 
       function beginTurn() {
         if (!micReady || isRecording || isWaiting) return;
+        if (!MOCK_MODE && userSpeechElapsed >= SPEECH_SECONDS) {
+          finishFreeDebateForBudget("你方已用完本節發言時間。");
+          return;
+        }
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           setState(
             "錯誤",
@@ -2058,6 +2953,7 @@
         userLine = null;
         aiLine = null;
         recordStartedAt = Date.now();
+        if (!MOCK_MODE) userSpeechStartedAt = recordStartedAt;
         talkBtn.className = "talk-btn recording";
         talkBtn.textContent = "完成並送出";
         setState("正在聽", "正在收音，完成發言後按下送出。", "listen", false);
@@ -2072,7 +2968,9 @@
 
       function endTurn() {
         if (!isRecording) return;
+        if (!MOCK_MODE) commitUserSpeechTime();
         isRecording = false;
+        recordStartedAt = null;
         if (recordTimer) clearInterval(recordTimer);
         recordTimer = null;
         meterEl.style.width = "0%";
@@ -2088,6 +2986,7 @@
         try {
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+            discardServerResponseUntilTurnSent = false;
             responsePurpose = "normal";
             responseEpoch += 1;
           }
@@ -2119,6 +3018,9 @@
             realtimeInput: { text },
           }),
         );
+        // A newly sent text turn owns all subsequent model output. Until this
+        // point a retry/resume must keep discarding the abandoned response.
+        discardServerResponseUntilTurnSent = false;
         responsePurpose = purpose || "normal";
         responseEpoch += 1;
       }
@@ -2132,7 +3034,9 @@
 
       function stopActiveRecording() {
         if (!isRecording) return;
+        if (!MOCK_MODE) commitUserSpeechTime();
         isRecording = false;
+        recordStartedAt = null;
         if (recordTimer) clearInterval(recordTimer);
         recordTimer = null;
         meterEl.style.width = "0%";
@@ -2271,12 +3175,19 @@
             return new Promise((resolve) => setTimeout(resolve, 200));
           })
           .then(() => {
-            if (
-              expectedSessionEpoch !== sessionEpoch ||
-              expectedResponseEpoch !== responseEpoch ||
-              reconnectingSession
-            )
+            if (expectedResponseEpoch !== responseEpoch) return;
+            if (reconnectingSession) {
+              setTimeout(
+                () =>
+                  finishTurnAfterPlayback(
+                    isFinalFeedbackTurn,
+                    expectedSessionEpoch,
+                    expectedResponseEpoch,
+                  ),
+                250,
+              );
               return;
+            }
             if (!micReady || !ws || ws.readyState !== WebSocket.OPEN) return;
             // 舊normal turn可能已進入playback wait，期間使用者已要求評價。
             // 呢個舊callback不可清走新feedback turn的line/state。
@@ -2332,7 +3243,7 @@
         clearActiveAiLine();
         if (feedbackPromptShown || finalFeedbackRequested) return;
         if (MOCK_MODE) {
-          mockPrevBtn.disabled = mockIndex === 0;
+          mockPrevBtn.disabled = !canMockPrev(mockIndex);
           mockToggleBtn.disabled = false;
           mockNextBtn.disabled = false;
         }
@@ -2350,8 +3261,56 @@
         resumeSpeechTimer();
       }
 
-      function cleanupMedia(closeSocket) {
-        clearTimers();
+      function retryCurrentResponseNow() {
+        clearWaitTimer();
+        showRetry(false);
+        retryPromptQueued = false;
+        responsePurpose = null;
+        responseEpoch += 1;
+        isWaiting = false;
+        // Arm the stale-response guard before closing. A resumption may still
+        // deliver buffered output from the abandoned model turn.
+        discardServerResponseUntilTurnSent = true;
+        resetAiAudioForTurn(true);
+        userLine = null;
+        aiLine = null;
+        clearActiveAiLine();
+        addLine("系統", "已中止上一輪等待，可以立即再次發言。", false);
+
+        if (
+          currentResumptionHandle() &&
+          ws &&
+          (ws.readyState === WebSocket.OPEN ||
+            ws.readyState === WebSocket.CONNECTING)
+        ) {
+          reconnectingSession = true;
+          setTalkEnabled(false);
+          setState("重新連線", "正在中止上一輪並恢復同一節連線…", "wait", true);
+          setSubstatus("逐字稿、計時、鈴聲及 Mock 章節會保留。");
+          try {
+            ws.close(4002, "retry current response");
+            return;
+          } catch (error) {}
+        }
+
+        // Google 尚未提供 resumption handle 時，以一個空 activity 明確
+        // interrupt 掛起的 model turn；舊輸出會丟棄到下一輪真正送出為止。
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+            ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+          }
+        } catch (error) {}
+        finishRetryAfterResponse();
+      }
+
+      function cleanupMedia(closeSocket, preserveHardDeadline) {
+        const keepHardDeadline = Boolean(preserveHardDeadline);
+        clearTimers(keepHardDeadline);
+        if (tokenFetchController) tokenFetchController.abort();
+        tokenFetchController = null;
+        if (tokenFetchTimeout) clearTimeout(tokenFetchTimeout);
+        tokenFetchTimeout = null;
         isRecording = false;
         isWaiting = false;
         micReady = false;
@@ -2379,16 +3338,22 @@
         inputCtx = null;
         outputCtx = null;
         playAt = 0;
-        speechElapsed = 0;
-        speechStartedAt = 0;
-        speechRunning = false;
+        userSpeechElapsed = 0;
+        userSpeechStartedAt = 0;
+        userPcmSamplesSent = 0;
+        aiSpeechElapsed = 0;
         speechEnded = false;
+        if (!keepHardDeadline) {
+          overallStartedAt = 0;
+          hardDeadlineReached = false;
+        }
         finalFeedbackRequested = false;
         finalFeedbackComplete = false;
         feedbackPromptShown = false;
         responsePurpose = null;
         feedbackPromptQueued = false;
         retryPromptQueued = false;
+        discardServerResponseUntilTurnSent = false;
         responseEpoch += 1;
         sessionEpoch += 1;
         closeStatusLocked = false;
@@ -2397,11 +3362,30 @@
         currentSessionIdx = 0;
         switchingSession = false;
         reconnectingSession = false;
+        pendingSessionHandoff = false;
+        tokenHandoffGeneration += 1;
+        tokenHandoffInFlight = false;
+        pendingTokenHandoffRecovery = null;
+        reconnectAttempts = 0;
+        sessionResumptionHandles = {};
         pendingMockSegIdx = 0;
         pendingAnnounceSeg = null;
         sessionContextNote = "";
         transcriptLog = [];
         remainingEl.textContent = "--:--";
+        aiRemainingEl.textContent = "--:--";
+        deadlineRemainingEl.textContent = keepHardDeadline
+          ? formatTime(
+              Math.max(
+                0,
+                Math.ceil(FREE_SESSION_MAX_SECONDS - getOverallElapsed()),
+              ),
+            )
+          : "--:--";
+        if (hasStartedOnce)
+          startBtn.textContent = MOCK_MODE
+            ? "重新建立Mock"
+            : "重新建立自由辯論";
         if (closeSocket && ws) {
           try {
             if (ws.readyState === WebSocket.OPEN) {
@@ -2416,9 +3400,9 @@
         }
       }
 
-      function stopLive(markManual, finalText) {
+      function stopLive(markManual, finalText, preserveHardDeadline) {
         manualStopping = Boolean(markManual);
-        cleanupMedia(true);
+        cleanupMedia(true, preserveHardDeadline);
         startBtn.disabled = false;
         stopBtn.disabled = true;
         setTalkEnabled(false);
@@ -2432,17 +3416,36 @@
 
       try {
         startBtn.addEventListener("click", () => {
+          if (hasStartedOnce) {
+            location.assign(
+              LIVE_SOURCE === "coach" ? "/ai-coach" : "/practice/ai-debate",
+            );
+            return;
+          }
           startLive().catch((e) => {
             console.error("[Live] startLive error:", e);
-            cleanupMedia(true);
+            const canRetryInitialToken = !liveSessionTokens[0];
+            cleanupMedia(true, canRetryInitialToken);
             setState("錯誤", "啟動失敗：" + e.message, "error", false);
+            if (canRetryInitialToken) {
+              hasStartedOnce = false;
+              startBtn.textContent = "重試開始";
+              setSubstatus("請按「重試開始」；如上次回應遺失，會沿用同一憑證。");
+            }
             startBtn.disabled = false;
             stopBtn.disabled = true;
           });
         });
         stopBtn.addEventListener("click", () => {
           if (!micReady) {
-            stopLive(true, "自由辯論已停止。");
+            const canRetryInitialToken =
+              Boolean(tokenFetchController) && !liveSessionTokens[0];
+            stopLive(true, "自由辯論已停止。", canRetryInitialToken);
+            if (canRetryInitialToken) {
+              hasStartedOnce = false;
+              startBtn.textContent = "重試開始";
+              setSubstatus("已中止等待連線；可立即按「重試開始」。");
+            }
             return;
           }
           // 第一下：進入「要求 AI 評價」流程；如果已經喺評價流程（等緊用戶
@@ -2464,20 +3467,8 @@
           mockNextBtn.addEventListener("click", () => mockNext());
         }
         retryBtn.addEventListener("click", () => {
-          clearWaitTimer();
-          showRetry(false);
           if (responsePurpose !== null) {
-            retryPromptQueued = true;
-            isWaiting = true;
-            setTalkEnabled(false);
-            setState(
-              "等待 AI",
-              "正在等上一輪回覆結束，之後會自動重試。",
-              "wait",
-              true,
-            );
-            setSubstatus("如仍然沒有回應，可以停止後重新開始。");
-            startWaitTimer();
+            retryCurrentResponseNow();
             return;
           }
           finishRetryAfterResponse();

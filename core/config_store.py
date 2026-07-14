@@ -50,6 +50,7 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     # Account access and delegated capabilities.
     "login_disabled_accounts": ConfigSpec("access", _ARRAY),
     "bypass_active_check_until": ConfigSpec("access", _OBJECT),
+    "solo_quota_exemptions": ConfigSpec("access", _OBJECT),
     "tts_recording_allowed_users": ConfigSpec("access", _ARRAY),
     "tts_recording_reviewers": ConfigSpec("access", _ARRAY),
     "ai_fund_treasurers": ConfigSpec("access", _ARRAY),
