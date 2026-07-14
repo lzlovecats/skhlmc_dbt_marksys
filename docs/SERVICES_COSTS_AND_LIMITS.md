@@ -3,8 +3,8 @@
 更新日期：2026-07-14
 
 目前基線：Render production 為 **4.2.1**，實際版本仍以[`version.py`](../version.py)
-為準。Production migration head為`20260714_0001`；兩個legacy BYTEA columns已由
-versioned migration永久移除。45張相片、45張縮圖及148段錄音共238個R2 objects
+為準。Production migration head為`20260714_0002`；兩個legacy BYTEA columns及
+legacy `system_config`已由versioned migrations退役。45張相片、45張縮圖及148段錄音共238個R2 objects
 （122,687,464 bytes）已再次完成size、SHA、MIME及metadata驗證。
 
 此文件記錄 production architecture、固定月費、免費額度及系統內的保護限制。

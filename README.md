@@ -42,7 +42,7 @@ deploy/proxy.py ── app組裝／static／Live rooms ───────┘
 - 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
-Production目前為48張public tables／361 columns，migration head `20260714_0001`；
+Production目前為46張public tables，migration head `20260714_0002`；
 media binary只存private R2，database只保存metadata。未完成的RLS、自家TTS、自家LLM、
 migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
@@ -51,9 +51,9 @@ migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.m
 - Browser只call同源FastAPI，不直連Supabase Data API。
 - 相片及TTS錄音以短期presigned URL直接上／下載R2；Render及PostgreSQL只處理metadata，沒有BYTEA fallback。
 - List API在database層filter/count/page；大response、external HTTP、AI、TTS及upload均有code-level上限。
-- 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`只在遷移窗口作read fallback。
+- 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`已由migration `20260714_0002`退役。
 - 新password寫入只存bcrypt hash；成功使用legacy plaintext credential登入時會即時升級，但production仍應主動rotate。
-- `system_config`、`app_config`及內部`schema_migrations`均不可經Database console存取。
+- `app_config`及內部`schema_migrations`均不可經Database console存取。
 
 ## 本機啟動
 

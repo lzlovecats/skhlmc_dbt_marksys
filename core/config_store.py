@@ -1,13 +1,13 @@
-"""Typed application configuration with a legacy ``system_config`` bridge.
+"""Typed application configuration store.
 
-``system_config`` grew into an untyped bucket for credentials, feature flags,
-role lists, finance settings, cached analysis and resource snapshots.  New code
-stores those values in ``app_config`` as native JSON values with an explicit
-namespace/type/secret classification.  Reads temporarily fall back to the old
-table so a deployment can be rolled back without invalidating credentials.
+All runtime settings live in ``app_config`` as native JSON values with an
+explicit namespace/type/secret classification.  The legacy untyped
+``system_config`` bucket was retired by migration ``20260714_0002`` after the
+inventory confirmed every key existed in the typed store; rolling that
+migration back rebuilds the legacy table from ``app_config``.
 
-The bridge is intentionally small and database-only: it does not import the
-FastAPI runtime and callers continue to inject the repository DB executor.
+This module is intentionally database-only: it does not import the FastAPI
+runtime and callers continue to inject the repository DB executor.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any, Iterable
 
 from sqlalchemy import text
 
-from schema import CREATE_APP_CONFIG, TABLE_APP_CONFIG
+from schema import TABLE_APP_CONFIG
 
 
 @dataclass(frozen=True)
@@ -145,7 +145,7 @@ def _row_value(frame, spec: ConfigSpec):
 
 
 def get_config(db, key: str, default: Any = None) -> Any:
-    """Read one typed value, falling back to the legacy table for rollback."""
+    """Read one typed value from the ``app_config`` store."""
 
     spec = config_spec(key, allow_legacy=True)
     try:
@@ -156,26 +156,17 @@ def get_config(db, key: str, default: Any = None) -> Any:
             ),
             spec,
         )
-        if value is not None:
-            return value
-    except Exception:
-        # A pre-migration database will not have app_config yet.
-        pass
-    try:
-        legacy = db.query(
-            "SELECT value FROM system_config WHERE key=:key", {"key": key}
-        )
-        value = _row_value(legacy, spec)
         return default if value is None else value
     except Exception:
+        # Bootstrap-order tolerance: a brand-new database may not have
+        # app_config yet when early startup reads run.
         return default
 
 
 def get_configs(db, keys: Iterable[str]) -> dict[str, Any]:
-    """Batch-read keys from the typed store and its rollback bridge.
+    """Batch-read keys from the typed store.
 
-    Normal executors use at most two queries: one for ``app_config`` and one
-    for keys missing from the legacy bridge.  The per-key fallback exists only
+    Normal executors use one ``IN`` query.  The per-key fallback exists only
     for deliberately tiny test doubles that do not implement ``IN`` queries.
     """
 
@@ -197,29 +188,8 @@ def get_configs(db, keys: Iterable[str]) -> dict[str, Any]:
                 row["value"], config_spec(key, allow_legacy=True)
             )
     except Exception:
-        # Compatibility path for old schemas and minimal unit-test executors.
+        # Compatibility path for minimal unit-test executors.
         return {key: get_config(db, key) for key in ordered}
-
-    missing = [key for key in ordered if key not in values]
-    if missing:
-        legacy_params = {f"key_{index}": key for index, key in enumerate(missing)}
-        legacy_placeholders = ",".join(
-            f":key_{index}" for index in range(len(missing))
-        )
-        try:
-            rows = db.query(
-                "SELECT key,value FROM system_config "
-                f"WHERE key IN ({legacy_placeholders})",
-                legacy_params,
-            )
-            for _, row in rows.iterrows():
-                key = str(row["key"])
-                values[key] = _decoded(
-                    row["value"], config_spec(key, allow_legacy=True)
-                )
-        except Exception:
-            # A missing legacy table simply means the typed rows are complete.
-            pass
     return values
 
 
@@ -294,70 +264,5 @@ def get_configs_from_connection(conn, keys: Iterable[str]) -> dict[str, Any]:
             key = str(row._mapping["key"])
             values[key] = _decoded(row._mapping["value"], config_spec(key, allow_legacy=True))
     except Exception:
-        rows = []
-    missing = [key for key in ordered if key not in values]
-    if missing:
-        legacy_params = {f"key_{index}": key for index, key in enumerate(missing)}
-        legacy_placeholders = ",".join(
-            f":key_{index}" for index in range(len(missing))
-        )
-        try:
-            rows = conn.execute(text(
-                "SELECT key,value FROM system_config "
-                f"WHERE key IN ({legacy_placeholders})"
-            ), legacy_params).fetchall()
-            for row in rows:
-                key = str(row._mapping["key"])
-                values[key] = _decoded(
-                    row._mapping["value"], config_spec(key, allow_legacy=True)
-                )
-        except Exception:
-            pass
+        pass
     return values
-
-
-def migrate_legacy_config(conn) -> dict[str, int]:
-    """Copy legacy rows once without overwriting typed values.
-
-    Unknown historical keys are preserved under the ``legacy`` namespace.  A
-    later release may remove ``system_config`` only after production inventory
-    confirms there are no fallback-only rows.
-    """
-
-    conn.execute(text(CREATE_APP_CONFIG))
-    exists = conn.execute(text(
-        "SELECT to_regclass('public.system_config') IS NOT NULL"
-    )).scalar()
-    if not exists:
-        return {"seen": 0, "inserted": 0, "unknown": 0}
-    rows = conn.execute(text(
-        "SELECT key,value,updated_at FROM system_config ORDER BY key"
-    )).fetchall()
-    inserted = unknown = 0
-    insert_sql = _UPSERT_SQL.replace(
-        "ON CONFLICT (key) DO UPDATE SET\n"
-        "    namespace=EXCLUDED.namespace,\n"
-        "    value=EXCLUDED.value,\n"
-        "    value_type=EXCLUDED.value_type,\n"
-        "    is_secret=EXCLUDED.is_secret,\n"
-        "    updated_at=EXCLUDED.updated_at",
-        "ON CONFLICT (key) DO NOTHING",
-    )
-    for row in rows:
-        key = str(row._mapping["key"])
-        try:
-            spec = config_spec(key)
-        except KeyError:
-            spec = config_spec(key, allow_legacy=True)
-            unknown += 1
-        raw_updated_at = row._mapping.get("updated_at")
-        try:
-            updated_at = dt.datetime.fromisoformat(str(raw_updated_at))
-        except (TypeError, ValueError):
-            updated_at = dt.datetime.now(dt.timezone.utc)
-        params = _params(
-            key, row._mapping["value"], updated_at, allow_legacy=spec.namespace == "legacy"
-        )
-        result = conn.execute(text(insert_sql), params)
-        inserted += max(0, int(result.rowcount or 0))
-    return {"seen": len(rows), "inserted": inserted, "unknown": unknown}

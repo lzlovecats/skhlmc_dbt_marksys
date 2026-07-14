@@ -16,13 +16,13 @@
 |---|---|
 | App | Render production 已運行 `4.2.1`；maintenance mode 關閉 |
 | Database | Supabase PostgreSQL 17.6，Singapore pooler；未發現獨立 staging database |
-| Migration | Head `20260714_0001`；pending、gap、unknown version、name/checksum mismatch 全部為 0 |
-| Catalog | 47 public tables（46 application + `schema_migrations`）、0 production-only tables、0 RLS |
-| Canonical checksum | `183d43d88e802c8eb3b4a3bec68d37f4a77e7817ee3bf8f0ba7e7577fe63f75c`（2026-07-14，`tg_notification_queue`移除後）；reconciliation 0 drift、0 runtime DDL violation |
-| Migration files | `baseline.json`加5對已freeze up/down，共11個正式檔案；全部永久保留 |
+| Migration | Head `20260714_0002`；pending、gap、unknown version、name/checksum mismatch 全部為 0 |
+| Catalog | 46 public tables（45 application + `schema_migrations`）、0 production-only tables、0 RLS |
+| Canonical checksum | `eb25cd2eeb7291ade3fcd2d84dd851baea8db67a7039757d21fcc644a8907599`（2026-07-14，`system_config`退役後）；reconciliation 0 drift、0 runtime DDL site（budget已收緊至0） |
+| Migration files | `baseline.json`加6對已freeze up/down，共13個正式檔案；全部永久保留 |
 | R2 media | 193 DB rows、238 objects、122,687,464 bytes 已經 HEAD size/hash/MIME/metadata 核對；新讀寫為 R2-only |
 | Legacy media | `20260714_0001`已永久移除`tts_voice_recordings.audio_data`及`match_photos.image_data`；rows及R2 objects post-check無損 |
-| Config | `app_config` 23 keys、`system_config` 22 keys；missing/mismatch 0；developer password 已 bcrypt，admin／SQL password及 bridge仍待收尾 |
+| Config | typed `app_config` 23 keys；`system_config`、read bridge及startup config migration已隨`20260714_0002`退役；developer password已bcrypt，admin／SQL password rotation仍待做 |
 | Security | Runtime仍使用可 `BYPASSRLS` 的 `postgres`；48 tables均未開RLS，legacy `anon`／`authenticated` grants仍在 |
 | Intentional future schema | Dataset/model、eval及RAG共7張表刻意未建立；未 provision 的 endpoint應明確503 |
 
@@ -65,12 +65,12 @@
 ### P0.4 Typed config及文件收斂
 
 - [ ] Smoke全部settings/login workflow，rotate admin及SQL password為bcrypt；按登入失效窗口決定cookie secret rotation，developer password只需核實現有bcrypt。
-- [ ] 觀察至少一個release，確認沒有fallback-only key；再用versioned migration刪`system_config`及legacy bridge。（2026-07-14 audit：`system_config`現有22 keys全部已存在於`app_config`（23 keys），0 fallback-only；只欠release觀察窗口。）
-- [ ] Bridge移除後刪`migrate_app_config.py`、`audit_app_config.py`及專屬過渡tests。
+- [x] `system_config`已由`20260714_0002`退役（owner批准免release觀察窗口）：audit確認22 keys全部已在`app_config`、0 fallback-only；migration up有fallback-only precondition，down由`app_config` backfill重建bridge table，屬可rollback。Read bridge、startup `migrate_legacy_config`及runtime DDL site已一併移除；已部署的`4.2.1`bridge code對missing table fail-safe，production drop後smoke正常。
+- [x] `migrate_app_config.py`及`audit_app_config.py`已隨bridge一併刪除；reconcile runtime DDL budget已收緊至0。
 - [x] `docs/`只保留本Roadmap及`SERVICES_COSTS_AND_LIMITS.md`；current architecture留在README，deploy／limits／Cloudflare／R2操作已合併入Services。
 - [ ] 保留網站runtime實際讀取的user manual、rules及通知／主席templates；appliance停止支援時才連其README一併退役。
 
-**Gate P0-D：**production不再讀legacy config，repo只有一份roadmap，其他文件各有單一職責而且沒有過期production數字。
+**Gate P0-D（達成 2026-07-14）：**production不再讀legacy config（`system_config`已刪，typed store係唯一來源），repo只有一份roadmap，其他文件各有單一職責。剩餘：admin／SQL password rotation（上方第一項）。
 
 ---
 
@@ -96,8 +96,8 @@
 ### P1.3 保留／移除工具的界線
 
 - 長期保留：`manage_db_migrations.py`、`core/db_migrations.py`、schema audit／reconcile、R2 orphan cleanup及dataset preparation。
-- 過渡完成即移除：media migration/finalizer及typed-config migration/audit工具，避免日後誤跑舊式`ALTER ... IF NOT EXISTS`造成unmanaged drift。
-- 現有11個`migrations/`正式檔案永久保留；將來每個cleanup自然增加一對up/down，檔案變多不等於repo不乾淨。
+- 過渡工具已全部退役（media migrator/finalizer及typed-config migration/audit工具均已刪除），runtime DDL reconcile budget為0，杜絕日後誤跑舊式`ALTER ... IF NOT EXISTS`造成unmanaged drift。
+- 現有13個`migrations/`正式檔案永久保留；將來每個cleanup自然增加一對up/down，檔案變多不等於repo不乾淨。
 
 **Gate P1：**staging restore可逐步升級；新空database可由已驗證current-head bootstrap +受控stamp或真正executable baseline重現；production catalog與ledger head一致；runtime沒有DDL；所有非additive migration可rollback或有明確irreversible approval。
 
