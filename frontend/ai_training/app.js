@@ -246,17 +246,8 @@
         warnGb = Number(storage.warn_bytes || 0) / 1e9,
         fmtLimit = (value) =>
           value.toFixed(2).replace(/\.00$/, "").replace(/0$/, "");
-      if (budgetEl) {
-        const bandwidthText = budget.unavailable
-            ? "本月頻寬用量暫時未能讀取"
-            : `本月系統已記錄約 ${(Number(budget.total_bytes || 0) / 1e9).toFixed(2)}GB；目前保護階段：${budget.stage || 0}`,
-          storageText = storage.unavailable
-              ? "R2 用量暫時未能讀取"
-              : !data.recording_storage_ready
-                ? "R2 尚未設定"
-              : `R2 約 ${(Number(storage.total_bytes || 0) / 1e9).toFixed(2)}GB / ${stopGb ? fmtLimit(stopGb) + "GB" : "未設定"}${storage.warning ? `，已進入${fmtLimit(warnGb)}GB警告區` : ""}`;
-        budgetEl.textContent = `${bandwidthText}；${storageText}。`;
-      }
+      if (budgetEl)
+        budgetEl.textContent = `本月系統已記錄約 ${(Number(budget.total_bytes || 0) / 1e9).toFixed(2)}GB；目前保護階段：${budget.stage || 0}。R2 約 ${(Number(storage.total_bytes || 0) / 1e9).toFixed(2)}GB / ${stopGb ? fmtLimit(stopGb) + "GB" : "未設定"}${storage.warning ? `，已進入${fmtLimit(warnGb)}GB警告區` : ""}。`;
       chooseScript();
       loadCollections();
       if (data.is_admin) loadAdmin();
