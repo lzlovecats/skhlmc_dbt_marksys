@@ -146,7 +146,11 @@ Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](d
 ```bash
 ./venv/bin/python -m compileall -q api core deploy
 git diff --check
+./venv/bin/python tools/manage_db_migrations.py lint
 ```
+
+GitHub Actions（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）會對每個
+push／PR跑同一批syntax及offline migration catalog gate。
 
 按owner指示，repo目前不保留automated test suite。每次發布至少要跑Python／JavaScript／shell syntax、`git diff --check`及相關production smoke；日後新增功能前按Roadmap重建最小針對性regression coverage。涉及R2或database destructive操作的工具預設dry-run；任何驗證成功都不等於production data mutation批准。
 

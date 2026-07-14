@@ -30,6 +30,7 @@ from core.db_migrations import (
     plan_history,
     record_baseline,
     rollback_latest,
+    stray_files,
     validate_catalog,
     verify_existing_history,
 )
@@ -49,7 +50,30 @@ def load_catalog():
     baseline = load_baseline_manifest(BASELINE_PATH)
     migrations = discover_migrations(MIGRATIONS_DIR)
     validate_catalog(baseline, migrations)
+    strays = stray_files(MIGRATIONS_DIR, {BASELINE_PATH.name})
+    if strays:
+        raise ValueError(f"stray files in migrations/: {', '.join(strays)}")
     return baseline, migrations
+
+
+def lint_report(baseline, migrations) -> dict:
+    """Offline catalog hygiene report; no database connection is used.
+
+    ``load_catalog`` has already rejected orphan/stray files, duplicate
+    versions, unpaired or empty directions, embedded transaction control and
+    missing browser-privilege revokes before this report is produced. The
+    ledger-side checks (unknown versions, history gaps, checksum drift) need a
+    live connection — run ``status`` against the target database for those.
+    """
+    return {
+        "operation": "lint",
+        "mode": "offline",
+        "schema_name": baseline.schema_name,
+        "baseline_version": baseline.version,
+        "migration_head": migrations[-1].version if migrations else baseline.version,
+        "registered_sql_migrations": len(migrations),
+        "catalog_valid": True,
+    }
 
 
 def _read_only_transaction(conn) -> None:
@@ -198,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("status")
+    commands.add_parser("lint")
     _add_mutation_flags(commands.add_parser("baseline"))
     _add_mutation_flags(commands.add_parser("apply"))
     _add_mutation_flags(commands.add_parser("rollback"))
@@ -215,7 +240,7 @@ def _required_confirmation(command: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     command = args.command or "status"
-    if command != "status" and args.apply:
+    if command not in ("status", "lint") and args.apply:
         if args.confirm != _required_confirmation(command):
             print(
                 "confirmation phrase does not match; no database access attempted",
@@ -227,6 +252,13 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"migration catalog is invalid: {exc}", file=sys.stderr)
         return 2
+
+    if command == "lint":
+        print(json.dumps(
+            lint_report(baseline, migrations),
+            ensure_ascii=False, indent=2, sort_keys=True,
+        ))
+        return 0
 
     engine = get_db_engine()
     if engine is None:
