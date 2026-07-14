@@ -147,12 +147,17 @@ Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](d
 ./venv/bin/python -m compileall -q api core deploy
 git diff --check
 ./venv/bin/python tools/manage_db_migrations.py lint
+./venv/bin/python -m pytest -q tests
 ```
 
 GitHub Actions（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）會對每個
-push／PR跑同一批syntax及offline migration catalog gate。
+push／PR跑同一批gate。
 
-按owner指示，repo目前不保留automated test suite。每次發布至少要跑Python／JavaScript／shell syntax、`git diff --check`及相關production smoke；日後新增功能前按Roadmap重建最小針對性regression coverage。涉及R2或database destructive操作的工具預設dry-run；任何驗證成功都不等於production data mutation批准。
+`tests/`只保留最小offline regression suite（無database、無網絡、秒級）：每個
+test對應一種真實發生過或會直接影響賽果／quota／費用的失敗模式，修bug時在此加
+對應case，不追求coverage數字。發布前另跑相關production smoke；涉及R2或database
+destructive操作的工具預設dry-run，任何驗證成功都不等於production data mutation
+批准。
 
 ## Database domains
 
@@ -179,6 +184,6 @@ Production exact baseline、已知drift及待處理indexes/FKs見[`docs/ROADMAP.
 3. 新table/column/index/RLS要有versioned migration、rollback及可重現permission驗證。
 4. HTML source保持正常縮排，不提交minified inline document；共用樣式/行為放`frontend/shared/`。
 5. Runtime需要的assets才放`assets/`；計劃更新`docs/ROADMAP.md`，不再新增散落migration diary。
-6. 修bug附可重現驗證步驟；重建最小test suite後再加入針對性regression test。資源改動同時更新`system_limits.py`及對應docs。
+6. 修bug附可重現驗證步驟，並在`tests/`加入對應regression case。資源改動同時更新`system_limits.py`及對應docs。
 
 Maintained by lzlovecats and contributors.

@@ -294,6 +294,17 @@ def discover_migrations(directory: Path) -> list[Migration]:
                     f"migration {version}_{name}.{direction}.sql contains {control}; "
                     "the runner owns transaction boundaries"
                 )
+            if "%" in sql:
+                # The runner executes migration files through exec_driver_sql,
+                # and psycopg2 applies printf-style interpolation to the raw
+                # statement text — a literal percent anywhere in the file
+                # (RAISE placeholders, LIKE patterns, even comments) fails at
+                # apply time with a TypeError. Reject it at lint time instead.
+                raise ValueError(
+                    f"migration {version}_{name}.{direction}.sql contains a "
+                    "literal percent character, which exec_driver_sql cannot "
+                    "execute safely"
+                )
         result.append(
             Migration(
                 version=version,
