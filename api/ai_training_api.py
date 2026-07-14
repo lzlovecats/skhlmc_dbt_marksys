@@ -500,6 +500,38 @@ def _log_ai(user, db, feature, success, response_data=None, error=""):
         pass
 
 
+def _operational_budget_status(db):
+    """Keep optional usage telemetry off the AI Training bootstrap path."""
+    from core import r2_storage
+    from deploy.proxy import bandwidth_budget_status
+
+    try:
+        bandwidth = bandwidth_budget_status(notify=True)
+    except Exception:
+        logger.exception("AI Training bandwidth status unavailable")
+        bandwidth = {"unavailable": True}
+
+    storage = None
+    try:
+        storage_ready = r2_storage.configured()
+    except Exception:
+        logger.exception("AI Training R2 configuration status unavailable")
+        storage_ready = False
+        storage = {"unavailable": True}
+
+    if storage_ready:
+        try:
+            # Page rendering only needs the latest conservative snapshot. An
+            # exact bucket scan is an external operation and must not make the
+            # whole workspace unavailable; upload-intent still refreshes and
+            # enforces the storage hard gate before accepting any new object.
+            storage = r2_storage.storage_budget_status(db, refresh=False)
+        except Exception:
+            logger.exception("AI Training R2 storage status unavailable")
+            storage = {"unavailable": True}
+    return bandwidth, storage_ready, storage
+
+
 @router.get("/data")
 def data(request: Request):
     user, db = _ctx(request)
@@ -511,9 +543,8 @@ def data(request: Request):
     mine = _rows(db.query(f"SELECT DISTINCT ON (script_id) id,script_id,status,created_at FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user ORDER BY script_id,created_at DESC LIMIT :inventory_limit", {"user":user,"inventory_limit":AI_TRAINING_INVENTORY_LIMIT}))
     llm = []
     rd_plan = _load_ai_roadmap()
-    from core import r2_storage
-    from deploy.proxy import bandwidth_budget_status
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
+    bandwidth, storage_ready, storage = _operational_budget_status(db)
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":storage_ready, "bandwidth_budget":bandwidth, "storage_budget":storage}
     result["limits"] = {
         "max_audio_bytes": MAX_AUDIO_BYTES,
         "max_duration_seconds": TTS_MAX_DURATION_SECONDS,
