@@ -1,10 +1,8 @@
-from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 import datetime as dt
 
 import pandas as pd
-from pypdf import PdfReader, PdfWriter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
@@ -13,12 +11,15 @@ from reportlab.pdfgen import canvas
 from scoring import (
     FREE_DEBATE_CRITERIA,
     SPEECH_CRITERIA,
+    derive_debater_ranks,
     free_debate_col,
     speech_col,
 )
 
 
-TEMPLATE_PATH = Path(__file__).resolve().parent / "assets" / "pdf_templates" / "score_sheet_template.pdf"
+TEMPLATE_IMAGE_PATH = Path(__file__).resolve().parent / "assets" / "pdf_templates" / "score_sheet_template.png"
+PAGE_WIDTH = 612
+PAGE_HEIGHT = 792
 FONT_NAME = "ScoreSheetCJK"
 FALLBACK_CID_FONT = "MSung-Light"
 FONT_CANDIDATES = [
@@ -104,7 +105,7 @@ def _num(value, default=0):
         return default
     try:
         return int(round(float(value)))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return default
 
 
@@ -215,12 +216,32 @@ def _individual_scores(side_data):
     return [sum(_weighted_speech_scores(df, i)) for i in range(4)]
 
 
-def _build_ranks(pro_data, con_data):
+def _build_ranks(pro_data, con_data, rankings=None):
+    if isinstance(rankings, dict):
+        try:
+            pro_ranks = list(rankings["正方"])
+            con_ranks = list(rankings["反方"])
+            submitted = [int(value) for value in pro_ranks + con_ranks]
+        except (KeyError, TypeError, ValueError):
+            submitted = []
+            pro_ranks, con_ranks = [], []
+        if (
+            len(pro_ranks) == 4
+            and len(con_ranks) == 4
+            and sorted(submitted) == list(range(1, 9))
+        ):
+            return {"正方": submitted[:4], "反方": submitted[4:]}
+
     all_scores = _individual_scores(pro_data) + _individual_scores(con_data)
     if len(all_scores) != 8:
         ranks = [""] * 8
     else:
-        ranks = pd.Series(all_scores).rank(ascending=False, method="min").astype(int).tolist()
+        derived = derive_debater_ranks(all_scores[:4], all_scores[4:])
+        ranks = [
+            derived[(side, position)]
+            for side in ("pro", "con")
+            for position in range(1, 5)
+        ]
     return {
         "正方": ranks[:4],
         "反方": ranks[4:],
@@ -290,10 +311,19 @@ def _draw_summary(c, side_data, judge_record):
     _draw_left(c, *JUDGE_NAME_POS, _get(judge_record, "judge_name"), size=9)
 
 
-def _overlay_page(page_width, page_height, match_info, judge_record, side_label, team_name, side_data, ranks):
-    packet = BytesIO()
-    c = canvas.Canvas(packet, pagesize=(page_width, page_height))
-    _register_font()
+def _draw_score_page(c, match_info, judge_record, side_label, team_name, side_data, ranks):
+    # The original Quartz PDF has malformed indirect references which can
+    # cross-link when the same page is merged twice.  A checked 300 dpi render
+    # is therefore used as the immutable background for deterministic output.
+    c.drawImage(
+        str(TEMPLATE_IMAGE_PATH),
+        0,
+        0,
+        width=PAGE_WIDTH,
+        height=PAGE_HEIGHT,
+        preserveAspectRatio=True,
+        mask="auto",
+    )
     c.setFillColorRGB(0, 0, 0)
 
     _draw_meta(c, match_info, judge_record, side_label, team_name)
@@ -302,32 +332,38 @@ def _overlay_page(page_width, page_height, match_info, judge_record, side_label,
     _draw_deductions(c, side_data)
     _draw_summary(c, side_data, judge_record)
 
-    c.save()
-    packet.seek(0)
-    return PdfReader(packet).pages[0]
 
+def build_score_sheet_pdf(match_info, judge_record, pro_data, con_data, rankings=None):
+    if not TEMPLATE_IMAGE_PATH.exists():
+        raise FileNotFoundError(f"PDF template image not found: {TEMPLATE_IMAGE_PATH}")
 
-def build_score_sheet_pdf(match_info, judge_record, pro_data, con_data):
-    if not TEMPLATE_PATH.exists():
-        raise FileNotFoundError(f"PDF template not found: {TEMPLATE_PATH}")
+    ranks = _build_ranks(pro_data, con_data, rankings=rankings)
 
-    template_reader = PdfReader(str(TEMPLATE_PATH))
-    template_page = template_reader.pages[0]
-    page_width = float(template_page.mediabox.width)
-    page_height = float(template_page.mediabox.height)
-    ranks = _build_ranks(pro_data, con_data)
-
-    writer = PdfWriter()
     pages = [
         ("正方", _get(judge_record, "pro_team"), pro_data, ranks["正方"]),
         ("反方", _get(judge_record, "con_team"), con_data, ranks["反方"]),
     ]
-    for side_label, team_name, side_data, side_ranks in pages:
-        page = deepcopy(template_page)
-        overlay = _overlay_page(page_width, page_height, match_info, judge_record, side_label, team_name, side_data, side_ranks)
-        page.merge_page(overlay)
-        writer.add_page(page)
 
     buffer = BytesIO()
-    writer.write(buffer)
+    c = canvas.Canvas(
+        buffer,
+        pagesize=(PAGE_WIDTH, PAGE_HEIGHT),
+        pageCompression=1,
+    )
+    c.setTitle("Debate score sheet")
+    _register_font()
+
+    for side_label, team_name, side_data, side_ranks in pages:
+        _draw_score_page(
+            c,
+            match_info,
+            judge_record,
+            side_label,
+            team_name,
+            side_data,
+            side_ranks,
+        )
+        c.showPage()
+
+    c.save()
     return buffer.getvalue()

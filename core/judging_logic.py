@@ -6,6 +6,8 @@ the eight individual debater scores either all persist or none do.
 
 import datetime as dt
 import json
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -13,7 +15,14 @@ from sqlalchemy import text
 
 from core.auth_logic import verify_password
 from core.vote_logic import _resolve_db
-from scoring import COHERENCE_MAX, FREE_DEBATE_CRITERIA, SPEECH_CRITERIA, free_debate_col, speech_col
+from scoring import (
+    COHERENCE_MAX,
+    FREE_DEBATE_CRITERIA,
+    SPEECH_CRITERIA,
+    derive_debater_ranks,
+    free_debate_col,
+    speech_col,
+)
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
 from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
@@ -113,11 +122,14 @@ def matches_for_judging(db=None, match_id=None, summaries=False):
 def verify_match_access(match_id, password, db=None):
     db = _resolve_db(db)
     rows = db.query(f"SELECT access_code_hash FROM {TABLE_MATCHES} WHERE match_id = :match_id", {"match_id": match_id})
-    if rows.empty or not rows.iloc[0]["access_code_hash"]:
+    if rows.empty or not _has(rows.iloc[0]["access_code_hash"]):
         return {"ok": False, "message": "該場次未開放評分，請向賽會人員查詢。"}
-    if not verify_password(password or "", str(rows.iloc[0]["access_code_hash"])):
+    access_code_hash = str(rows.iloc[0]["access_code_hash"])
+    if not verify_password(password or "", access_code_hash):
         return {"ok": False, "message": "密碼錯誤！"}
-    return {"ok": True}
+    # Kept server-internal by the API.  Binding the signed session to this exact
+    # hash makes access-code rotation or removal immediately revoke old cookies.
+    return {"ok": True, "access_code_hash": access_code_hash}
 
 
 def has_final_submission(match_id, judge_name, db=None):
@@ -149,13 +161,17 @@ def load_drafts(match_id, judge_name, db=None):
 
 
 def _number(value, field, minimum, maximum):
+    if isinstance(value, bool):
+        raise ValueError(f"{field} 必須是整數。")
     try:
-        number = int(value)
-    except (TypeError, ValueError) as exc:
+        decimal = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(f"{field} 必須是整數。") from exc
-    if not minimum <= number <= maximum:
+    if not decimal.is_finite() or decimal != decimal.to_integral_value():
+        raise ValueError(f"{field} 必須是整數。")
+    if not Decimal(minimum) <= decimal <= Decimal(maximum):
         raise ValueError(f"{field} 必須介乎 {minimum} 至 {maximum}。")
-    return number
+    return int(decimal)
 
 
 def normalise_side_data(side, score_data):
@@ -172,12 +188,19 @@ def normalise_side_data(side, score_data):
         free_rows = free_rows.to_dict(orient="records")
     elif free_rows is None:
         free_rows = []
-    if len(speech_rows) != 4 or len(free_rows) != 1:
+    if (
+        not isinstance(speech_rows, (list, tuple))
+        or not isinstance(free_rows, (list, tuple))
+        or len(speech_rows) != 4
+        or len(free_rows) != 1
+        or any(not isinstance(row, Mapping) for row in speech_rows)
+        or not isinstance(free_rows[0], Mapping)
+    ):
         raise ValueError("評分表資料不完整。")
     clean_speech, individual_scores = [], []
     for index, row in enumerate(speech_rows):
         clean = {
-            "辯位": str(row.get("辯位") or ROLES[index])[:10],
+            "辯位": ROLES[index],
             "姓名": str(row.get("姓名") or "")[:80],
         }
         score = 0
@@ -300,9 +323,7 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data, db=None):
 
 
 def auto_derive_ranking_order(pro_scores, con_scores):
-    rows = [{"side": side, "position": position, "score": int(score)} for side, scores in (("pro", pro_scores), ("con", con_scores)) for position, score in enumerate(scores, 1)]
-    rows.sort(key=lambda row: row["score"], reverse=True)
-    return {(row["side"], row["position"]): rank for rank, row in enumerate(rows, 1)}
+    return derive_debater_ranks(pro_scores, con_scores)
 
 
 def submit_best_debater_rankings(match_id, judge_name, rankings, db=None):
@@ -315,18 +336,29 @@ def submit_best_debater_rankings(match_id, judge_name, rankings, db=None):
     if len(rankings) != 8:
         raise ValueError("排名資料必須包含本場 8 位辯員。")
     try:
-        slots = [(str(item.get("side", "")), int(item.get("position", 0))) for item in rankings]
-        assigned = sorted(int(item.get("rank", 0)) for item in rankings)
+        parsed = [
+            {
+                "side": str(item.get("side", "")).strip(),
+                "position": _number(item.get("position"), "辯位", 1, 4),
+                "rank": _number(item.get("rank"), "名次", 1, 8),
+            }
+            for item in rankings
+            if isinstance(item, Mapping)
+        ]
+        slots = [(item["side"], item["position"]) for item in parsed]
+        assigned = sorted(item["rank"] for item in parsed)
     except (TypeError, ValueError) as exc:
         raise ValueError("排名資料格式不正確。") from exc
+    if len(parsed) != 8:
+        raise ValueError("排名資料格式不正確。")
     expected_slots = {(side, position) for side in ("pro", "con") for position in range(1, 5)}
     if set(slots) != expected_slots or len(set(slots)) != 8:
         raise ValueError("排名資料必須完整包含正反方各四個辯位。")
     if assigned != list(range(1, 9)):
         raise ValueError("每個名次（1–8）必須恰好使用一次，請檢查是否有重複或遺漏。")
     params = [
-        {"match_id": match_id, "judge_name": judge, "side": side, "position": position, "rank": int(item["rank"])}
-        for item, (side, position) in zip(rankings, slots)
+        {"match_id": match_id, "judge_name": judge, **item}
+        for item in parsed
     ]
     with db.transaction() as session:
         session.execute(text(f"""INSERT INTO {TABLE_BEST_DEBATER_RANKINGS} (match_id,judge_name,side,position,rank)

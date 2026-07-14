@@ -71,7 +71,14 @@ def chairperson_data(selected_match_id=None, db=None):
     )
     closing = {"has_scores": bool(result.get("has_scores")), "pro_votes": 0, "con_votes": 0, "draw_votes": 0, "best_debater": "（資料不足，暫時未能判定）"}
     if result.get("has_scores"):
-        closing.update({"pro_votes": result["pro_votes"], "con_votes": result["con_votes"], "draw_votes": result["draws"], "best_debater": (result.get("best_debater") or {}).get("role") or closing["best_debater"]})
+        best = result.get("best_debater") or {}
+        tied_roles = best.get("tied_roles") or []
+        best_label = (
+            f"（同分，待評判團商議：{'、'.join(tied_roles)}）"
+            if tied_roles
+            else best.get("role") or closing["best_debater"]
+        )
+        closing.update({"pro_votes": result["pro_votes"], "con_votes": result["con_votes"], "draw_votes": result["draws"], "best_debater": best_label})
     return {
         "matches": [{"match_id": item["match_id"], "label": f"{item['match_id']} — {item['pro_team']} vs {item['con_team']} ({item['match_date']} {item['match_time']})"} for item in matches],
         "selected_match_id": selected, "match": match, "judge_names": _judge_names(selected, db),

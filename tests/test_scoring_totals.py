@@ -10,6 +10,7 @@ from scoring import (
     SPEECH_CRITERIA,
     SPEECH_MAX_PER_DEBATER,
     SPEECH_TOTAL_MAX,
+    derive_debater_ranks,
     free_debate_col,
     speech_col,
 )
@@ -89,6 +90,12 @@ def test_out_of_range_and_malformed_input_is_rejected():
         normalise_side_data("旁證", _side_data())
     with pytest.raises(ValueError):
         normalise_side_data("正方", _side_data(coherence=COHERENCE_MAX + 1))
+    fractional = _speech_rows()
+    fractional[0][speech_col(SPEECH_CRITERIA[0])] = 9.9
+    with pytest.raises(ValueError, match="必須是整數"):
+        normalise_side_data("正方", _side_data(raw_df_a=fractional))
+    with pytest.raises(ValueError, match="評分表資料不完整"):
+        normalise_side_data("正方", _side_data(raw_df_a={"a": 1, "b": 2, "c": 3, "d": 4}))
 
 
 def test_best_debater_ranking_orders_all_eight_speakers():
@@ -97,3 +104,12 @@ def test_best_debater_ranking_orders_all_eight_speakers():
     assert ranks[("con", 1)] == 2
     assert ranks[("con", 4)] == 8
     assert sorted(ranks.values()) == list(range(1, 9))
+
+
+def test_derived_ranking_keeps_unique_slots_when_scores_tie():
+    ranks = derive_debater_ranks([80, 80, 70, 70], [80, 60, 60, 50])
+    assert [ranks[("pro", position)] for position in range(1, 5)] == [1, 2, 4, 5]
+    assert ranks[("con", 1)] == 3
+    assert sorted(ranks.values()) == list(range(1, 9))
+    with pytest.raises(ValueError, match="有限數值"):
+        derive_debater_ranks([80, float("inf"), 70, 60], [50, 40, 30, 20])

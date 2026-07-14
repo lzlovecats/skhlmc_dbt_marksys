@@ -20,6 +20,9 @@ import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
+from account_access import AI_COMMENT_ACCOUNT_ID
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_MOTION_COMMENTS,
@@ -51,7 +54,6 @@ class _TransactionExecutor:
         self._session = session
 
     def query(self, sql_str, params=None):
-        import pandas as pd
         from sqlalchemy import text
 
         result = self._session.execute(text(sql_str), params or {})
@@ -320,7 +322,7 @@ def ensure_ai_comment_account(db=None):
         VALUES (:uid, '', 'inactive', TRUE)
         ON CONFLICT (user_id) DO UPDATE SET account_disabled = TRUE
         """,
-        {"uid": "Gemini"},
+        {"uid": AI_COMMENT_ACCOUNT_ID},
     )
 
 

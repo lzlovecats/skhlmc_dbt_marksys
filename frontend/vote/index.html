@@ -300,13 +300,15 @@
       }
       .btn-on-agree {
         background: var(--agree);
-        color: #fff;
+        color: #07111f;
         border-color: var(--agree);
+        font-weight: 700;
       }
       .btn-on-against {
         background: var(--against);
-        color: #fff;
+        color: #07111f;
         border-color: var(--against);
+        font-weight: 700;
       }
       .btn-primary {
         background: var(--accent);
@@ -553,6 +555,22 @@
       }
       .multi-opt input {
         margin-top: 0.2rem;
+      }
+      .multi-copy {
+        min-width: 0;
+      }
+      .multi-title {
+        display: block;
+        color: var(--text);
+        line-height: 1.4;
+      }
+      .multi-meta {
+        display: block;
+        color: var(--muted);
+        font-size: 0.78rem;
+        font-weight: 600;
+        line-height: 1.45;
+        margin-top: 0.15rem;
       }
       .depose-filter-grid {
         display: grid;
@@ -1181,7 +1199,10 @@
               (t) => `
             <label class="multi-opt" data-category="${esc(t.category || "未分類")}">
                 <input type="checkbox" value="${esc(t.topic_text)}">
-                <span>${esc(t.topic_text)}</span>
+                <span class="multi-copy">
+                    <span class="multi-title">${esc(t.topic_text)}</span>
+                    <span class="multi-meta">類別：${esc(t.category || "未分類")} ｜ 難度：${esc(diffLabel(t.difficulty) || "未設定")}</span>
+                </span>
             </label>`,
             )
             .join("");
@@ -1324,10 +1345,11 @@
             <div class="card">
                 <div class="topic">參與率</div>
                 <div class="sub">活躍成員標準：整體投票率 ≥ 40%，且最近10次投票至少參與3次。</div>
+                <div class="sub" style="margin-top:.35rem">同意票數顯示「同意有效票 / 已投有效票」；每位委員只計其參與率起算日或之後的議案。同意率 = 同意有效票 ÷ 已投有效票。</div>
                 <div class="sub" style="margin-top:.45rem">辯題投票 + 罷免投票總數：${esc(data.total_vote_count)} 個 ｜ 目前活躍成員：${esc(data.active_count)} 人</div>
                 <div class="actions"><button data-act="refresh">🔄 重新整理</button></div>
             </div>`;
-          if (mine && ME !== "admin") {
+          if (mine) {
             html += `<div class="card">
                 <div class="topic">我的參與情況</div>
                 <div class="metric-grid">
@@ -1360,7 +1382,7 @@
                     <table>
                         <thead><tr>
                             <th>用戶</th><th>整體投票次數</th><th>整體投票率</th>
-                            <th>最近10次參與</th><th>同意票數</th><th>投票同意率</th><th>活躍狀態</th>
+                            <th>最近10次參與</th><th>同意有效票 / 已投有效票</th><th>投票同意率</th><th>活躍狀態</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
                     </table>

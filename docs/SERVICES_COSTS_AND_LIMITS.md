@@ -70,6 +70,8 @@ Browser ⇄ Render WebSocket room ⇄ Google Gemini Live
 Solo Gemini Live只有短小的HTML、prompt及token response經Render，Live audio直接在
 browser與Google之間傳送；長期Gemini／OpenRouter key永遠只留在server。普通AI及
 多人Live仍經Render。Cloudflare R2只處理private media，與Gemini Live路徑無關。
+多人Live實時media plane未來搬離Render的候選架構、安全／成本gate、canary及
+rollback見[`ROADMAP.md` P0.1](ROADMAP.md)；現行production資料流沒有改變。
 網站custom domain及靜態edge cache屬optional；只可cache公開CSS、JS、manifest及圖示，
 不可對HTML、API、登入、WebSocket或private R2 URL使用`Cache Everything`。
 

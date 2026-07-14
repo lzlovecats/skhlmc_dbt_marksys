@@ -1,8 +1,11 @@
 """Read model for the organiser results page."""
 
+import math
+
 import pandas as pd
 
 from core.vote_logic import _resolve_db
+from scoring import derive_debater_ranks
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORES
 from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
@@ -17,6 +20,73 @@ ROLE_KEYS = {
 
 def _clean(value):
     return "" if value is None else str(value).strip()
+
+
+def _complete_ranking(rank_df, judge):
+    if rank_df.empty:
+        return False
+    judge_rows = rank_df[rank_df["judge_name"] == judge]
+    if len(judge_rows) != 8:
+        return False
+    try:
+        slots = {
+            (str(row["side"]).strip(), int(row["position"]))
+            for _, row in judge_rows.iterrows()
+        }
+        ranks = {int(value) for value in judge_rows["rank"].tolist()}
+    except (KeyError, TypeError, ValueError):
+        return False
+    expected_slots = {
+        (side, position)
+        for side in ("pro", "con")
+        for position in range(1, 5)
+    }
+    return slots == expected_slots and ranks == set(range(1, 9))
+
+
+def _ranking_row(judge, numeric_scores, rank_df):
+    """Resolve one judge independently: explicit ranking or score fallback."""
+    if _complete_ranking(rank_df, judge):
+        judge_rows = rank_df[rank_df["judge_name"] == judge]
+        submitted = {
+            (str(row["side"]).strip(), int(row["position"])): int(row["rank"])
+            for _, row in judge_rows.iterrows()
+        }
+        return ({
+            column: submitted[(side, position)]
+            for column, (_, side, position) in ROLE_KEYS.items()
+        }, "submitted")
+
+    derived = derive_debater_ranks(
+        [numeric_scores[column] for column in RANK_COLUMNS[:4]],
+        [numeric_scores[column] for column in RANK_COLUMNS[4:]],
+    )
+    return ({
+        column: derived[(side, position)]
+        for column, (_, side, position) in ROLE_KEYS.items()
+    }, "derived")
+
+
+def judge_ranking(match_id, judge_name, score_row, db):
+    """Return the selected judge's PDF-ready ranks and their source."""
+    numeric = pd.to_numeric(
+        pd.Series({column: score_row.get(column) for column in RANK_COLUMNS}),
+        errors="coerce",
+    )
+    if numeric.isna().any() or not numeric.map(math.isfinite).all():
+        return None
+    rank_df = db.query(
+        f"""SELECT judge_name, side, position, rank
+            FROM {TABLE_BEST_DEBATER_RANKINGS}
+            WHERE match_id = :match_id AND judge_name = :judge_name""",
+        {"match_id": match_id, "judge_name": judge_name},
+    )
+    row, source = _ranking_row(judge_name, numeric, rank_df)
+    return {
+        "正方": [row[column] for column in RANK_COLUMNS[:4]],
+        "反方": [row[column] for column in RANK_COLUMNS[4:]],
+        "source": source,
+    }
 
 
 def _scores(match_id=None, db=None):
@@ -62,7 +132,10 @@ def _scores(match_id=None, db=None):
 
 def _best_debaters(match_id, scores, db):
     numeric_scores = scores[list(RANK_COLUMNS)].apply(pd.to_numeric, errors="coerce")
-    if numeric_scores.isna().any().any():
+    if (
+        numeric_scores.isna().any().any()
+        or not numeric_scores.apply(lambda column: column.map(math.isfinite)).all().all()
+    ):
         return None, None
 
     names_df = db.query(
@@ -83,31 +156,10 @@ def _best_debaters(match_id, scores, db):
         {"match_id": match_id},
     )
     judges = scores["judge_name"].tolist()
-    expected_slots = {(side, position) for side in ("pro", "con") for position in range(1, 5)}
-
-    def complete_ranking(judge):
-        judge_rows = rank_df[rank_df["judge_name"] == judge]
-        if len(judge_rows) != 8:
-            return False
-        slots = {(str(row["side"]).strip(), int(row["position"])) for _, row in judge_rows.iterrows()}
-        try:
-            ranks = {int(value) for value in judge_rows["rank"].tolist()}
-        except (TypeError, ValueError):
-            return False
-        return slots == expected_slots and ranks == set(range(1, 9))
-
-    explicit = not rank_df.empty and all(complete_ranking(judge) for judge in judges)
-    if explicit:
-        rows = []
-        for judge in judges:
-            judge_rows = rank_df[rank_df["judge_name"] == judge]
-            rows.append({
-                column: int(found["rank"].iloc[0]) if not (found := judge_rows[(judge_rows["side"] == side) & (judge_rows["position"] == position)]).empty else 0
-                for column, (_, side, position) in ROLE_KEYS.items()
-            })
-        ranks = pd.DataFrame(rows)
-    else:
-        ranks = pd.DataFrame([row.rank(ascending=False, method="min") for _, row in numeric_scores.iterrows()])
+    ranks = pd.DataFrame([
+        _ranking_row(judge, numeric_scores.iloc[index], rank_df)[0]
+        for index, judge in enumerate(judges)
+    ], columns=RANK_COLUMNS)
 
     rank_sum = ranks.sum()
     results = [
@@ -115,7 +167,21 @@ def _best_debaters(match_id, scores, db):
         for column in RANK_COLUMNS
     ]
     results.sort(key=lambda item: (item["rank_sum"], -item["average_score"]))
-    return results, results[0]
+    leaders = [
+        item
+        for item in results
+        if item["rank_sum"] == results[0]["rank_sum"]
+        and item["average_score"] == results[0]["average_score"]
+    ]
+    if len(leaders) == 1:
+        return results, results[0]
+    return results, {
+        "role": None,
+        "rank_sum": results[0]["rank_sum"],
+        "average_score": results[0]["average_score"],
+        "is_tie": True,
+        "tied_roles": [item["role"] for item in leaders],
+    }
 
 
 def _anomalies(scores):

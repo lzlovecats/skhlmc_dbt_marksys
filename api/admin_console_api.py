@@ -14,6 +14,10 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from account_access import (
+    NON_MEMBER_ACCOUNT_DB_KEYS, account_id_can_be_created,
+    is_non_member_account, is_protected_account,
+)
 from core.auth_logic import hash_password, verify_password
 from core.config_store import (
     get_config,
@@ -22,7 +26,11 @@ from core.config_store import (
     set_config,
     set_configs_on_connection,
 )
-from ai_model_config import AI_MODEL_OPTIONS, DEFAULT_AI_MODEL
+from ai_model_config import (
+    AI_MODEL_OPTIONS,
+    DEFAULT_AI_MODEL,
+    resolve_interactive_model_settings,
+)
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_BUG_REPORTS,
@@ -250,6 +258,14 @@ def dev_data(request:Request):
     config_keys=("maintenance_mode","maintenance_deadline","bypass_active_check_until","solo_quota_exemptions","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")
     loaded_configs=_configs(db,(*config_keys,"login_disabled_accounts"))
     configs={key:_display_config(loaded_configs.get(key)) for key in config_keys}
+    enabled_providers, effective_default_model = resolve_interactive_model_settings(
+        loaded_configs.get("ai_enabled_providers"),
+        loaded_configs.get("ai_default_model"),
+    )
+    # Show the effective runtime values even before these optional settings
+    # have ever been saved, so the controls never appear blank/write-only.
+    configs["ai_enabled_providers"] = _display_config(list(enabled_providers))
+    configs["ai_default_model"] = _display_config(effective_default_model)
     # The settings page is also the human-facing list operation.  Never show an
     # expired/malformed grant as though it were still bypassing a quota.
     configs["solo_quota_exemptions"]=_display_config(_active_solo_quota_exemptions(db))
@@ -258,7 +274,16 @@ def dev_data(request:Request):
         try: disabled_values=json.loads(disabled_values)
         except (TypeError,ValueError,json.JSONDecodeError): disabled_values=[]
     login_disabled={str(value).strip() for value in disabled_values if str(value).strip()} if isinstance(disabled_values,list) else set()
-    account_rows=db.query(f"SELECT user_id,account_status FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT})
+    account_rows=db.query(
+        f"SELECT user_id,account_status FROM {TABLE_ACCOUNTS} "
+        "WHERE user_id<>'' AND LOWER(user_id) <> ALL(:excluded_account_keys) "
+        "AND COALESCE(account_disabled,FALSE)=FALSE "
+        "ORDER BY user_id LIMIT :account_limit",
+        {
+            "excluded_account_keys": list(NON_MEMBER_ACCOUNT_DB_KEYS),
+            "account_limit": ACCOUNT_INVENTORY_LIMIT,
+        },
+    )
     account_options=[str(value).strip() for value in account_rows.get("user_id",[]) if str(value).strip() and str(value).strip() not in login_disabled]
     inactive_accounts=[str(row.get("user_id") or "").strip() for _,row in account_rows.iterrows() if str(row.get("account_status") or "").strip()=="inactive" and str(row.get("user_id") or "").strip() not in login_disabled]
     providers=sorted({str(config.get("provider") or "").strip() for config in AI_MODEL_OPTIONS.values() if config.get("provider")})
@@ -266,7 +291,7 @@ def dev_data(request:Request):
     provider_keys={provider:next((str(config.get("api_key") or "") for config in AI_MODEL_OPTIONS.values() if config.get("provider")==provider),"") for provider in providers}
     models=[{"label":label,"provider":config.get("provider","")} for label,config in AI_MODEL_OPTIONS.items()]
     subs=_rows(db.query(f"SELECT user_id,COUNT(*) AS device_count FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE is_active=TRUE GROUP BY user_id ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT}))
-    return {"version":APP_VERSION,"account_options":account_options,"inactive_accounts":inactive_accounts,"ai_options":{"providers":providers,"models":models,"default_model":DEFAULT_AI_MODEL,"key_status":{provider:bool(key and _get_proxy_secret(key)) for provider,key in provider_keys.items()},"key_names":provider_keys},"configs":configs,"subscriptions":subs}
+    return {"version":APP_VERSION,"account_options":account_options,"inactive_accounts":inactive_accounts,"ai_options":{"providers":providers,"models":models,"default_model":effective_default_model,"key_status":{provider:bool(key and _get_proxy_secret(key)) for provider,key in provider_keys.items()},"key_names":provider_keys},"configs":configs,"subscriptions":subs}
 
 @router.get("/developer/collection/{kind}")
 def dev_collection(kind:str,request:Request,page:int=1):
@@ -322,6 +347,7 @@ def change_system_password(key:str,body:PasswordChange,request:Request):
 def create_account(body:AccountBody,request:Request):
     _require(request,"developer"); uid=body.user_id.strip()
     if not uid or not body.password: raise HTTPException(400,"請輸入用戶名稱及密碼")
+    if not account_id_can_be_created(uid): raise HTTPException(400,"此用戶名稱保留作系統帳戶使用")
     db=_db(); exists=db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:uid",{"uid":uid})
     if not exists.empty: raise HTTPException(400,"此用戶名稱已存在")
     count=scalar_count(db,f"SELECT COUNT(*) total FROM {TABLE_ACCOUNTS}")
@@ -331,7 +357,7 @@ def create_account(body:AccountBody,request:Request):
 @router.post("/developer/accounts/{uid}/password")
 def reset_account(uid:str,body:AccountBody,request:Request):
     _require(request,"developer");
-    if uid in ("admin","developer",""): raise HTTPException(400,"不可在此重設系統帳戶")
+    if not uid.strip() or is_protected_account(uid): raise HTTPException(400,"不可在此重設系統帳戶")
     if not body.password: raise HTTPException(400,"請輸入新密碼")
     db=_db()
     if db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:uid",{"uid":uid}).empty: raise HTTPException(404,"帳戶不存在")
@@ -341,7 +367,7 @@ def reset_account(uid:str,body:AccountBody,request:Request):
 def set_account_access(uid:str,body:AccountAccessBody,request:Request):
     _require(request,"developer")
     uid=uid.strip()
-    if uid in ("admin","developer",""): raise HTTPException(400,"不可停用系統帳戶")
+    if not uid or is_protected_account(uid): raise HTTPException(400,"不可停用系統帳戶")
     db=_db()
     if db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:uid",{"uid":uid}).empty: raise HTTPException(404,"帳戶不存在")
     access_keys=("login_disabled_accounts","tts_recording_reviewers","lateness_fund_managers","tts_recording_allowed_users","ai_fund_treasurers","bypass_active_check_until","solo_quota_exemptions")
@@ -483,7 +509,7 @@ def set_solo_quota_exemption(body: SoloQuotaExemptionBody, request: Request):
     mode = body.mode.strip().lower()
     if not user_id:
         raise HTTPException(400, "請選擇委員帳戶")
-    if user_id in ("admin", "developer"):
+    if is_non_member_account(user_id):
         raise HTTPException(400, "不可為系統帳戶設定 Solo 豁免")
     if mode not in ("free", "mock", "all"):
         raise HTTPException(400, "豁免類別只可選 free、mock 或 all")
@@ -586,22 +612,31 @@ def developer_settings(body:JsonSettings,request:Request):
         if deadline_was_supplied:
             cleaned["maintenance_deadline"]=deadline.strftime("%Y-%m-%dT%H:%M")
     if "ai_enabled_providers" in cleaned or "ai_default_model" in cleaned:
-        providers=cleaned.get("ai_enabled_providers")
-        if providers is None:
-            providers=_config(db,"ai_enabled_providers") or []
-            if isinstance(providers,str):
-                try: providers=json.loads(providers)
-                except (TypeError,ValueError,json.JSONDecodeError): providers=[]
-        if not isinstance(providers,list): raise HTTPException(400,"Provider 設定無效")
-        providers=list(dict.fromkeys(str(item).strip() for item in providers if str(item).strip()))
         valid_providers={str(item.get("provider") or "") for item in AI_MODEL_OPTIONS.values()}
-        if not providers or set(providers)-valid_providers: raise HTTPException(400,"請至少啟用一個有效 Provider")
+        if "ai_enabled_providers" in cleaned:
+            providers=cleaned["ai_enabled_providers"]
+            if not isinstance(providers,list): raise HTTPException(400,"Provider 設定無效")
+            providers=list(dict.fromkeys(str(item).strip() for item in providers if str(item).strip()))
+            if not providers or set(providers)-valid_providers: raise HTTPException(400,"請至少啟用一個有效 Provider")
+        else:
+            providers=list(resolve_interactive_model_settings(
+                _config(db,"ai_enabled_providers"),
+                _config(db,"ai_default_model"),
+            )[0])
         model=str(cleaned.get("ai_default_model") or _config(db,"ai_default_model") or DEFAULT_AI_MODEL).strip()
         if model not in AI_MODEL_OPTIONS or AI_MODEL_OPTIONS[model].get("provider") not in providers: raise HTTPException(400,"預設模型必須屬於已啟用的 Provider")
         cleaned["ai_enabled_providers"]=providers; cleaned["ai_default_model"]=model
     requested={user for key,value in cleaned.items() if key in account_list_keys for user in value}
     if requested:
-        rows=db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT})
+        rows=db.query(
+            f"SELECT user_id FROM {TABLE_ACCOUNTS} "
+            "WHERE user_id<>'' AND LOWER(user_id) <> ALL(:excluded_account_keys) "
+            "AND COALESCE(account_disabled,FALSE)=FALSE LIMIT :account_limit",
+            {
+                "excluded_account_keys": list(NON_MEMBER_ACCOUNT_DB_KEYS),
+                "account_limit": ACCOUNT_INVENTORY_LIMIT,
+            },
+        )
         valid={str(value).strip() for value in rows.get("user_id",[]) if str(value).strip()}
         valid-=set(_json_list_config(db,"login_disabled_accounts"))
         invalid=sorted(requested-valid)

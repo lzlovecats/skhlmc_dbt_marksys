@@ -12,6 +12,7 @@ import threading
 import time
 
 import httpx
+from ai_model_config import RAG_EMBEDDING_MODEL, RAG_EMBEDDING_VERSION
 from core.ai_provider import post_json_bounded
 from core.schema_features import READY, feature_bundle_state
 from schema import TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS
@@ -23,8 +24,8 @@ from system_limits import (
 )
 
 
-EMBEDDING_MODEL = "gemini-embedding-2"
-EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
+EMBEDDING_MODEL = RAG_EMBEDDING_MODEL
+EMBEDDING_VERSION = RAG_EMBEDDING_VERSION
 EMBEDDING_DIMENSION = 768
 _RAG_SCHEMA_CACHE = {"ready": False, "checked_at": 0.0}
 _RAG_SCHEMA_LOCK = threading.Lock()

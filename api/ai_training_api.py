@@ -17,7 +17,11 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from ai_model_config import (
+    RAG_EMBEDDING_MODEL, RAG_EMBEDDING_VERSION, get_feature_model,
+)
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
+from api.access import require_page_user
 from api.resource_limits import EXPORT_MAX_BYTES, EXPORT_MAX_ROWS, jsonl_response, require_row_limit
 from core.ai_provider import post_json_bounded
 from core.media_probe import (
@@ -67,12 +71,21 @@ ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE
 MAX_AUDIO_MB = max(1, MAX_AUDIO_BYTES // (1024 * 1024))
 TTS_REVIEW_SEMAPHORE = asyncio.Semaphore(TTS_REVIEW_CONCURRENCY)
 LLM_REVIEW_SEMAPHORE = asyncio.Semaphore(LLM_REVIEW_CONCURRENCY)
-RAG_EMBEDDING_MODEL = "gemini-embedding-2"
-RAG_EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
 _AI_TRAINING_AUDIT_LAST_PRUNE = None
 _AI_TRAINING_AUDIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 AI_TRAINING_PROVIDER_PUBLIC_ERROR = "AI 服務暫時無法完成請求，請稍後再試。"
+
+
+def _gemini_generation_url(feature):
+    """Resolve every AI Training generation model from ai_model_config.py."""
+    _label, config = get_feature_model(feature)
+    if config.get("provider") != "gemini":
+        raise RuntimeError(f"AI Training feature {feature} requires a Gemini model")
+    return (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{config['model']}:generateContent"
+    )
 
 
 async def _post_gemini_json(client, url, api_key, **kwargs):
@@ -215,8 +228,8 @@ def _segments(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
 
 
 def _ctx(request):
-    from deploy.proxy import _require_committee_user, get_vote_db
-    return _require_committee_user(request), get_vote_db()
+    from deploy.proxy import get_vote_db
+    return require_page_user(request, "ai_training"), get_vote_db()
 
 
 def _feature_schema_state(db, feature: str) -> bool:
@@ -450,7 +463,8 @@ def _load_ai_roadmap() -> str:
     return roadmap
 
 
-def _gemini_usage(response_data, model_label="Gemini 2.5 Flash"):
+def _gemini_usage(response_data, feature="tts_review"):
+    model_label, model = get_feature_model(feature)
     meta = response_data.get("usageMetadata") or {}
     prompt_tokens = int(meta.get("promptTokenCount") or 0)
     output_tokens = int(meta.get("candidatesTokenCount") or 0)
@@ -460,9 +474,17 @@ def _gemini_usage(response_data, model_label="Gemini 2.5 Flash"):
         if "AUDIO" in str(item.get("modality") or "").upper()
     )
     text_tokens = max(0, prompt_tokens - audio_tokens)
-    usd = (text_tokens * 0.30 + audio_tokens * 1.00 + output_tokens * 2.50) / 1_000_000
+    usd = (
+        text_tokens * float(model.get("input_price_per_million") or 0)
+        + audio_tokens * float(
+            model.get("audio_input_price_per_million")
+            or model.get("input_price_per_million")
+            or 0
+        )
+        + output_tokens * float(model.get("output_price_per_million") or 0)
+    ) / 1_000_000
     return {
-        "model_label": model_label, "provider": "gemini", "input_tokens": text_tokens,
+        "model_label": model_label, "provider": model.get("provider") or "gemini", "input_tokens": text_tokens,
         "output_tokens": output_tokens, "audio_tokens": audio_tokens, "search_calls": 0,
         "estimated_cost_usd": round(usd, 6), "estimated_cost_hkd": round(usd * 7.8, 4),
         "cost_source": "actual_tokens",
@@ -472,7 +494,7 @@ def _gemini_usage(response_data, model_label="Gemini 2.5 Flash"):
 def _log_ai(user, db, feature, success, response_data=None, error=""):
     try:
         from core.funds_logic import log_ai_usage
-        usage = _gemini_usage(response_data or {}) if success else None
+        usage = _gemini_usage(response_data or {}, feature) if success else None
         log_ai_usage(user, feature, success, usage=usage, error_message=error, db=db)
     except Exception:
         pass
@@ -892,7 +914,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         "只回覆 JSON：{\"passed\":true,\"matches_prompt\":true,\"speech_clarity\":\"clear\","
         "\"volume\":\"ok\",\"noise_level\":\"low\",\"clipping\":false,\"transcript\":\"\",\"problems\":[],\"note\":\"\"}"
     )
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    url = _gemini_generation_url("tts_review")
     async with TTS_REVIEW_SEMAPHORE:
         try:
             audio = await asyncio.to_thread(
@@ -970,7 +992,7 @@ async def llm(body: LlmBody, request: Request):
             raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查")
         prompt = "審核以下香港粵語辯論訓練文字，只回覆 JSON，含 passed(boolean), reason, relevance, quality, anonymization, permission_risk。\n" + normalized
         try:
-            url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            url=_gemini_generation_url("llm_review")
             async with LLM_REVIEW_SEMAPHORE:
                 async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
                     response_data = await _post_gemini_json(client, url, key, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0,"maxOutputTokens":2048}})
@@ -1176,7 +1198,7 @@ async def coverage_ai(request: Request):
         item = grouped.setdefault(row["script_id"], {"category":row["category"], "text":row["text"], "accepted":0, "pending":0})
         if row.get("status") in ("accepted", "pending"): item[row["status"]] = int(row.get("n") or 0)
     summary = "\n".join(f"[{x['category']}] {sid}｜accepted={x['accepted']}｜pending={x['pending']}｜{x['text']}" for sid,x in grouped.items()) or "（句庫為空）"
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    url = _gemini_generation_url("tts_script_analysis")
     coverage_prompt = build_tts_coverage_prompt(summary)[:AI_TRAINING_PROMPT_MAX_CHARS]
     body = {"systemInstruction":{"parts":[{"text":TTS_COVERAGE_SYSTEM_PROMPT}]}, "contents":[{"parts":[{"text":coverage_prompt}]}], "generationConfig":{"responseMimeType":"application/json","temperature":.4,"maxOutputTokens":2048}}
     try:
@@ -1264,7 +1286,7 @@ async def regenerate_suggestions(request: Request):
     locked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) in locked_ids) or "（暫時冇已錄音句子）"
     unlocked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) not in locked_ids) or "（暫時冇未錄音句子）"
     prompt = build_tts_regenerate_prompt(locked, unlocked)[:AI_TRAINING_PROMPT_MAX_CHARS]
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    url = _gemini_generation_url("tts_script_analysis")
     payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5, "maxOutputTokens": 2048}}
     try:
         async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
@@ -1449,7 +1471,10 @@ async def eval_baseline(request: Request):
     user, db = _admin(request)
     _require_feature_schema(db, "eval")
     payload_body = await request.json()
-    model_label = str(payload_body.get("model_label") or "Gemini 2.5 Flash")[:200]
+    model_label = str(
+        payload_body.get("model_label")
+        or get_feature_model("ai_training_eval")[0]
+    )[:200]
     cases = _rows(db.query(f"SELECT case_id,task_type,title,input_json,rubric_json FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE ORDER BY case_id LIMIT :eval_limit", {"eval_limit": AI_EVAL_CASE_LIMIT}))
     _audit(db, user, "eval_baseline_requested", "eval_run", model_label, {"cases": len(cases)})
     return {"ok":True,"model_label":model_label,"case_count":len(cases),

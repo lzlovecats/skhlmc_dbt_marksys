@@ -18,10 +18,15 @@
       .actions {
         display: flex;
         gap: 0.6rem;
+        align-items: center;
         flex-wrap: wrap;
       }
       .actions button {
         width: auto;
+      }
+      #app > .actions {
+        gap: 1rem;
+        margin: 0.8rem 0 1rem;
       }
       .report {
         margin: 0.7rem 0;
@@ -182,11 +187,11 @@
           <section class="card">
             <h2>維護模式</h2>
             <p class="caption">開啟後除本頁外，所有頁面均會顯示維護中訊息。</p>
-            <p id="maintState"></p>
+            <p id="maintState">正在讀取目前維護模式…</p>
             <label>預期完成時間（香港時間）<input id="maintenanceDeadline" type="datetime-local" /></label>
             <div class="actions">
               <button id="saveMaintDeadline">儲存預期完成時間</button>
-              <button id="toggleMaint" class="primary"></button>
+              <button id="toggleMaint" class="primary" type="button">切換維護模式</button>
             </div>
           </section>
           <section class="card">
@@ -419,7 +424,15 @@
           $("login").classList.add("hidden");
           $("app").classList.remove("hidden");
           $("version").textContent = "目前系統版本：" + data.version;
-          let c = data.configs;
+          const c = data.configs || {};
+          const maintenanceOn = ["true", "1", "yes", "on"].includes(
+            String(c.maintenance_mode).toLowerCase(),
+          );
+          $("maintState").textContent =
+            "目前維護模式：" + (maintenanceOn ? "開啟" : "關閉");
+          $("toggleMaint").textContent = maintenanceOn
+            ? "關閉維護模式"
+            : "開啟維護模式";
           renderAccountPicker(
             "ttsAllowed",
             jsonList(c.tts_recording_allowed_users),
@@ -448,12 +461,6 @@
               return `${esc(provider)}：${esc(data.ai_options.key_names?.[provider] || "未指定 key")}（${ready ? "已設定" : "未設定"}）`;
             })
             .join("<br>");
-          let on = ["true", "1", "yes", "on"].includes(
-            String(c.maintenance_mode).toLowerCase(),
-          );
-          $("maintState").textContent =
-            "目前維護模式：" + (on ? "開啟" : "關閉");
-          $("toggleMaint").textContent = on ? "關閉維護模式" : "開啟維護模式";
           if (c.maintenance_deadline) {
             $("maintenanceDeadline").value = String(c.maintenance_deadline).slice(0, 16);
           } else if (!$("maintenanceDeadline").value) {

@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from ai_model_config import LOCAL_TTS_TRAINING_ENGINE
 from system_limits import (
     DATASET_ARCHIVE_MAX_BYTES,
     DATASET_ARCHIVE_MAX_ITEMS,
@@ -635,12 +636,12 @@ def _write_webui_note(
     note_path.write_text(
         "\n".join(
             [
-                "GPT-SoVITS WebUI fields",
+                f"{LOCAL_TTS_TRAINING_ENGINE} WebUI fields",
                 "========================",
                 "",
                 "Open WebUI",
                 "----------",
-                "cd ~/Documents/AI/GPT-SoVITS",
+                f"cd ~/Documents/AI/{LOCAL_TTS_TRAINING_ENGINE}",
                 "conda activate GPTSoVits",
                 "python webui.py",
                 "Browser URL: http://127.0.0.1:9874",
@@ -813,7 +814,7 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     (output_dir / "quality_report.json").write_text(
         json.dumps(quality_report, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
 
-    print("Prepared GPT-SoVITS dataset")
+    print(f"Prepared {LOCAL_TTS_TRAINING_ENGINE} dataset")
     print(f"  extracted dir: {output_dir}")
     print(f"  metadata:      {metadata_path}")
     print(f"  speaker:       {speaker}")
@@ -834,7 +835,7 @@ def prepare_dataset(args: argparse.Namespace) -> int:
     if empty_text:
         print(f"  warning:       skipped {empty_text} row(s) with empty text")
     print()
-    print("Fill GPT-SoVITS WebUI with:")
+    print(f"Fill {LOCAL_TTS_TRAINING_ENGINE} WebUI with:")
     print(f"  Experiment/model name: {experiment}")
     print(f"  Text labelling file:   {list_path}")
     print("  Audio dataset folder:  leave blank")
@@ -862,7 +863,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Download/verify an AI Training recordings.json manifest (or open a legacy ZIP) "
-            "and build a GPT-SoVITS dataset."
+            f"and build a {LOCAL_TTS_TRAINING_ENGINE} dataset."
         )
     )
     parser.add_argument(
@@ -877,8 +878,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--speaker",
         help="Speaker user id to keep. Required if the input contains multiple speakers",
     )
-    parser.add_argument("--experiment", help="GPT-SoVITS experiment/model name. Defaults to <speaker>_yue_v0")
-    parser.add_argument("--language", default=DEFAULT_LANGUAGE, help="GPT-SoVITS language code. Default: yue")
+    parser.add_argument(
+        "--experiment",
+        help=f"{LOCAL_TTS_TRAINING_ENGINE} experiment/model name. Defaults to <speaker>_yue_v0",
+    )
+    parser.add_argument(
+        "--language",
+        default=DEFAULT_LANGUAGE,
+        help=f"{LOCAL_TTS_TRAINING_ENGINE} language code. Default: yue",
+    )
     parser.add_argument(
         "--text-column",
         default="prompt_text",

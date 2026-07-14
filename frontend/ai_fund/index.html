@@ -420,7 +420,9 @@
         </label>
         <div class="actions">
           <button value="cancel">取消</button
-          ><button id="statusSubmit" type="button" class="primary"></button>
+          ><button id="statusSubmit" type="button" class="primary">
+            確認狀態
+          </button>
         </div>
       </form>
     </dialog>
@@ -507,6 +509,7 @@
             tts_review: "AI訓練·錄音檢查",
             tts_script_analysis: "AI訓練·句庫分析",
             llm_review: "AI訓練·文字審查",
+            kiosk_match_review: "Kiosk AI全場評判",
           };
         let data = null,
           pendingRows = {},
