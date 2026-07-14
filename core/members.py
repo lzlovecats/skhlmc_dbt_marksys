@@ -7,6 +7,7 @@ The participation rate and last-ten rule live in the database view defined in
 import datetime
 from zoneinfo import ZoneInfo
 
+from account_access import account_can_access
 from core.config_store import get_config
 from schema import VIEW_COMMITTEE_VOTE_ACTIVITY
 from core.vote_logic import _resolve_db
@@ -92,9 +93,8 @@ def get_bypass_active_until(user_id: str, db=None):
 def member_activity(user_id, db=None) -> dict:
     """Activity and bypass state used by the voting API."""
     user_id = str(user_id or "").strip()
-    if user_id == "admin":
-        naturally_active = True
-    else:
+    vote_allowed = account_can_access(user_id, "vote")
+    if vote_allowed:
         db = _resolve_db(db)
         frame = db.query(
             f"SELECT is_active FROM {VIEW_COMMITTEE_VOTE_ACTIVITY} "
@@ -102,7 +102,13 @@ def member_activity(user_id, db=None) -> dict:
             {"user_id": user_id},
         )
         naturally_active = not frame.empty and _coerce_bool(frame.iloc[0].get("is_active"))
-    bypass_until = None if naturally_active else get_bypass_active_until(user_id, db=db)
+    else:
+        naturally_active = False
+    bypass_until = (
+        None
+        if naturally_active or not vote_allowed
+        else get_bypass_active_until(user_id, db=db)
+    )
     return {
         "naturally_active": naturally_active,
         "bypass_until": bypass_until.strftime("%Y-%m-%d %H:%M") if bypass_until else None,

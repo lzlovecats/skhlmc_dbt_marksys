@@ -44,4 +44,6 @@ def test_linked_free_debate_session_counts_both_time_banks():
 def test_free_debate_bell_schedule_exists_for_practice_formats():
     for debate_format in ("校園隨想", "聯中"):
         config = get_debate_timer_config(debate_format, free_debate_minutes=2.5)
-        assert config["bell_schedules"].get("free"), debate_format
+        schedule = config["bell_schedules"].get("free")
+        assert schedule, debate_format
+        assert schedule[0] == {"t": 0, "rings": 1, "label": "開始 — 1 叮"}

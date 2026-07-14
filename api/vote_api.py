@@ -10,6 +10,8 @@ domain code stay on one source of truth.
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from account_access import AI_COMMENT_ACCOUNT_ID
+from api.access import require_page_user
 from system_limits import VOTE_PENDING_MOTION_LIMIT
 
 router = APIRouter(prefix="/api/vote", tags=["vote"])
@@ -18,11 +20,7 @@ router = APIRouter(prefix="/api/vote", tags=["vote"])
 # ── dependencies (resolved from the proxy at request time) ────────────────────
 def _committee_user(request: Request) -> str:
     """401 unless the request carries a valid committee cookie / bearer token."""
-    from deploy.proxy import _require_committee_user
-    user_id = _require_committee_user(request)
-    if user_id == "admin":
-        raise HTTPException(403, "賽會人員帳戶不能使用此頁面")
-    return user_id
+    return require_page_user(request, "vote")
 
 
 def _activity_payload(user_id: str, db) -> dict:
@@ -507,7 +505,9 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
         )
         _log_vote_ai(user_id, "vote_discussion", ai_text, usage, db)
         if vote_ai.is_successful_ai_result(ai_text):
-            vl.insert_comment(motion_type, motion_key, "Gemini", ai_text, db=db)
+            vl.insert_comment(
+                motion_type, motion_key, AI_COMMENT_ACCOUNT_ID, ai_text, db=db
+            )
         else:
             return {
                 "status": "ai_failed" if text else "failed",

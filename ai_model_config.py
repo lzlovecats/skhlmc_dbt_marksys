@@ -152,11 +152,149 @@ NON_MANUAL_MODEL_OPTIONS = {
     },
 }
 
-ROOM_JUDGEMENT_MODEL_LABELS = (
-    "Gemini 3.5 Flash",
-    "Gemini 2.5 Flash",
-    "Gemini 2.5 Flash Lite",
-)
+# Non-interactive features must never choose their own model in an API module.
+# Change a feature here and every caller, usage ledger entry and inventory page
+# will resolve the same label/slug.
+AI_FEATURE_MODEL_LABELS = {
+    "vote_discussion": NON_MANUAL_DEFAULT_AI_MODEL,
+    "vote_review": NON_MANUAL_DEFAULT_AI_MODEL,
+    "vote_analysis": NON_MANUAL_DEFAULT_AI_MODEL,
+    "room_judgement": "Gemini 3.5 Flash",
+    "kiosk_match_review": "Gemini 3.5 Flash",
+    "tts_review": "Gemini 2.5 Flash",
+    "llm_review": "Gemini 2.5 Flash",
+    "tts_script_analysis": "Gemini 2.5 Flash",
+    "ai_training_eval": "Gemini 2.5 Flash",
+}
+
+AI_FEATURE_MODEL_FALLBACK_LABELS = {
+    "room_judgement": (
+        AI_FEATURE_MODEL_LABELS["room_judgement"],
+        "Gemini 2.5 Flash",
+        "Gemini 2.5 Flash Lite",
+    ),
+}
+
+AI_FEATURE_REQUIREMENTS = {
+    # These callers use the Gemini generateContent/file APIs directly.  Keeping
+    # the provider constraint beside the selected label prevents a future
+    # config-only model swap from sending an OpenRouter slug to a Gemini URL.
+    "room_judgement": {"provider": "gemini"},
+    "kiosk_match_review": {"provider": "gemini", "supports_audio": True},
+    "tts_review": {"provider": "gemini", "supports_audio": True},
+    "llm_review": {"provider": "gemini"},
+    "tts_script_analysis": {"provider": "gemini"},
+}
+
+# Provider-specific models which do not use the normal text/audio generation
+# selector still live in this same file.
+GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+GEMINI_LIVE_MODEL_LABEL = "Gemini Live"
+GEMINI_LIVE_PROVIDER = "gemini"
+RAG_EMBEDDING_MODEL = "gemini-embedding-2"
+RAG_EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
+LOCAL_TTS_TRAINING_ENGINE = "GPT-SoVITS"
+
+# Deployment-selected models/providers are dynamic values rather than fixed
+# public model slugs, but their selectors and defaults are still model choices.
+# Keep those names here too so API/proxy modules never invent a second source
+# of truth for a custom LLM, custom TTS checkpoint or Azure voice.
+CUSTOM_LLM_OPTION = {
+    "label": "自家辯論 LLM",
+    "provider": "custom",
+    "base_url_secret": "CUSTOM_LLM_BASE_URL",
+    "model_secret": "CUSTOM_LLM_MODEL",
+    "api_key_secret": "CUSTOM_LLM_API_KEY",
+    "registry_model_type": "llm",
+    "supports_audio": False,
+    "supports_web_search": False,
+    "input_price_per_million": 0,
+    "output_price_per_million": 0,
+    "web_search_price_per_call": 0,
+    "pricing_note": "自家OpenAI-compatible endpoint。",
+    "paid_rate_note": "成本由本地／GPU服務承擔。",
+    "selection_label": "自家模型",
+    "pricing_label": "自家",
+    "is_premium": False,
+}
+
+TTS_PROVIDER_SECRET = "TTS_PROVIDER"
+AZURE_TTS_PROVIDER = "azure"
+CUSTOM_TTS_PROVIDER = "custom"
+DEFAULT_TTS_PROVIDER = AZURE_TTS_PROVIDER
+TTS_PROVIDER_OPTIONS = {
+    AZURE_TTS_PROVIDER: {
+        "speech_key_secret": "AZURE_SPEECH_KEY",
+        "region_secret": "AZURE_SPEECH_REGION",
+        "voice_secret": "AZURE_TTS_VOICE",
+        "default_voice": "zh-HK-HiuMaanNeural",
+        "rate_secret": "AZURE_TTS_RATE",
+        "default_rate": "0%",
+        "output_format_secret": "AZURE_TTS_OUTPUT_FORMAT",
+        "default_output_format": "audio-24khz-48kbitrate-mono-mp3",
+    },
+    CUSTOM_TTS_PROVIDER: {
+        "url_secret": "CUSTOM_TTS_URL",
+        "api_key_secret": "CUSTOM_TTS_API_KEY",
+        "model_secret": "CUSTOM_TTS_MODEL_VERSION",
+        "registry_model_type": "tts",
+    },
+}
+
+
+def get_tts_provider_config(provider=None):
+    """Return the selected TTS provider and its central runtime selectors.
+
+    Unknown or blank deployment values retain the previous safe behaviour of
+    falling back to Azure rather than accidentally calling an arbitrary path.
+    """
+    selected = str(provider or "").strip().lower()
+    if selected not in TTS_PROVIDER_OPTIONS:
+        selected = DEFAULT_TTS_PROVIDER
+    return selected, TTS_PROVIDER_OPTIONS[selected]
+
+
+def resolve_interactive_model_settings(enabled_providers=None, default_model=None):
+    """Resolve the developer-controlled AI Coach provider/model settings.
+
+    Missing or malformed legacy values preserve the historical runtime by
+    enabling every known provider.  A default which is unknown or belongs to a
+    disabled provider falls back deterministically to the normal default, then
+    to the first model belonging to an enabled provider.
+    """
+    known_providers = tuple(dict.fromkeys(
+        str(config.get("provider") or "").strip()
+        for config in AI_MODEL_OPTIONS.values()
+        if str(config.get("provider") or "").strip()
+    ))
+    raw_providers = (
+        enabled_providers
+        if isinstance(enabled_providers, (list, tuple, set))
+        else ()
+    )
+    selected_providers = tuple(dict.fromkeys(
+        str(provider or "").strip()
+        for provider in raw_providers
+        if str(provider or "").strip() in known_providers
+    ))
+    if not selected_providers:
+        selected_providers = known_providers
+
+    eligible_labels = tuple(
+        label for label, config in AI_MODEL_OPTIONS.items()
+        if config.get("provider") in selected_providers
+    )
+    requested = str(default_model or "").strip()
+    if requested not in eligible_labels:
+        requested = (
+            DEFAULT_AI_MODEL
+            if DEFAULT_AI_MODEL in eligible_labels
+            else eligible_labels[0]
+        )
+    return selected_providers, requested
+
+# Backwards-compatible public name used by the room runtime and existing tests.
+ROOM_JUDGEMENT_MODEL_LABELS = AI_FEATURE_MODEL_FALLBACK_LABELS["room_judgement"]
 
 
 def model_slugs_for_labels(labels):
@@ -165,3 +303,43 @@ def model_slugs_for_labels(labels):
         for label in labels
         if label in NON_MANUAL_MODEL_OPTIONS
     )
+
+
+def _validate_feature_model(feature_key, label, config):
+    for requirement, expected in AI_FEATURE_REQUIREMENTS.get(feature_key, {}).items():
+        actual = config.get(requirement)
+        if actual != expected:
+            raise ValueError(
+                f"AI feature {feature_key} requires {requirement}={expected!r}; "
+                f"{label} has {actual!r}"
+            )
+
+
+def get_feature_model(feature):
+    """Return ``(label, config)`` for one centrally selected AI feature."""
+    feature_key = str(feature or "").strip()
+    try:
+        label = AI_FEATURE_MODEL_LABELS[feature_key]
+    except KeyError as exc:
+        raise KeyError(f"Unknown AI model feature: {feature_key}") from exc
+    config = NON_MANUAL_MODEL_OPTIONS.get(label) or AI_MODEL_OPTIONS.get(label)
+    if not config:
+        raise KeyError(f"AI feature {feature_key} selects unknown model: {label}")
+    _validate_feature_model(feature_key, label, config)
+    return label, config
+
+
+def model_slugs_for_feature(feature):
+    """Ordered provider model slugs, including centrally defined fallbacks."""
+    feature_key = str(feature or "").strip()
+    labels = AI_FEATURE_MODEL_FALLBACK_LABELS.get(feature_key)
+    if not labels:
+        labels = (get_feature_model(feature_key)[0],)
+    slugs = []
+    for label in labels:
+        config = NON_MANUAL_MODEL_OPTIONS.get(label) or AI_MODEL_OPTIONS.get(label)
+        if not config:
+            raise KeyError(f"AI feature {feature} selects unknown model: {label}")
+        _validate_feature_model(feature_key, label, config)
+        slugs.append(config["model"])
+    return tuple(slugs)

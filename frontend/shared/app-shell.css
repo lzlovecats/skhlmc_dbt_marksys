@@ -11,6 +11,7 @@
     --muted: #9aa0ab;
     --border: #3a3d46;
     --accent: #4c9bff;
+    --accent-fill: #1f6fcb;
     --agree: #29b46b;
     --against: #ff5c5c;
     --ok: #8ee6b4;
@@ -58,6 +59,12 @@ input, textarea, select {
     border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); color: var(--text); font: inherit;
 }
+label > input:not([type="checkbox"]):not([type="radio"]),
+label > textarea,
+label > select {
+    display: block;
+    margin-top: .35rem;
+}
 input[type="checkbox"], input[type="radio"] {
     width: 1.1rem;
     height: 1.1rem;
@@ -77,6 +84,7 @@ textarea { resize: vertical; }
 input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 button, a.button {
+    --accent: var(--accent-fill);
     display: inline-flex; align-items: center; justify-content: center;
     min-height: 2.7rem; padding: .55rem .9rem;
     border: 1px solid var(--border); border-radius: var(--radius);
@@ -85,7 +93,7 @@ button, a.button {
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .55; cursor: default; }
 button.primary, .btn-primary, .primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
-.login button, form > button.primary { margin-top: 1rem; }
+.login button, form > button { margin-top: 1rem; }
 
 .tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .35rem; margin: .9rem 0 1rem; overflow-x: auto; }
 .tab, .tabs > button { min-width: 0; }

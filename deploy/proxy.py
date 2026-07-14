@@ -27,7 +27,13 @@ from sqlalchemy import text
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.websockets import WebSocketDisconnect
 
+from account_access import (
+    account_can_access,
+    access_denial_message,
+    normalize_account_id,
+)
 from schema import (
+    TABLE_ACCOUNTS,
     TABLE_AI_DATASET_SNAPSHOTS,
     TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_FUND_USAGE_LOGS,
@@ -35,6 +41,7 @@ from schema import (
     TABLE_BANDWIDTH_USAGE_LOGS,
     TABLE_PRACTICE_DAILY_USAGE,
     TABLE_PUSH_SUBSCRIPTIONS,
+    TABLE_MATCHES,
     TABLE_VIDEO_PROGRESS,
     TABLE_VIDEO_VIEWS,
 )
@@ -53,7 +60,18 @@ from debate_timing import (  # pure helpers, no side effects
     FREE_DEBATE_FORMATS,
     DEBATE_FORMATS,
 )
-from ai_model_config import ROOM_JUDGEMENT_MODEL_LABELS, model_slugs_for_labels
+from ai_model_config import (
+    AZURE_TTS_PROVIDER,
+    CUSTOM_TTS_PROVIDER,
+    DEFAULT_TTS_PROVIDER,
+    GEMINI_LIVE_MODEL,
+    GEMINI_LIVE_MODEL_LABEL,
+    GEMINI_LIVE_PROVIDER,
+    TTS_PROVIDER_OPTIONS,
+    TTS_PROVIDER_SECRET,
+    get_tts_provider_config,
+    model_slugs_for_feature,
+)
 from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
@@ -77,6 +95,8 @@ from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
 from api.ai_training_api import router as ai_training_router
 from api.admin_console_api import router as admin_console_router
+from api.kiosk_api import router as kiosk_router, require_kiosk_user
+from api.access import require_page_user
 from version import APP_VERSION
 from system_limits import (
     BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
@@ -84,6 +104,12 @@ from system_limits import (
     BANDWIDTH_WARN_BYTES, CACHE_HTML_MAX_AGE_SECONDS, CACHE_HTML_STALE_SECONDS,
     CACHE_MANIFEST_MAX_AGE_SECONDS, CACHE_SHARED_MAX_AGE_SECONDS,
     CACHE_SHARED_STALE_SECONDS, CACHE_STATIC_MAX_AGE_SECONDS,
+    COMMITTEE_SESSION_CLOCK_SKEW_SECONDS,
+    COMMITTEE_SESSION_MAX_AGE_SECONDS,
+    COMMITTEE_SESSION_TOKEN_MAX_CHARS,
+    JUDGING_SESSION_CLOCK_SKEW_SECONDS,
+    JUDGING_SESSION_TOKEN_MAX_CHARS,
+    JUDGING_SESSION_TTL_SECONDS,
     GEMINI_WS_MAX_QUEUE, GEMINI_WS_MAX_SIZE,
     GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE,
     AI_PROVIDER_PROMPT_MAX_CHARS, AI_PROVIDER_RESPONSE_MAX_BYTES,
@@ -157,6 +183,7 @@ ESSENTIAL_ONLY_BLOCKED_PATHS = {
     "/api/ai-training/coverage/ai",
     "/api/ai-training/regenerate-suggestions",
     "/api/ai-training/rag/reindex",
+    "/api/kiosk/match-review/analyze",
     "/api/tts/azure",
     "/api/vote/ai-review",
     "/api/vote/analysis/ai",
@@ -330,6 +357,7 @@ app.include_router(chairperson_router)
 app.include_router(ai_coach_router)
 app.include_router(ai_training_router)
 app.include_router(admin_console_router)
+app.include_router(kiosk_router)
 logger = logging.getLogger("skh_proxy")
 
 
@@ -371,31 +399,100 @@ def get_vote_db():
     return RuntimeDb(engine)
 
 
-def _verify_committee_token(token: str):
-    """Verify a signed ``user_id:sig`` token against the shared cookie secret."""
-    if not token or ":" not in token:
-        return None
-
+def _committee_auth_material(user_id: str):
+    """Load the current secret, access state and credential hash atomically."""
     engine = _get_db_engine()
     if engine is None:
         return None
-
-    user_id, sig = token.rsplit(":", 1)
-    with engine.begin() as conn:
-        configs = get_configs_from_connection(
-            conn, ("cookie_secret", "login_disabled_accounts")
-        )
-    if "cookie_secret" not in configs:
+    try:
+        with engine.begin() as conn:
+            configs = get_configs_from_connection(
+                conn, ("cookie_secret", "login_disabled_accounts")
+            )
+            row = conn.execute(
+                text(
+                    f"SELECT password_hash FROM {TABLE_ACCOUNTS} "
+                    "WHERE user_id=:user_id"
+                ),
+                {"user_id": user_id},
+            ).fetchone()
+    except Exception:
         return None
-    disabled_accounts = configs.get("login_disabled_accounts") or []
-    if isinstance(disabled_accounts, list) and user_id in disabled_accounts:
+    secret = configs.get("cookie_secret")
+    if not secret or row is None:
         return None
+    try:
+        password_hash = str(row._mapping["password_hash"])
+    except (AttributeError, KeyError, TypeError):
+        try:
+            password_hash = str(row[0])
+        except (IndexError, TypeError):
+            return None
+    disabled = configs.get("login_disabled_accounts") or []
+    disabled_keys = (
+        {normalize_account_id(value) for value in disabled}
+        if isinstance(disabled, list)
+        else set()
+    )
+    return str(secret), password_hash, disabled_keys
 
-    secret = configs["cookie_secret"]
-    expected = hmac.new(str(secret).encode(), user_id.encode(), hashlib.sha256).hexdigest()
-    if hmac.compare_digest(sig, expected):
-        return user_id
-    return None
+
+def _committee_credential_fingerprint(
+    secret: str, user_id: str, password_hash: str,
+) -> str:
+    material = f"committee-credential-v1\0{user_id}\0{password_hash}".encode()
+    return hmac.new(secret.encode(), material, hashlib.sha256).hexdigest()
+
+
+def _verify_committee_token(token: str):
+    """Verify a bounded, expiring session against the current credential hash."""
+    value = str(token or "")
+    if not value or len(value) > COMMITTEE_SESSION_TOKEN_MAX_CHARS:
+        return None
+    try:
+        prefix, encoded, signature = value.split(".", 2)
+        if prefix != "ct1":
+            return None
+        payload = json.loads(_claim_b64decode(encoded))
+        if not isinstance(payload, dict) or payload.get("v") != 1:
+            return None
+        user_id = str(payload.get("sub") or "")
+        issued_at = int(payload.get("iat"))
+        expires_at = int(payload.get("exp"))
+        credential = str(payload.get("cred") or "")
+    except (
+        OverflowError, TypeError, ValueError, UnicodeError, json.JSONDecodeError,
+    ):
+        return None
+    now = int(time.time())
+    if (
+        not user_id
+        or len(user_id) > 200
+        or issued_at > now + COMMITTEE_SESSION_CLOCK_SKEW_SECONDS
+        or expires_at <= now
+        or expires_at <= issued_at
+        or expires_at - issued_at > COMMITTEE_SESSION_MAX_AGE_SECONDS
+    ):
+        return None
+    material = _committee_auth_material(user_id)
+    if material is None:
+        return None
+    secret, password_hash, disabled_keys = material
+    expected_signature = _claim_b64(
+        hmac.new(
+            secret.encode(), f"ct1.{encoded}".encode("ascii"), hashlib.sha256,
+        ).digest()
+    )
+    expected_credential = _committee_credential_fingerprint(
+        secret, user_id, password_hash,
+    )
+    if (
+        normalize_account_id(user_id) in disabled_keys
+        or not hmac.compare_digest(signature, expected_signature)
+        or not hmac.compare_digest(credential, expected_credential)
+    ):
+        return None
+    return user_id
 
 
 def _verify_committee_cookie(request: Request):
@@ -537,15 +634,41 @@ def _planned_live_practice_claim(
     )
 
 
-def _sign_committee_token(user_id: str):
-    """Mint a signed ``user_id:sig`` committee token, matching
-    _verify_committee_token / auth._sign_cookie. Used by the committee login API
-    to set the shared ``committee_user`` cookie. Returns None if no secret."""
-    secret = _get_relay_cookie_secret()
-    if not secret:
+def _sign_committee_token(user_id: str, *, credential_hash: str | None = None):
+    """Mint one versioned session bound to the account's current password hash."""
+    normalized_user = str(user_id or "").strip()
+    if not normalized_user or len(normalized_user) > 200:
         return None
-    sig = hmac.new(str(secret).encode(), user_id.encode(), hashlib.sha256).hexdigest()
-    return f"{user_id}:{sig}"
+    material = _committee_auth_material(normalized_user)
+    if material is None:
+        return None
+    secret, password_hash, disabled_keys = material
+    if (
+        normalize_account_id(normalized_user) in disabled_keys
+        or credential_hash is not None
+        and not hmac.compare_digest(str(credential_hash), password_hash)
+    ):
+        return None
+    issued_at = int(time.time())
+    payload = {
+        "v": 1,
+        "sub": normalized_user,
+        "iat": issued_at,
+        "exp": issued_at + COMMITTEE_SESSION_MAX_AGE_SECONDS,
+        "cred": _committee_credential_fingerprint(
+            secret, normalized_user, password_hash,
+        ),
+    }
+    encoded = _claim_b64(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    )
+    signature = _claim_b64(
+        hmac.new(
+            secret.encode(), f"ct1.{encoded}".encode("ascii"), hashlib.sha256,
+        ).digest()
+    )
+    token = f"ct1.{encoded}.{signature}"
+    return token if len(token) <= COMMITTEE_SESSION_TOKEN_MAX_CHARS else None
 
 
 def _sign_registration_admin_token():
@@ -571,28 +694,131 @@ def _verify_registration_admin_token(token: str) -> bool:
     return hmac.compare_digest(sig, expected)
 
 
-def _sign_judging_token(match_id: str):
-    """Mint a session token restricted to one judge-accessible match."""
-    secret = _get_relay_cookie_secret()
-    if not secret or not match_id:
+def _judging_auth_material(match_id: str):
+    """Load the current signing secret and still-open match credential."""
+    engine = _get_db_engine()
+    if engine is None:
         return None
-    subject = f"judging:{match_id}"
-    sig = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
-    return f"{subject}:{sig}"
+    try:
+        with engine.begin() as conn:
+            configs = get_configs_from_connection(conn, ("cookie_secret",))
+            row = conn.execute(
+                text(
+                    f"SELECT access_code_hash FROM {TABLE_MATCHES} "
+                    "WHERE match_id=:match_id"
+                ),
+                {"match_id": match_id},
+            ).fetchone()
+    except Exception:
+        return None
+    secret = str(configs.get("cookie_secret") or "")
+    if not secret or row is None:
+        return None
+    try:
+        raw_hash = row._mapping["access_code_hash"]
+    except (AttributeError, KeyError, TypeError):
+        try:
+            raw_hash = row[0]
+        except (IndexError, TypeError):
+            return None
+    access_code_hash = "" if raw_hash is None else str(raw_hash).strip()
+    if not access_code_hash or access_code_hash.lower() in {"nan", "none", "<na>"}:
+        return None
+    return secret, access_code_hash
+
+
+def _judging_credential_fingerprint(
+    secret: str, match_id: str, access_code_hash: str,
+) -> str:
+    material = (
+        f"judging-credential-v1\0{match_id}\0{access_code_hash}".encode()
+    )
+    return hmac.new(secret.encode(), material, hashlib.sha256).hexdigest()
+
+
+def _sign_judging_token(match_id: str, *, credential_hash: str):
+    """Mint one expiring match session bound to the current access-code hash."""
+    normalized_match = str(match_id or "").strip()
+    if not normalized_match or len(normalized_match) > 200:
+        return None
+    material = _judging_auth_material(normalized_match)
+    if material is None:
+        return None
+    secret, current_hash = material
+    if not hmac.compare_digest(str(credential_hash or ""), current_hash):
+        return None
+    issued_at = int(time.time())
+    payload = {
+        "v": 1,
+        "sub": normalized_match,
+        "iat": issued_at,
+        "exp": issued_at + JUDGING_SESSION_TTL_SECONDS,
+        "cred": _judging_credential_fingerprint(
+            secret, normalized_match, current_hash,
+        ),
+    }
+    encoded = _claim_b64(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    )
+    signature = _claim_b64(
+        hmac.new(
+            secret.encode(), f"jt1.{encoded}".encode("ascii"), hashlib.sha256,
+        ).digest()
+    )
+    token = f"jt1.{encoded}.{signature}"
+    return token if len(token) <= JUDGING_SESSION_TOKEN_MAX_CHARS else None
 
 
 def _verify_judging_token(token: str):
-    if not token or ":" not in token:
+    """Verify time, signature, match existence and the live access credential."""
+    value = str(token or "")
+    if not value or len(value) > JUDGING_SESSION_TOKEN_MAX_CHARS:
         return None
-    subject, sig = token.rsplit(":", 1)
-    if not subject.startswith("judging:"):
+    try:
+        prefix, encoded, signature = value.split(".", 2)
+        if prefix != "jt1":
+            return None
+        payload = json.loads(_claim_b64decode(encoded))
+        if not isinstance(payload, dict) or payload.get("v") != 1:
+            return None
+        match_id = str(payload.get("sub") or "")
+        issued_at = int(payload.get("iat"))
+        expires_at = int(payload.get("exp"))
+        credential = str(payload.get("cred") or "")
+    except (
+        OverflowError, TypeError, ValueError, UnicodeError, json.JSONDecodeError,
+    ):
         return None
-    match_id = subject[len("judging:"):]
-    secret = _get_relay_cookie_secret()
-    if not secret or not match_id:
+    now = int(time.time())
+    if (
+        not match_id
+        or len(match_id) > 200
+        or issued_at > now + JUDGING_SESSION_CLOCK_SKEW_SECONDS
+        or expires_at <= now
+        or expires_at <= issued_at
+        or expires_at - issued_at > JUDGING_SESSION_TTL_SECONDS
+        or not re.fullmatch(r"[A-Za-z0-9_-]{43}", signature)
+        or not re.fullmatch(r"[0-9a-f]{64}", credential)
+    ):
         return None
-    expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
-    return match_id if hmac.compare_digest(sig, expected) else None
+    material = _judging_auth_material(match_id)
+    if material is None:
+        return None
+    secret, access_code_hash = material
+    expected_signature = _claim_b64(
+        hmac.new(
+            secret.encode(), f"jt1.{encoded}".encode("ascii"), hashlib.sha256,
+        ).digest()
+    )
+    expected_credential = _judging_credential_fingerprint(
+        secret, match_id, access_code_hash,
+    )
+    if (
+        not hmac.compare_digest(signature, expected_signature)
+        or not hmac.compare_digest(credential, expected_credential)
+    ):
+        return None
+    return match_id
 
 
 def _sign_review_token(match_id: str):
@@ -693,7 +919,7 @@ async def favicon():
 
 @app.post("/api/push/subscribe")
 async def push_subscribe(request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "member_profile")
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -733,7 +959,7 @@ async def push_subscribe(request: Request):
 
 @app.post("/api/push/unsubscribe")
 async def push_unsubscribe(request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "member_profile")
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -809,6 +1035,11 @@ async def push_resubscribe(request: Request):
         user_id = row[0] if row is not None else None
         if not user_id:
             raise HTTPException(status_code=404, detail="Old subscription not found")
+        if not account_can_access(user_id, "member_profile"):
+            raise HTTPException(
+                status_code=403,
+                detail=access_denial_message("member_profile"),
+            )
 
         conn.execute(
             text(
@@ -844,8 +1075,11 @@ async def push_resubscribe(request: Request):
 
 
 def _build_azure_tts_ssml(text_value: str, voice: str, rate: str) -> str:
-    voice = xml_escape(voice or "zh-HK-HiuMaanNeural", {'"': "&quot;"})
-    rate = xml_escape(rate or "0%", {'"': "&quot;"})
+    azure_config = TTS_PROVIDER_OPTIONS[AZURE_TTS_PROVIDER]
+    voice = xml_escape(
+        voice or azure_config["default_voice"], {'"': "&quot;"}
+    )
+    rate = xml_escape(rate or azure_config["default_rate"], {'"': "&quot;"})
     text_value = xml_escape(text_value)
     return (
         '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
@@ -867,20 +1101,26 @@ class TtsUnavailable(Exception):
         self.status = status
 
 
+def _selected_tts_provider():
+    raw = _get_proxy_secret(TTS_PROVIDER_SECRET, DEFAULT_TTS_PROVIDER)
+    return get_tts_provider_config(raw)
+
+
 def tts_provider_configured() -> bool:
     """Whether the active TTS provider has the secrets it needs. Drives whether
     live-room server-side TTS turns on (else the room stays on Gemini native audio)."""
-    provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
-    if provider == "custom":
-        model_id = _get_proxy_secret("CUSTOM_TTS_MODEL_VERSION").strip()
+    provider, config = _selected_tts_provider()
+    if provider == CUSTOM_TTS_PROVIDER:
+        model_id = _get_proxy_secret(config["model_secret"]).strip()
         return bool(
-            _get_proxy_secret("CUSTOM_TTS_URL").strip()
-            and _get_proxy_secret("CUSTOM_TTS_API_KEY").strip()
-            and model_id and _model_is_deployable(model_id, "tts")
+            _get_proxy_secret(config["url_secret"]).strip()
+            and _get_proxy_secret(config["api_key_secret"]).strip()
+            and model_id
+            and _model_is_deployable(model_id, config["registry_model_type"])
         )
     return bool(
-        _get_proxy_secret("AZURE_SPEECH_KEY").strip()
-        and _get_proxy_secret("AZURE_SPEECH_REGION").strip()
+        _get_proxy_secret(config["speech_key_secret"]).strip()
+        and _get_proxy_secret(config["region_secret"]).strip()
     )
 
 
@@ -986,16 +1226,25 @@ def _preprocess_tts_text(text_value: str) -> str:
 
 
 async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
-    speech_key = _get_proxy_secret("AZURE_SPEECH_KEY").strip()
-    speech_region = _get_proxy_secret("AZURE_SPEECH_REGION").strip()
+    config = TTS_PROVIDER_OPTIONS[AZURE_TTS_PROVIDER]
+    speech_key = _get_proxy_secret(config["speech_key_secret"]).strip()
+    speech_region = _get_proxy_secret(config["region_secret"]).strip()
     if not speech_key or not speech_region:
         raise TtsUnavailable("Azure TTS is not configured", status=503)
 
-    voice = _get_proxy_secret("AZURE_TTS_VOICE", "zh-HK-HiuMaanNeural").strip() or "zh-HK-HiuMaanNeural"
-    rate = _get_proxy_secret("AZURE_TTS_RATE", "0%").strip() or "0%"
+    voice = (
+        _get_proxy_secret(config["voice_secret"], config["default_voice"]).strip()
+        or config["default_voice"]
+    )
+    rate = (
+        _get_proxy_secret(config["rate_secret"], config["default_rate"]).strip()
+        or config["default_rate"]
+    )
     output_format = (
-        _get_proxy_secret("AZURE_TTS_OUTPUT_FORMAT", "audio-24khz-48kbitrate-mono-mp3").strip()
-        or "audio-24khz-48kbitrate-mono-mp3"
+        _get_proxy_secret(
+            config["output_format_secret"], config["default_output_format"]
+        ).strip()
+        or config["default_output_format"]
     )
     ssml = _build_azure_tts_ssml(text_value, voice, rate)
     endpoint = f"https://{speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
@@ -1027,12 +1276,13 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
 
 async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
     """Call the authenticated custom TTS service using the stable wire contract."""
-    custom_url = _get_proxy_secret("CUSTOM_TTS_URL").strip()
-    api_key = _get_proxy_secret("CUSTOM_TTS_API_KEY").strip()
-    model_version = _get_proxy_secret("CUSTOM_TTS_MODEL_VERSION").strip()
+    config = TTS_PROVIDER_OPTIONS[CUSTOM_TTS_PROVIDER]
+    custom_url = _get_proxy_secret(config["url_secret"]).strip()
+    api_key = _get_proxy_secret(config["api_key_secret"]).strip()
+    model_version = _get_proxy_secret(config["model_secret"]).strip()
     if not custom_url or not api_key or not model_version:
         raise TtsUnavailable("Custom TTS is not configured", status=503)
-    if not _model_is_deployable(model_version, "tts"):
+    if not _model_is_deployable(model_version, config["registry_model_type"]):
         raise TtsUnavailable("Custom TTS model has not passed the deployable gate", status=503)
     request_id = secrets.token_urlsafe(12)
     started = time.monotonic()
@@ -1071,9 +1321,9 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
         raise TtsUnavailable("Missing text", status=400)
     if len(processed) > TTS_TEXT_MAX_CHARS:
         raise TtsUnavailable("TTS lexicon expansion exceeds server limit", status=400)
-    provider = (_get_proxy_secret("TTS_PROVIDER", "azure").strip() or "azure").lower()
+    provider, _config = _selected_tts_provider()
     async with TTS_SEMAPHORE:
-        if provider == "custom":
+        if provider == CUSTOM_TTS_PROVIDER:
             try:
                 return await _synthesize_custom(processed)
             except TtsUnavailable as exc:
@@ -1084,7 +1334,7 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
 
 @app.post("/api/tts/azure")
 async def azure_tts(request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "tts")
     budget_error = _bandwidth_live_gate_error()
     if budget_error:
         raise HTTPException(
@@ -1124,7 +1374,7 @@ async def azure_tts(request: Request):
 
 @app.post("/api/video/view")
 async def video_view(request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "video_replay")
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -1156,7 +1406,7 @@ async def video_view(request: Request):
 
 @app.post("/api/video/progress")
 async def video_progress(request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "video_replay")
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -1339,7 +1589,7 @@ async def projector_get_sequence(request: Request):
 
 @app.get("/api/projector/matches")
 async def projector_list_matches(request: Request):
-    _require_committee_user(request)
+    require_page_user(request, "projector")
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -1364,7 +1614,7 @@ async def projector_list_matches(request: Request):
 
 @app.post("/api/projector/state")
 async def projector_set_state(request: Request):
-    _require_committee_user(request)
+    require_page_user(request, "projector")
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -1417,15 +1667,15 @@ async def projector_set_state(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Appliance practice page (login-free kiosk hub)
+# Appliance practice page (dedicated kiosk-authenticated hub)
 #
 # Additive and self-contained, same pattern as the projector above. Serves one
 # static big-text page (templates/appliance_practice.html) meant for the
 # dedicated-machine 日常練習 mode (PRACTICE_URL). It embeds the chairperson
-# 叮叮 timer (all formats) — pure client-side, no login — and links out to the
-# existing /ai-coach for AI practice (the kiosk browser stays logged in as the
-# appliance's own committee account, so direct Gemini Live token minting keeps
-# working). No Streamlit page, schema, or existing route is touched.
+# 叮叮 timer (all formats) and dedicated kiosk login shell, and links out to the
+# existing AI-practice engine. The HTML shell remains reachable so an expired
+# browser cookie can display its login form; server-side AI routes require the
+# centrally defined kiosk page-access policy.
 # ---------------------------------------------------------------------------
 
 
@@ -1433,7 +1683,7 @@ async def projector_set_state(request: Request):
 async def appliance_practice_page():
     return FileResponse(BASE_DIR / "templates" / "appliance_practice.html",
                         media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+                        headers=_cache_headers(CACHE_NO_CACHE))
 
 
 @app.get("/vote")
@@ -1571,7 +1821,7 @@ async def ai_coach_page():
 
 @app.get("/ai-coach/room/{code}")
 async def ai_coach_room_page(code: str, request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "ai_room")
     room = ROOMS.get((code or "").upper())
     if not room:
         return _practice_error_page("房間不存在", "房間已結束或不存在。", "/ai-coach")
@@ -1708,12 +1958,12 @@ async def appliance_practice_timer_config(request: Request):
 # coach (ai_coach.py) so behaviour stays consistent — the only differences are a
 # big-text setup page and that the ephemeral-token mint happens here in the
 # proxy (which has no Streamlit `st.secrets`) instead of in ai_coach. Minting is
-# gated on the committee cookie (the kiosk logs in as its own committee account)
+# gated on the dedicated kiosk cookie
 # and rate-limited so the appliance can't be abused into burning AI budget.
 # ---------------------------------------------------------------------------
 
-# Keep in sync with ai_coach_helpers.FREE_DEBATE_LIVE_MODEL.
-FREE_DEBATE_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+# Backwards-compatible alias; the model choice itself is centrally managed.
+FREE_DEBATE_LIVE_MODEL = GEMINI_LIVE_MODEL
 
 # Only formats with a free-debate segment are offered for standalone Free De.
 _PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
@@ -2416,9 +2666,11 @@ def _reserve_solo_live_slot(
             (user_id,feature,model_label,provider,estimated_cost_usd,
              estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,
             search_calls,cost_source,status,error_message,created_at)
-            VALUES(:user,:feature,'Gemini Live','gemini',:usd,:hkd,0,0,
+            VALUES(:user,:feature,:model_label,:provider,:usd,:hkd,0,0,
                    :audio,0,'gemini_live_token_reservation','success',:marker,:now)"""), {
             "user": user_id, "feature": feature,
+            "model_label": GEMINI_LIVE_MODEL_LABEL,
+            "provider": GEMINI_LIVE_PROVIDER,
             "usd": round(duration_minutes * 0.01, 4),
             "hkd": round(duration_minutes * 0.078, 4),
             "audio": int(duration_minutes * 60 * 25),
@@ -2742,7 +2994,14 @@ background:#3b82f6;border-radius:16px;padding:16px 44px;text-decoration:none}}
 
 
 @app.get("/practice/ai-debate")
-async def appliance_ai_debate_page():
+async def appliance_ai_debate_page(request: Request):
+    try:
+        require_kiosk_user(request)
+    except HTTPException:
+        return RedirectResponse(
+            url="/practice?next=ai-debate", status_code=307,
+            headers={"Cache-Control": CACHE_NO_STORE},
+        )
     return FileResponse(BASE_DIR / "templates" / "appliance_ai_debate.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_HTML))
@@ -2758,11 +3017,12 @@ async def appliance_ai_debate_live(request: Request):
 
 
 async def _appliance_ai_debate_live_locked(request: Request):
-    user_id = _verify_committee_cookie(request)
-    if not user_id:
+    try:
+        user_id = require_kiosk_user(request)
+    except HTTPException:
         return _practice_error_page(
-            "需要委員登入",
-            "AI 辯論練習需要委員帳戶。請喺部機用委員帳戶登入一次（cookie 會記住），再返嚟開始。",
+            "需要 kiosk 登入",
+            "AI 辯論練習只限專用 kiosk 帳戶。請返回練習首頁登入。",
         )
 
     q = request.query_params
@@ -2916,7 +3176,7 @@ ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no O/0/I/1
 ROOM_CODE_LEN = 5
 ROOM_EMPTY_GRACE_MS = ROOM_EMPTY_GRACE_SECONDS * 1000
 ROOM_MAX_AGE_MS = ROOM_MAX_AGE_SECONDS * 1000
-ROOM_JUDGEMENT_MODELS = model_slugs_for_labels(ROOM_JUDGEMENT_MODEL_LABELS)
+ROOM_JUDGEMENT_MODELS = model_slugs_for_feature("room_judgement")
 
 ROOMS = {}  # code -> Room
 ROOMS_LOCK = asyncio.Lock()
@@ -5593,7 +5853,7 @@ def _build_room_plan(
 
 @app.post("/api/room/create")
 async def room_create(request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "ai_room")
     budget_error = _bandwidth_live_gate_error()
     if budget_error:
         raise HTTPException(status_code=429, detail=budget_error)
@@ -5666,7 +5926,7 @@ async def room_create(request: Request):
 
 @app.get("/api/room/{code}")
 async def room_info(code: str, request: Request):
-    _require_committee_user(request)
+    require_page_user(request, "ai_room")
     room = ROOMS.get((code or "").upper())
     if not room or room.phase == "ended":
         raise HTTPException(status_code=404, detail="房間不存在或已結束")
@@ -5682,7 +5942,7 @@ async def room_info(code: str, request: Request):
 
 @app.post("/api/room/{code}/leave")
 async def room_leave(code: str, request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "ai_room")
     room = ROOMS.get((code or "").upper())
     if room and user_id in room.members:
         m = room.members[user_id]
@@ -5710,7 +5970,7 @@ async def room_leave(code: str, request: Request):
 
 @app.get("/api/room/{code}/transcript")
 async def room_transcript(code: str, request: Request):
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "ai_room")
     room = ROOMS.get((code or "").upper())
     if not room:
         raise HTTPException(status_code=404, detail="房間不存在")
@@ -5785,7 +6045,7 @@ async def room_ws(websocket: WebSocket, code: str):
     # Authenticate before accept.  The same-origin HttpOnly cookie is the only
     # browser credential, so signed member tokens never enter URLs or storage.
     user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
-    if not user_id:
+    if not user_id or not account_can_access(user_id, "ai_room"):
         await websocket.close(code=1008)
         return
 

@@ -6,6 +6,8 @@ import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
+from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from core.config_store import get_config, get_configs, set_configs
 from core.vote_logic import _resolve_db
 from schema import (
@@ -42,16 +44,19 @@ AI_FEATURE_LABELS = {
     "vote_analysis": "辯題庫 / 往績分析", "vote_discussion": "委員討論回應",
     "tts_review": "AI訓練·錄音檢查", "tts_script_analysis": "AI訓練·句庫分析",
     "llm_review": "AI訓練·文字審查",
+    "kiosk_match_review": "Kiosk AI全場評判",
 }
 AI_USAGE_FEATURES = (
     "speech_review", "strategy", "web_research", "fact_check",
     "free_debate_live", "full_mock_live", "vote_review",
     "vote_analysis", "vote_discussion", "tts_review",
     "tts_script_analysis", "llm_review",
+    "kiosk_match_review",
 )
 LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
 _AI_PRUNE_LOCK = threading.Lock()
 _AI_LAST_PRUNE = None
+_NON_MEMBER_ACCOUNT_SQL = sql_account_id_literals((*NON_MEMBER_ACCOUNT_DB_KEYS, ""))
 
 
 def _now():
@@ -197,7 +202,7 @@ def lateness_data(selected_year=None, user_id=None, db=None):
     totals = _lateness_totals(year, db)
     accounts = db.query(
         f"SELECT user_id FROM {TABLE_ACCOUNTS} "
-        "WHERE user_id NOT IN ('admin','developer','') "
+        f"WHERE LOWER(user_id) NOT IN ({_NON_MEMBER_ACCOUNT_SQL}) "
         "AND COALESCE(account_disabled,FALSE)=FALSE "
         "ORDER BY user_id LIMIT :account_limit",
         {"account_limit": ACCOUNT_LIST_LIMIT},
@@ -326,7 +331,7 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
     db = _resolve_db(db)
     prune_ai_usage(db)
     usage = usage or {}
-    model_label = str(usage.get("model_label") or "Gemini 3.5 Flash")
+    model_label = str(usage.get("model_label") or NON_MANUAL_DEFAULT_AI_MODEL)
     provider = str(usage.get("provider") or "gemini").lower()
     if provider not in AI_PROVIDERS:
         provider = "other"
@@ -428,7 +433,7 @@ def ai_data(user_id, db=None):
     )
     transactions = []
     usage = []
-    accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE user_id NOT IN ('admin','developer','') AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_LIST_LIMIT})
+    accounts = db.query(f"SELECT user_id FROM {TABLE_ACCOUNTS} WHERE LOWER(user_id) NOT IN ({_NON_MEMBER_ACCOUNT_SQL}) AND COALESCE(account_disabled,FALSE)=FALSE ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_LIST_LIMIT})
     total_row = totals.iloc[0] if not totals.empty else {}
     amount = _float(total_row.get("balance")); account_count = len(accounts)
     google = config.get("google_ai_studio_balance_usd")

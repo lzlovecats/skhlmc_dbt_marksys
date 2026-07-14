@@ -1,6 +1,10 @@
 """AI helpers for topic review and vote analysis."""
 
-from ai_model_config import AI_MODEL_OPTIONS, NON_MANUAL_DEFAULT_AI_MODEL, NON_MANUAL_MODEL_OPTIONS
+from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, is_non_member_account
+from ai_model_config import (
+    AI_MODEL_OPTIONS, NON_MANUAL_DEFAULT_AI_MODEL,
+    NON_MANUAL_MODEL_OPTIONS, get_feature_model,
+)
 from prompts import (
     VOTE_BANK_ANALYSIS_SYSTEM_PROMPT,
     VOTE_DISCUSSION_SYSTEM_PROMPT,
@@ -37,8 +41,12 @@ def is_successful_ai_result(result: str | None) -> bool:
     return not str(result).lstrip().startswith(("⚠️", "❌"))
 
 
-def _model_config(model_label=None):
-    label = model_label or NON_MANUAL_DEFAULT_AI_MODEL
+def _model_config(model_label=None, feature="vote_discussion"):
+    if model_label:
+        label = model_label
+    else:
+        label, feature_config = get_feature_model(feature)
+        return {**feature_config, "label": label}
     config = (
         NON_MANUAL_MODEL_OPTIONS.get(label)
         or AI_MODEL_OPTIONS.get(label)
@@ -82,11 +90,13 @@ def _format_ai_error(provider, error):
     return f"❌ {provider} 回覆失敗：{error}"
 
 
-def generate_general_ai_reply(system_prompt, user_text, secrets, model_label=None):
+def generate_general_ai_reply(
+    system_prompt, user_text, secrets, model_label=None, *, feature="vote_discussion",
+):
     user_text = str(user_text or "")
     if len(user_text) > VOTE_AI_PROMPT_MAX_CHARS:
         user_text = user_text[:VOTE_AI_PROMPT_MAX_CHARS] + "\n[輸入已按伺服器資源上限截斷]"
-    model = _model_config(model_label)
+    model = _model_config(model_label, feature)
     if not model:
         return "❌ 未能載入 AI 模型設定。", None
     if model.get("provider") == "gemini":
@@ -213,7 +223,10 @@ def review_topic(topic, category, difficulty, db, secrets):
         difficulty_definitions=DIFFICULTY_CRITERIA,
         analytics_context=gather_topic_review_context(category, difficulty, db),
     )
-    return generate_general_ai_reply(VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, secrets)
+    return generate_general_ai_reply(
+        VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, secrets,
+        feature="vote_review",
+    )
 
 
 def gather_bank_analysis_context(db):
@@ -262,7 +275,10 @@ def gather_bank_analysis_context(db):
 def analyze_topic_bank(db, secrets):
     bank_summary, topic_lines = gather_bank_analysis_context(db)
     user_text = build_vote_bank_analysis_prompt(bank_summary, topic_lines)
-    return generate_general_ai_reply(VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, secrets)
+    return generate_general_ai_reply(
+        VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, secrets,
+        feature="vote_analysis",
+    )
 
 
 def _status_label(status):
@@ -293,13 +309,18 @@ def gather_vote_history_analysis_context(vote_df, db):
         summary_lines.append(f"{motion_type}：{len(type_df)} 項（{'、'.join(status_parts) if status_parts else '未有狀態'}）")
 
     account_df = db.query(
-        "SELECT user_id FROM accounts WHERE user_id NOT IN ('admin', 'Gemini') "
-        "ORDER BY user_id LIMIT :limit", {"limit": ACCOUNT_LIST_LIMIT}
+        "SELECT user_id FROM accounts "
+        "WHERE LOWER(user_id) <> ALL(:excluded_account_keys) "
+        "ORDER BY user_id LIMIT :limit",
+        {
+            "excluded_account_keys": list(NON_MEMBER_ACCOUNT_DB_KEYS),
+            "limit": ACCOUNT_LIST_LIMIT,
+        },
     )
     all_user_ids = account_df["user_id"].tolist() if not account_df.empty else []
     if not ballots.empty:
         for uid in ballots["user_id"].dropna().unique().tolist():
-            if uid not in all_user_ids:
+            if not is_non_member_account(uid) and uid not in all_user_ids:
                 all_user_ids.append(uid)
     ballot_groups = {uid: member_df for uid, member_df in ballots.groupby("user_id")} if not ballots.empty else {}
     member_lines = []
@@ -356,7 +377,10 @@ def gather_vote_history_analysis_context(vote_df, db):
 def analyze_vote_history(vote_df, db, secrets):
     overall_summary, member_lines, category_lines, reason_lines = gather_vote_history_analysis_context(vote_df, db)
     user_text = build_vote_history_analysis_prompt(overall_summary, member_lines, category_lines, reason_lines)
-    return generate_general_ai_reply(VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, secrets)
+    return generate_general_ai_reply(
+        VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, secrets,
+        feature="vote_analysis",
+    )
 
 
 def extract_gemini_question(comment):
@@ -404,4 +428,7 @@ def discussion_reply(motion_type, motion_key, comments, db, secrets, question=No
         question=question,
         background=build_motion_background(motion_type, motion_key, db),
     )
-    return generate_general_ai_reply(VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, secrets)
+    return generate_general_ai_reply(
+        VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, secrets,
+        feature="vote_discussion",
+    )

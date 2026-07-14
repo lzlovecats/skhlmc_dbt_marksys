@@ -80,6 +80,7 @@ def pdf(request: Request, judge_name: str | None = None):
             record,
             payload["sides"]["正方"],
             payload["sides"]["反方"],
+            rankings=payload.get("ranking"),
         )
     except Exception as exc:
         raise HTTPException(500, f"產生 PDF 失敗：{exc}") from exc

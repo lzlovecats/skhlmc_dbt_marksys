@@ -56,6 +56,31 @@ def test_ai_coach_ui_prices_search_fallback_with_actual_default_model():
     assert '$("researchForm"), $("factForm")' in sync_model
 
 
+def test_ai_coach_runtime_honours_provider_allowlist_and_default(monkeypatch):
+    from core import config_store
+
+    monkeypatch.setattr(
+        config_store,
+        "get_configs",
+        lambda *_args, **_kwargs: {
+            "ai_enabled_providers": ["openrouter"],
+            "ai_default_model": "Haiku 4.5",
+        },
+    )
+    providers, default_model = ai_coach_api._runtime_model_settings(object())
+    assert providers == ("openrouter",)
+    assert default_model == "Haiku 4.5"
+    assert ai_coach_api._requested_model_label(
+        ai_coach_api.CoachRequest(feature="strategy"), default_model,
+    ) == "Haiku 4.5"
+
+    disabled = ai_coach_api.AI_MODEL_OPTIONS["Gemini 2.5 Flash"]
+    with pytest.raises(HTTPException, match="Provider"):
+        ai_coach_api._require_enabled_model(
+            "Gemini 2.5 Flash", disabled, providers,
+        )
+
+
 class _Result:
     def __init__(self, *, scalar_value=0, row=None):
         self._scalar = scalar_value
@@ -355,7 +380,7 @@ def test_identity_only_reload_guard_matches_enriched_reserved_claim(monkeypatch)
     assert proxy._solo_live_practice_reserved(launch) is False
     assert proxy._solo_live_practice_exists(launch) is True
 
-    monkeypatch.setattr(proxy, "_verify_committee_cookie", lambda _request: "alice")
+    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
     monkeypatch.setattr(
         proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch,
     )
@@ -1048,7 +1073,7 @@ def test_initial_live_html_contains_claim_but_never_mints_or_reserves(monkeypatc
         "user_id": "alice", "mode": mode, "practice_id": f"practice_{mode}_001",
         "session_seconds": [], "system_prompt": "", "exp": 0,
     }
-    monkeypatch.setattr(proxy, "_verify_committee_cookie", lambda _request: "alice")
+    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
@@ -1231,7 +1256,7 @@ def test_reload_of_reserved_initial_practice_never_mints_again(monkeypatch):
         "user_id": "alice", "mode": "free", "practice_id": "practice_free_001",
         "session_seconds": [], "system_prompt": "",
     }
-    monkeypatch.setattr(proxy, "_verify_committee_cookie", lambda _request: "alice")
+    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: True)
     monkeypatch.setattr(
@@ -1655,7 +1680,7 @@ def test_bandwidth_4gb_blocks_initial_and_jit_token_provider_calls(monkeypatch):
         "user_id": "alice", "mode": "free", "practice_id": "practice-free",
         "session_seconds": [], "system_prompt": "",
     }
-    monkeypatch.setattr(proxy, "_verify_committee_cookie", lambda _request: "alice")
+    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_practice_live_rate_check", lambda _user: None)

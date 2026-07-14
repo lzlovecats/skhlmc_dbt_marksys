@@ -5,15 +5,17 @@ from pydantic import BaseModel, Field
 from pathlib import Path
 import threading
 import time
+from account_access import account_can_access, access_denial_message
+from api.access import require_page_user
 from system_limits import (
-    COMMITTEE_COOKIE_MAX_AGE_DAYS, MAINTENANCE_PRUNE_INTERVAL_SECONDS,
+    COMMITTEE_SESSION_MAX_AGE_SECONDS, MAINTENANCE_PRUNE_INTERVAL_SECONDS,
     NOTIFICATION_READ_RETENTION_DAYS,
 )
 
 router = APIRouter(prefix="/api/committee", tags=["committee"])
 
 COOKIE_NAME = "committee_user"
-COOKIE_MAX_AGE = COMMITTEE_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60
+COOKIE_MAX_AGE = COMMITTEE_SESSION_MAX_AGE_SECONDS
 _notification_prune_lock = threading.Lock()
 _notification_last_prune = 0.0
 
@@ -74,22 +76,36 @@ def _prune_notification_reads(db, now):
 
 
 @router.post("/login")
-def login(body: LoginBody, response: Response):
+def login(body: LoginBody, request: Request, response: Response):
     from deploy.proxy import get_vote_db, _sign_committee_token
-    from core.auth_logic import check_login, record_login
+    from core.auth_logic import (
+        authenticate_login,
+        login_rate_limit_retry_after,
+        record_login,
+    )
 
     uid = (body.user_id or "").strip()
     pw = (body.password or "").strip()
     if not uid or not pw:
         raise HTTPException(400, "請輸入帳號及密碼")
+    # Reject service identities before password verification. Otherwise the
+    # 401/403 distinction becomes a password oracle for the known kiosk id.
+    if not account_can_access(uid, "committee_login"):
+        raise HTTPException(403, access_denial_message("committee_login"))
+    retry_after = login_rate_limit_retry_after(request, uid)
+    if retry_after is not None:
+        raise HTTPException(
+            429,
+            "登入嘗試次數過多，請稍後再試。",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     db = get_vote_db()
-    if not check_login(uid, pw, db=db):
+    credential_hash = authenticate_login(uid, pw, db=db)
+    if credential_hash is None:
         raise HTTPException(401, "用戶名稱或密碼錯誤")
-    if uid == "admin":
-        raise HTTPException(403, "賽會人員帳戶不能使用此頁面，請改用內部委員會成員帳戶登入")
 
-    token = _sign_committee_token(uid)
+    token = _sign_committee_token(uid, credential_hash=credential_hash)
     if not token:
         raise HTTPException(503, "登入服務暫時未能使用")
 
@@ -97,13 +113,16 @@ def login(body: LoginBody, response: Response):
     response.set_cookie(
         COOKIE_NAME, token,
         max_age=COOKIE_MAX_AGE, path="/", samesite="lax", httponly=True,
+        secure=True,
     )
     return {"status": "ok", "user_id": uid}
 
 
 @router.post("/logout")
 def logout(response: Response):
-    response.delete_cookie(COOKIE_NAME, path="/")
+    response.delete_cookie(
+        COOKIE_NAME, path="/", samesite="lax", httponly=True, secure=True,
+    )
     return {"status": "ok"}
 
 
@@ -111,17 +130,16 @@ def logout(response: Response):
 def me(request: Request):
     """Return the logged-in committee user, or 401. Lets the HTML page check
     login state without pulling vote data."""
-    from deploy.proxy import _require_committee_user
-    return {"user_id": _require_committee_user(request)}
+    return {"user_id": require_page_user(request, "member_profile")}
 
 
 @router.get("/notification")
 def notification(request: Request):
     """Return the current one-time notice when this member has not read it."""
-    from deploy.proxy import _require_committee_user, get_vote_db
+    from deploy.proxy import get_vote_db
     from schema import TABLE_NOTIFICATION_READS
 
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "member_profile")
     notice = _current_notification()
     if not notice:
         return {"notification": None}
@@ -142,10 +160,10 @@ class NotificationReadBody(BaseModel):
 def notification_read(body: NotificationReadBody, request: Request):
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    from deploy.proxy import _require_committee_user, get_vote_db
+    from deploy.proxy import get_vote_db
     from schema import TABLE_NOTIFICATION_READS
 
-    user_id = _require_committee_user(request)
+    user_id = require_page_user(request, "member_profile")
     current = _current_notification()
     if not current or body.notification_id != current["id"]:
         raise HTTPException(400, "通知已更新，請重新載入")
@@ -167,10 +185,10 @@ def notification_read(body: NotificationReadBody, request: Request):
 
 @router.post("/password")
 def password(body: PasswordBody, request: Request):
-    from deploy.proxy import _require_committee_user, get_vote_db
+    from deploy.proxy import get_vote_db
     from core.auth_logic import change_password
 
-    uid = _require_committee_user(request)
+    uid = require_page_user(request, "member_profile")
     current = (body.current_password or "").strip()
     new = (body.new_password or "").strip()
     confirm = (body.confirm_password or "").strip()

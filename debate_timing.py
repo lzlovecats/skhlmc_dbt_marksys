@@ -179,6 +179,7 @@ def get_debate_timer_config(debate_format, free_debate_minutes=None, closing_pre
                 _bell(220, 5, "3:40 — 5 叮"),
             ],
             "free": [
+                _bell(0, 1, "開始 — 1 叮"),
                 _bell(120, 1, "2:00 — 1 叮"),
                 _bell(150, 2, "2:30 — 2 叮"),
             ],

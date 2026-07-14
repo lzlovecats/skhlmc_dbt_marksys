@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from account_access import ADMIN_ACCOUNT_ID
+
 from core.auth_logic import append_login_record, hash_password, verify_password
 from core.config_store import get_config, set_config
 from core.vote_logic import _resolve_db
@@ -306,5 +308,5 @@ def check_admin_password(password, db=None):
         return {"ok": False, "message": "密碼錯誤"}
     if not str(stored).startswith(("$2a$", "$2b$", "$2y$")):
         set_config(db, "admin_password", hash_password(plain))
-    append_login_record("admin", "admin", _now(), db=db)
+    append_login_record(ADMIN_ACCOUNT_ID, "admin", _now(), db=db)
     return {"ok": True}

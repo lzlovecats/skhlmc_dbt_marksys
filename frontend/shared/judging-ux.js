@@ -23,8 +23,11 @@
         const isDraft = url === "/api/judging/draft" && String(options.method || "GET").toUpperCase() === "POST";
         if (!isDraft) return nativeFetch(input, options);
         let side = "";
+        let requestJudge = "";
         try {
-            side = JSON.parse(options.body || "{}").side || "";
+            const payload = JSON.parse(options.body || "{}");
+            side = payload.side || "";
+            requestJudge = String(payload.judge_name || "").trim();
         } catch {}
         const manual = manualSaveSide === side;
         if (!manual && !dirtySides.has(side)) {
@@ -32,7 +35,8 @@
         }
         try {
             const response = await nativeFetch(input, options);
-            if (response.ok) setDirty(side, false);
+            const currentJudge = String($("judge")?.value || "").trim();
+            if (response.ok && requestJudge === currentJudge) setDirty(side, false);
             return response;
         } finally {
             if (manual) manualSaveSide = "";
@@ -135,6 +139,10 @@
     }, true);
 
     $("judge").addEventListener("change", () => {
+        clearTimeout(judgeNameTimer);
+        judgeNameTimer = null;
+        dirtySides.clear();
+        manualSaveSide = "";
         $("scoreApp").classList.remove("hidden");
         $("status").innerHTML = "";
         $("panelPro").innerHTML = '<div class="notice">正在檢查此評判的雲端暫存紀錄…</div>';

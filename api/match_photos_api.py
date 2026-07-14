@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from api.access import require_page_user
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from system_limits import (
     PHOTO_BATCH_MAX_ITEMS, PHOTO_DAILY_USER_LIMIT, PHOTO_MAX_BYTES,
@@ -42,8 +43,8 @@ class PhotoCompleteBody(BaseModel):
 
 
 def _context(request: Request):
-    from deploy.proxy import _require_committee_user, get_vote_db
-    return _require_committee_user(request), get_vote_db()
+    from deploy.proxy import get_vote_db
+    return require_page_user(request, "match_photos"), get_vote_db()
 
 
 @router.get("/data")

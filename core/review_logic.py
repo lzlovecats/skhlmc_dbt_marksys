@@ -2,7 +2,7 @@
 
 from core.auth_logic import verify_password
 from core.judging_logic import _deserialize, normalize_judge_name
-from core.results_logic import _best_debaters, _scores
+from core.results_logic import _best_debaters, _scores, judge_ranking
 from core.vote_logic import _resolve_db
 from scoring import (
     COHERENCE_MAX,
@@ -56,7 +56,8 @@ def review_data(match_id, judge_name=None, db=None):
         return {
             "has_scores": False, "judges": [], "selected_judge": None,
             "record": None, "best_debaters": None, "best_debater": None,
-            "sides": {}, "missing_sides": [], "config": SCORE_CONFIG,
+            "sides": {}, "missing_sides": [], "ranking": None,
+            "config": SCORE_CONFIG,
         }
     judges = scores["judge_name"].drop_duplicates().tolist()
     judge = judge_name if judge_name in judges else judges[0]
@@ -104,6 +105,7 @@ def review_data(match_id, judge_name=None, db=None):
         except (AttributeError, TypeError, ValueError, KeyError):
             missing.append(side)
     best_rows, best = _best_debaters(match_id, scores, db)
+    ranking = judge_ranking(match_id, judge, record, db)
     return {
         "has_scores": True,
         "judges": judges,
@@ -113,5 +115,6 @@ def review_data(match_id, judge_name=None, db=None):
         "best_debater": best,
         "sides": sides,
         "missing_sides": missing,
+        "ranking": ranking,
         "config": SCORE_CONFIG,
     }

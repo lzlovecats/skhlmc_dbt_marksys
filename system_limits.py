@@ -92,6 +92,9 @@ EXPORT_MAX_BYTES = _limit("EXPORT_MAX_BYTES", 5 * MIB, minimum=KIB, maximum=5 * 
 OPEN_DB_CACHE_TTL_SECONDS = _limit("OPEN_DB_CACHE_TTL_SECONDS", 60, minimum=1, maximum=3_600, group="api", description="Public topic-bank memory-cache TTL")
 OPEN_DB_STALE_REVALIDATE_SECONDS = _limit("OPEN_DB_STALE_REVALIDATE_SECONDS", 300, minimum=1, maximum=86_400, group="api", description="Public topic-bank stale revalidation window")
 ADMIN_SESSION_TTL_SECONDS = _limit("ADMIN_SESSION_TTL_SECONDS", 4 * 60 * 60, minimum=60, maximum=24 * 60 * 60, group="api", description="Developer/admin session TTL")
+JUDGING_SESSION_TTL_SECONDS = _limit("JUDGING_SESSION_TTL_SECONDS", 12 * 60 * 60, minimum=15 * 60, maximum=24 * 60 * 60, group="api", description="Match-scoped judging session TTL")
+JUDGING_SESSION_CLOCK_SKEW_SECONDS = _limit("JUDGING_SESSION_CLOCK_SKEW_SECONDS", 60, minimum=0, maximum=300, group="api", description="Allowed future clock skew in judging session tokens")
+JUDGING_SESSION_TOKEN_MAX_CHARS = _limit("JUDGING_SESSION_TOKEN_MAX_CHARS", 2_048, minimum=256, maximum=4_096, group="api", description="Judging session token characters")
 MAX_ADMIN_CONSOLE_SESSIONS = _limit("MAX_ADMIN_CONSOLE_SESSIONS", 256, minimum=16, maximum=256, group="api", description="In-memory privileged console sessions")
 ADMIN_RECENT_LOGIN_LIMIT = _limit("ADMIN_RECENT_LOGIN_LIMIT", 50, minimum=1, maximum=50, group="api", description="Recent logins returned on admin overview")
 SQL_RESULT_MAX_ROWS = _limit("SQL_RESULT_MAX_ROWS", 500, minimum=1, maximum=500, group="api", description="SQL-console result rows")
@@ -184,6 +187,11 @@ TTS_REVIEW_CONCURRENCY = _limit("TTS_REVIEW_CONCURRENCY", 2, minimum=1, maximum=
 AI_COACH_MAX_AUDIO_BYTES = _limit("AI_COACH_MAX_AUDIO_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MIB, group="ai", description="AI Coach decoded audio bytes")
 AI_COACH_MAX_AUDIO_SECONDS = _limit("AI_COACH_MAX_AUDIO_SECONDS", 60, minimum=1, maximum=60, group="ai", description="AI Coach browser recording duration")
 AI_COACH_CONCURRENCY = _limit("AI_COACH_CONCURRENCY", 3, minimum=1, maximum=3, group="ai", description="Concurrent AI Coach requests")
+KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES = _limit("KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES", 12 * MIB, minimum=MIB, maximum=12 * MIB, group="ai", description="Temporary full-match kiosk recording bytes")
+KIOSK_MATCH_REVIEW_MAX_SECONDS = _limit("KIOSK_MATCH_REVIEW_MAX_SECONDS", 75 * 60, minimum=10 * 60, maximum=75 * 60, group="ai", description="Full-match kiosk recording duration")
+KIOSK_MATCH_REVIEW_CONCURRENCY = _limit("KIOSK_MATCH_REVIEW_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent full-match audio reviews")
+KIOSK_MATCH_REVIEW_DAILY_LIMIT = _limit("KIOSK_MATCH_REVIEW_DAILY_LIMIT", 5, minimum=1, maximum=10, group="ai", description="Kiosk full-match recording upload intents per HK day")
+KIOSK_MATCH_REVIEW_MONTHLY_LIMIT = _limit("KIOSK_MATCH_REVIEW_MONTHLY_LIMIT", 100, minimum=1, maximum=100, group="ai", description="System full-match recording upload intents per HK month")
 PREPARE_LIVE_USER_HOURLY_LIMIT = _limit("PREPARE_LIVE_USER_HOURLY_LIMIT", 1, minimum=1, maximum=1, group="ai", description="Prepare-live calls per user/hour")
 PREPARE_LIVE_USER_DAILY_LIMIT = _limit("PREPARE_LIVE_USER_DAILY_LIMIT", 3, minimum=1, maximum=3, group="ai", description="Prepare-live calls per user/day")
 PREPARE_LIVE_USAGE_RETENTION_DAYS = _limit("PREPARE_LIVE_USAGE_RETENTION_DAYS", 2, minimum=1, maximum=2, group="ai", description="Prepare-live quota-row retention")
@@ -292,6 +300,13 @@ LOGIN_RECORD_RETENTION_DAYS = _limit("LOGIN_RECORD_RETENTION_DAYS", 400, minimum
 NOTIFICATION_READ_RETENTION_DAYS = _limit("NOTIFICATION_READ_RETENTION_DAYS", 400, minimum=31, maximum=400, group="database", description="Notification-read retention")
 AI_USAGE_RETENTION_DAYS = _limit("AI_USAGE_RETENTION_DAYS", 400, minimum=90, maximum=400, group="database", description="AI usage telemetry retention")
 COMMITTEE_COOKIE_MAX_AGE_DAYS = _limit("COMMITTEE_COOKIE_MAX_AGE_DAYS", 180, minimum=1, maximum=400, group="database", description="Committee login cookie lifetime")
+COMMITTEE_SESSION_MAX_AGE_SECONDS = COMMITTEE_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60
+COMMITTEE_SESSION_CLOCK_SKEW_SECONDS = _limit("COMMITTEE_SESSION_CLOCK_SKEW_SECONDS", 60, minimum=0, maximum=300, group="runtime", description="Allowed future clock skew in committee session tokens")
+COMMITTEE_SESSION_TOKEN_MAX_CHARS = _limit("COMMITTEE_SESSION_TOKEN_MAX_CHARS", 2_048, minimum=256, maximum=4_096, group="runtime", description="Committee session token characters")
+LOGIN_RATE_WINDOW_SECONDS = _limit("LOGIN_RATE_WINDOW_SECONDS", 5 * 60, minimum=60, maximum=60 * 60, group="runtime", description="In-process login attempt rolling window")
+LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT = _limit("LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT", 8, minimum=1, maximum=30, group="runtime", description="Login attempts per client and account per window")
+LOGIN_RATE_MAX_PER_CLIENT = _limit("LOGIN_RATE_MAX_PER_CLIENT", 30, minimum=1, maximum=100, group="runtime", description="Login attempts per client across accounts per window")
+LOGIN_RATE_MAX_GLOBAL = _limit("LOGIN_RATE_MAX_GLOBAL", 120, minimum=10, maximum=500, group="runtime", description="Login attempts across this worker per window")
 HOME_ACTIVE_MEMBER_WINDOW_HOURS = _limit("HOME_ACTIVE_MEMBER_WINDOW_HOURS", 24, minimum=1, maximum=7 * 24, group="database", description="Home active-member window")
 LLM_SUBMISSION_RATE_WINDOW_HOURS = _limit("LLM_SUBMISSION_RATE_WINDOW_HOURS", 24, minimum=1, maximum=7 * 24, group="database", description="LLM per-user quota window")
 OPENROUTER_CREDIT_TIMEOUT_SECONDS = _limit("OPENROUTER_CREDIT_TIMEOUT_SECONDS", 12, minimum=1, maximum=60, group="ai", description="OpenRouter credit lookup timeout")
@@ -302,6 +317,14 @@ SCHEDULE_MAX_TEAM_NAME_CHARS = _limit("SCHEDULE_MAX_TEAM_NAME_CHARS", 100, minim
 
 
 def _validate_relationships() -> None:
+    if not (
+        LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT
+        <= LOGIN_RATE_MAX_PER_CLIENT
+        <= LOGIN_RATE_MAX_GLOBAL
+    ):
+        raise RuntimeError(
+            "Login limits must satisfy per-client-account <= per-client <= global"
+        )
     if not BANDWIDTH_WARN_BYTES < BANDWIDTH_STOP_LIVE_BYTES < BANDWIDTH_ESSENTIAL_ONLY_BYTES:
         raise RuntimeError(
             "Bandwidth limits must satisfy BANDWIDTH_WARN_BYTES < "

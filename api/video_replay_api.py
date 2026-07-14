@@ -1,6 +1,7 @@
 """Committee-authenticated JSON endpoints for the HTML replay page."""
 
 from fastapi import APIRouter, Request
+from api.access import require_page_user
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from pydantic import BaseModel, Field
 
@@ -29,8 +30,8 @@ class ChaptersBody(BaseModel):
 
 
 def _context(request: Request):
-    from deploy.proxy import _require_committee_user, get_vote_db
-    return _require_committee_user(request), get_vote_db()
+    from deploy.proxy import get_vote_db
+    return require_page_user(request, "video_replay"), get_vote_db()
 
 
 @router.get("/data")

@@ -16,7 +16,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ai_model_config import AI_MODEL_OPTIONS, DEFAULT_AI_MODEL
+from ai_model_config import (
+    AI_MODEL_OPTIONS,
+    CUSTOM_LLM_OPTION,
+    DEFAULT_AI_MODEL,
+    resolve_interactive_model_settings,
+)
+from api.access import require_page_user
 from core.media_probe import MediaProbeError, probe_audio
 from prompts import (
     FACT_CHECK_SYSTEM_PROMPT, QA_REVIEW_SYSTEM_PROMPT, SPEECH_REVIEW_SYSTEM_PROMPT,
@@ -127,16 +133,43 @@ def consume_live_brief(brief_id, user_id):
     return str(row[0]) if row else ""
 
 def _context(request):
-    from deploy.proxy import _require_committee_user
-    return _require_committee_user(request)
+    return require_page_user(request, "ai_coach")
+
+
+def _runtime_model_settings(db):
+    """Return the effective provider allowlist and AI Coach default model."""
+    try:
+        from core.config_store import get_configs
+
+        stored = get_configs(db, ("ai_enabled_providers", "ai_default_model"))
+    except Exception:
+        stored = {}
+    return resolve_interactive_model_settings(
+        stored.get("ai_enabled_providers"), stored.get("ai_default_model"),
+    )
+
+
+def _requested_model_label(body, runtime_default):
+    """Use the runtime default when an API client omitted ``model_label``."""
+    fields_set = getattr(body, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(body, "__fields_set__", set())
+    return body.model_label if "model_label" in fields_set else runtime_default
+
+
+def _require_enabled_model(label, config, enabled_providers):
+    if label in AI_MODEL_OPTIONS and config.get("provider") not in enabled_providers:
+        raise HTTPException(400, "所選 AI Provider 已由開發者停用")
 
 
 def _config(label, db=None):
-    if label == "自家辯論 LLM":
+    if label == CUSTOM_LLM_OPTION["label"]:
         from deploy.proxy import _get_proxy_secret
-        base_url = _get_proxy_secret("CUSTOM_LLM_BASE_URL").strip().rstrip("/")
-        model = _get_proxy_secret("CUSTOM_LLM_MODEL").strip()
-        api_key = _get_proxy_secret("CUSTOM_LLM_API_KEY").strip()
+        base_url = _get_proxy_secret(
+            CUSTOM_LLM_OPTION["base_url_secret"]
+        ).strip().rstrip("/")
+        model = _get_proxy_secret(CUSTOM_LLM_OPTION["model_secret"]).strip()
+        api_key = _get_proxy_secret(CUSTOM_LLM_OPTION["api_key_secret"]).strip()
         if not base_url or not model or not api_key:
             raise HTTPException(503, "自家LLM尚未完成設定")
         if db is not None:
@@ -156,16 +189,29 @@ def _config(label, db=None):
                 raise HTTPException(503, "自家LLM模型registry尚未由正式migration啟用")
             registered = db.query(
                 f"""SELECT 1 FROM {TABLE_AI_MODEL_VERSIONS}
-                    WHERE model_id=:model AND model_type='llm' AND status='deployable'""",
-                {"model": model},
+                    WHERE model_id=:model AND model_type=:type AND status='deployable'""",
+                {
+                    "model": model,
+                    "type": CUSTOM_LLM_OPTION["registry_model_type"],
+                },
             )
             if registered.empty:
                 raise HTTPException(503, "自家LLM未通過deployable評估gate")
-        return {"provider":"custom","model":model,"base_url":base_url,
-                "api_key":"CUSTOM_LLM_API_KEY","supports_audio":False,"supports_web_search":False,
-                "input_price_per_million":0,"output_price_per_million":0,"web_search_price_per_call":0,
-                "pricing_note":"自家OpenAI-compatible endpoint。","paid_rate_note":"成本由本地／GPU服務承擔。",
-                "selection_label":"自家模型","pricing_label":"自家","is_premium":False}
+        config = {
+            key: CUSTOM_LLM_OPTION[key]
+            for key in (
+                "provider", "supports_audio", "supports_web_search",
+                "input_price_per_million", "output_price_per_million",
+                "web_search_price_per_call", "pricing_note", "paid_rate_note",
+                "selection_label", "pricing_label", "is_premium",
+            )
+        }
+        config.update({
+            "model": model,
+            "base_url": base_url,
+            "api_key": CUSTOM_LLM_OPTION["api_key_secret"],
+        })
+        return config
     if label not in AI_MODEL_OPTIONS:
         raise HTTPException(400, "不支援的 AI 模型")
     return AI_MODEL_OPTIONS[label]
@@ -368,17 +414,20 @@ def data(request: Request):
     balance=db.query("SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) balance FROM ai_fund_transactions WHERE status='confirmed'")
     from core.config_store import get_config
     low_balance_hkd = float(get_config(db, "ai_fund_low_balance_hkd", 100) or 100)
+    enabled_providers, runtime_default_model = _runtime_model_settings(db)
     models=[]
     for label,item in AI_MODEL_OPTIONS.items():
+        if item["provider"] not in enabled_providers:
+            continue
         key_name="OPENROUTER_API_KEY" if item["provider"]=="openrouter" else "GEMINI_API_KEY"
         estimates={f:_estimate(f,item) for f in ("strategy","speech_review","web_research","fact_check")}
         estimates["speech_review_audio"]=_estimate("speech_review",item,has_audio=True)
         models.append({"label":label,"selection_label":item.get("selection_label",""),"supports_audio":item["supports_audio"],"supports_web_search":item["supports_web_search"],"note":f"{item['pricing_note']} {item.get('paid_rate_note','')}".strip(),"pricing_label":item.get("pricing_label",""),"is_premium":bool(item.get("is_premium")),"api_key_name":key_name,"available":bool(_get_proxy_secret(key_name)),"estimates":estimates})
     try:
-        custom = _config("自家辯論 LLM", db)
-        models.append({"label":"自家辯論 LLM","selection_label":"自家模型","supports_audio":False,
-            "supports_web_search":False,"note":custom["pricing_note"],"pricing_label":"自家",
-            "is_premium":False,"api_key_name":"CUSTOM_LLM_API_KEY","available":True,
+        custom = _config(CUSTOM_LLM_OPTION["label"], db)
+        models.append({"label":CUSTOM_LLM_OPTION["label"],"selection_label":custom["selection_label"],"supports_audio":custom["supports_audio"],
+            "supports_web_search":custom["supports_web_search"],"note":custom["pricing_note"],"pricing_label":custom["pricing_label"],
+            "is_premium":custom["is_premium"],"api_key_name":CUSTOM_LLM_OPTION["api_key_secret"],"available":True,
             "estimates":{feature:{"usd":0,"hkd":0} for feature in ("strategy","speech_review","web_research","fact_check","speech_review_audio")}})
     except HTTPException:
         pass
@@ -398,7 +447,7 @@ def data(request: Request):
         and int(bandwidth.get("total_bytes") or 0) < int(bandwidth.get("stop_live_bytes") or 0)
     )
     payload = {
-        "models": models, "default_model": DEFAULT_AI_MODEL,
+        "models": models, "default_model": runtime_default_model,
         "topics": [dict(x) for x in topics.to_dict("records")],
         "matches": [dict(x) for x in matches.to_dict("records")],
         "formats": {name: get_debate_timer_config(name) for name in DEBATE_FORMATS},
@@ -455,15 +504,17 @@ async def run(body: CoachRequest, request: Request):
     budget_error = _bandwidth_essential_gate_error()
     if budget_error: raise HTTPException(429, budget_error)
     db = get_vote_db()
-    config = _config(body.model_label, db)
-    model_label = body.model_label
+    enabled_providers, runtime_default_model = _runtime_model_settings(db)
+    model_label = _requested_model_label(body, runtime_default_model)
+    config = _config(model_label, db)
+    _require_enabled_model(model_label, config, enabled_providers)
     if (
         body.feature in ("web_research", "fact_check")
         and not config.get("supports_web_search")
     ):
         # Never present an ungrounded custom-model answer as web research.
-        config = AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
-        model_label = DEFAULT_AI_MODEL
+        config = AI_MODEL_OPTIONS[runtime_default_model]
+        model_label = runtime_default_model
     key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")
     if not _get_proxy_secret(key_name): raise HTTPException(503,f"未設定 {key_name}")
     system, user = _message(body, db)
@@ -479,7 +530,7 @@ async def run(body: CoachRequest, request: Request):
         result, actual = await _generate(config, system, user, body, user_id)
     except HTTPException as exc:
         if config.get("provider") == "custom":
-            fallback = AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
+            fallback = AI_MODEL_OPTIONS[runtime_default_model]
             try:
                 result, actual = await _generate(
                     fallback, system, user, body, user_id,
@@ -491,14 +542,14 @@ async def run(body: CoachRequest, request: Request):
                     else AI_PROVIDER_PUBLIC_ERROR
                 )
                 _usage(
-                    db, user_id, body.feature, DEFAULT_AI_MODEL, fallback,
+                    db, user_id, body.feature, runtime_default_model, fallback,
                     False, public_error,
                 )
                 raise HTTPException(
                     fallback_exc.status_code, public_error,
                 ) from fallback_exc
             config = fallback
-            model_label = DEFAULT_AI_MODEL
+            model_label = runtime_default_model
         else:
             _usage(db, user_id, body.feature, model_label, config, False, exc.detail)
             raise
@@ -522,15 +573,17 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     budget_error=proxy._bandwidth_essential_gate_error()
     if budget_error: raise HTTPException(429,budget_error)
     db = proxy.get_vote_db()
-    config = _config(body.model_label, db)
+    enabled_providers, runtime_default_model = _runtime_model_settings(db)
+    model_label = _requested_model_label(body, runtime_default_model)
+    config = _config(model_label, db)
+    _require_enabled_model(model_label, config, enabled_providers)
     quota_error=proxy._solo_live_quota_error(user_id,body.mode)
     if quota_error: raise HTTPException(429,quota_error)
     prepare_error=_reserve_prepare_live(db,user_id)
     if prepare_error: raise HTTPException(429,prepare_error)
-    model_label=body.model_label
     if not config.get("supports_web_search"):
-        config=AI_MODEL_OPTIONS[DEFAULT_AI_MODEL]
-        model_label=DEFAULT_AI_MODEL
+        config=AI_MODEL_OPTIONS[runtime_default_model]
+        model_label=runtime_default_model
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"
     grounded_body=CoachRequest(feature="web_research",model_label=model_label,topic=body.topic,research_need=need)
     system,user=_message(grounded_body)

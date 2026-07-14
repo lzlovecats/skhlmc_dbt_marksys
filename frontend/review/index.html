@@ -268,6 +268,11 @@
             名次總和: item.rank_sum,
             平均得分: item.average_score,
           }));
+          if (best.is_tie) {
+            $("best").innerHTML =
+              `<p class="notice warn">最佳辯論員名次總和及平均分仍然相同，須由評判團商議決定：<strong>${best.tied_roles.map(esc).join("、")}</strong>。</p>${ranking.length ? `<details><summary>查看最佳辯論員排名</summary>${table(ranking)}</details>` : ""}`;
+            return;
+          }
           $("best").innerHTML =
             `<p class="best-summary">本場最佳辯論員：<strong>${esc(best.role)}</strong>（名次總和：${esc(best.rank_sum)} ｜ 平均分：${esc(best.average_score)}）</p>${ranking.length ? `<details><summary>查看最佳辯論員排名</summary>${table(ranking)}</details>` : ""}`;
         }

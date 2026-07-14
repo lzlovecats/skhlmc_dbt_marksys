@@ -35,7 +35,7 @@ def _referenced_keys(db) -> set[str]:
 def _issued_intents(db) -> dict[str, dict]:
     db.execute(CREATE_R2_UPLOAD_INTENTS)
     rows = db.query("""SELECT intent_id,object_keys,created_at
-        FROM r2_upload_intents WHERE status='issued'""")
+        FROM r2_upload_intents WHERE status IN ('issued','processing')""")
     intents: dict[str, dict] = {}
     for _, row in rows.iterrows():
         intent_id = str(row["intent_id"])

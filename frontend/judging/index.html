@@ -258,13 +258,13 @@
               data-side="正方"
               type="button"
               id="tabPro"
-            ></button
+            >正方</button
             ><button
               class="tab"
               data-side="反方"
               type="button"
               id="tabCon"
-            ></button>
+            >反方</button>
           </div>
           <section id="panelPro" class="panel active"></section>
           <section id="panelCon" class="panel"></section>
@@ -332,7 +332,8 @@
             final: null,
           };
         let speech = [],
-          free = [];
+          free = [],
+          stateRequestId = 0;
         const roles = ["主辯", "一副", "二副", "結辯"];
         const esc = (v) =>
           String(v ?? "").replace(
@@ -538,11 +539,18 @@
         }
         async function save(side, silent = false) {
           if (!S.judge) throw Error("請輸入評判姓名！");
+          const expectedJudge = S.judge,
+            expectedStateRequestId = stateRequestId;
           const out = await api("/api/judging/draft", {
-            judge_name: S.judge,
+            judge_name: expectedJudge,
             side,
             score_data: data(side),
           });
+          if (
+            expectedJudge !== S.judge ||
+            expectedStateRequestId !== stateRequestId
+          )
+            return false;
           S.drafts[side] = out.score_data;
           S.saved[side] = true;
           S.savedAt[side] = out.score_data.last_saved || "";
@@ -557,13 +565,19 @@
                 : `✅ 已暫存${side}評分`,
             );
           }
+          return true;
         }
-        async function state() {
+        async function state(expectedJudge = S.judge) {
+          const requestId = ++stateRequestId;
           const d = await api(
-            "/api/judging/state?judge_name=" + encodeURIComponent(S.judge),
+            "/api/judging/state?judge_name=" +
+              encodeURIComponent(expectedJudge),
             null,
             "GET",
           );
+          if (requestId !== stateRequestId || expectedJudge !== S.judge)
+            return false;
+          if (d.submitted) throw Error("你已提交過評分！無法修改評分！");
           S.match = d.match;
           S.drafts = d.drafts;
           S.saved = { 正方: !!d.drafts.正方, 反方: !!d.drafts.反方 };
@@ -571,8 +585,8 @@
             正方: d.drafts.正方?.last_saved || "",
             反方: d.drafts.反方?.last_saved || "",
           };
-          if (d.submitted) throw Error("你已提交過評分！無法修改評分！");
           render();
+          return true;
         }
         function render() {
           $("matchTitle").textContent = `已進入場次：${S.match.match_id}`;
@@ -670,19 +684,23 @@
           }
         };
         $("judge").onchange = async () => {
-          S.judge = $("judge").value.trim();
+          const requestedJudge = $("judge").value.trim();
+          S.judge = requestedJudge;
           if (!S.judge) {
+            stateRequestId += 1;
+            busy(false);
             render();
             return;
           }
           busy(true);
+          const requestId = stateRequestId + 1;
           try {
-            await state();
-            toast("☁️ 已檢查雲端暫存");
+            if (await state(requestedJudge)) toast("☁️ 已檢查雲端暫存");
           } catch (e) {
-            msg("submitMsg", e.message);
+            if (requestId === stateRequestId && requestedJudge === S.judge)
+              msg("submitMsg", e.message);
           } finally {
-            busy(false);
+            if (requestId === stateRequestId) busy(false);
           }
         };
         document.addEventListener("click", (e) => {

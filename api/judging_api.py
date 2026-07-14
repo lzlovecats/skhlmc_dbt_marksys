@@ -7,6 +7,8 @@ requested match with that signed scope before passing data to the domain layer.
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from system_limits import JUDGING_SESSION_TTL_SECONDS
+
 router = APIRouter(prefix="/api/judging", tags=["judging"])
 COOKIE_NAME = "judging_match"
 
@@ -70,22 +72,43 @@ def scoring_config():
 
 
 @router.post("/login")
-def login(body: LoginBody, response: Response):
+def login(body: LoginBody, request: Request, response: Response):
+    from core.auth_logic import login_rate_limit_retry_after
     from core.judging_logic import verify_match_access
     from deploy.proxy import _sign_judging_token
-    result = verify_match_access(body.match_id, body.password, db=_db())
+    match_id = str(body.match_id or "").strip()
+    retry_after = login_rate_limit_retry_after(request, f"judging:{match_id}")
+    if retry_after is not None:
+        raise HTTPException(
+            429,
+            "登入嘗試次數過多，請稍後再試。",
+            headers={"Retry-After": str(retry_after)},
+        )
+    result = verify_match_access(match_id, body.password, db=_db())
     if not result["ok"]:
         raise HTTPException(401, result["message"])
-    token = _sign_judging_token(body.match_id)
+    token = _sign_judging_token(
+        match_id, credential_hash=result["access_code_hash"],
+    )
     if not token:
         raise HTTPException(503, "登入服務暫時未能使用。")
-    response.set_cookie(COOKIE_NAME, token, path="/", samesite="lax", httponly=True)
-    return {"ok": True, "match_id": body.match_id}
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=JUDGING_SESSION_TTL_SECONDS,
+        path="/",
+        samesite="lax",
+        httponly=True,
+        secure=True,
+    )
+    return {"ok": True, "match_id": match_id}
 
 
 @router.post("/logout")
 def logout(response: Response):
-    response.delete_cookie(COOKIE_NAME, path="/")
+    response.delete_cookie(
+        COOKIE_NAME, path="/", samesite="lax", httponly=True, secure=True,
+    )
     return {"ok": True}
 
 

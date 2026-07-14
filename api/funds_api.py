@@ -4,6 +4,7 @@ import httpx
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from api.access import require_page_user
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_ROWS, csv_response, require_row_limit
 from system_limits import OPENROUTER_CREDIT_TIMEOUT_SECONDS
@@ -26,8 +27,8 @@ def _csv_response(filename, headers, rows):
 
 
 def _context(request):
-    from deploy.proxy import _require_committee_user, get_vote_db
-    return _require_committee_user(request), get_vote_db()
+    from deploy.proxy import get_vote_db
+    return require_page_user(request, "funds"), get_vote_db()
 
 
 def _lateness_context(request, manager=False):

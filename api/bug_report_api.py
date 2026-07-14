@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
+from api.access import require_page_user
 
 router = APIRouter(prefix="/api/bug-report", tags=["bug-report"])
 
@@ -16,8 +17,8 @@ class BugReportBody(BaseModel):
 
 
 def _context(request: Request):
-    from deploy.proxy import _require_committee_user, get_vote_db
-    return _require_committee_user(request), get_vote_db()
+    from deploy.proxy import get_vote_db
+    return require_page_user(request, "bug_report"), get_vote_db()
 
 
 @router.get("/data")

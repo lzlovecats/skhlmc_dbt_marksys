@@ -6,6 +6,8 @@ This file is the single source of truth for all table schemas.
 
 from sqlalchemy import text
 
+from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
+
 TABLE_ACCOUNTS = "accounts"
 TABLE_MATCHES = "matches"
 TABLE_TOPICS = "topics"
@@ -838,7 +840,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
@@ -935,6 +937,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_BUG_REPORTS} (
 
 # View: COMMITTEE_VOTE_ACTIVITY
 # Canonical source for committee participation metrics used by the API.
+# Both eligible motions and cast-ballot counts start at each account's
+# active_since date; system/service accounts are never committee members.
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
 DROP VIEW IF EXISTS {VIEW_COMMITTEE_VOTE_ACTIVITY};
 CREATE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
@@ -959,17 +963,31 @@ all_events AS (
     UNION ALL
     SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
 ),
+combined_ballots AS (
+    SELECT
+        b.user_id,
+        b.vote_choice,
+        tv.created_at
+    FROM {TABLE_TOPIC_VOTE_BALLOTS} b
+    JOIN {TABLE_TOPIC_VOTES} tv ON tv.topic_text = b.topic_text
+    UNION ALL
+    SELECT
+        b.user_id,
+        b.vote_choice,
+        tdv.created_at
+    FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
+    JOIN {TABLE_TOPIC_REMOVAL_VOTES} tdv ON tdv.topic_text = b.topic_text
+),
 ballot_summary AS (
     SELECT
-        user_id,
-        COUNT(*) AS total_ballots,
-        SUM(CASE WHEN vote_choice = 'agree' THEN 1 ELSE 0 END) AS agree_ballots
-    FROM (
-        SELECT user_id, vote_choice FROM {TABLE_TOPIC_VOTE_BALLOTS}
-        UNION ALL
-        SELECT user_id, vote_choice FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
-    ) combined_ballots
-    GROUP BY user_id
+        a.user_id,
+        COUNT(cb.vote_choice) AS total_ballots,
+        COUNT(cb.vote_choice) FILTER (WHERE cb.vote_choice = 'agree') AS agree_ballots
+    FROM {TABLE_ACCOUNTS} a
+    LEFT JOIN combined_ballots cb
+      ON cb.user_id = a.user_id
+     AND (a.active_since IS NULL OR cb.created_at::date >= a.active_since)
+    GROUP BY a.user_id
 ),
 base_stats AS (
     SELECT
@@ -1030,7 +1048,8 @@ base_stats AS (
         COALESCE(bs.agree_ballots, 0) AS agree_ballots
     FROM {TABLE_ACCOUNTS} a
     LEFT JOIN ballot_summary bs ON bs.user_id = a.user_id
-    WHERE a.user_id NOT IN ('admin', 'developer', '')
+    WHERE LOWER(a.user_id) NOT IN ({sql_account_id_literals(NON_MEMBER_ACCOUNT_DB_KEYS)})
+      AND a.user_id != ''
       AND COALESCE(a.account_disabled, FALSE) = FALSE
 )
 SELECT

@@ -355,8 +355,8 @@ def delete_intent_objects(db, intent_id: str, object_keys) -> bool:
         except Exception:
             deleted = False
     if not deleted:
-        # Keep status=issued so storage accounting remains conservative and the
-        # orphan sweeper can retry every recorded pending/final key.
+        # Keep the current open status (issued/processing) so storage accounting
+        # remains conservative and the orphan sweeper can retry every key.
         return False
     try:
         mark_upload_intent_deleted(db, str(intent_id or ""))
