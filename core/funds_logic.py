@@ -7,7 +7,11 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
-from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
+from ai_model_config import (
+    NON_MANUAL_DEFAULT_AI_MODEL,
+    build_tts_usage_metadata,
+    get_tts_provider_config,
+)
 from core.config_store import get_config, get_configs, set_configs
 from core.vote_logic import _resolve_db
 from schema import (
@@ -26,7 +30,9 @@ AI_FUND_TARGET_DEFAULT = 500.0
 AI_FUND_LOW_BALANCE_DEFAULT = 100.0
 AI_FUND_PAYMENT_DEFAULT = "請按賽會指示付款，並提交交易編號供 AI基金管理員確認。"
 AI_TRANSACTION_TYPES = {"member_deposit", "provider_topup", "provider_refund", "member_refund", "adjustment"}
-AI_PROVIDERS = {"openrouter", "gemini", "openai", "custom", "general", "other"}
+AI_PROVIDERS = {
+    "openrouter", "gemini", "openai", "azure", "custom", "general", "other",
+}
 AI_PAYMENT_METHODS = {"FPS", "現金", "Alipay", "PayMe", "其他"}
 AI_TRANSACTION_LABELS = {
     "member_deposit": "成員入數", "provider_topup": "AI provider 充值 / 帳單",
@@ -35,7 +41,8 @@ AI_TRANSACTION_LABELS = {
 }
 AI_PROVIDER_LABELS = {
     "general": "整體AI基金", "gemini": "Gemini", "openrouter": "OpenRouter",
-    "openai": "GPT", "custom": "自家模型", "other": "其他",
+    "openai": "GPT", "azure": "Azure Speech", "custom": "自家模型",
+    "other": "其他",
 }
 AI_FEATURE_LABELS = {
     "speech_review": "練習發言", "strategy": "主線策劃", "web_research": "搵料易",
@@ -43,16 +50,18 @@ AI_FEATURE_LABELS = {
     "full_mock_live": "打完整Mock", "vote_review": "辯題審查",
     "vote_analysis": "辯題庫 / 往績分析", "vote_discussion": "委員討論回應",
     "tts_review": "AI訓練·錄音檢查", "tts_script_analysis": "AI訓練·句庫分析",
-    "llm_review": "AI訓練·文字審查",
-    "kiosk_match_review": "Kiosk AI全場評判",
+    "llm_review": "AI訓練·文字審查", "tts": "粵語語音合成",
+    "kiosk_match_review": "AI評判易（Kiosk）",
+    "kiosk_match_review_tts": "AI評判易·粵語讀出",
 }
 AI_USAGE_FEATURES = (
     "speech_review", "strategy", "web_research", "fact_check",
     "free_debate_live", "full_mock_live", "vote_review",
     "vote_analysis", "vote_discussion", "tts_review",
     "tts_script_analysis", "llm_review",
-    "kiosk_match_review",
+    "kiosk_match_review", "tts", "kiosk_match_review_tts",
 )
+TTS_USAGE_FEATURES = frozenset(("tts", "kiosk_match_review_tts"))
 LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
 _AI_PRUNE_LOCK = threading.Lock()
 _AI_LAST_PRUNE = None
@@ -73,6 +82,13 @@ def _float(value, default=0.0):
     except (TypeError, ValueError):
         return default
     return number if math.isfinite(number) else default
+
+
+def _nonnegative_int(value, default=0):
+    try:
+        return max(0, int(value if value is not None else default))
+    except (TypeError, ValueError, OverflowError):
+        return max(0, int(default))
 
 
 def _rows(frame):
@@ -325,12 +341,19 @@ def prune_ai_usage(db):
 
 
 def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
-    """Record one AI call using actual provider token metadata."""
+    """Record one provider call using actual or explicitly estimated metadata.
+
+    Failed calls normally remain zero-cost, preserving the legacy behaviour.
+    When a provider may bill an unsuccessful attempt, the caller can pass its
+    known usage metadata and it will be retained instead of silently discarded.
+    ``operation_id`` and ``operation_stage`` correlate multiple provider calls
+    without persisting prompts, transcripts or synthesized text.
+    """
     if feature not in AI_USAGE_FEATURES:
         raise ValueError("不支援的 AI 功能類型。")
     db = _resolve_db(db)
     prune_ai_usage(db)
-    usage = usage or {}
+    usage = usage if isinstance(usage, dict) else {}
     model_label = str(usage.get("model_label") or NON_MANUAL_DEFAULT_AI_MODEL)
     provider = str(usage.get("provider") or "gemini").lower()
     if provider not in AI_PROVIDERS:
@@ -340,13 +363,20 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
         "feature": feature,
         "model": model_label,
         "provider": provider,
-        "usd": _float(usage.get("estimated_cost_usd")) if success else 0,
-        "hkd": _float(usage.get("estimated_cost_hkd")) if success else 0,
-        "input": int(usage.get("input_tokens") or 0) if success else 0,
-        "output": int(usage.get("output_tokens") or 0) if success else 0,
-        "audio": int(usage.get("audio_tokens") or 0) if success else 0,
-        "search": int(usage.get("search_calls") or 0) if success else 0,
-        "source": str(usage.get("cost_source") or "estimate") if success else "failed",
+        "usd": max(0.0, _float(usage.get("estimated_cost_usd"))),
+        "hkd": max(0.0, _float(usage.get("estimated_cost_hkd"))),
+        "input": _nonnegative_int(usage.get("input_tokens")),
+        "output": _nonnegative_int(usage.get("output_tokens")),
+        "audio": _nonnegative_int(usage.get("audio_tokens")),
+        "characters": _nonnegative_int(usage.get("billable_characters")),
+        "search": _nonnegative_int(usage.get("search_calls")),
+        "operation_id": str(usage.get("operation_id") or "").strip()[:200] or None,
+        "operation_stage": (
+            str(usage.get("operation_stage") or "").strip()[:80] or None
+        ),
+        "source": str(
+            usage.get("cost_source") or ("estimate" if success else "failed")
+        )[:120],
         "status": "success" if success else "failed",
         "error": str(error_message or "")[:1000],
         "now": _now(),
@@ -354,11 +384,69 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
     db.execute(
         f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}(
             user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,
-            input_tokens,output_tokens,audio_tokens,search_calls,cost_source,status,error_message,created_at
+            input_tokens,output_tokens,audio_tokens,billable_characters,search_calls,
+            operation_id,operation_stage,cost_source,status,error_message,created_at
         ) VALUES(
-            :user,:feature,:model,:provider,:usd,:hkd,:input,:output,:audio,:search,:source,:status,:error,:now
+            :user,:feature,:model,:provider,:usd,:hkd,:input,:output,:audio,:characters,
+            :search,:operation_id,:operation_stage,:source,:status,:error,:now
         )""",
         params,
+    )
+
+
+def log_tts_usage(
+    user_id,
+    feature,
+    success,
+    *,
+    provider,
+    text,
+    operation_id,
+    operation_stage="synthesis",
+    model_label="",
+    price_per_million_characters_usd=None,
+    error_message="",
+    db=None,
+):
+    """Log one actual TTS provider attempt without retaining synthesized text.
+
+    Call this once around *each* Azure/custom HTTP attempt, including a failed
+    custom attempt followed by a successful Azure fallback. ``provider`` must be
+    the provider actually called, and ``text`` must be the post-lexicon text sent
+    in that request.  Reuse one ``operation_id`` across fallbacks or across the
+    transcript/judgement/read-out stages of one AI評判易 match.
+    """
+    if feature not in TTS_USAGE_FEATURES:
+        raise ValueError("不支援的 TTS 用量功能類型。")
+    if not str(operation_id or "").strip():
+        raise ValueError("TTS 用量紀錄必須提供 operation_id。")
+    selected, provider_config = get_tts_provider_config(provider)
+    configured_price = price_per_million_characters_usd
+    if configured_price in (None, ""):
+        from core.runtime_secrets import get_secret
+
+        price_secret = str(
+            provider_config.get("price_per_million_characters_secret") or ""
+        )
+        configured_price = get_secret(price_secret, "") if price_secret else ""
+    usage = build_tts_usage_metadata(
+        selected,
+        text,
+        price_per_million_characters_usd=configured_price,
+        model_label=model_label,
+        operation_id=operation_id,
+        operation_stage=operation_stage,
+    )
+    usage["estimated_cost_hkd"] = (
+        float(usage.get("estimated_cost_usd") or 0) * HKD_PER_USD
+    )
+    return log_ai_usage(
+        user_id,
+        feature,
+        success,
+        usage=usage,
+        error_message=error_message,
+        db=db,
     )
 
 
@@ -426,7 +514,7 @@ def ai_data(user_id, db=None):
             COALESCE((
                 SELECT SUM(estimated_cost_hkd)
                 FROM {TABLE_AI_FUND_USAGE_LOGS}
-                WHERE status='success' AND created_at>=:since
+                WHERE created_at>=:since
             ), 0) AS recent_usage
         """,
         {"since": since},
@@ -497,13 +585,23 @@ def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None)
 
 def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
     db = _resolve_db(db)
-    where = "WHERE status='success'" if treasurer else "WHERE status='success' AND user_id=:user"
+    where = "" if treasurer else "WHERE user_id=:user"
     params = {} if treasurer else {"user": user_id}
     paging = " LIMIT :limit OFFSET :offset" if limit is not None else ""
     if limit is not None:
         params.update(limit=max(1, int(limit)), offset=max(0, int(offset)))
     return db.query(f"""SELECT TO_CHAR(created_at,'YYYY-MM') AS "month",user_id,
-        COALESCE(provider,'other') AS provider,feature,model_label,COUNT(*) AS uses,
+        COALESCE(provider,'other') AS provider,feature,model_label,
+        COUNT(*) FILTER (WHERE status='success') AS uses,
+        COUNT(*) AS provider_calls,
+        COUNT(DISTINCT CASE
+            WHEN feature IN ('kiosk_match_review','kiosk_match_review_tts')
+                 AND NULLIF(operation_id,'') IS NOT NULL
+                THEN operation_id
+            WHEN status='success' THEN 'call:' || id::text
+            ELSE NULL
+        END) AS tasks,
+        COALESCE(SUM(billable_characters),0) AS billable_characters,
         ROUND(SUM(estimated_cost_hkd)::numeric,4) AS estimated_cost_hkd
         FROM {TABLE_AI_FUND_USAGE_LOGS} {where}
         GROUP BY TO_CHAR(created_at,'YYYY-MM'),user_id,COALESCE(provider,'other'),feature,model_label
@@ -512,7 +610,7 @@ def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
 
 def ai_usage_summary_count(user_id, treasurer=False, db=None):
     db = _resolve_db(db)
-    where = "WHERE status='success'" if treasurer else "WHERE status='success' AND user_id=:user"
+    where = "" if treasurer else "WHERE user_id=:user"
     params = {} if treasurer else {"user": user_id}
     result = db.query(f"""SELECT COUNT(*) AS n FROM (
         SELECT 1 FROM {TABLE_AI_FUND_USAGE_LOGS} {where}

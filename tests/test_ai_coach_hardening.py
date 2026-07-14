@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from api import admin_console_api, ai_coach_api
 from core import ai_provider, funds_logic, media_probe
+import ai_model_config
 import deploy.proxy as proxy
 import system_limits
 
@@ -775,6 +776,84 @@ def test_gemini_rest_keys_are_headers_never_urls(monkeypatch):
     assert secret not in rag_call["url"]
     assert rag_call["kwargs"]["headers"] == {"x-goog-api-key": secret}
     assert "params" not in rag_call["kwargs"]
+
+
+def test_provider_per_call_generation_overrides_are_bounded(monkeypatch):
+    captured = {"timeouts": [], "payloads": []}
+
+    class _Client:
+        def __init__(self, *, timeout):
+            captured["timeouts"].append(timeout)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def post(_client, _url, **kwargs):
+        captured["payloads"].append(kwargs["json"])
+        return {
+            "candidates": [{
+                "finishReason": "STOP",
+                "content": {"parts": [{"text": "complete"}]},
+            }],
+            "usageMetadata": {},
+        }
+
+    monkeypatch.setattr(ai_provider.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(ai_provider, "post_json_bounded", post)
+
+    result, _usage = asyncio.run(ai_provider.generate_text(
+        {"provider": "gemini", "model": "gemini-test"},
+        "S" * 10,
+        "U" * 10,
+        api_key="key",
+        max_output_tokens=12_345,
+        max_prompt_chars=12,
+        timeout_seconds=45,
+        temperature=None,
+        require_complete=True,
+    ))
+    assert result == "complete"
+    first = captured["payloads"][0]
+    assert first["system_instruction"]["parts"][0]["text"] == "S" * 10
+    assert first["contents"][0]["parts"][0]["text"] == "U" * 2
+    assert first["generationConfig"] == {"maxOutputTokens": 12_345}
+    assert captured["timeouts"][0] == 45
+
+    asyncio.run(ai_provider.generate_text(
+        {"provider": "gemini", "model": "gemini-test"},
+        "S" * 300_000,
+        "U" * 300_000,
+        api_key="key",
+        max_output_tokens=999_999,
+        max_prompt_chars=999_999,
+        timeout_seconds=999_999,
+        temperature=999,
+    ))
+    second = captured["payloads"][1]
+    system_text = second["system_instruction"]["parts"][0]["text"]
+    user_text = second["contents"][0]["parts"][0]["text"]
+    assert len(system_text) + len(user_text) == 250_000
+    assert second["generationConfig"] == {
+        "maxOutputTokens": 65_536,
+        "temperature": 2.0,
+    }
+    assert captured["timeouts"][1] == 300
+
+
+def test_gemini_require_complete_rejects_truncated_text():
+    response = {
+        "candidates": [{
+            "finishReason": "MAX_TOKENS",
+            "content": {"parts": [{"text": "partial transcript"}]},
+        }],
+    }
+
+    assert ai_provider._gemini_text(response) == "partial transcript"
+    with pytest.raises(ValueError, match="incomplete"):
+        ai_provider._gemini_text(response, require_complete=True)
 
 
 @pytest.mark.parametrize("search_calls", [0, 1, 3])
@@ -1582,6 +1661,117 @@ def test_custom_fallback_failure_logs_safe_fallback_failure(monkeypatch):
     assert "gemini-super-secret" not in repr((args, kwargs))
 
 
+def test_custom_strategy_fallback_logs_both_real_attempts_as_one_operation(monkeypatch):
+    ledger = []
+    custom = {
+        "provider": "custom",
+        "model": "school-model",
+        "api_key": "CUSTOM_LLM_API_KEY",
+        "supports_audio": False,
+        "supports_web_search": False,
+        "input_price_per_million": 0,
+        "output_price_per_million": 0,
+    }
+    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
+    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: custom)
+    monkeypatch.setattr(
+        ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user")
+    )
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(
+        ai_coach_api,
+        "_usage",
+        lambda *args, **kwargs: ledger.append((args, kwargs)),
+    )
+    calls = []
+
+    async def provider(config, *_args, **_kwargs):
+        calls.append(config["provider"])
+        if config["provider"] == "custom":
+            raise RuntimeError("custom unavailable")
+        return "fallback ok", {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "audio_tokens": 0,
+            "search_calls": 0,
+            "cost_source": "gemini_usage_metadata",
+        }
+
+    monkeypatch.setattr(ai_provider, "generate_text", provider)
+    body = ai_coach_api.CoachRequest(
+        feature="strategy",
+        model_label="自家辯論 LLM",
+        topic="測試辯題",
+    )
+    response = asyncio.run(ai_coach_api.run(body, _request("US")))
+
+    assert json.loads(response.body)["markdown"] == "fallback ok"
+    assert calls == ["custom", "gemini"]
+    assert [(item[0][4]["provider"], item[0][5]) for item in ledger] == [
+        ("custom", False),
+        ("gemini", True),
+    ]
+    assert [item[1]["operation_stage"] for item in ledger] == [
+        "primary",
+        "fallback",
+    ]
+    operation_ids = {item[1]["operation_id"] for item in ledger}
+    assert len(operation_ids) == 1
+    assert next(iter(operation_ids)).startswith("coach-")
+
+
+def test_custom_local_preflight_failure_does_not_create_phantom_attempt(monkeypatch):
+    ledger = []
+    custom = {
+        "provider": "custom",
+        "model": "school-model",
+        "api_key": "CUSTOM_LLM_API_KEY",
+        "supports_audio": False,
+        "supports_web_search": False,
+    }
+    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
+    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: custom)
+    monkeypatch.setattr(
+        ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user")
+    )
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(proxy, "record_bandwidth_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        ai_coach_api,
+        "probe_audio",
+        lambda *_args, **_kwargs: {"mime": "audio/webm"},
+    )
+    monkeypatch.setattr(
+        ai_coach_api,
+        "_usage",
+        lambda *args, **kwargs: ledger.append((args, kwargs)),
+    )
+
+    async def fallback(config, *_args, **_kwargs):
+        assert config["provider"] == "gemini"
+        return "fallback ok", {}
+
+    monkeypatch.setattr(ai_provider, "generate_text", fallback)
+    body = ai_coach_api.CoachRequest(
+        feature="speech_review",
+        model_label="自家辯論 LLM",
+        topic="測試辯題",
+        audio_base64=base64.b64encode(b"audio").decode("ascii"),
+        audio_duration_seconds=1,
+    )
+    response = asyncio.run(ai_coach_api.run(body, _request("US")))
+
+    assert json.loads(response.body)["markdown"] == "fallback ok"
+    assert len(ledger) == 1
+    assert ledger[0][0][4]["provider"] == "gemini"
+    assert ledger[0][0][5] is True
+    assert ledger[0][1]["operation_stage"] == "fallback"
+
+
 def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     captured = []
     broadcasts = []
@@ -1622,6 +1812,110 @@ def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     assert "params" not in captured[0]["kwargs"]
     assert "2MiB" in room.judgement
     assert broadcasts[-1] == {"type": "judgement", "text": room.judgement}
+
+
+def test_room_judgement_fallback_logs_each_attempt_under_one_operation(monkeypatch):
+    models = ai_model_config.model_slugs_for_feature("room_judgement")[:2]
+    calls = []
+    ledger = []
+    broadcasts = []
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def bounded(_client, url, **_kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            raise proxy.httpx.ReadTimeout("first model timed out")
+        return {
+            "candidates": [
+                {"content": {"parts": [{"text": "建議勝方：正方"}]}}
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 20,
+            },
+        }
+
+    async def broadcast(_room, message):
+        broadcasts.append(message)
+
+    def log(*args, **kwargs):
+        ledger.append((args, kwargs))
+
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(proxy, "post_json_bounded", bounded)
+    monkeypatch.setattr(proxy, "_room_broadcast", broadcast)
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
+    monkeypatch.setattr(proxy, "ROOM_JUDGEMENT_MODELS", models)
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
+    monkeypatch.setattr(funds_logic, "log_ai_usage", log)
+    room = SimpleNamespace(
+        code="ROOM1",
+        created_by="alice",
+        topic="辯題",
+        debate_format="校園隨想",
+        structure="mock",
+        transcript=[{"side": "正方", "text": "內容"}],
+        transcript_revision=7,
+        judgement="",
+        judgement_lock=asyncio.Lock(),
+    )
+
+    asyncio.run(proxy._room_request_judgement(room))
+
+    assert len(calls) == len(ledger) == 2
+    assert room.judgement == "建議勝方：正方"
+    assert [(item[0][1], item[0][2]) for item in ledger] == [
+        ("full_mock_live", False),
+        ("full_mock_live", True),
+    ]
+    usage_rows = [item[1]["usage"] for item in ledger]
+    assert [row["operation_stage"] for row in usage_rows] == [
+        "judgement_attempt_1",
+        "judgement_attempt_2",
+    ]
+    assert len({row["operation_id"] for row in usage_rows}) == 1
+    assert usage_rows[0]["cost_source"] == "provider_attempt_unknown_usage"
+    assert usage_rows[1]["input_tokens"] == 100
+    assert usage_rows[1]["output_tokens"] == 20
+    assert usage_rows[1]["estimated_cost_usd"] > 0
+    assert broadcasts[-1] == {"type": "judgement", "text": room.judgement}
+
+
+def test_room_judgement_missing_key_does_not_log_phantom_provider_call(monkeypatch):
+    ledger = []
+
+    async def broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(proxy, "_room_broadcast", broadcast)
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        funds_logic, "log_ai_usage", lambda *args, **kwargs: ledger.append((args, kwargs))
+    )
+    room = SimpleNamespace(
+        created_by="alice",
+        topic="辯題",
+        debate_format="校園隨想",
+        structure="free",
+        transcript=[{"side": "正方", "text": "內容"}],
+        judgement="",
+        judgement_lock=asyncio.Lock(),
+    )
+
+    asyncio.run(proxy._room_request_judgement(room))
+    assert "未設定 GEMINI_API_KEY" in room.judgement
+    assert ledger == []
 
 
 def test_room_judgement_unexpected_error_never_broadcasts_secret(monkeypatch):

@@ -39,6 +39,10 @@
   let timer = null;
   let timerStartedAt = 0;
   let firedBells = new Set();
+  let reviewAttempt = "initial";
+  let previousReviewMarkdown = "";
+  let reviewContextSnapshot = "";
+  let retakeConsumed = false;
 
   const modelByLabel = (label) =>
     meta?.models.find((model) => model.label === label);
@@ -69,6 +73,85 @@
     document.querySelector(`[data-pane="${name}"]`).classList.add("active");
   }
 
+  function currentReviewContext() {
+    return JSON.stringify({
+      match_id: selectedMatchId,
+      topic: $("reviewTopic").value.trim(),
+      side: $("reviewSide").value,
+      position: Number($("reviewPosition").value),
+      debate_format: $("reviewFormat").value,
+      review_mode: $("reviewMode").value,
+    });
+  }
+
+  function setReviewContextLocked(locked) {
+    [
+      $("reviewTopic"),
+      $("reviewSide"),
+      $("reviewPosition"),
+      $("reviewFormat"),
+      $("reviewMode"),
+      $("globalModel"),
+    ].forEach((element) => {
+      element.disabled = locked;
+    });
+    $("reviewForm")
+      .querySelectorAll(".topic-source, .topic-picker")
+      .forEach((element) => {
+        element.disabled = locked;
+      });
+  }
+
+  function clearRecordedAudio() {
+    if (recordStopTimer) clearTimeout(recordStopTimer);
+    recordStopTimer = null;
+    const activeRecorder = recorder;
+    recorder = null;
+    if (activeRecorder) {
+      activeRecorder.discard = true;
+      if (activeRecorder.state === "recording") activeRecorder.stop();
+    }
+    audioBase64 = "";
+    audioMime = "audio/webm";
+    audioDurationSeconds = 0;
+    const preview = $("audioPreview");
+    preview.pause();
+    if (preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
+    preview.removeAttribute("src");
+    preview.load();
+    preview.classList.add("hidden");
+    $("record").textContent = "開始錄音";
+    $("recordState").textContent = "未錄音";
+    syncModel();
+  }
+
+  function resetReviewCycle(message = "") {
+    const hadCycle = Boolean(
+      previousReviewMarkdown ||
+        reviewAttempt === "retake" ||
+        retakeConsumed ||
+        !$("retakeResult").classList.contains("hidden"),
+    );
+    reviewAttempt = "initial";
+    previousReviewMarkdown = "";
+    reviewContextSnapshot = "";
+    retakeConsumed = false;
+    setReviewContextLocked(false);
+    $("reviewSubmit").textContent = "分析發言";
+    $("retakeOffer").classList.add("hidden");
+    $("retakeActive").classList.add("hidden");
+    $("retakeResultTitle").classList.add("hidden");
+    $("retakeResult").classList.add("hidden");
+    $("retakeResult").innerHTML = "";
+    if (hadCycle) {
+      $("reviewResult").classList.add("caption");
+      $("reviewResult").textContent =
+        message || "內容已更改，請重新分析發言。";
+      $("downloadReview").classList.add("hidden");
+    }
+    clearRecordedAudio();
+  }
+
   function topicSource(container) {
     const target = $(container.dataset.topicTarget);
     const source = container.dataset.topicSource;
@@ -83,6 +166,8 @@
     const targetWrap = target.closest("label");
 
     const choose = () => {
+      if (supportsMatches)
+        resetReviewCycle("場次已更改，請重新分析發言。");
       const rows = supportsMatches ? meta.matches : meta.topics;
       const row = rows[Number(picker.value)];
       if (!row) return;
@@ -96,6 +181,8 @@
     };
     picker.addEventListener("change", choose);
     mode.addEventListener("change", () => {
+      if (supportsMatches)
+        resetReviewCycle("辯題來源已更改，請重新分析發言。");
       const manual = mode.value === "手動輸入";
       pickerWrap.classList.toggle("hidden", manual);
       targetWrap.classList.toggle("hidden", !manual);
@@ -402,6 +489,7 @@
         const duration = (Date.now() - activeRecorder.startedAt) / 1000;
         stream.getTracks().forEach((track) => track.stop());
         if (recorder === activeRecorder) recorder = null;
+        if (activeRecorder.discard) return;
         if (
           duration < 1 ||
           duration > limits.audio_max_seconds ||
@@ -457,12 +545,14 @@
           model_label: $("globalModel").value,
         }),
       });
-      $(outputId).classList.remove("caption");
+      $(outputId).classList.remove("caption", "hidden");
       $(outputId).innerHTML = SafeMarkdown.render(data.markdown);
       $(downloadId).classList.remove("hidden");
       toast("✅ AI 分析完成。");
+      return data;
     } catch (error) {
       toast(`⚠️ ${error.message}`);
+      return null;
     } finally {
       busy(false);
     }
@@ -488,6 +578,9 @@
       : model.estimates.speech_review;
     $("reviewEstimate").textContent =
       `估算成本：${estimateText(reviewEstimate)}。`;
+    $("retakeEstimate").textContent = model.supports_audio
+      ? `改進檢查會另作一次錄音分析，估算成本：${estimateText(model.estimates.speech_review_audio)}。`
+      : "改進檢查必須選用支援錄音分析嘅模型，並會另作一次 AI 分析。";
     $("researchEstimate").textContent =
       `估算成本：${searchEstimate("web_research")}，${searchModel ? `按 ${searchModel.label} 及 1 次搜尋工具估算` : "搜尋模型暫時不可用"}。`;
     $("factEstimate").textContent =
@@ -737,6 +830,38 @@
     }
   }
 
+  function startReviewRetake() {
+    if (
+      !previousReviewMarkdown ||
+      retakeConsumed ||
+      $("reviewMode").value !== "台上發言"
+    )
+      return;
+    if (currentReviewContext() !== reviewContextSnapshot) {
+      resetReviewCycle("發言資料已更改，請重新完成首次分析。");
+      return toast("⚠️ 發言資料已更改，請重新完成首次分析。");
+    }
+    if (!currentModel()?.supports_audio)
+      return toast("⚠️ 請先選擇支援錄音分析嘅模型，再開始重錄。");
+    reviewAttempt = "retake";
+    setReviewContextLocked(true);
+    clearRecordedAudio();
+    $("retakeOffer").classList.add("hidden");
+    $("retakeActive").classList.remove("hidden");
+    $("reviewSubmit").textContent = "檢查今次有冇改進";
+    $("record").focus();
+  }
+
+  function cancelReviewRetake() {
+    if (reviewAttempt !== "retake") return;
+    reviewAttempt = "initial";
+    setReviewContextLocked(false);
+    clearRecordedAudio();
+    $("retakeActive").classList.add("hidden");
+    $("retakeOffer").classList.remove("hidden");
+    $("reviewSubmit").textContent = "分析發言";
+  }
+
   document
     .querySelectorAll("[data-pane]")
     .forEach((button) =>
@@ -762,12 +887,29 @@
     }
   });
   $("globalModel").addEventListener("change", syncModel);
-  $("reviewFormat").addEventListener("change", syncReviewStage);
-  $("reviewMode").addEventListener("change", renderQaFields);
-  $("reviewPosition").addEventListener("change", syncReviewStage);
+  $("reviewTopic").addEventListener("input", () =>
+    resetReviewCycle("辯題已更改，請重新分析發言。"),
+  );
+  $("reviewSide").addEventListener("change", () =>
+    resetReviewCycle("立場已更改，請重新分析發言。"),
+  );
+  $("reviewFormat").addEventListener("change", () => {
+    resetReviewCycle("賽制已更改，請重新分析發言。");
+    syncReviewStage();
+  });
+  $("reviewMode").addEventListener("change", () => {
+    resetReviewCycle("練習類型已更改，請重新分析發言。");
+    renderQaFields();
+  });
+  $("reviewPosition").addEventListener("change", () => {
+    resetReviewCycle("辯位已更改，請重新分析發言。");
+    syncReviewStage();
+  });
   $("reviewStage").addEventListener("change", syncStageClock);
   $("speechTimer").addEventListener("click", toggleTimer);
   $("record").addEventListener("click", recordAudio);
+  $("startRetake").addEventListener("click", startReviewRetake);
+  $("cancelRetake").addEventListener("click", cancelReviewRetake);
   $("liveFormat").addEventListener("change", syncLive);
   $("liveMinutes").addEventListener("input", syncLive);
   $("mockFormat").addEventListener("change", syncMock);
@@ -791,25 +933,70 @@
       "downloadStrategy",
     );
   });
-  $("reviewForm").addEventListener("submit", (event) => {
+  $("reviewForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const review = buildReviewText();
     if (review.warning) return toast(`⚠️ ${review.warning}`);
-    if (!review.text && !audioBase64) return toast("⚠️ 請輸入文字稿或錄音。");
-    run(
+    const isRetake = reviewAttempt === "retake";
+    if (isRetake) {
+      if (
+        $("reviewMode").value !== "台上發言" ||
+        currentReviewContext() !== reviewContextSnapshot
+      ) {
+        resetReviewCycle("發言資料已更改，請重新完成首次分析。");
+        return toast("⚠️ 發言資料已更改，請重新完成首次分析。");
+      }
+      if (!previousReviewMarkdown)
+        return toast("⚠️ 缺少上次 AI 評語，請重新完成首次分析。");
+      if (!audioBase64)
+        return toast("⚠️ 請先錄製一段全新錄音，再檢查有冇改進。");
+      if (!currentModel()?.supports_audio)
+        return toast("⚠️ 改進檢查必須使用支援錄音分析嘅模型。");
+    } else if (!review.text && !audioBase64) {
+      return toast("⚠️ 請輸入文字稿或錄音。");
+    }
+    const data = await run(
       "speech_review",
       {
         topic: $("reviewTopic").value.trim(),
         match_id: selectedMatchId,
         side: $("reviewSide").value,
         position: Number($("reviewPosition").value),
+        debate_format: $("reviewFormat").value,
+        review_mode: $("reviewMode").value,
+        review_attempt: isRetake ? "retake" : "initial",
+        previous_review: isRetake ? previousReviewMarkdown : "",
         text: review.text,
         audio_base64: audioBase64,
         audio_mime: audioMime,
         audio_duration_seconds: audioDurationSeconds,
       },
-      "reviewResult",
+      isRetake ? "retakeResult" : "reviewResult",
       "downloadReview",
+    );
+    if (!data) return;
+    if (isRetake) {
+      reviewAttempt = "initial";
+      previousReviewMarkdown = "";
+      reviewContextSnapshot = "";
+      retakeConsumed = true;
+      setReviewContextLocked(false);
+      $("reviewSubmit").textContent = "分析發言";
+      $("retakeOffer").classList.add("hidden");
+      $("retakeActive").classList.add("hidden");
+      $("retakeResultTitle").classList.remove("hidden");
+      return;
+    }
+    previousReviewMarkdown = data.markdown;
+    reviewContextSnapshot = currentReviewContext();
+    retakeConsumed = false;
+    $("retakeActive").classList.add("hidden");
+    $("retakeResultTitle").classList.add("hidden");
+    $("retakeResult").classList.add("hidden");
+    $("retakeResult").innerHTML = "";
+    $("retakeOffer").classList.toggle(
+      "hidden",
+      $("reviewMode").value !== "台上發言",
     );
   });
   $("researchForm").addEventListener("submit", (event) => {
@@ -919,7 +1106,6 @@
   });
   [
     ["downloadStrategy", "策略建議.txt", "strategyResult"],
-    ["downloadReview", "分析結果.txt", "reviewResult"],
     ["downloadResearch", "搵料結果.txt", "researchResult"],
     ["downloadFact", "fact_check結果.txt", "factResult"],
   ].forEach(([button, name, result]) =>
@@ -927,6 +1113,14 @@
       download(name, $(result).textContent),
     ),
   );
+  $("downloadReview").addEventListener("click", () => {
+    const sections = [`初次分析\n\n${$("reviewResult").textContent.trim()}`];
+    if (!$("retakeResult").classList.contains("hidden"))
+      sections.push(
+        `改進檢查結果\n\n${$("retakeResult").textContent.trim()}`,
+      );
+    download("發言分析及改進檢查.txt", sections.join("\n\n---\n\n"));
+  });
 
   boot();
 })();

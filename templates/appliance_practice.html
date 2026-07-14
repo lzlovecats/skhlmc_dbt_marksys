@@ -449,7 +449,7 @@
         color: #6b7280;
       }
 
-      /* ---- full-match microphone review ---- */
+      /* ---- AI評判易 full-match microphone review ---- */
       .review-wrap {
         display: grid;
         width: min(1120px, 100%);
@@ -543,7 +543,9 @@
         margin-top: 18px;
       }
       .review-actions button,
-      .mic-refresh {
+      .mic-refresh,
+      .hardware-test,
+      .marker-button {
         min-height: 54px;
         padding: 12px 24px;
         border: 0;
@@ -556,7 +558,9 @@
         cursor: pointer;
       }
       .review-actions button:disabled,
-      .mic-refresh:disabled {
+      .mic-refresh:disabled,
+      .hardware-test:disabled,
+      .marker-button:disabled {
         opacity: 0.45;
         cursor: not-allowed;
       }
@@ -568,6 +572,78 @@
       }
       #review-analyze {
         background: var(--blue);
+      }
+      .hardware-panel,
+      .marker-panel {
+        margin-top: 18px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--panel-2);
+      }
+      .hardware-test {
+        width: 100%;
+        background: #2f6fe0;
+      }
+      .preflight-results {
+        display: grid;
+        gap: 6px;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.45;
+      }
+      .preflight-results .pass { color: #7ce6a7; }
+      .preflight-results .fail { color: #ff9c9c; }
+      .preflight-results .warn { color: #ffd37c; }
+      .marker-panel h3 { margin: 0 0 8px; }
+      .marker-help {
+        margin: 0 0 12px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      .marker-controls {
+        display: grid;
+        grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(130px, auto));
+        gap: 10px;
+      }
+      .marker-controls select {
+        min-height: 52px;
+        padding: 8px 12px;
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        color: var(--text);
+        background: #171a22;
+        font: inherit;
+      }
+      .marker-button.pro { background: #2f6fe0; }
+      .marker-button.con { background: #c23b4d; }
+      .marker-button.both { background: #7b4cc9; }
+      .marker-button.unknown { background: #5c6474; }
+      .marker-log {
+        margin-top: 10px;
+        color: #d8deea;
+        font-size: 15px;
+        line-height: 1.5;
+      }
+      .transcript-details {
+        margin-top: 22px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+      }
+      .transcript-details summary {
+        cursor: pointer;
+        font-size: 20px;
+        font-weight: 800;
+      }
+      .transcript-details .review-result {
+        max-height: 65vh;
+        margin-top: 14px;
+        padding: 14px;
+        overflow: auto;
+        border-radius: 12px;
+        background: #151820;
+        font-size: 16px;
       }
       .mic-row {
         display: grid;
@@ -616,6 +692,9 @@
         .mic-row {
           grid-template-columns: 1fr;
         }
+        .marker-controls {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -657,13 +736,6 @@
           </button>
           <button class="mode-btn" id="mode-ai" onclick="switchMode('ai')">
             🤖 AI 辯論練習
-          </button>
-          <button
-            class="mode-btn"
-            id="mode-review"
-            onclick="switchMode('review')"
-          >
-            🎙️ AI 全場評判
           </button>
           <button class="mode-btn logout-btn" onclick="logoutKiosk()">
             登出
@@ -800,79 +872,6 @@
         </div>
       </div>
 
-      <!-- ============ full-match microphone AI review ============ -->
-      <div class="panel" id="panel-review">
-        <div class="review-wrap">
-          <section class="review-card">
-            <h2>🎙️ AI 全場評判（MVP）</h2>
-            <p>
-              將一支收音咪接到 kiosk，完整錄低成場比賽；完場後錄音會直接上載到私人暫存區，
-              經格式驗證後即時刪除原始檔，再交由支援錄音的 AI 模型提供評語及建議勝方。
-              <strong>AI 結果只屬第二意見，唔係正式賽果。</strong>
-            </p>
-            <div class="review-fields">
-              <div class="field wide">
-                <label for="review-topic">辯題</label>
-                <input id="review-topic" maxlength="500" placeholder="輸入完整辯題" />
-              </div>
-              <div class="field">
-                <label for="review-format">賽制</label>
-                <select id="review-format"></select>
-              </div>
-              <div class="field">
-                <label for="review-mic">收音咪</label>
-                <div class="mic-row">
-                  <select id="review-mic" aria-label="選擇收音咪"></select>
-                  <button class="mic-refresh" type="button" onclick="refreshMicrophones(true)">
-                    重新偵測
-                  </button>
-                </div>
-              </div>
-              <div class="field">
-                <label for="review-pro-team">正方隊伍</label>
-                <input id="review-pro-team" maxlength="200" value="正方" />
-              </div>
-              <div class="field">
-                <label for="review-con-team">反方隊伍</label>
-                <input id="review-con-team" maxlength="200" value="反方" />
-              </div>
-            </div>
-            <label class="review-consent">
-              <input id="review-notice" type="checkbox" />
-              <span>
-                我確認已通知在場人士全場會被錄音及交由受控雲端 AI 處理；原始錄音只作今次分析，
-                伺服器會在讀取後刪除，系統只保留一般 AI 用量紀錄及畫面上的評語。
-              </span>
-            </label>
-          </section>
-
-          <section class="review-card">
-            <div class="record-display" id="review-clock">0:00.000</div>
-            <div class="record-meta" id="review-meta">未開始錄音</div>
-            <div class="review-actions">
-              <button id="review-start" type="button" onclick="startMatchRecording()">
-                ● 開始全場錄音
-              </button>
-              <button id="review-stop" type="button" onclick="stopMatchRecording()" disabled>
-                ■ 完場並停止
-              </button>
-              <button id="review-discard" type="button" onclick="discardLocalRecording()" disabled>
-                清除錄音
-              </button>
-              <button id="review-analyze" type="button" onclick="analyzeMatchRecording()" disabled>
-                🤖 上載並分析
-              </button>
-            </div>
-            <div class="review-status" id="review-status" role="status"></div>
-          </section>
-
-          <section class="review-card hidden" id="review-result-card">
-            <h2>AI 輔助評語</h2>
-            <p class="privacy-note" id="review-result-meta"></p>
-            <div class="review-result" id="review-result"></div>
-          </section>
-        </div>
-      </div>
       </div>
     </div>
 
@@ -1012,17 +1011,11 @@
           .getElementById("panel-ai")
           .classList.toggle("active", mode === "ai");
         document
-          .getElementById("panel-review")
-          .classList.toggle("active", mode === "review");
-        document
           .getElementById("mode-timer")
           .classList.toggle("active", mode === "timer");
         document
           .getElementById("mode-ai")
           .classList.toggle("active", mode === "ai");
-        document
-          .getElementById("mode-review")
-          .classList.toggle("active", mode === "review");
       }
 
       // ---------- timer engine (config loaded from /api/practice/timer-config) ----------
@@ -1271,6 +1264,9 @@
           }
           prepareBell();
           s.running = true;
+          if (matchRecorder && matchRecorder.state !== "inactive") {
+            addReviewMarker(side, "自由辯論");
+          }
           s.startTs = performance.now() - s.elapsed * 1000;
           btn.textContent = "暫停";
           btn.className = "btn btn-pause";
@@ -1296,9 +1292,14 @@
       // ---------- full-match microphone recording ----------
       let reviewLimits = {
           max_bytes: 12 * 1024 * 1024,
-          max_seconds: 75 * 60,
+          max_seconds: 90 * 60,
           min_seconds: 10,
         },
+        reviewMatches = [],
+        hardwarePassedAt = 0,
+        hardwareDeviceId = "",
+        matchMarkers = [],
+        recordedMatchId = "",
         matchRecorder = null,
         matchStream = null,
         matchChunks = [],
@@ -1312,10 +1313,198 @@
         matchStopReason = "manual",
         screenWakeLock = null;
 
+      const HARDWARE_TEST_TTL_MS = 30 * 60 * 1000;
+
       function setReviewStatus(message, kind) {
         const el = document.getElementById("review-status");
         el.textContent = message || "";
         el.className = "review-status" + (kind ? " " + kind : "");
+      }
+
+      function selectedReviewMatch() {
+        const matchId = document.getElementById("review-match").value;
+        return reviewMatches.find((item) => item.match_id === matchId) || null;
+      }
+
+      function hardwareTestIsFresh() {
+        return Boolean(
+          hardwarePassedAt &&
+            Date.now() - hardwarePassedAt <= HARDWARE_TEST_TTL_MS &&
+            hardwareDeviceId === document.getElementById("review-mic").value,
+        );
+      }
+
+      function updateReviewStartAvailability() {
+        const recording = matchRecorder && matchRecorder.state !== "inactive";
+        const match = selectedReviewMatch();
+        document.getElementById("review-start").disabled = Boolean(
+          recording || !match || !match.topic || !hardwareTestIsFresh(),
+        );
+      }
+
+      function invalidateHardwareTest(message) {
+        hardwarePassedAt = 0;
+        hardwareDeviceId = "";
+        if (message) {
+          document.getElementById("review-preflight-results").innerHTML =
+            '<div class="warn">⚠️ ' + escapeHtml(message) + "</div>";
+        }
+        updateReviewStartAvailability();
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "").replace(
+          /[&<>"']/g,
+          (char) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[char],
+        );
+      }
+
+      async function loadReviewMatches() {
+        const data = await apiJson("/api/kiosk/match-review/matches", {
+          method: "GET",
+        });
+        reviewMatches = data.matches || [];
+        const select = document.getElementById("review-match");
+        select.innerHTML = reviewMatches.length
+          ? reviewMatches
+              .map((match) => {
+                const schedule = [match.match_date, match.match_time]
+                  .filter(Boolean)
+                  .join(" ");
+                const label =
+                  match.match_id +
+                  " — " +
+                  match.pro_team +
+                  " vs " +
+                  match.con_team +
+                  (schedule ? "（" + schedule + "）" : "");
+                return (
+                  '<option value="' +
+                  escapeHtml(match.match_id) +
+                  '">' +
+                  escapeHtml(label) +
+                  "</option>"
+                );
+              })
+              .join("")
+          : '<option value="">未有正式場次</option>';
+        await onReviewMatchChange(false);
+      }
+
+      async function onReviewMatchChange(clearRecording = true) {
+        if (clearRecording && matchBlob) discardLocalRecording(false);
+        const match = selectedReviewMatch();
+        document.getElementById("review-topic").value = match?.topic || "";
+        document.getElementById("review-format").value = match
+          ? match.debate_format +
+            (match.debate_format === "聯中" && match.free_debate_minutes
+              ? "（自由辯論每邊 " + match.free_debate_minutes + " 分鐘）"
+              : "")
+          : "";
+        document.getElementById("review-pro-team").value =
+          match?.pro_team || "";
+        document.getElementById("review-con-team").value =
+          match?.con_team || "";
+        const timerSelect = document.getElementById("format-select");
+        if (
+          match &&
+          cfg &&
+          Array.from(timerSelect.options).some(
+            (option) => option.value === match.debate_format,
+          )
+        ) {
+          timerSelect.value = match.debate_format;
+          document.getElementById("free-field").style.display =
+            match.debate_format === "聯中" ? "flex" : "none";
+          if (match.debate_format === "聯中") {
+            document.getElementById("free-minutes").value =
+              Number(match.free_debate_minutes) >= 2
+                ? match.free_debate_minutes
+                : 5;
+          }
+          await reloadConfig();
+        }
+        updateReviewStartAvailability();
+      }
+
+      function setMarkerButtons(enabled) {
+        document
+          .querySelectorAll("[data-review-marker]")
+          .forEach((button) => (button.disabled = !enabled));
+      }
+
+      function renderReviewMarkers() {
+        const log = document.getElementById("review-marker-log");
+        if (!matchMarkers.length) {
+          log.textContent = "未有時間標記";
+          return;
+        }
+        const labels = {
+          pro: "正方",
+          con: "反方",
+          both: "雙方",
+          unknown: "未確定",
+        };
+        const recent = matchMarkers.slice(-8).map(
+          (item) =>
+            fmtTime(item.offset_seconds) +
+            " " +
+            labels[item.side] +
+            " · " +
+            item.segment,
+        );
+        log.textContent =
+          "共 " + matchMarkers.length + " 個標記｜" + recent.join("｜");
+      }
+
+      function addReviewMarker(side, segmentOverride) {
+        if (!matchRecorder || matchRecorder.state === "inactive") return;
+        const marker = {
+          offset_seconds: Math.round(reviewElapsed() * 1000) / 1000,
+          side,
+          segment:
+            segmentOverride || document.getElementById("review-segment").value,
+        };
+        const last = matchMarkers[matchMarkers.length - 1];
+        if (
+          last &&
+          last.side === marker.side &&
+          last.segment === marker.segment &&
+          marker.offset_seconds - last.offset_seconds < 0.25
+        )
+          return;
+        matchMarkers.push(marker);
+        renderReviewMarkers();
+      }
+
+      function reviewAudioConstraints() {
+        const selected = document.getElementById("review-mic").value;
+        const audio = {
+          channelCount: 1,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: true,
+        };
+        if (selected) audio.deviceId = { exact: selected };
+        return audio;
+      }
+
+      function createMatchRecorder(stream, mime) {
+        try {
+          return new MediaRecorder(stream, {
+            mimeType: mime,
+            audioBitsPerSecond: 16000,
+          });
+        } catch (_) {
+          return new MediaRecorder(stream, { mimeType: mime });
+        }
       }
 
       function humanBytes(value) {
@@ -1381,6 +1570,7 @@
 
       async function refreshMicrophones(requestPermission) {
         const select = document.getElementById("review-mic");
+        if (requestPermission) invalidateHardwareTest("收音咪已重新偵測，請再做開始前測試。");
         if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
           select.innerHTML = '<option value="">瀏覽器不支援收音咪</option>';
           return;
@@ -1422,6 +1612,173 @@
         }
       }
 
+      async function testAllReviewHardware() {
+        const button = document.getElementById("review-hardware-test");
+        const output = document.getElementById("review-preflight-results");
+        const rows = [];
+        let stream = null,
+          recorder = null,
+          testContext = null;
+        hardwarePassedAt = 0;
+        hardwareDeviceId = "";
+        updateReviewStartAvailability();
+        button.disabled = true;
+        button.textContent = "正在測試…請對收音咪講『測試』";
+        output.innerHTML = '<div class="warn">⏳ 正檢查雲端設定、收音咪、短錄音及鈴聲…</div>';
+
+        const addRow = (kind, text) =>
+          rows.push(
+            '<div class="' +
+              kind +
+              '">' +
+              (kind === "pass" ? "✅ " : kind === "warn" ? "⚠️ " : "❌ ") +
+              escapeHtml(text) +
+              "</div>",
+          );
+        try {
+          const server = await apiJson("/api/kiosk/match-review/preflight", {
+            method: "GET",
+          });
+          Object.values(server.checks || {}).forEach((check) =>
+            addRow(check.ok ? "pass" : "fail", check.detail || "未知檢查"),
+          );
+
+          const browserChecks = [
+            [window.isSecureContext, "HTTPS 安全連線"],
+            [Boolean(navigator.mediaDevices?.getUserMedia), "瀏覽器收音權限介面"],
+            [Boolean(window.MediaRecorder), "瀏覽器短錄音功能"],
+            [Boolean(window.crypto?.subtle), "SHA-256 錄音完整性功能"],
+            [Boolean(window.AudioContext || window.webkitAudioContext), "Web Audio 鈴聲／聲量功能"],
+          ];
+          browserChecks.forEach(([ok, label]) => addRow(ok ? "pass" : "fail", label));
+          if (browserChecks.some(([ok]) => !ok)) {
+            throw new Error("瀏覽器缺少必要錄音功能");
+          }
+          const mime = supportedRecorderMime();
+          if (!mime) throw new Error("瀏覽器未有受支援的錄音格式");
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: reviewAudioConstraints(),
+          });
+          const track = stream.getAudioTracks()[0];
+          addRow(
+            track && track.readyState === "live" ? "pass" : "fail",
+            "所選收音咪已連線" +
+              (track?.label ? "：" + track.label : ""),
+          );
+
+          recorder = createMatchRecorder(stream, mime);
+          const chunks = [];
+          const stopped = new Promise((resolve, reject) => {
+            recorder.ondataavailable = (event) => {
+              if (event.data?.size) chunks.push(event.data);
+            };
+            recorder.onerror = (event) =>
+              reject(event.error || new Error("短錄音失敗"));
+            recorder.onstop = resolve;
+          });
+
+          const Context = window.AudioContext || window.webkitAudioContext;
+          testContext = new Context();
+          if (testContext.state === "suspended") await testContext.resume();
+          const analyser = testContext.createAnalyser();
+          analyser.fftSize = 2048;
+          testContext.createMediaStreamSource(stream).connect(analyser);
+          const samples = new Float32Array(analyser.fftSize);
+          let peakRms = 0,
+            clipping = false;
+          const sampleStart = performance.now();
+          recorder.start(250);
+          await prepareBell();
+          for (let index = 0; index < 24; index += 1) {
+            if (index === 4) await playBell(1);
+            analyser.getFloatTimeDomainData(samples);
+            let squared = 0;
+            for (const sample of samples) {
+              squared += sample * sample;
+              if (Math.abs(sample) >= 0.985) clipping = true;
+            }
+            peakRms = Math.max(peakRms, Math.sqrt(squared / samples.length));
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          recorder.stop();
+          await stopped;
+          const sampleSeconds = Math.max(
+            0.5,
+            (performance.now() - sampleStart) / 1000,
+          );
+          const sampleBlob = new Blob(chunks, {
+            type: recorder.mimeType || mime,
+          });
+          const sampleOk = sampleBlob.size > 100;
+          addRow(
+            sampleOk ? "pass" : "fail",
+            "短錄音可建立（" + humanBytes(sampleBlob.size) + "，不會上載）",
+          );
+          const micOk = peakRms >= 0.002;
+          addRow(
+            micOk ? "pass" : "fail",
+            "收音咪訊號峰值 " + (peakRms * 100).toFixed(2) + "%" +
+              (micOk ? "" : "；請檢查靜音、距離或輸入裝置"),
+          );
+          addRow(
+            clipping ? "warn" : "pass",
+            clipping ? "收音曾接近爆音，請降低咪增益" : "未偵測到明顯爆音",
+          );
+
+          const measuredBitrate = Math.ceil((sampleBlob.size * 8) / sampleSeconds);
+          const recorderBitrate = Number(recorder.audioBitsPerSecond || 0);
+          const projectedBitrate = recorderBitrate || measuredBitrate;
+          const projectedBytes =
+            (projectedBitrate / 8) * reviewLimits.max_seconds * 1.05;
+          const sizeOk = projectedBytes <= reviewLimits.max_bytes;
+          addRow(
+            sizeOk ? "pass" : "fail",
+            "錄音器約 " +
+              Math.round(projectedBitrate / 1000) +
+              " kbps；90 分鐘預計 " +
+              humanBytes(projectedBytes) +
+              "／上限 " +
+              humanBytes(reviewLimits.max_bytes),
+          );
+          addRow(
+            navigator.wakeLock ? "pass" : "warn",
+            navigator.wakeLock
+              ? "螢幕常亮功能可用"
+              : "瀏覽器不支援 Wake Lock；比賽期間不可鎖屏",
+          );
+
+          const heardBell = window.confirm(
+            "硬件測試已播放一聲正式鈴聲。你有清楚聽到鈴聲嗎？",
+          );
+          addRow(heardBell ? "pass" : "fail", "現場確認喇叭鈴聲");
+          const passed = Boolean(
+            server.ok && sampleOk && micOk && sizeOk && heardBell,
+          );
+          if (passed) {
+            hardwarePassedAt = Date.now();
+            hardwareDeviceId = document.getElementById("review-mic").value;
+            addRow("pass", "所有必要檢查通過；30 分鐘內可開始錄音");
+          } else {
+            addRow("fail", "未通過全部必要檢查，暫不可開始全場錄音");
+          }
+        } catch (error) {
+          addRow("fail", error.message || "硬件測試失敗");
+        } finally {
+          if (recorder && recorder.state !== "inactive") {
+            try { recorder.stop(); } catch (_) {}
+          }
+          if (stream) stream.getTracks().forEach((track) => track.stop());
+          if (testContext) {
+            try { await testContext.close(); } catch (_) {}
+          }
+          output.innerHTML = rows.join("");
+          button.disabled = false;
+          button.textContent = "🧪 重新測試所有硬件";
+          updateReviewStartAvailability();
+        }
+      }
+
       function finishMatchRecording() {
         cancelAnimationFrame(matchRaf);
         clearTimeout(matchHardStop);
@@ -1439,7 +1796,11 @@
         matchStream = null;
         matchRecorder = null;
         releaseScreenWake();
-        document.getElementById("review-start").disabled = false;
+        setMarkerButtons(false);
+        document.getElementById("review-match").disabled = false;
+        document.getElementById("review-mic").disabled = false;
+        document.getElementById("review-hardware-test").disabled = false;
+        document.querySelectorAll(".mic-refresh").forEach((button) => (button.disabled = false));
         document.getElementById("review-stop").disabled = true;
         const valid =
           matchDuration >= reviewLimits.min_seconds &&
@@ -1448,6 +1809,7 @@
         document.getElementById("review-discard").disabled = !matchBlob.size;
         document.getElementById("review-analyze").disabled = !valid;
         updateReviewClock();
+        updateReviewStartAvailability();
         if (matchBlob.size > reviewLimits.max_bytes || matchStopReason === "size") {
           setReviewStatus(
             "錄音已達 " + humanBytes(reviewLimits.max_bytes) + " 安全上限，請清除後重錄。",
@@ -1468,8 +1830,13 @@
       }
 
       async function startMatchRecording() {
-        if (!document.getElementById("review-topic").value.trim()) {
-          setReviewStatus("請先輸入辯題。", "error");
+        const officialMatch = selectedReviewMatch();
+        if (!officialMatch || !officialMatch.topic) {
+          setReviewStatus("請先選擇已設定辯題的正式場次。", "error");
+          return;
+        }
+        if (!hardwareTestIsFresh()) {
+          setReviewStatus("請先按『開始前測試所有硬件』並通過全部必要檢查。", "error");
           return;
         }
         if (!document.getElementById("review-notice").checked) {
@@ -1486,25 +1853,15 @@
           return;
         }
         discardLocalRecording(false);
-        const selected = document.getElementById("review-mic").value;
-        const audio = {
-          channelCount: 1,
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: true,
-        };
-        if (selected) audio.deviceId = { exact: selected };
         try {
-          matchStream = await navigator.mediaDevices.getUserMedia({ audio });
-          try {
-            matchRecorder = new MediaRecorder(matchStream, {
-              mimeType: mime,
-              audioBitsPerSecond: 16000,
-            });
-          } catch (_) {
-            matchRecorder = new MediaRecorder(matchStream, { mimeType: mime });
-          }
+          matchStream = await navigator.mediaDevices.getUserMedia({
+            audio: reviewAudioConstraints(),
+          });
+          matchRecorder = createMatchRecorder(matchStream, mime);
           matchMime = matchRecorder.mimeType || mime;
+          recordedMatchId = officialMatch.match_id;
+          matchMarkers = [];
+          renderReviewMarkers();
           matchChunks = [];
           matchBytes = 0;
           matchDuration = 0;
@@ -1530,12 +1887,18 @@
           };
           matchRecorder.onstop = finishMatchRecording;
           matchRecorder.start(5000);
+          addReviewMarker("unknown", "開場／其他");
           document.getElementById("review-start").disabled = true;
           document.getElementById("review-stop").disabled = false;
           document.getElementById("review-discard").disabled = true;
           document.getElementById("review-analyze").disabled = true;
           document.getElementById("review-result-card").classList.add("hidden");
-          setReviewStatus("全場錄音進行中。完場時請按「完場並停止」。", "");
+          document.getElementById("review-match").disabled = true;
+          document.getElementById("review-mic").disabled = true;
+          document.getElementById("review-hardware-test").disabled = true;
+          document.querySelectorAll(".mic-refresh").forEach((button) => (button.disabled = true));
+          setMarkerButtons(true);
+          setReviewStatus("AI評判易正錄製全場。完場時請按「完場並停止」。", "");
           updateReviewClock();
           holdScreenAwake();
           matchHardStop = setTimeout(
@@ -1547,6 +1910,14 @@
           if (matchStream) matchStream.getTracks().forEach((track) => track.stop());
           matchStream = null;
           matchRecorder = null;
+          recordedMatchId = "";
+          matchMarkers = [];
+          setMarkerButtons(false);
+          document.getElementById("review-match").disabled = false;
+          document.getElementById("review-mic").disabled = false;
+          document.getElementById("review-hardware-test").disabled = false;
+          document.querySelectorAll(".mic-refresh").forEach((button) => (button.disabled = false));
+          updateReviewStartAvailability();
           setReviewStatus(
             "未能開始錄音：" + (error.message || "請檢查收音咪及瀏覽器權限"),
             "error",
@@ -1568,10 +1939,14 @@
         matchChunks = [];
         matchBytes = 0;
         matchDuration = 0;
+        recordedMatchId = "";
+        matchMarkers = [];
+        renderReviewMarkers();
         document.getElementById("review-clock").textContent = "0:00.000";
         document.getElementById("review-meta").textContent = "未開始錄音";
         document.getElementById("review-discard").disabled = true;
         document.getElementById("review-analyze").disabled = true;
+        updateReviewStartAvailability();
         if (showMessage) setReviewStatus("已清除 kiosk 記憶體內的錄音。", "ok");
       }
 
@@ -1602,10 +1977,10 @@
 
       async function analyzeMatchRecording() {
         if (!matchBlob) return;
-        const topic = document.getElementById("review-topic").value.trim();
+        const matchId = recordedMatchId;
         const notice = document.getElementById("review-notice").checked;
-        if (!topic || !notice) {
-          setReviewStatus("請填寫辯題並確認錄音通知。", "error");
+        if (!matchId || !notice) {
+          setReviewStatus("請確認正式場次及錄音通知。", "error");
           return;
         }
         const analyzeButton = document.getElementById("review-analyze");
@@ -1622,6 +1997,7 @@
           const intent = await apiJson("/api/kiosk/match-review/upload-intent", {
             method: "POST",
             body: JSON.stringify({
+              match_id: matchId,
               mime_type: matchBlob.type || matchMime,
               byte_size: matchBlob.size,
               sha256: digest,
@@ -1636,31 +2012,41 @@
             body: matchBlob,
           });
           if (!upload.ok) throw new Error("錄音上載失敗（HTTP " + upload.status + "）");
-          setReviewStatus("AI 正在聆聽整場錄音；請勿關閉頁面…", "");
+          setReviewStatus(
+            "AI評判易正先做全場逐字稿，再用原音＋逐字稿交叉評審；請勿關閉頁面…",
+            "",
+          );
           const result = await apiJson("/api/kiosk/match-review/analyze", {
             method: "POST",
             body: JSON.stringify({
               upload_token: uploadToken,
-              topic,
-              debate_format: document.getElementById("review-format").value,
-              pro_team: document.getElementById("review-pro-team").value,
-              con_team: document.getElementById("review-con-team").value,
+              match_id: matchId,
+              speaker_markers: matchMarkers,
               recording_notice_confirmed: notice,
             }),
           });
           document.getElementById("review-result").textContent = result.markdown;
+          document.getElementById("review-transcript").textContent =
+            result.transcript || "AI 未有回傳逐字稿。";
           document.getElementById("review-result-meta").textContent =
+            "場次：" +
+            (result.match?.match_id || matchId) +
+            " · " +
             "模型：" +
             result.model_label +
             " · 錄音：" +
             fmtTime(result.audio?.duration_seconds || matchDuration) +
+            " · 發言方標記：" +
+            (result.speaker_marker_count ?? matchMarkers.length) +
             (result.recording_deleted
-              ? " · 原始錄音已刪除"
+              ? " · R2 原始錄音已在 AI 處理前刪除"
               : " · 原始錄音正等待清理程序刪除");
           document.getElementById("review-result-card").classList.remove("hidden");
           matchBlob = null;
+          recordedMatchId = "";
           document.getElementById("review-discard").disabled = true;
-          setReviewStatus("分析完成。以下只屬 AI 輔助第二意見。", "ok");
+          invalidateHardwareTest("每場完成後要重新測試硬件及刷新剩餘配額。");
+          setReviewStatus("AI評判易分析完成。以下只屬 AI 輔助第二意見。", "ok");
           document.getElementById("review-result-card").scrollIntoView({
             behavior: "smooth",
             block: "start",
@@ -1674,11 +2060,11 @@
               });
             } catch (_) {}
           }
-          setReviewStatus(error.message || "全場分析失敗，請稍後再試。", "error");
+          setReviewStatus(error.message || "AI評判易分析失敗，請稍後再試。", "error");
         } finally {
-          document.getElementById("review-start").disabled = false;
           document.getElementById("review-discard").disabled = !matchBlob;
           analyzeButton.disabled = !matchBlob;
+          updateReviewStartAvailability();
         }
       }
 
@@ -1693,10 +2079,6 @@
       }
 
       async function showKioskApp(sessionData) {
-        reviewLimits = {
-          ...reviewLimits,
-          ...((sessionData && sessionData.match_review_limits) || {}),
-        };
         document.getElementById("kiosk-login").classList.add("hidden");
         document.getElementById("kiosk-app").classList.remove("hidden");
         if (!appInitialized) {
@@ -1715,18 +2097,12 @@
       }
 
       async function logoutKiosk() {
-        if (matchRecorder && matchRecorder.state !== "inactive") {
-          setReviewStatus("請先停止全場錄音再登出。", "error");
-          switchMode("review");
-          return;
-        }
         try {
           await apiJson("/api/kiosk/logout", {
             method: "POST",
             body: "{}",
           });
         } catch (_) {}
-        discardLocalRecording(false);
         document.getElementById("kiosk-password").value = "";
         showKioskLogin("已登出 kiosk。 ");
       }
@@ -1736,22 +2112,17 @@
         if (!res.ok) throw new Error("未能載入計時設定");
         cfg = await res.json();
         const timerSelect = document.getElementById("format-select");
-        const reviewSelect = document.getElementById("review-format");
         timerSelect.innerHTML = "";
-        reviewSelect.innerHTML = "";
         (cfg.formats || []).forEach((format) => {
           const timerOption = document.createElement("option");
           timerOption.value = format;
           timerOption.textContent = format;
           timerSelect.appendChild(timerOption);
-          reviewSelect.appendChild(timerOption.cloneNode(true));
         });
         timerSelect.value = cfg.format;
-        reviewSelect.value = cfg.format;
         document.getElementById("free-field").style.display =
           cfg.format === "聯中" ? "flex" : "none";
         buildStages();
-        refreshMicrophones(false);
         const requested = new URLSearchParams(location.search).get("next");
         if (requested === "ai-debate") switchMode("ai");
       }

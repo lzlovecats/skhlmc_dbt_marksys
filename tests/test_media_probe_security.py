@@ -121,6 +121,108 @@ def test_shared_probe_rejects_claimed_actual_duration_mismatch(monkeypatch):
         media_probe.probe_audio(b"audio", "audio/webm", 2, max_seconds=60)
 
 
+def test_missing_duration_fallback_reads_progress_not_decoded_pcm(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "ffprobe":
+            return _probe_result(duration=0)
+        assert command[0] == "ffmpeg"
+        assert command[command.index("-progress") + 1] == "pipe:1"
+        assert command[command.index("-f") + 1] == "null"
+        assert "s16le" not in command
+        assert "pipe:1" not in command[command.index("-f") + 2 :]
+        return SimpleNamespace(
+            returncode=0,
+            stdout="out_time_us=5000000\nprogress=end\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(media_probe.subprocess, "run", fake_run)
+    result = media_probe.probe_audio(
+        b"metadata-free-webm", "audio/webm", 5, max_seconds=60,
+    )
+
+    assert result["duration"] == 5.0
+    assert len(calls) == 2
+    assert calls[1][1]["text"] is True
+    assert calls[1][1]["timeout"] == media_probe.MEDIA_TRANSCODE_TIMEOUT_SECONDS
+
+
+def test_provider_transcode_is_mono_16kbps_mp3_and_output_bounded(monkeypatch):
+    payload = b"validated-browser-audio"
+    converted = b"ID3" + b"m" * 200
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "ffmpeg"
+        assert command[command.index("-i") + 1].endswith("source.webm")
+        with open(command[command.index("-i") + 1], "rb") as source:
+            assert source.read() == payload
+        assert command[command.index("-ac") + 1] == "1"
+        assert command[command.index("-ar") + 1] == "16000"
+        assert command[command.index("-b:a") + 1] == "16k"
+        assert command[command.index("-fs") + 1] == "1025"
+        assert command[command.index("-f") + 1] == "mp3"
+        with open(command[-1], "wb") as output:
+            output.write(converted)
+        assert kwargs == {
+            "capture_output": True,
+            "text": True,
+            "timeout": media_probe.MEDIA_TRANSCODE_TIMEOUT_SECONDS,
+            "check": False,
+        }
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(media_probe.subprocess, "run", fake_run)
+    result, mime = media_probe.transcode_audio_for_provider(
+        payload,
+        "audio/webm;codecs=opus",
+        max_output_bytes=1024,
+    )
+
+    assert result == converted
+    assert mime == "audio/mpeg"
+
+
+def test_provider_transcode_rejects_output_over_bound_before_read(monkeypatch):
+    def fake_run(command, **_kwargs):
+        with open(command[-1], "wb") as output:
+            output.write(b"x" * 65)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(media_probe.subprocess, "run", fake_run)
+    with pytest.raises(media_probe.MediaProbeError, match="超出大小上限"):
+        media_probe.transcode_audio_for_provider(
+            b"audio", "audio/webm", max_output_bytes=64,
+        )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired("ffmpeg", 120),
+        OSError("ffmpeg unavailable"),
+    ],
+    ids=["timeout", "oserror"],
+)
+def test_provider_transcode_runtime_failures_are_service_unavailable(
+    monkeypatch, failure,
+):
+    monkeypatch.setattr(
+        media_probe.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(media_probe.MediaProbeError, match="未能執行音訊格式轉換") as raised:
+        media_probe.transcode_audio_for_provider(
+            b"audio", "audio/webm", max_output_bytes=1024,
+        )
+
+    assert raised.value.service_unavailable is True
+
+
 def _request():
     return Request({
         "type": "http",

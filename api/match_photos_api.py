@@ -42,6 +42,14 @@ class PhotoCompleteBody(BaseModel):
     upload_tokens: list[str] = Field(min_length=1, max_length=PHOTO_BATCH_MAX_ITEMS)
 
 
+class PhotoMetadataBody(BaseModel):
+    album_label: str = Field(min_length=1, max_length=200)
+    match_video_id: int | None = Field(default=None, gt=0)
+    photo_date: str = Field(default="", max_length=20)
+    photo_title: str = Field(default="", max_length=300)
+    caption: str = Field(default="", max_length=2000)
+
+
 def _context(request: Request):
     from deploy.proxy import get_vote_db
     return require_page_user(request, "match_photos"), get_vote_db()
@@ -75,7 +83,7 @@ def data(request: Request):
 def photos(request: Request, page: int = 1, album: str = "全部", search: str = "", sort: str = "date_desc"):
     from core import media_logic as logic
     from schema import TABLE_MATCH_PHOTOS
-    _user, db = _context(request); page,_,offset=bounds(page)
+    user_id, db = _context(request); page,_,offset=bounds(page)
     album = str(album or "")[:200]
     search = str(search or "")[:100]
     clauses=[];params={}
@@ -88,8 +96,40 @@ def photos(request: Request, page: int = 1, album: str = "全部", search: str =
     frame=db.query(f"SELECT id,album_label,match_video_id,photo_date,photo_title,caption,file_name,mime_type,uploaded_by,created_at FROM {TABLE_MATCH_PHOTOS} {where} ORDER BY {order} LIMIT :limit OFFSET :offset",params)
     items=[]
     for _,r in frame.iterrows():
-        items.append({k:logic.format_value(r.get(k)) for k in ("id","album_label","match_video_id","photo_date","photo_title","caption","file_name","mime_type","uploaded_by","created_at")})
+        uploaded_by = logic.clean_text(r.get("uploaded_by"))
+        items.append({
+            "id": logic.safe_int(r.get("id")),
+            "album_label": logic.clean_text(r.get("album_label")),
+            "match_video_id": logic.safe_int(r.get("match_video_id")) or None,
+            "photo_date": logic.clean_text(r.get("photo_date")),
+            "photo_title": logic.clean_text(r.get("photo_title")),
+            "caption": logic.clean_text(r.get("caption")),
+            "file_name": logic.clean_text(r.get("file_name")),
+            "mime_type": logic.clean_text(r.get("mime_type")),
+            "uploaded_by": uploaded_by,
+            "created_at": logic.json_time(r.get("created_at")),
+            "can_edit": uploaded_by == str(user_id),
+        })
     return payload(items,page,total)
+
+
+@router.patch("/photos/{photo_id}")
+def update_photo(photo_id: int, body: PhotoMetadataBody, request: Request):
+    from core import media_logic as logic
+
+    user_id, db = _context(request)
+    try:
+        changed = logic.update_photo_metadata(
+            user_id, photo_id, body.album_label, body.match_video_id,
+            body.photo_date, body.photo_title, body.caption, db=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not changed:
+        # Deliberately use the same response for a missing row and another
+        # uploader's row so this mutation endpoint does not disclose ownership.
+        raise HTTPException(404, "找不到可編輯的圖片。")
+    return {"ok": True, "message": "圖片資料已更新。"}
 
 
 @router.post("/upload-intent")

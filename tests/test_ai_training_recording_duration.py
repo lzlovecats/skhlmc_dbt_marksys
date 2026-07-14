@@ -37,14 +37,16 @@ def test_live_webm_without_duration_is_measured_by_bounded_decode(monkeypatch):
         if command[0] == "ffprobe":
             return _live_webm_probe_result()
         assert command[0] == "ffmpeg"
-        assert command[command.index("-ac") + 1] == "1"
-        assert command[command.index("-ar") + 1] == "16000"
+        assert command[command.index("-progress") + 1] == "pipe:1"
         assert command[command.index("-t") + 1] == "61"
-        assert command[-2:] == ["s16le", "pipe:1"]
+        assert command[command.index("-f") + 1] == "null"
+        assert "s16le" not in command
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == media_probe.MEDIA_TRANSCODE_TIMEOUT_SECONDS
         return SimpleNamespace(
             returncode=0,
-            stdout=b"\0" * (4 * 16_000 * 2),
-            stderr=b"",
+            stdout="out_time_us=4000000\nprogress=end\n",
+            stderr="",
         )
 
     monkeypatch.setattr(media_probe.subprocess, "run", fake_run)
@@ -63,8 +65,8 @@ def test_bounded_decode_still_rejects_audio_over_server_limit(monkeypatch):
             return _live_webm_probe_result()
         return SimpleNamespace(
             returncode=0,
-            stdout=b"\0" * (61 * 16_000 * 2),
-            stderr=b"",
+            stdout="out_time_us=61000000\nprogress=end\n",
+            stderr="",
         )
 
     monkeypatch.setattr(media_probe.subprocess, "run", fake_run)

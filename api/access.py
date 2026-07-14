@@ -14,3 +14,21 @@ def require_page_user(request: Request, page: str) -> str:
     if not account_can_access(user_id, page):
         raise HTTPException(403, access_denial_message(page))
     return user_id
+
+
+def require_competition_staff(request: Request) -> str:
+    """Require the same organiser session used by 主席主持易.
+
+    Competition-day controls deliberately use the dedicated organiser gate,
+    rather than a committee account cookie, so every person who can operate
+    主席主持易 receives the same bounded competition-control capability.
+    Keeping this check here prevents projector/recording endpoints from each
+    growing a subtly different authentication rule.
+    """
+    from deploy.proxy import _verify_registration_admin_token
+
+    cookies = getattr(request, "cookies", {}) or {}
+    token = cookies.get("registration_admin") or ""
+    if not _verify_registration_admin_token(token):
+        raise HTTPException(401, "未登入賽會人員帳戶，請先到主席主持易登入。")
+    return "registration_admin"

@@ -29,6 +29,7 @@ TABLE_VIDEO_VIEWS = "video_views"
 TABLE_VIDEO_COMMENTS = "video_comments"
 TABLE_VIDEO_VOTES = "video_votes"
 TABLE_VIDEO_CHAPTERS = "video_chapters"
+TABLE_VIDEO_ROSTER = "video_roster"
 TABLE_VIDEO_PROGRESS = "video_progress"
 TABLE_MATCH_PHOTOS = "match_photos"
 TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
@@ -57,6 +58,9 @@ TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
 TABLE_BANDWIDTH_USAGE_LOGS = "bandwidth_usage_logs"
 TABLE_R2_UPLOAD_INTENTS = "r2_upload_intents"
 TABLE_PROJECTOR_STATE = "projector_state"
+TABLE_PROJECTOR_AI_SESSIONS = "projector_ai_sessions"
+TABLE_PROJECTOR_AI_CONTROLS = "projector_ai_controls"
+TABLE_PROJECTOR_AI_MARKERS = "projector_ai_markers"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
 TABLE_AI_COACH_PREPARE_USAGE = "ai_coach_prepare_usage"
 TABLE_APP_CONFIG = "app_config"
@@ -89,8 +93,20 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCHES} (
     topic_text             TEXT,
     pro_team               TEXT,
     con_team               TEXT,
+    debate_format          TEXT    NOT NULL DEFAULT '校園隨想',
+    free_debate_minutes    NUMERIC(4,1),
     access_code_hash       TEXT,
-    review_password_hash   TEXT
+    review_password_hash   TEXT,
+    CONSTRAINT matches_debate_format_check
+        CHECK (debate_format IN ('校園隨想', '聯中', '星島', '基本法盃')),
+    CONSTRAINT matches_free_debate_minutes_check
+        CHECK (
+            free_debate_minutes IS NULL
+            OR (
+                debate_format = '聯中'
+                AND free_debate_minutes BETWEEN 2 AND 10
+            )
+        )
 );
 """
 
@@ -449,12 +465,62 @@ CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_CHAPTERS} (
     chapter_label   TEXT        NOT NULL,
     start_seconds   INTEGER     NOT NULL DEFAULT 0,
     display_order   INTEGER     DEFAULT 0,
+    is_best_debater BOOLEAN     NOT NULL DEFAULT FALSE,
     updated_at      TIMESTAMP   DEFAULT NOW(),
     PRIMARY KEY (video_id, chapter_label),
+    CONSTRAINT video_chapters_best_role_check
+        CHECK (
+            is_best_debater = FALSE
+            OR chapter_label IN (
+                '正主', '反主', '正一', '反一', '正二',
+                '反二', '正三', '反三', '反結', '正結'
+            )
+        ),
     CONSTRAINT fk_video_chapters_video
         FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
         ON DELETE CASCADE
 );
+"""
+
+# Table: VIDEO_ROSTER
+# Per-video links from individual speech roles to committee member accounts.
+CREATE_VIDEO_ROSTER = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_ROSTER} (
+    video_id        INTEGER     NOT NULL,
+    role_label      TEXT        NOT NULL
+                                CHECK (role_label IN (
+                                    '正主', '反主', '正一', '反一', '正二',
+                                    '反二', '正三', '反三', '反結', '正結'
+                                )),
+    member_user_id  TEXT        NOT NULL,
+    updated_at      TIMESTAMP   DEFAULT NOW(),
+    PRIMARY KEY (video_id, role_label),
+    CONSTRAINT fk_video_roster_video
+        FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_roster_member
+        FOREIGN KEY (member_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Keep the member-linked roster backend-only on a fresh ``init_db`` target,
+# including Supabase databases whose default grants expose new public tables.
+LOCK_VIDEO_ROSTER_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_VIDEO_ROSTER} FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_VIDEO_ROSTER} FROM %I',
+            role_name
+        );
+    END LOOP;
+END $$;
 """
 
 # Table: VIDEO_PROGRESS
@@ -617,6 +683,98 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_STATE} (
     visible       BOOLEAN DEFAULT TRUE,
     updated_at    TIMESTAMP
 );
+"""
+
+CREATE_PROJECTOR_AI_SESSIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_SESSIONS} (
+    session_id             TEXT PRIMARY KEY,
+    display_key            TEXT NOT NULL,
+    match_id               TEXT NOT NULL,
+    status                 TEXT NOT NULL DEFAULT 'start_requested'
+        CHECK (status IN ('start_requested','recording','stop_requested','processing',
+                          'ready','published','error','cleared','expired')),
+    status_detail          TEXT NOT NULL DEFAULT '',
+    recording_started_at   TIMESTAMP,
+    recording_duration_seconds DOUBLE PRECISION,
+    recording_bytes        BIGINT CHECK (recording_bytes IS NULL OR recording_bytes >= 0),
+    result_ciphertext      BYTEA,
+    tts_audio_ciphertext   BYTEA,
+    tts_mime               TEXT,
+    tts_claim_token        TEXT,
+    tts_status             TEXT NOT NULL DEFAULT 'not_requested'
+        CHECK (tts_status IN ('not_requested','generating','unavailable','ready','playing',
+                              'played','stopped','failed')),
+    published              BOOLEAN NOT NULL DEFAULT FALSE,
+    publish_revision       BIGINT NOT NULL DEFAULT 0 CHECK (publish_revision >= 0),
+    result_expires_at      TIMESTAMP,
+    created_at             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_projector_ai_session_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
+        ON DELETE RESTRICT
+);
+"""
+
+CREATE_PROJECTOR_AI_CONTROLS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_CONTROLS} (
+    display_key        TEXT PRIMARY KEY,
+    current_session_id TEXT,
+    command            TEXT NOT NULL DEFAULT '',
+    command_revision   BIGINT NOT NULL DEFAULT 0 CHECK (command_revision >= 0),
+    ack_revision       BIGINT NOT NULL DEFAULT 0 CHECK (ack_revision >= 0),
+    kiosk_status       TEXT NOT NULL DEFAULT 'offline',
+    status_detail      TEXT NOT NULL DEFAULT '',
+    command_payload    JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    hardware_status    JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    capabilities       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    kiosk_last_seen_at TIMESTAMP,
+    created_at         TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_projector_ai_control_session
+        FOREIGN KEY (current_session_id) REFERENCES {TABLE_PROJECTOR_AI_SESSIONS}(session_id)
+        ON DELETE SET NULL
+);
+"""
+
+CREATE_PROJECTOR_AI_MARKERS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_MARKERS} (
+    id             BIGSERIAL PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    offset_seconds DOUBLE PRECISION NOT NULL CHECK (offset_seconds >= 0),
+    side           TEXT NOT NULL CHECK (side IN ('pro','con','both','unknown')),
+    segment        TEXT NOT NULL,
+    seg_index      INTEGER NOT NULL CHECK (seg_index >= 0),
+    created_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_projector_ai_marker_session
+        FOREIGN KEY (session_id) REFERENCES {TABLE_PROJECTOR_AI_SESSIONS}(session_id)
+        ON DELETE CASCADE
+);
+"""
+
+# Results, transcripts, speaker markers and TTS audio are backend-only even
+# though the payload columns are authenticated-encrypted at rest.
+LOCK_PROJECTOR_AI_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE
+    {TABLE_PROJECTOR_AI_SESSIONS}, {TABLE_PROJECTOR_AI_CONTROLS},
+    {TABLE_PROJECTOR_AI_MARKERS}
+    FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_PROJECTOR_AI_MARKERS}_id_seq
+    FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_PROJECTOR_AI_SESSIONS}, {TABLE_PROJECTOR_AI_CONTROLS}, {TABLE_PROJECTOR_AI_MARKERS} FROM '
+            || quote_ident(role_name);
+        EXECUTE
+            'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_PROJECTOR_AI_MARKERS}_id_seq FROM '
+            || quote_ident(role_name);
+    END LOOP;
+END $$;
 """
 
 CREATE_AI_COACH_LIVE_BRIEFS = f"""
@@ -840,7 +998,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
@@ -848,7 +1006,17 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     input_tokens        INTEGER     DEFAULT 0,
     output_tokens       INTEGER     DEFAULT 0,
     audio_tokens        INTEGER     DEFAULT 0,
+    billable_characters INTEGER     NOT NULL DEFAULT 0
+                                CHECK (billable_characters >= 0),
     search_calls        INTEGER     DEFAULT 0,
+    operation_id        TEXT        CHECK (
+                                operation_id IS NULL
+                                OR CHAR_LENGTH(operation_id) BETWEEN 1 AND 200
+                            ),
+    operation_stage     TEXT        CHECK (
+                                operation_stage IS NULL
+                                OR CHAR_LENGTH(operation_stage) BETWEEN 1 AND 80
+                            ),
     cost_source         TEXT        DEFAULT 'estimate',
     status              TEXT        DEFAULT 'success'
                                 CHECK (status IN ('success', 'failed')),
@@ -1105,6 +1273,10 @@ CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice
     ON {TABLE_VIDEO_VOTES}(video_id, vote_choice);
 CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
     ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_video_chapters_one_best_debater
+    ON {TABLE_VIDEO_CHAPTERS}(video_id) WHERE is_best_debater = TRUE;
+CREATE INDEX IF NOT EXISTS idx_video_roster_member_video
+    ON {TABLE_VIDEO_ROSTER}(member_user_id, video_id);
 CREATE INDEX IF NOT EXISTS idx_match_photos_album_created
     ON {TABLE_MATCH_PHOTOS}(album_label, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_match_photos_date_created
@@ -1121,6 +1293,16 @@ CREATE INDEX IF NOT EXISTS idx_bandwidth_usage_created
     ON {TABLE_BANDWIDTH_USAGE_LOGS}(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_r2_upload_intents_quota
     ON {TABLE_R2_UPLOAD_INTENTS}(media_kind, user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_projector_ai_sessions_display_updated
+    ON {TABLE_PROJECTOR_AI_SESSIONS}(display_key, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projector_ai_sessions_one_active_display
+    ON {TABLE_PROJECTOR_AI_SESSIONS}(display_key)
+    WHERE status IN ('start_requested','recording','stop_requested','processing');
+CREATE INDEX IF NOT EXISTS idx_projector_ai_sessions_expiry
+    ON {TABLE_PROJECTOR_AI_SESSIONS}(result_expires_at)
+    WHERE result_ciphertext IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_projector_ai_markers_session_time
+    ON {TABLE_PROJECTOR_AI_MARKERS}(session_id, offset_seconds, id);
 CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
     ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active
@@ -1148,6 +1330,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_created_at
     ON {TABLE_AI_FUND_USAGE_LOGS}(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_user_id
     ON {TABLE_AI_FUND_USAGE_LOGS}(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_operation
+    ON {TABLE_AI_FUND_USAGE_LOGS}(operation_id, operation_stage)
+    WHERE operation_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date
     ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date);
 CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date
@@ -1212,6 +1397,8 @@ ALL_SCHEMAS = [
     CREATE_VIDEO_COMMENTS,            # → match_videos, accounts
     CREATE_VIDEO_VOTES,               # → match_videos, accounts
     CREATE_VIDEO_CHAPTERS,            # → match_videos
+    CREATE_VIDEO_ROSTER,              # → match_videos, accounts
+    LOCK_VIDEO_ROSTER_PRIVILEGES,
     CREATE_VIDEO_PROGRESS,            # → match_videos, accounts
     CREATE_MATCH_PHOTOS,              # → match_videos, accounts
     CREATE_TTS_VOICE_CONSENTS,        # → accounts
@@ -1233,6 +1420,10 @@ ALL_SCHEMAS = [
     CREATE_BANDWIDTH_USAGE_LOGS,        # → accounts
     CREATE_R2_UPLOAD_INTENTS,           # → accounts
     CREATE_PROJECTOR_STATE,             # short-lived projector state
+    CREATE_PROJECTOR_AI_SESSIONS,        # encrypted two-hour AI評判易 result
+    CREATE_PROJECTOR_AI_CONTROLS,        # cross-device command + ACK state
+    CREATE_PROJECTOR_AI_MARKERS,         # server-time projector segment events
+    LOCK_PROJECTOR_AI_PRIVILEGES,
     CREATE_AI_COACH_LIVE_BRIEFS,        # short-lived AI coach state
     CREATE_AI_COACH_PREPARE_USAGE,      # AI coach quota ledger
     CREATE_AI_COACH_PREPARE_USAGE_INDEX,

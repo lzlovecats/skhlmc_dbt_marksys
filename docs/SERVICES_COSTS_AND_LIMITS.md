@@ -22,7 +22,7 @@ Provider 價格可隨時調整；付款前應以各 provider dashboard 及官方
 |---|---|---:|---:|---|
 | Render | FastAPI、HTML、普通AI／TTS、多人Live WebSocket rooms | Starter | US$7，約 HK$55 | 512MB RAM、0.5 CPU；目前帳戶顯示 5GB outbound/月 |
 | Supabase | PostgreSQL database | Free | US$0 | 500MB database、500MB RAM、5GB egress、5GB cached egress、1GB Storage |
-| Cloudflare R2 | Private 相片、縮圖及 TTS 錄音 | Standard Free Tier | 預期 US$0 | 10GB-month、1M Class A、10M Class B；Internet egress 免費 |
+| Cloudflare R2 | Private 相片、縮圖、TTS 錄音及 AI評判易短暫錄音 | Standard Free Tier | 預期 US$0 | 10GB-month、1M Class A、10M Class B；Internet egress 免費 |
 | Google Gemini API | AI Coach、審核、Gemini Live；未來RAG embedding | Free／paid usage | US$0 起，按使用量 | 模型 token、Search grounding、Live API rate limits；RAG schema未provision時會在provider call前停止 |
 | OpenRouter | DeepSeek、Claude、GPT 等可選模型 | Prepaid／usage | 無固定月費 | 按模型 token 及搜尋用量扣 credits |
 | Azure Speech | 可選廣東話 TTS | 按 Azure subscription | 未能由 repo 確定 | 按合成字元／subscription quota |
@@ -136,6 +136,35 @@ TOAST空間，未經maintenance評估不為追求dashboard數字而跑`VACUUM FU
 - 新檔案先上載至`pending/photos/...`或`pending/audio/tts/...`，server驗證後用R2
   內部copy升格到正式key；中斷上載由48小時lifecycle及orphan cleaner清理。
 - R2總量7GB開始警告、8GB停止簽發新PUT，保留至少2GB free-tier緩衝。
+
+### AI評判易全場錄音
+
+- 只接受 kiosk account，並綁定資料庫內正式場次；辯題、隊名、賽制及聯中自由辯論時間不由 browser 自行聲稱。
+- 每段10秒至90分鐘，最多12MiB；browser目標16kbps。開始前短錄音會按實際 recorder bitrate 推算90分鐘大小，超過上限便不准開始。
+- 每日5場係所有裝置共用固定 `kiosk` identity；每月100場係全系統共用。兩者以香港日／月計算。簽發 upload intent 時先保留名額；上載後放棄、或未呼叫 provider 前失敗且已成功刪除錄音，會釋放名額。一旦開始實際 AI provider 呼叫，無論成功或失敗都計一場；刪檔失敗時亦會保守地佔用至孤兒檔清理完成。
+- 暫存 key 只會是 `pending/audio/kiosk-match-review/{UTC年}/{月}/{intent_id}.{ext}`，不會升格成 durable object，也不會寫入 media table。
+- Render下載後會用ffprobe驗證，再以ffmpeg轉成單聲道16kHz／16kbps MP3。R2原檔成功刪除後先可呼叫provider；刪除失敗即取消分析。
+- Gemini先以完整原音產生附時間碼逐字稿，再以同一原音＋逐字稿＋正式場次及 Projector 環節標記評審，因此每場係兩個 provider calls，但只扣一個 app 場次 quota。原錄音會在 provider 呼叫前由 R2 刪除；逐字稿、完整評語及可選 TTS 音軌只以加密形式短暫保留最多兩小時，不會放入公開 projector state。
+- 單一房間咪只可做匿名 speaker diarization，不能靠聲線或其他個人特徵判斷站方。正式環節由 Projector Control 每次轉環節自動留下 server-side 時間標記。現有自由辯論環節只標示「雙方」，不增加正／反手動按鈕；AI 要先利用正式環節建立匿名講者站方錨點，再依論點、立場、稱呼及回應上下文判斷自由辯論每句屬邊方；證據不足必須標「未能確定」。
+- 停止後結果只在 `/projector/control` 給已登入主席主持易的賽會人員私人預覽，絕不自動公開。操作員可在正式人手賽果公布前手動投影 AI 第二意見。
+- 投影摘要最多 1,200 字。沒有可用 TTS provider 時只投影文字，不會讀出；Azure TTS 已設定時，只會在操作員明確發布／播放後合成及讀出上述 1,200 字內粵語摘要。這是本 app 的上限，不是聲稱 Azure 平台硬上限。
+- 逐字稿、評審及 TTS 的實際 provider attempts 共用同一 `operation_id`，但分別記錄 `transcription`、`judgement`及 `result_tts` stage。AI基金以一個場次任務顯示，同時保留每次 AI／TTS provider call、成敗、tokens、TTS 計費字元及估算成本。沒有 provider call 便沒有 TTS 支出。
+- 因錄音可能包含學生個人資料，只容許已確認paid Gemini project；部署必須設定 `GEMINI_PAID_TIER_CONFIRMED=true`，否則preflight及上載均fail closed。
+- 一鍵 preflight 檢查 R2、模型／key、paid 確認、ffprobe／ffmpeg、bandwidth、正式場次、app quota，並在 Kiosk 實測咪、短錄音、90分鐘預計檔案大小、投影畫面及本機鈴聲。有 TTS 才另外播放測試句；無 TTS 只列警告，不阻止錄音。測試不上載咪錄音、不呼叫 AI 或扣 AI 場次 quota；若實際呼叫 TTS 測試句，該 TTS provider attempt 仍會按實際支出記入 AI基金。
+
+R2 object tree：
+
+```text
+pending/photos/original/{safe_user}/{uuid}.{ext}
+pending/photos/thumb/{safe_user}/{uuid}.{ext}
+pending/audio/tts/{safe_user}/{intent_id}.{ext}
+pending/audio/kiosk-match-review/{UTC YYYY}/{MM}/{intent_id}.{ext}
+photos/original/{safe_user}/{uuid}.{ext}
+photos/thumb/{safe_user}/{uuid}.{ext}
+audio/tts/{safe_user}/{intent_id}.{ext}
+```
+
+只有相片及TTS會由`pending/`升格至最後三個durable prefixes；AI評判易永不升格。`pending/`由兩日lifecycle及48小時orphan cleaner兜底，規則不得擴到durable prefixes。
 
 ### 單人Gemini Live
 

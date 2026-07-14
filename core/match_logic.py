@@ -1,6 +1,7 @@
 """Match management and team roster logic."""
 
 import datetime as dt
+import math
 import random
 import secrets
 from zoneinfo import ZoneInfo
@@ -9,6 +10,7 @@ from sqlalchemy import text
 
 from core.auth_logic import hash_password
 from core.vote_logic import _resolve_db
+from debate_timing import DEBATE_FORMATS
 from schema import (
     TABLE_DEBATERS, TABLE_MATCHES,
     TABLE_MATCH_ROSTER_LINKS, TABLE_TOPICS,
@@ -25,8 +27,18 @@ def _date(value): return value.strftime("%Y-%m-%d") if hasattr(value, "strftime"
 def _time(value): return value.strftime("%H:%M") if hasattr(value, "strftime") else _clean(value)[:5]
 
 
+def _free_debate_minutes(value):
+    if not _has(value):
+        return None
+    try:
+        minutes = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return minutes if math.isfinite(minutes) else None
+
+
 def _match_records(db, detail_match_id=None, compact=False):
-    matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
+    matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, debate_format, free_debate_minutes, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
     match_ids = matches["match_id"].astype(str).tolist() if "match_id" in matches.columns else []
     requested = _clean(detail_match_id)
     detail_id = requested if requested in match_ids else (match_ids[0] if match_ids else "")
@@ -46,7 +58,10 @@ def _match_records(db, detail_match_id=None, compact=False):
     }
     out = []
     for _, row in matches.iterrows():
-        record = {"match_id": _clean(row["match_id"]), "match_date": _date(row.get("match_date")), "match_time": _time(row.get("match_time")), "topic_text": _clean(row.get("topic_text")), "pro_team": _clean(row.get("pro_team")), "con_team": _clean(row.get("con_team")), "has_access_code": _has(row.get("access_code_hash")), "has_review_password": _has(row.get("review_password_hash"))}
+        debate_format = _clean(row.get("debate_format"))
+        if debate_format not in DEBATE_FORMATS:
+            debate_format = DEBATE_FORMATS[0]
+        record = {"match_id": _clean(row["match_id"]), "match_date": _date(row.get("match_date")), "match_time": _time(row.get("match_time")), "topic_text": _clean(row.get("topic_text")), "pro_team": _clean(row.get("pro_team")), "con_team": _clean(row.get("con_team")), "debate_format": debate_format, "free_debate_minutes": _free_debate_minutes(row.get("free_debate_minutes")) if debate_format == "聯中" else None, "has_access_code": _has(row.get("access_code_hash")), "has_review_password": _has(row.get("review_password_hash"))}
         for side in ("pro", "con"):
             for pos in range(1, 5):
                 record[f"{side}_{pos}"] = debater_lookup.get((record["match_id"], side, pos), "")
@@ -84,6 +99,9 @@ def match_admin_data(selected_match_id=None, db=None, compact=False):
     links = ensure_match_links(selected, db) if selected else {}
     return {"matches": matches, "selected_match_id": selected or None, "roster_links": links,
             "default_date": _now().date().isoformat(), "default_time": "16:00",
+            "debate_formats": list(DEBATE_FORMATS),
+            "default_debate_format": DEBATE_FORMATS[0],
+            "default_free_debate_minutes": 5,
             "time_slots": TIME_SLOTS, "difficulties": [{"value": key, "label": value} for key, value in DIFFICULTY_OPTIONS.items()]}
 
 
@@ -96,10 +114,11 @@ def create_match(match_id, db=None):
         return {"ok": False, "message": "場次已達保護上限，請先刪除不再需要的舊場次。"}
     created = db.execute_count(
         f"""INSERT INTO {TABLE_MATCHES}
-            (match_id, match_date, match_time, topic_text, pro_team, con_team)
-            VALUES (:id, NULL, NULL, '', '', '')
+            (match_id, match_date, match_time, topic_text, pro_team, con_team,
+             debate_format, free_debate_minutes)
+            VALUES (:id, NULL, NULL, '', '', '', :format, NULL)
             ON CONFLICT (match_id) DO NOTHING""",
-        {"id": match_id},
+        {"id": match_id, "format": DEBATE_FORMATS[0]},
     )
     if not created:
         return {"ok": False, "message": "此場次已存在。"}
@@ -118,6 +137,23 @@ def save_match(data, db=None):
         return {"ok": False, "message": "請輸入有效的比賽日期。"}
     if match_time and match_time not in TIME_SLOTS:
         return {"ok": False, "message": "請選擇有效的比賽時間。"}
+    debate_format = _clean(data.get("debate_format")) or DEBATE_FORMATS[0]
+    if debate_format not in DEBATE_FORMATS:
+        return {"ok": False, "message": "請選擇有效的賽制。"}
+    raw_free_minutes = data.get("free_debate_minutes")
+    free_minutes_supplied = (
+        raw_free_minutes is not None and str(raw_free_minutes).strip() != ""
+    )
+    free_minutes = _free_debate_minutes(raw_free_minutes)
+    if debate_format == "聯中":
+        if free_minutes_supplied and (
+            free_minutes is None or not 2 <= free_minutes <= 10
+        ):
+            return {"ok": False, "message": "聯中自由辯論時間必須介乎 2 至 10 分鐘。"}
+    elif free_minutes_supplied:
+        return {"ok": False, "message": "只有聯中賽制可設定自由辯論時間。"}
+    else:
+        free_minutes = None
     raw_access = _clean(data.get("access_code"))
     raw_review = _clean(data.get("review_password"))
     new_access_hash = hash_password(raw_access) if raw_access else None
@@ -128,8 +164,8 @@ def save_match(data, db=None):
         access, review = exists._mapping["access_code_hash"], exists._mapping["review_password_hash"]
         access = None if data.get("clear_access_code") else new_access_hash or access
         review = None if data.get("clear_review_password") else new_review_hash or review
-        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "access": access, "review": review}
-        session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
+        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "format": debate_format, "free_minutes": free_minutes, "access": access, "review": review}
+        session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, debate_format=:format, free_debate_minutes=:free_minutes, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
         debater_params = [
             {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))}
             for side in ("pro", "con")

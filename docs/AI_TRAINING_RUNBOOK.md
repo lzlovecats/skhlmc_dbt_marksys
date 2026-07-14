@@ -9,6 +9,39 @@
 > 這是研究環境 runbook，不是 production deployment 指引。第一輪目標是建立可重現
 > baseline，不是由零 pretrain，也不是訓練完成便取代 Azure TTS。
 
+## 0. 建議入口：本機拖放資料準備器
+
+日常使用毋須逐段抄第 3–4 節命令。先在 workstation repo 根目錄啟動只綁定
+`127.0.0.1` 的本機程式：
+
+```bash
+./tools/start_gpt_sovits_preparer.sh
+```
+
+Launcher 會優先使用 repo 的 `venv`，沒有便使用 `python3`；亦可直接執行
+`python3 tools/gpt_sovits_preparer_app.py`。
+
+Browser 會自動開啟「GPT-SoVITS 本機資料準備器」。把 AI Training 頁下載的單一錄音者
+`recordings.json` 拖入頁面後，程式會自動：
+
+1. 在 `~/private-ai-training/` 建立權限為 `700` 的獨立 workspace；
+2. 驗證 manifest、單一 speaker、ID、稿句、重複 SHA-256 及下載 URL；
+3. 直接從 R2 下載、retry、核對 size/hash/音訊 metadata，且不在 log 顯示 signed URL；
+4. 只做 decode、32 kHz mono PCM16 轉檔，不做 denoise、音量 normalization 或變聲；
+5. 按完整稿分組產生 `train`、`validation`、`test`，WebUI 指引只會引用 `train.list`；
+6. 保存不含 signed URL 的 provenance、實際檔案 SHA-256、quality report 及 read-only raw；
+7. 偵測 OS、CPU、RAM、磁碟、PyTorch／NVIDIA GPU、逐張 VRAM 及 driver，顯示保守的
+   GPT-SoVITS batch、precision、epoch、save frequency 及 OOM fallback。
+
+參數 profile 鎖定正式 release `20250606v2pro`、commit
+`d7c2210da8c013e81a94bfc7b811a477c99fd506`；epoch 沿用該 release default，batch 才按
+本機硬件保守調整。開始訓練前仍須核對 checkout、code／weights／vocoder license；程式不會
+把任何產物標成 production-ready。
+
+拖放頁受 browser 安全限制，不能刪除原本 Downloads 內含短期 URL 的
+`recordings.json`；完成後要自行把原檔移到 Trash。若 URL 已過期，重新 export 再拖入即可。
+第 3–4 節保留作 audit、故障排查及人工重現參考。
+
 ## 1. Repo 現況
 
 現時已經有：

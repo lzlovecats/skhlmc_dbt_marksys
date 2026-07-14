@@ -13,6 +13,8 @@
         --accent: #f9a825;
         --pro: #2e7d32;
         --con: #b3261e;
+        --line: #2a3654;
+        --warn: #ffd166;
       }
       * {
         box-sizing: border-box;
@@ -24,7 +26,7 @@
         font-family:
           "Noto Sans CJK HK", "PingFang HK", "Microsoft JhengHei", sans-serif;
         padding: 16px;
-        max-width: 720px;
+        max-width: 980px;
         margin: 0 auto;
       }
       h1 {
@@ -44,11 +46,12 @@
         margin-bottom: 6px;
       }
       select,
+      input,
       button {
         font-size: 16px;
         padding: 10px 12px;
         border-radius: 8px;
-        border: 1px solid #2a3654;
+        border: 1px solid var(--line);
         background: #0f1830;
         color: var(--text);
         width: 100%;
@@ -77,6 +80,14 @@
       button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+      input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        margin: 1px 0 0;
+        padding: 0;
+        accent-color: var(--accent);
+        flex: 0 0 auto;
       }
       .meta {
         font-size: 13px;
@@ -136,6 +147,9 @@
       .ok {
         color: #7ee787;
       }
+      .warn {
+        color: var(--warn);
+      }
       .toggle-on {
         background: var(--pro) !important;
         border-color: var(--pro) !important;
@@ -160,12 +174,238 @@
       .back:hover {
         color: var(--text);
       }
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .section-title h2 {
+        margin: 0;
+        font-size: 19px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 9px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .badge::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #69738b;
+      }
+      .badge.online {
+        color: #7ee787;
+        border-color: rgba(126, 231, 135, 0.45);
+      }
+      .badge.online::before {
+        background: #7ee787;
+      }
+      .badge.busy {
+        color: var(--warn);
+        border-color: rgba(255, 209, 102, 0.45);
+      }
+      .badge.busy::before {
+        background: var(--warn);
+      }
+      .badge.error {
+        color: #ff8a80;
+        border-color: rgba(255, 138, 128, 0.45);
+      }
+      .badge.error::before {
+        background: #ff8a80;
+      }
+      .official-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 12px;
+        margin-top: 10px;
+      }
+      .official-field {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0f1830;
+        padding: 9px 10px;
+        min-width: 0;
+      }
+      .official-field.wide {
+        grid-column: 1 / -1;
+      }
+      .official-field small {
+        display: block;
+        color: var(--muted);
+        margin-bottom: 3px;
+      }
+      .official-field span {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+      .advisory {
+        border: 1px solid rgba(249, 168, 37, 0.5);
+        background: rgba(249, 168, 37, 0.09);
+        border-radius: 8px;
+        padding: 10px;
+        color: #ffe4a3;
+        font-size: 13px;
+        line-height: 1.55;
+        margin-bottom: 12px;
+      }
+      .hardware-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px;
+        margin: 10px 0;
+      }
+      .hardware-item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0f1830;
+        padding: 8px 10px;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .hardware-item.good {
+        border-color: rgba(126, 231, 135, 0.45);
+        color: #b6f5bc;
+      }
+      .hardware-item.bad {
+        border-color: rgba(255, 138, 128, 0.45);
+        color: #ffc0bb;
+      }
+      .confirm-list {
+        display: grid;
+        gap: 8px;
+        margin: 10px 0;
+      }
+      .checkline {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        color: var(--text);
+        font-size: 14px;
+        line-height: 1.45;
+        margin: 0;
+      }
+      .clock-wrap {
+        text-align: center;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #080e1a;
+        padding: 12px;
+        margin: 12px 0;
+      }
+      #aiClock {
+        font-variant-numeric: tabular-nums;
+        font-size: clamp(30px, 7vw, 52px);
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .clock-limit,
+      .substatus {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .ai-status {
+        min-height: 22px;
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: #0f1830;
+        font-size: 13px;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+      .ai-status.error {
+        color: #ffb4ad;
+        border: 1px solid rgba(255, 138, 128, 0.4);
+      }
+      .ai-status.success {
+        color: #a8efae;
+        border: 1px solid rgba(126, 231, 135, 0.4);
+      }
+      .result-card {
+        margin-top: 12px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      .result-card[hidden] {
+        display: none;
+      }
+      .summary-preview {
+        white-space: pre-wrap;
+        border-left: 4px solid var(--accent);
+        background: #0f1830;
+        border-radius: 6px;
+        padding: 11px;
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+      }
+      details {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin-top: 10px;
+        padding: 9px 10px;
+        background: #0f1830;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 700;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--text);
+        margin: 10px 0 0;
+        max-height: 48vh;
+        overflow-y: auto;
+      }
+      .action-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .danger {
+        background: #3a2320;
+        color: #ffd6d0;
+        border-color: var(--con);
+      }
+      .hidden {
+        display: none !important;
+      }
+      @media (max-width: 640px) {
+        .row,
+        .section-title {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .official-grid,
+        .hardware-grid,
+        .action-grid {
+          grid-template-columns: 1fr;
+        }
+        .official-field.wide {
+          grid-column: auto;
+        }
+      }
     </style>
   </head>
   <body>
     <div class="topbar">
       <h1>比賽日投影控制</h1>
-      <a class="back" href="/">← 返回系統</a>
+      <a class="back" href="/chairperson">← 返回主席主持易</a>
     </div>
 
     <div class="card">
@@ -173,21 +413,27 @@
       <select id="match">
         <option value="">載入中…</option>
       </select>
-      <div class="row" style="margin-top: 10px">
-        <div>
-          <label>賽制</label>
-          <select id="format">
-            <option>校園隨想</option>
-            <option>聯中</option>
-            <option>星島</option>
-            <option>基本法盃</option>
-          </select>
+      <button class="primary" id="apply" style="margin-top: 10px">
+        套用正式場次
+      </button>
+      <div class="official-grid" id="officialMatch">
+        <div class="official-field wide">
+          <small>辯題</small><span id="officialMotion">尚未套用場次</span>
         </div>
-        <div style="display: flex; align-items: flex-end">
-          <button class="primary" id="apply">套用場次</button>
+        <div class="official-field">
+          <small>正方</small><span id="officialPro">—</span>
+        </div>
+        <div class="official-field">
+          <small>反方</small><span id="officialCon">—</span>
+        </div>
+        <div class="official-field">
+          <small>正式賽制</small><span id="officialFormat">—</span>
+        </div>
+        <div class="official-field">
+          <small>自由辯論時間</small><span id="officialFree">—</span>
         </div>
       </div>
-      <div class="meta" id="matchMeta"></div>
+      <div class="meta" id="matchMeta">賽制由正式場次資料決定，控制頁不能另行更改。</div>
     </div>
 
     <div class="card">
@@ -206,21 +452,121 @@
       <div id="seq"></div>
     </div>
 
+    <div class="card" id="aiJudgeCard">
+      <div class="section-title">
+        <h2>🎙️ AI評判易</h2>
+        <span class="badge" id="kioskBadge">正在連接比賽日 Kiosk</span>
+      </div>
+      <div class="advisory">
+        AI評判易只提供 AI 輔助第二意見，正式賽果以評判團為準。結果完成後只會先喺呢個控制頁私人預覽；必須由操作員手動發布先會投影。如粵語語音服務已設定並可用，發布時會先準備語音；投影完成後再由操作員另按「讀出／重新讀出」，否則全程只投影文字。
+      </div>
+
+      <section>
+        <div class="row">
+          <button id="hardwareTest">🧪 測試所有比賽日硬件</button>
+          <button id="hardwareConfirm" disabled>確認大屏及喇叭正常</button>
+        </div>
+        <div class="hardware-grid" id="hardwareResults">
+          <div class="hardware-item">尚未測試 Kiosk、收音咪、大屏及粵語喇叭。</div>
+        </div>
+        <div class="confirm-list">
+          <label class="checkline">
+            <input id="screenConfirmed" type="checkbox" />
+            <span>我確認投影大屏已顯示今次硬件測試畫面。</span>
+          </label>
+          <label class="checkline">
+            <input id="audioConfirmed" type="checkbox" />
+            <span>我確認現場喇叭清楚播出測試聲；如已設定 TTS，亦聽到粵語測試句。</span>
+          </label>
+        </div>
+      </section>
+
+      <div class="clock-wrap">
+        <div id="aiClock">0:00.000</div>
+        <div class="clock-limit" id="aiClockLimit">上限 90:00.000</div>
+        <div class="substatus" id="recordingMeta">未開始錄音</div>
+      </div>
+
+      <label class="checkline">
+        <input id="recordingNotice" type="checkbox" />
+        <span>我確認已通知在場人士：全場會被錄音並交由 AI 製作逐字稿及輔助評語。</span>
+      </label>
+      <div class="action-grid">
+        <button class="primary" id="aiStart" disabled>● 開始全場錄音</button>
+        <button class="danger" id="aiStop" disabled>■ 完場並停止</button>
+      </div>
+      <div class="ai-status" id="aiStatus" role="status">
+        等待比賽日 Kiosk 回報狀態…
+      </div>
+      <div class="substatus" id="commandStatus"></div>
+      <div class="substatus" id="quotaStatus"></div>
+
+      <section class="result-card" id="aiResult" hidden>
+        <div class="section-title">
+          <h2>私人結果預覽</h2>
+          <span class="badge" id="resultBadge">未投影</span>
+        </div>
+        <p class="meta" id="resultMeta"></p>
+        <h3>大屏及粵語朗讀摘要</h3>
+        <div class="summary-preview" id="projectorSummary"></div>
+        <details open>
+          <summary>完整 AI 評語（只供控制頁預覽）</summary>
+          <pre id="fullResult"></pre>
+        </details>
+        <details>
+          <summary>全場逐字稿（只供控制頁預覽，不會投影）</summary>
+          <pre id="transcript"></pre>
+        </details>
+        <div class="action-grid">
+          <button class="primary" id="publishResult" disabled>
+            📽️ 投影文字並準備語音
+          </button>
+          <button id="speechPlay" disabled>🔊 讀出／重新讀出</button>
+          <button id="speechStop" disabled>⏹ 停止朗讀</button>
+          <button class="danger" id="clearResult" disabled>
+            清除 AI 結果及投影
+          </button>
+        </div>
+        <div class="substatus" id="ttsStatus"></div>
+      </section>
+    </div>
+
     <script>
       (function () {
+        "use strict";
+
         var DISPLAY =
           new URLSearchParams(location.search).get("display") || "main";
         var el = function (id) {
           return document.getElementById(id);
         };
         var state = {
+          configured: false,
           match_id: "",
           seg_index: 0,
           seg_total: 0,
           visible: false,
-          debate_format: "校園隨想",
+          debate_format: "",
+          free_debate_minutes: null,
         };
+        var matches = [];
         var segments = [];
+        var sequenceMatchId = "";
+        var sequenceEpoch = 0;
+        var stateBusy = false;
+        var aiBusy = false;
+        var matchSelectionDirty = false;
+        var authRedirecting = false;
+        var projectorPollBusy = false;
+        var aiPollBusy = false;
+        var projectorFailures = 0;
+        var aiFailures = 0;
+        var aiPayload = { control: {}, session: null, limits: {} };
+        var durationBase = 0;
+        var durationSampledAt = performance.now();
+        var durationSessionId = "";
+        var durationRecording = false;
+        var maxDurationSeconds = 90 * 60;
 
         function setStatus(msg, cls) {
           var s = el("status");
@@ -240,175 +586,1139 @@
           });
         }
 
-        function api(method, url, body) {
+        function redirectToChairperson() {
+          if (authRedirecting) return;
+          authRedirecting = true;
+          setStatus("登入已失效，正在前往主席主持易重新登入…", "err");
+          el("aiStatus").textContent =
+            "登入已失效，正在前往主席主持易重新登入…";
+          el("aiStatus").className = "ai-status error";
+          window.setTimeout(function () {
+            window.location.assign("/chairperson");
+          }, 250);
+        }
+
+        async function api(method, url, body) {
           var headers = body ? { "Content-Type": "application/json" } : {};
-          return fetch(url, {
+          var response = await fetch(url, {
             method: method,
             headers: Object.keys(headers).length ? headers : undefined,
             body: body ? JSON.stringify(body) : undefined,
             credentials: "same-origin",
             cache: "no-store",
-          }).then(function (r) {
-            if (r.status === 401)
-              throw new Error(
-                "未登入：請先喺 app 用委員帳戶登入（同一個瀏覽器）。",
-              );
-            if (!r.ok) throw new Error("錯誤 " + r.status);
-            return r.json();
+          });
+          var payload = {};
+          try {
+            payload = await response.json();
+          } catch (_) {}
+          if (response.status === 401) {
+            redirectToChairperson();
+            throw new Error("未登入");
+          }
+          if (!response.ok) {
+            throw new Error(payload.detail || "錯誤 " + response.status);
+          }
+          return payload;
+        }
+
+        function matchById(matchId) {
+          return matches.find(function (item) {
+            return String(item.match_id || "") === String(matchId || "");
           });
         }
 
-        function loadMatches() {
-          api("GET", "/api/projector/matches")
-            .then(function (d) {
-              var sel = el("match");
-              sel.innerHTML = "";
-              var ph = document.createElement("option");
-              ph.value = "";
-              ph.textContent = "— 揀場次 —";
-              sel.appendChild(ph);
-              (d.matches || []).forEach(function (m) {
-                var o = document.createElement("option");
-                o.value = m.match_id;
-                o.dataset.pro = m.pro_team;
-                o.dataset.con = m.con_team;
-                o.dataset.topic = m.topic_text;
-                o.textContent =
-                  (m.match_date || "") +
-                  " " +
-                  (m.pro_team || "?") +
-                  " vs " +
-                  (m.con_team || "?");
-                sel.appendChild(o);
-              });
-              if (state.match_id) sel.value = state.match_id;
-              setStatus("");
-            })
-            .catch(function (e) {
-              setStatus(e.message, "err");
+        function officialValue(primary, fallback) {
+          return primary !== undefined && primary !== null && primary !== ""
+            ? primary
+            : fallback;
+        }
+
+        async function loadMatches() {
+          try {
+            var data = await api("GET", "/api/projector/matches");
+            matches = Array.isArray(data.matches) ? data.matches : [];
+            var selected = state.match_id || el("match").value;
+            var select = el("match");
+            select.innerHTML = "";
+            var placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = "— 揀正式場次 —";
+            select.appendChild(placeholder);
+            matches.forEach(function (match) {
+              var option = document.createElement("option");
+              var schedule = [match.match_date, match.match_time]
+                .filter(Boolean)
+                .join(" ");
+              option.value = match.match_id || "";
+              option.textContent =
+                (schedule ? schedule + " · " : "") +
+                (match.pro_team || "未設定正方") +
+                " vs " +
+                (match.con_team || "未設定反方") +
+                "（" +
+                (match.match_id || "無場次編號") +
+                "）";
+              select.appendChild(option);
             });
+            if (selected && matchById(selected)) select.value = selected;
+            if (!matches.length) {
+              setStatus("未有可用嘅正式場次。", "err");
+            }
+          } catch (error) {
+            if (!authRedirecting) setStatus(error.message, "err");
+          }
         }
 
-        function loadSequence(fmt) {
-          return api(
-            "GET",
-            "/api/projector/sequence?format=" + encodeURIComponent(fmt),
-          ).then(function (d) {
-            segments = d.segments || [];
+        async function loadSequence(matchId) {
+          if (!matchId) {
+            sequenceMatchId = "";
+            segments = [];
             renderSeq();
-          });
+            return;
+          }
+          var epoch = ++sequenceEpoch;
+          try {
+            var data = await api(
+              "GET",
+              "/api/projector/sequence?match_id=" + encodeURIComponent(matchId),
+            );
+            if (epoch !== sequenceEpoch) return;
+            sequenceMatchId = matchId;
+            segments = Array.isArray(data.segments) ? data.segments : [];
+            if (data.debate_format || data.format)
+              state.debate_format = data.debate_format || data.format;
+            if (data.free_debate_minutes !== undefined)
+              state.free_debate_minutes = data.free_debate_minutes;
+            renderOfficialMatch();
+            renderSeq();
+          } catch (error) {
+            if (epoch !== sequenceEpoch || authRedirecting) return;
+            segments = [];
+            renderSeq();
+            setStatus("未能載入正式比賽進程：" + error.message, "err");
+          }
         }
 
         function sidePill(side) {
           var cls =
             side === "正方" ? "pro" : side === "反方" ? "con" : "neutral";
-          return '<span class="pill ' + cls + '">' + side + "</span>";
+          return '<span class="pill ' + cls + '">' + esc(side) + "</span>";
         }
 
         function renderSeq() {
           var box = el("seq");
           box.innerHTML = "";
+          if (!segments.length) {
+            var empty = document.createElement("div");
+            empty.className = "meta";
+            empty.textContent = state.match_id
+              ? "未能載入呢個正式場次嘅發言進程。"
+              : "請先套用正式場次。";
+            box.appendChild(empty);
+            updateControlAvailability();
+            return;
+          }
           segments.forEach(function (seg, i) {
             var div = document.createElement("div");
             div.className = "seg" + (i === state.seg_index ? " cur" : "");
             div.innerHTML =
               "<span>" + esc(seg.label) + "</span>" + sidePill(seg.side);
             div.onclick = function () {
-              push({ seg_index: i });
+              if (!stateBusy) pushState({ seg_index: i });
             };
             box.appendChild(div);
           });
           var cur = box.querySelector(".seg.cur");
           if (cur) cur.scrollIntoView({ block: "nearest" });
+          updateControlAvailability();
         }
 
-        function applyState(s) {
-          if (!s) return;
-          state.match_id = s.match_id || state.match_id || "";
-          state.seg_index = s.seg_index || 0;
-          state.seg_total = s.seg_total || segments.length;
-          state.visible = !!s.visible;
-          state.debate_format = s.debate_format || state.debate_format;
-          renderSeq();
-          if (state.match_id && el("match").value !== state.match_id)
+        function renderOfficialMatch() {
+          var selectedMatchId = el("match").value;
+          var previewingSelection = !!(
+            matchSelectionDirty &&
+            selectedMatchId &&
+            selectedMatchId !== state.match_id
+          );
+          var shownMatchId = previewingSelection
+            ? selectedMatchId
+            : state.match_id;
+          var match = matchById(shownMatchId) || {};
+          var motion = previewingSelection
+            ? match.topic_text
+            : officialValue(state.motion, match.topic_text);
+          var proTeam = previewingSelection
+            ? match.pro_team
+            : officialValue(state.pro_team, match.pro_team);
+          var conTeam = previewingSelection
+            ? match.con_team
+            : officialValue(state.con_team, match.con_team);
+          var debateFormat = previewingSelection
+            ? match.debate_format
+            : officialValue(state.debate_format, match.debate_format);
+          var freeMinutes = previewingSelection
+            ? match.free_debate_minutes
+            : officialValue(
+                state.free_debate_minutes,
+                match.free_debate_minutes,
+              );
+          el("officialMotion").textContent = motion || "—";
+          el("officialPro").textContent = proTeam || "—";
+          el("officialCon").textContent = conTeam || "—";
+          el("officialFormat").textContent = debateFormat || "—";
+          el("officialFree").textContent =
+            debateFormat === "聯中"
+              ? freeMinutes !== null && freeMinutes !== undefined && freeMinutes !== ""
+                ? freeMinutes + " 分鐘（每邊）"
+                : "正式場次未設定"
+              : debateFormat
+                ? "按正式賽制"
+                : "—";
+          var schedule = [match.match_date, match.match_time]
+            .filter(Boolean)
+            .join(" ");
+          el("matchMeta").textContent = previewingSelection
+            ? "已選場次：" +
+              (shownMatchId || "—") +
+              (schedule ? " · " + schedule : "") +
+              "。呢個只係預覽；撳「套用正式場次」先會改變大屏及 AI評判易。"
+            : state.configured
+            ? "場次：" +
+              (state.match_id || "—") +
+              (schedule ? " · " + schedule : "") +
+              "。賽制及時間由正式場次資料決定。"
+            : "賽制由正式場次資料決定，控制頁不能另行更改。";
+        }
+
+        function applyState(serverState) {
+          if (!serverState) return;
+          var previousMatch = state.match_id;
+          state.configured = !!serverState.configured;
+          state.match_id = serverState.match_id || "";
+          state.seg_index = Math.max(0, Number(serverState.seg_index) || 0);
+          state.seg_total = Math.max(
+            0,
+            Number(serverState.seg_total) || segments.length,
+          );
+          state.visible = !!serverState.visible;
+          state.debate_format = serverState.debate_format || "";
+          state.free_debate_minutes =
+            serverState.free_debate_minutes !== undefined
+              ? serverState.free_debate_minutes
+              : null;
+          state.motion = serverState.motion || "";
+          state.pro_team = serverState.pro_team || "";
+          state.con_team = serverState.con_team || "";
+          if (
+            state.match_id &&
+            !matchSelectionDirty &&
+            el("match").value !== state.match_id
+          ) {
             el("match").value = state.match_id;
+          }
           var t = el("toggle");
           t.textContent = state.visible ? "■ 隱藏大屏" : "▶ 顯示大屏";
           t.className = "big " + (state.visible ? "toggle-on" : "toggle-off");
-          el("matchMeta").innerHTML = s.configured
-            ? "辯題：" +
-              esc(s.motion || "—") +
-              "<br>正方：" +
-              esc(s.pro_team || "—") +
-              "　反方：" +
-              esc(s.con_team || "—")
-            : "未設定場次";
+          renderOfficialMatch();
+          renderSeq();
+          if (
+            state.match_id &&
+            (state.match_id !== previousMatch || sequenceMatchId !== state.match_id)
+          ) {
+            loadSequence(state.match_id);
+          }
+          updateControlAvailability();
         }
 
-        function push(patch) {
-          api(
-            "POST",
-            "/api/projector/state",
-            Object.assign({ display: DISPLAY }, patch),
+        async function pushState(patch) {
+          if (stateBusy) return;
+          stateBusy = true;
+          updateControlAvailability();
+          try {
+            var serverState = await api(
+              "POST",
+              "/api/projector/state",
+              Object.assign({ display: DISPLAY }, patch),
+            );
+            if (patch.match_id && serverState.match_id === patch.match_id) {
+              matchSelectionDirty = false;
+            }
+            applyState(serverState);
+            setStatus("投影狀態已更新。", "ok");
+          } catch (error) {
+            if (!authRedirecting) setStatus(error.message, "err");
+          } finally {
+            stateBusy = false;
+            updateControlAvailability();
+          }
+        }
+
+        async function pollProjectorState() {
+          if (projectorPollBusy || authRedirecting) return;
+          projectorPollBusy = true;
+          try {
+            var serverState = await api(
+              "GET",
+              "/api/projector/state?display=" + encodeURIComponent(DISPLAY),
+            );
+            projectorFailures = 0;
+            applyState(serverState);
+          } catch (error) {
+            projectorFailures += 1;
+            if (!authRedirecting && projectorFailures >= 2) {
+              setStatus("投影狀態連線中斷：" + error.message, "err");
+              updateControlAvailability();
+            }
+          } finally {
+            projectorPollBusy = false;
+          }
+        }
+
+        function statusKey(value) {
+          return String(value || "").trim().toLowerCase();
+        }
+
+        function isRecordingStatus(value) {
+          return statusKey(value) === "recording";
+        }
+
+        function isProcessingStatus(value) {
+          return [
+            "start_requested",
+            "starting",
+            "stop_requested",
+            "stopping",
+            "uploading",
+            "processing",
+            "transcribing",
+            "transcription",
+            "analysing",
+            "analyzing",
+            "judging",
+          ].includes(statusKey(value));
+        }
+
+        function isFailedStatus(value) {
+          return ["failed", "error", "offline", "expired"].includes(
+            statusKey(value),
+          );
+        }
+
+        function statusLabel(value) {
+          return (
+            {
+              idle: "待命",
+              online: "在線待命",
+              ready: "AI評語完成，等待操作員預覽",
+              testing: "正在測試硬件",
+              hardware_ready: "硬件測試完成",
+              start_requested: "等待 Kiosk 開始全場錄音",
+              starting: "正在啟動錄音",
+              recording: "全場錄音中",
+              stop_requested: "等待 Kiosk 停止錄音",
+              stopping: "正在停止錄音",
+              uploading: "正在上載私人暫存錄音",
+              processing: "正在處理錄音",
+              transcribing: "正在製作全場逐字稿",
+              transcription: "正在製作全場逐字稿",
+              analysing: "正在交叉核對及評審",
+              analyzing: "正在交叉核對及評審",
+              judging: "正在交叉核對及評審",
+              complete: "AI評語完成，等待操作員預覽",
+              completed: "AI評語完成，等待操作員預覽",
+              result_ready: "AI評語完成，等待操作員預覽",
+              published: "AI結果已投影",
+              speaking: "正在讀出粵語摘要",
+              played: "粵語摘要播放完成",
+              stopped: "粵語朗讀已停止",
+              failed: "處理失敗",
+              error: "發生錯誤",
+              expired: "結果已過期",
+              cleared: "已清除",
+            }[statusKey(value)] || value || "等待狀態"
+          );
+        }
+
+        function hardwareReady(hardware) {
+          if (!hardware || typeof hardware !== "object") return false;
+          if (
+            hardware.passed !== true ||
+            hardware.operator_confirmed !== true
           )
-            .then(function (s) {
-              applyState(s);
-              setStatus("已更新", "ok");
-            })
-            .catch(function (e) {
-              setStatus(e.message, "err");
-            });
+            return false;
+          var testedAt = parseServerTime(hardware.tested_at);
+          if (!testedAt) return false;
+          var ageMs = Date.now() - testedAt.getTime();
+          return ageMs >= -5000 && ageMs <= 30 * 60 * 1000;
         }
 
-        el("apply").onclick = function () {
-          var sel = el("match");
-          var mid = sel.value;
-          if (!mid) {
-            setStatus("請先揀場次", "err");
+        function hardwarePassed(hardware) {
+          return !!(
+            hardware &&
+            typeof hardware === "object" &&
+            hardware.passed === true
+          );
+        }
+
+        function hardwareHasResult(hardware) {
+          return !!(
+            hardware &&
+            typeof hardware === "object" &&
+            Object.keys(hardware).length
+          );
+        }
+
+        function renderHardware(hardware) {
+          var container = el("hardwareResults");
+          container.innerHTML = "";
+          if (!hardwareHasResult(hardware)) {
+            var pending = document.createElement("div");
+            pending.className = "hardware-item";
+            pending.textContent =
+              "尚未測試 Kiosk、收音咪、大屏及粵語喇叭。";
+            container.appendChild(pending);
             return;
           }
-          var fmt = el("format").value;
-          loadSequence(fmt).then(function () {
-            push({
-              match_id: mid,
-              debate_format: fmt,
-              seg_index: 0,
-              visible: false,
-            });
+          var summary = document.createElement("div");
+          if (!hardwarePassed(hardware)) {
+            summary.className = "hardware-item bad";
+            summary.textContent =
+              "✕ 必要硬件測試未通過；請先按上方按鈕重新測試。";
+          } else if (!hardware.operator_confirmed) {
+            summary.className = "hardware-item good";
+            summary.textContent =
+              "✓ Kiosk 自動測試通過；請現場確認大屏及喇叭。";
+          } else if (!hardwareReady(hardware)) {
+            summary.className = "hardware-item bad";
+            summary.textContent =
+              "✕ 硬件確認已超過 30 分鐘；開始錄音前必須重新測試。";
+          } else {
+            summary.className = "hardware-item good";
+            summary.textContent =
+              "✓ 自動測試及現場確認已完成，可以開始正式場次錄音。";
+          }
+          container.appendChild(summary);
+          if (hardware.screen_confirmed === true)
+            el("screenConfirmed").checked = true;
+          if (hardware.audio_confirmed === true)
+            el("audioConfirmed").checked = true;
+          if (hardware.operator_confirmed === true) {
+            el("screenConfirmed").checked = true;
+            el("audioConfirmed").checked = true;
+          }
+          var labels = {
+            kiosk: "比賽日 Kiosk",
+            microphone: "收音咪",
+            mic: "收音咪",
+            recorder: "瀏覽器錄音器",
+            storage: "私人暫存區",
+            r2: "私人暫存區",
+            ai: "AI 模型",
+            media: "錄音驗證工具",
+            screen: "投影大屏",
+            speaker: "現場喇叭",
+            audio: "粵語聲音",
+            tts: "粵語語音服務",
+            network: "網絡",
+            quota: "AI評判易配額",
+          };
+          var source =
+            hardware.checks && typeof hardware.checks === "object"
+              ? hardware.checks
+              : hardware;
+          var entries = Array.isArray(source)
+            ? source.map(function (item, index) {
+                return [String(index + 1), item];
+              })
+            : Object.entries(source).filter(function (entry) {
+                return ![
+                  "ready",
+                  "ok",
+                  "passed",
+                  "confirmed",
+                  "status",
+                  "screen_confirmed",
+                  "audio_confirmed",
+                ].includes(entry[0]);
+              });
+          if (!entries.length) entries = [["status", hardware]];
+          entries.slice(0, 16).forEach(function (entry) {
+            var key = entry[0];
+            var value = entry[1];
+            var item = document.createElement("div");
+            var ok =
+              value === true ||
+              (value && typeof value === "object" && value.ok === true);
+            var bad =
+              value === false ||
+              (value && typeof value === "object" && value.ok === false);
+            var label =
+              value && typeof value === "object" && value.label
+                ? value.label
+                : labels[key] || key.replaceAll("_", " ");
+            var detail =
+              value && typeof value === "object"
+                ? value.detail || value.message || value.status || ""
+                : typeof value === "string" || typeof value === "number"
+                  ? String(value)
+                  : "";
+            item.className =
+              "hardware-item" + (ok ? " good" : bad ? " bad" : "");
+            item.textContent =
+              (ok ? "✓ " : bad ? "✕ " : "• ") +
+              label +
+              (detail ? "：" + detail : "");
+            container.appendChild(item);
           });
+        }
+
+        function formatBytes(value) {
+          var bytes = Math.max(0, Number(value) || 0);
+          if (bytes < 1024) return Math.round(bytes) + " B";
+          if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KiB";
+          return (bytes / (1024 * 1024)).toFixed(2) + " MiB";
+        }
+
+        function formatDuration(value) {
+          var secondsValue = Number(value);
+          if (!Number.isFinite(secondsValue)) secondsValue = 0;
+          var milliseconds = Math.max(
+            0,
+            Math.min(
+              maxDurationSeconds * 1000,
+              Math.floor(secondsValue * 1000),
+            ),
+          );
+          var minutes = Math.floor(milliseconds / 60000);
+          var seconds = Math.floor((milliseconds % 60000) / 1000);
+          var millis = milliseconds % 1000;
+          return (
+            minutes +
+            ":" +
+            String(seconds).padStart(2, "0") +
+            "." +
+            String(millis).padStart(3, "0")
+          );
+        }
+
+        function sampledDuration() {
+          var value = durationBase;
+          if (durationRecording) {
+            value += (performance.now() - durationSampledAt) / 1000;
+          }
+          return Math.min(maxDurationSeconds, Math.max(0, value));
+        }
+
+        function updateClock() {
+          el("aiClock").textContent = formatDuration(sampledDuration());
+        }
+
+        function updateDurationSession(session) {
+          var sessionId = String((session && session.session_id) || "");
+          var recording = !!session && isRecordingStatus(session.status);
+          var reported = Math.max(
+            0,
+            Number((session && session.duration_seconds) || 0),
+          );
+          if (sessionId === durationSessionId && recording && durationRecording) {
+            reported = Math.max(reported, sampledDuration());
+          }
+          durationSessionId = sessionId;
+          durationBase = Math.min(maxDurationSeconds, reported);
+          durationSampledAt = performance.now();
+          durationRecording = recording;
+          updateClock();
+        }
+
+        function renderLimits(limits) {
+          limits = limits && typeof limits === "object" ? limits : {};
+          maxDurationSeconds = Math.min(
+            90 * 60,
+            Math.max(
+              1,
+              Number(limits.max_seconds || limits.max_duration_seconds) ||
+                90 * 60,
+            ),
+          );
+          el("aiClockLimit").textContent =
+            "上限 " + formatDuration(maxDurationSeconds);
+          var quota = limits.quota || limits;
+          var parts = [];
+          if (quota.user_daily_remaining !== undefined)
+            parts.push("今日 kiosk 共用剩餘 " + quota.user_daily_remaining + " 場");
+          else if (quota.daily_remaining !== undefined)
+            parts.push("今日剩餘 " + quota.daily_remaining + " 場");
+          if (quota.global_monthly_remaining !== undefined)
+            parts.push("本月全系統剩餘 " + quota.global_monthly_remaining + " 場");
+          else if (quota.monthly_remaining !== undefined)
+            parts.push("本月剩餘 " + quota.monthly_remaining + " 場");
+          if (limits.max_bytes)
+            parts.push("錄音上限 " + formatBytes(limits.max_bytes));
+          el("quotaStatus").textContent = parts.join(" · ");
+        }
+
+        function ttsProviderAvailable(control, session) {
+          if (session && session.tts_available !== undefined)
+            return !!session.tts_available;
+          return !!(control && control.tts_available);
+        }
+
+        function ttsPlaybackAvailable(control, session) {
+          if (!session || !session.published) return false;
+          if (session.tts_audio_ready !== undefined)
+            return !!session.tts_audio_ready;
+          return (
+            ttsProviderAvailable(control, session) &&
+            !["failed", "unavailable", "not_requested"].includes(
+              statusKey(session.tts_status),
+            )
+          );
+        }
+
+        function ttsStatusLabel(value) {
+          return (
+            {
+              not_requested: "尚未要求朗讀",
+              ready: "粵語語音已準備",
+              playing: "正在讀出粵語摘要",
+              speaking: "正在讀出粵語摘要",
+              played: "粵語摘要播放完成",
+              stopped: "粵語朗讀已停止",
+              failed: "粵語語音合成失敗",
+              unavailable: "粵語語音服務不可用",
+            }[statusKey(value)] ||
+            String(value || "粵語朗讀已就緒")
+          );
+        }
+
+        function parseServerTime(value) {
+          var raw = String(value || "").trim();
+          if (!raw) return null;
+          if (
+            /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(
+              raw,
+            )
+          ) {
+            raw = raw.replace(" ", "T") + "Z";
+          }
+          var parsed = new Date(raw);
+          return Number.isNaN(parsed.getTime()) ? null : parsed;
+        }
+
+        function renderResult(control, session) {
+          var hasResult = !!(
+            session &&
+            (session.result_markdown ||
+              session.transcript ||
+              session.projector_summary)
+          );
+          el("aiResult").hidden = !hasResult;
+          if (!hasResult) {
+            el("projectorSummary").textContent = "";
+            el("fullResult").textContent = "";
+            el("transcript").textContent = "";
+            return;
+          }
+          var available = ttsProviderAvailable(control, session);
+          el("projectorSummary").textContent =
+            session.projector_summary || "AI 未有提供大屏摘要。";
+          el("fullResult").textContent =
+            session.result_markdown || "AI 未有提供完整評語。";
+          el("transcript").textContent =
+            session.transcript || "AI 未有提供逐字稿。";
+          var match = session.match || {};
+          var expires = parseServerTime(session.result_expires_at);
+          var expiryText =
+            expires
+              ? expires.toLocaleString("zh-HK", { hour12: false })
+              : session.result_expires_at || "未提供";
+          el("resultMeta").textContent =
+            "場次：" +
+            (match.match_id || state.match_id || "—") +
+            " · 結果有效至：" +
+            expiryText;
+          el("resultBadge").textContent = session.published
+            ? "已投影"
+            : "未投影";
+          el("resultBadge").className =
+            "badge " + (session.published ? "online" : "");
+          el("publishResult").textContent = available
+            ? "📽️ 投影文字並準備語音"
+            : "📽️ 只投影文字";
+          el("ttsStatus").textContent = available
+            ? statusKey(session.tts_status) === "not_requested"
+              ? "粵語朗讀服務可用；結果唔會自動播放。"
+              : "粵語朗讀狀態：" + ttsStatusLabel(session.tts_status)
+            : "粵語語音服務目前不可用；只可投影文字，朗讀控制已停用。";
+        }
+
+        function renderAiStatus(payload) {
+          payload = payload && typeof payload === "object" ? payload : {};
+          var control = payload.control || {};
+          var session = payload.session || null;
+          var limits = payload.limits || {};
+          aiPayload = { control: control, session: session, limits: limits };
+          renderLimits(limits);
+          renderHardware(control.hardware || {});
+          updateDurationSession(session);
+          renderResult(control, session);
+
+          var controlStatus = control.status || control.kiosk_status;
+          var controlState = statusKey(controlStatus);
+          var controlCalm = [
+            "",
+            "idle",
+            "online",
+            "ready",
+            "hardware_ready",
+            "played",
+            "stopped",
+            "cleared",
+          ].includes(controlState);
+          var badge = el("kioskBadge");
+          if (!control.kiosk_online) {
+            badge.textContent = "比賽日 Kiosk 離線";
+            badge.className = "badge error";
+          } else if (isFailedStatus(controlStatus)) {
+            badge.textContent = "Kiosk 在線 · " + statusLabel(controlStatus);
+            badge.className = "badge error";
+          } else if (controlCalm) {
+            badge.textContent = "比賽日 Kiosk 在線";
+            badge.className = "badge online";
+          } else {
+            badge.textContent = "Kiosk 在線 · " + statusLabel(controlStatus);
+            badge.className = "badge busy";
+          }
+
+          var sessionStatus = session ? session.status : controlStatus;
+          var detail =
+            (session &&
+              (session.detail || session.status_detail || session.error)) ||
+            control.detail ||
+            control.status_detail ||
+            "";
+          el("aiStatus").textContent =
+            statusLabel(sessionStatus) + (detail ? "：" + detail : "");
+          el("aiStatus").className =
+            "ai-status" +
+            (isFailedStatus(sessionStatus)
+              ? " error"
+              : session &&
+                  (session.result_markdown || session.projector_summary)
+                ? " success"
+                : "");
+
+          var commandRevision = Number(control.command_revision) || 0;
+          var ackRevision = Number(control.ack_revision) || 0;
+          el("commandStatus").textContent = commandRevision
+            ? "控制命令 #" +
+              commandRevision +
+              " · Kiosk 已確認 #" +
+              ackRevision +
+              (ackRevision < commandRevision ? "（等待 Kiosk 回應）" : "")
+            : control.kiosk_online
+              ? "Kiosk 控制連線正常。"
+              : "請確認比賽日 Kiosk 已開啟、登入並連接網絡。";
+
+          el("recordingMeta").textContent = session
+            ? statusLabel(session.status) +
+              " · " +
+              formatBytes(session.recording_bytes || 0)
+            : "未開始錄音";
+          updateControlAvailability();
+        }
+
+        async function pollAiStatus() {
+          if (aiPollBusy || authRedirecting) return;
+          aiPollBusy = true;
+          try {
+            var payload = await api(
+              "GET",
+              "/api/projector/ai/status?display=" + encodeURIComponent(DISPLAY),
+            );
+            aiFailures = 0;
+            renderAiStatus(payload);
+          } catch (error) {
+            aiFailures += 1;
+            if (!authRedirecting && aiFailures >= 2) {
+              el("kioskBadge").textContent = "Kiosk 狀態連線中斷";
+              el("kioskBadge").className = "badge error";
+              el("aiStatus").textContent =
+                "未能取得 AI評判易狀態：" + error.message;
+              el("aiStatus").className = "ai-status error";
+              updateControlAvailability();
+            }
+          } finally {
+            aiPollBusy = false;
+          }
+        }
+
+        function updateControlAvailability() {
+          var control = aiPayload.control || {};
+          var session = aiPayload.session || null;
+          var browserOnline = navigator.onLine !== false;
+          var projectorConnected = browserOnline && projectorFailures < 2;
+          var aiConnected = browserOnline && aiFailures < 2;
+          var sessionId = String((session && session.session_id) || "");
+          var sessionStatus = session && session.status;
+          var sessionState = statusKey(sessionStatus);
+          var recording = isRecordingStatus(sessionStatus);
+          var processing = isProcessingStatus(sessionStatus);
+          var reusableSession = ["cleared", "expired"].includes(sessionState);
+          var sessionBlocksNew = !!sessionId && !reusableSession;
+          var hasResult = !!(
+            session &&
+            (session.result_markdown || session.projector_summary)
+          );
+          var ttsAvailable = ttsPlaybackAvailable(control, session);
+          var selectedMatch = el("match").value;
+          var appliedMatch =
+            state.configured &&
+            state.match_id &&
+            selectedMatch === state.match_id;
+
+          el("apply").disabled =
+            !projectorConnected ||
+            stateBusy ||
+            aiBusy ||
+            !selectedMatch ||
+            sessionBlocksNew;
+          el("match").disabled =
+            !projectorConnected || stateBusy || aiBusy || sessionBlocksNew;
+          el("toggle").disabled =
+            !projectorConnected || stateBusy || !state.configured;
+          el("prev").disabled =
+            !projectorConnected ||
+            stateBusy ||
+            !segments.length ||
+            state.seg_index <= 0;
+          el("next").disabled =
+            !projectorConnected ||
+            stateBusy ||
+            !segments.length ||
+            state.seg_index >= segments.length - 1;
+
+          var screenConfirmed = el("screenConfirmed").checked;
+          var audioConfirmed = el("audioConfirmed").checked;
+          el("hardwareTest").disabled =
+            !aiConnected ||
+            aiBusy ||
+            recording ||
+            processing ||
+            sessionBlocksNew ||
+            !control.kiosk_online;
+          el("hardwareConfirm").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !control.kiosk_online ||
+            sessionBlocksNew ||
+            !hardwarePassed(control.hardware) ||
+            !screenConfirmed ||
+            !audioConfirmed;
+          el("screenConfirmed").disabled =
+            !aiConnected ||
+            aiBusy ||
+            recording ||
+            processing ||
+            sessionBlocksNew;
+          el("audioConfirmed").disabled =
+            !aiConnected ||
+            aiBusy ||
+            recording ||
+            processing ||
+            sessionBlocksNew;
+          el("recordingNotice").disabled =
+            !aiConnected ||
+            aiBusy ||
+            recording ||
+            processing ||
+            sessionBlocksNew;
+
+          el("aiStart").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !control.kiosk_online ||
+            !appliedMatch ||
+            sessionBlocksNew ||
+            !hardwareReady(control.hardware) ||
+            !el("recordingNotice").checked;
+          el("aiStop").disabled =
+            !aiConnected || aiBusy || !sessionId || !recording;
+          el("publishResult").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !sessionId ||
+            !hasResult ||
+            processing ||
+            recording;
+          el("speechPlay").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !sessionId ||
+            !hasResult ||
+            !ttsAvailable ||
+            !session.published;
+          el("speechStop").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !sessionId ||
+            !ttsAvailable ||
+            !session.published;
+          el("clearResult").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !sessionId ||
+            recording ||
+            processing ||
+            reusableSession;
+        }
+
+        async function runAiCommand(path, body, pendingMessage) {
+          if (aiBusy) return null;
+          aiBusy = true;
+          el("aiStatus").textContent = pendingMessage;
+          el("aiStatus").className = "ai-status";
+          updateControlAvailability();
+          try {
+            var response = await api("POST", path, body);
+            if (response && (response.control || response.session)) {
+              renderAiStatus(response);
+            }
+            await pollAiStatus();
+            return response;
+          } catch (error) {
+            if (!authRedirecting) {
+              el("aiStatus").textContent = error.message;
+              el("aiStatus").className = "ai-status error";
+            }
+            return null;
+          } finally {
+            aiBusy = false;
+            updateControlAvailability();
+          }
+        }
+
+        el("apply").onclick = async function () {
+          var matchId = el("match").value;
+          if (!matchId) {
+            setStatus("請先揀正式場次。", "err");
+            return;
+          }
+          await pushState({
+            match_id: matchId,
+            seg_index: 0,
+            visible: false,
+          });
+          if (state.match_id === matchId) await loadSequence(matchId);
         };
 
-        el("format").onchange = function () {
-          loadSequence(this.value);
+        el("match").onchange = function () {
+          matchSelectionDirty = this.value !== state.match_id;
+          renderOfficialMatch();
+          updateControlAvailability();
         };
 
         el("toggle").onclick = function () {
-          push({ visible: !state.visible });
+          pushState({ visible: !state.visible });
         };
         el("next").onclick = function () {
           if (state.seg_index < segments.length - 1)
-            push({ seg_index: state.seg_index + 1 });
+            pushState({ seg_index: state.seg_index + 1 });
         };
         el("prev").onclick = function () {
-          if (state.seg_index > 0) push({ seg_index: state.seg_index - 1 });
+          if (state.seg_index > 0)
+            pushState({ seg_index: state.seg_index - 1 });
         };
 
-        // initial load: matches, then current state + its sequence
-        loadMatches();
-        api(
-          "GET",
-          "/api/projector/state?display=" + encodeURIComponent(DISPLAY),
-        )
-          .then(function (s) {
-            var fmt = (s && s.debate_format) || "校園隨想";
-            el("format").value = fmt;
-            return loadSequence(fmt).then(function () {
-              applyState(s);
-            });
-          })
-          .catch(function (e) {
-            setStatus(e.message, "err");
-          });
+        el("screenConfirmed").onchange = updateControlAvailability;
+        el("audioConfirmed").onchange = updateControlAvailability;
+        el("recordingNotice").onchange = updateControlAvailability;
+
+        el("hardwareTest").onclick = async function () {
+          el("screenConfirmed").checked = false;
+          el("audioConfirmed").checked = false;
+          await runAiCommand(
+            "/api/projector/ai/hardware-test",
+            { display: DISPLAY },
+            "已要求比賽日 Kiosk 測試收音咪、大屏、喇叭、網絡及 AI服務…",
+          );
+        };
+
+        el("hardwareConfirm").onclick = async function () {
+          if (
+            !el("screenConfirmed").checked ||
+            !el("audioConfirmed").checked
+          ) {
+            el("aiStatus").textContent =
+              "請先確認大屏測試畫面及現場測試聲音。";
+            el("aiStatus").className = "ai-status error";
+            return;
+          }
+          await runAiCommand(
+            "/api/projector/ai/hardware-confirm",
+            {
+              display: DISPLAY,
+              screen_confirmed: true,
+              audio_confirmed: true,
+            },
+            "正在確認比賽日硬件測試結果…",
+          );
+        };
+
+        el("aiStart").onclick = async function () {
+          var matchId = el("match").value;
+          if (!state.configured || state.match_id !== matchId) {
+            el("aiStatus").textContent = "請先套用同一個正式場次。";
+            el("aiStatus").className = "ai-status error";
+            return;
+          }
+          if (!el("recordingNotice").checked) {
+            el("aiStatus").textContent =
+              "請先確認已通知在場人士錄音及 AI 處理安排。";
+            el("aiStatus").className = "ai-status error";
+            return;
+          }
+          await runAiCommand(
+            "/api/projector/ai/start",
+            {
+              display: DISPLAY,
+              match_id: matchId,
+              recording_notice_confirmed: true,
+            },
+            "正在要求比賽日 Kiosk 開始全場錄音…",
+          );
+        };
+
+        el("aiStop").onclick = async function () {
+          var session = aiPayload.session || {};
+          if (!session.session_id) return;
+          if (
+            !window.confirm(
+              "確定比賽已經完場並停止全場錄音？停止後不能繼續同一段錄音。",
+            )
+          )
+            return;
+          await runAiCommand(
+            "/api/projector/ai/stop",
+            { display: DISPLAY, session_id: session.session_id },
+            "正在停止錄音；Kiosk 之後會上載、製作逐字稿及評審，請勿關閉控制頁…",
+          );
+        };
+
+        el("publishResult").onclick = async function () {
+          var control = aiPayload.control || {};
+          var session = aiPayload.session || {};
+          if (!session.session_id) return;
+          var speak = ttsProviderAvailable(control, session);
+          if (
+            !window.confirm(
+              speak
+                ? "確定將私人預覽嘅 AI 輔助摘要顯示喺大屏並準備粵語語音？投影完成後，請另按「讀出／重新讀出」先會由現場喇叭播放。"
+                : "粵語語音目前不可用。確定只將 AI 輔助摘要顯示喺大屏？",
+            )
+          )
+            return;
+          await runAiCommand(
+            "/api/projector/ai/publish",
+            {
+              display: DISPLAY,
+              session_id: session.session_id,
+              speak: speak,
+            },
+            speak
+              ? "正在投影 AI 輔助摘要並準備粵語語音；完成後請另按讀出…"
+              : "粵語語音服務不可用，正在只投影文字摘要…",
+          );
+        };
+
+        el("speechPlay").onclick = async function () {
+          var session = aiPayload.session || {};
+          if (!session.session_id) return;
+          await runAiCommand(
+            "/api/projector/ai/speech",
+            {
+              display: DISPLAY,
+              session_id: session.session_id,
+              action: "play",
+            },
+            "正在要求 Kiosk 重新讀出粵語摘要…",
+          );
+        };
+
+        el("speechStop").onclick = async function () {
+          var session = aiPayload.session || {};
+          if (!session.session_id) return;
+          await runAiCommand(
+            "/api/projector/ai/speech",
+            {
+              display: DISPLAY,
+              session_id: session.session_id,
+              action: "stop",
+            },
+            "正在停止粵語朗讀…",
+          );
+        };
+
+        el("clearResult").onclick = async function () {
+          var session = aiPayload.session || {};
+          if (!session.session_id) return;
+          if (
+            !window.confirm(
+              "確定清除大屏內容、私人 AI 評語、逐字稿及粵語語音？清除後不能復原。",
+            )
+          )
+            return;
+          var cleared = await runAiCommand(
+            "/api/projector/ai/clear",
+            { display: DISPLAY, session_id: session.session_id },
+            "正在清除 AI 結果、逐字稿及大屏內容…",
+          );
+          if (cleared) el("recordingNotice").checked = false;
+        };
+
+        async function bootstrap() {
+          await loadMatches();
+          await Promise.all([pollProjectorState(), pollAiStatus()]);
+          window.setInterval(pollProjectorState, 2000);
+          window.setInterval(pollAiStatus, 1500);
+          window.setInterval(updateClock, 31);
+        }
+
+        window.addEventListener("focus", function () {
+          pollProjectorState();
+          pollAiStatus();
+        });
+        window.addEventListener("online", function () {
+          pollProjectorState();
+          pollAiStatus();
+        });
+        window.addEventListener("offline", function () {
+          projectorFailures = Math.max(projectorFailures, 2);
+          aiFailures = Math.max(aiFailures, 2);
+          el("aiStatus").textContent =
+            "呢部控制裝置已斷線；Kiosk 錄音不會因此自動停止，請立即檢查網絡。";
+          el("aiStatus").className = "ai-status error";
+          updateControlAvailability();
+        });
+        document.addEventListener("visibilitychange", function () {
+          if (!document.hidden) {
+            pollProjectorState();
+            pollAiStatus();
+          }
+        });
+        window.addEventListener("beforeunload", function (event) {
+          var session = aiPayload.session || {};
+          if (
+            isRecordingStatus(session.status) ||
+            isProcessingStatus(session.status)
+          ) {
+            event.preventDefault();
+            event.returnValue = "";
+          }
+        });
+
+        updateControlAvailability();
+        bootstrap();
       })();
     </script>
   </body>

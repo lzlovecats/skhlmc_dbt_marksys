@@ -422,7 +422,47 @@
   if (location.pathname === "/match-photos")
     observeVisible("app", () => {
       const target = document.getElementById("gallery"),
-        load = () => {
+        showPhotoNotice = (message, isError = false) => {
+          const notice = document.getElementById("toast");
+          notice.textContent = message;
+          notice.classList.toggle("err", isError);
+          notice.classList.remove("hidden");
+          window.clearTimeout(notice._photoEditTimer);
+          notice._photoEditTimer = window.setTimeout(
+            () => notice.classList.add("hidden"),
+            3200,
+          );
+        },
+        editAlbumOptions = (photo) => {
+          const currentVideo =
+            photo.match_video_id == null ? "" : String(photo.match_video_id);
+          let currentIsAllowed = false;
+          const options = [...document.getElementById("album").options]
+            .map((option) => {
+              const video = option.dataset.video || "",
+                selected =
+                  option.value === photo.album_label &&
+                  video === currentVideo,
+                sameLabelDifferentVideo =
+                  option.value === photo.album_label &&
+                  video !== currentVideo,
+                optionText = sameLabelDifferentVideo && video
+                  ? `${option.textContent}（片段 #${video}）`
+                  : option.textContent;
+              currentIsAllowed ||= selected;
+              return `<option value="${esc(option.value)}" data-video="${esc(video)}" ${selected ? "selected" : ""}>${esc(optionText)}</option>`;
+            })
+            .join("");
+          const oldLink = currentVideo
+            ? `片段 #${currentVideo}`
+            : "舊連結";
+          return `${currentIsAllowed ? "" : `<option value="${esc(photo.album_label)}" data-video="${esc(currentVideo)}" selected>原有：${esc(photo.album_label)}（${esc(oldLink)}）</option>`}${options}`;
+        },
+        photoEditor = (photo) =>
+          photo.can_edit
+            ? `<details><summary>編輯資料</summary><form class="photo-edit-form" data-photo-id="${esc(photo.id)}"><label>所屬場次</label><select name="album_label" required>${editAlbumOptions(photo)}</select><label>相片日期（可留空）</label><input name="photo_date" type="date" value="${esc(photo.photo_date)}"><label>圖片標題（可留空）</label><input name="photo_title" maxlength="300" value="${esc(photo.photo_title)}"><label>圖片說明（可留空）</label><textarea name="caption" maxlength="2000" rows="3">${esc(photo.caption)}</textarea><button class="primary" type="submit">儲存修改</button></form></details>`
+            : "",
+        load = (page = 1) => {
           const sortMap = {
               "相片日期（舊至新）": "date_asc",
               "上載時間（新至舊）": "created_desc",
@@ -447,13 +487,55 @@
                 const title =
                     p.photo_title || p.file_name || `match-photo-${p.id}.jpg`,
                   image = `/api/match-photos/image/${p.id}`,
-                  thumbnail = `${image}?thumbnail=1`;
-                return `<article class="photo"><img loading="lazy" decoding="async" src="${thumbnail}" alt="${esc(title)}"><div class="photo-title">${esc(title)}</div><div class="photo-meta">${esc(p.album_label)} ｜ ${esc(p.photo_date)} ｜ ${esc(p.uploaded_by)}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<a href="${image}?download=1">下載原圖</a></article>`;
+                  thumbnail = `${image}?thumbnail=1`,
+                  date = p.photo_date || "未設定";
+                return `<article class="photo"><img loading="lazy" decoding="async" src="${thumbnail}" alt="${esc(title)}"><div class="photo-title">${esc(title)}</div><div class="photo-meta">${esc(p.album_label)} ｜ ${esc(date)} ｜ ${esc(p.uploaded_by || "未設定")}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<div class="photo-actions"><a href="${image}?download=1">下載原圖</a></div>${photoEditor(p)}</article>`;
               })
               .join("");
-          });
+          }, page);
         };
       load();
+      target.addEventListener("submit", async (event) => {
+        const form = event.target.closest(".photo-edit-form");
+        if (!form) return;
+        event.preventDefault();
+        const album = form.elements.album_label,
+          option = album.selectedOptions[0],
+          button = form.querySelector('button[type="submit"]');
+        if (!option || !option.value) {
+          showPhotoNotice("請重新選擇所屬場次。", true);
+          return;
+        }
+        button.disabled = true;
+        try {
+          const response = await fetch(
+              `/api/match-photos/photos/${encodeURIComponent(form.dataset.photoId)}`,
+              {
+                method: "PATCH",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  album_label: option.value,
+                  match_video_id: option.dataset.video
+                    ? Number(option.dataset.video)
+                    : null,
+                  photo_date: form.elements.photo_date.value,
+                  photo_title: form.elements.photo_title.value,
+                  caption: form.elements.caption.value,
+                }),
+              },
+            ),
+            data = await response.json().catch(() => ({}));
+          if (!response.ok)
+            throw new Error(data.detail || `HTTP ${response.status}`);
+          showPhotoNotice(`☑️ ${data.message || "圖片資料已更新。"}`);
+          await load(1);
+        } catch (error) {
+          showPhotoNotice(error.message || "未能更新圖片資料。", true);
+        } finally {
+          if (button.isConnected) button.disabled = false;
+        }
+      });
       ["filter", "sort", "view"].forEach((id) =>
         document.getElementById(id).addEventListener(
           "change",

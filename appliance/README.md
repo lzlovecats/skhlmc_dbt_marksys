@@ -207,17 +207,20 @@ cat /var/lib/marksys/health.json      # 健康燈讀緊嘅資料
 
 | 網址 | 畀邊個 | 需唔需要登入 |
 |---|---|---|
-| `<APP_URL>/projector` | 大屏顯示（比賽日 kiosk 開呢個） | 唔使 |
-| `<APP_URL>/projector/control` | 主席／IT 控制 | 要，委員帳戶（同一瀏覽器先登入 app） |
+| `<APP_URL>/projector?kiosk=1` | 比賽日 Kiosk 大屏＋AI評判易收音／播聲引擎 | 要，固定 `kiosk` 帳戶；畫面會提供專用登入 |
+| `<APP_URL>/projector` | 純大屏顯示（不啟動收音／播聲） | 唔使 |
+| `<APP_URL>/projector/control` | 賽會人員投影及 AI評判易控制 | 要，先登入主席主持易 |
 
 **點運作**
-- 控制頁揀場次（由 `matches` 讀辯題／正反隊）＋ 揀賽制 → 撳「套用場次」。
+- 控制頁揀正式場次；辯題、正反隊、賽制及自由辯論時間全部由 `matches` 讀取，控制頁不可另揀賽制。
 - 撳「顯示大屏」開／關投影內容；「下一位／上一位」或撳進程列表推進發言者。
 - 大屏每 2 秒 poll 一次，自動跟住更新。
+- AI評判易由大屏 Kiosk 錄低最多 90 分鐘；正式環節跟 Projector Control 自動標記，自由辯論由 AI 按逐字稿內容判斷陣營。
+- 完成後只在控制頁私人預覽；賽會人員明確按掣先投影。沒有可用 TTS provider 時只顯示文字；有 Azure TTS 時朗讀最多 1,200 字粵語摘要。
 
 **比賽日建議接法**
-- 部機 HDMI 出投影機；比賽日 kiosk 設 `CONTEST_URL=<APP_URL>/projector`（見 `appliance.env`）。
-- 主席／IT 用自己電話／平板開 `<APP_URL>/projector/control`（先登入委員帳戶）。
+- 部機 HDMI 出投影機並插入收音咪／喇叭；比賽日 kiosk 設 `CONTEST_URL=<APP_URL>/projector?kiosk=1`（見 `appliance.env`）。
+- 賽會人員用自己電話／平板先登入「主席主持易」，再開 `<APP_URL>/projector/control`。
 - 想控制同顯示都喺部機一齊做，可以喺同一部機開兩個 Chromium 視窗（一個 display 拉去投影屏，一個 control 喺 laptop 屏）。
 
-> 技術上：新增 `deploy/proxy.py` 幾條 route（排喺 catch-all 之前）＋ `templates/projector_display.html`、`templates/projector_control.html`，同一張自動建立嘅 `projector_state` 表。只**讀** `matches`／`debaters`，唔改任何現有表或頁。
+> 技術上：普通投影狀態仍用 `projector_state`。AI評判易另用有 revision／ACK 的短期控制狀態、server-side 環節事件及兩小時加密結果；原始錄音仍先放私人 R2、驗證及轉換後刪除，再交 AI，逐字稿及完整評語不會放入公開 projector state。

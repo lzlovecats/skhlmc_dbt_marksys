@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import pandas as pd
 from fastapi import HTTPException, Request, Response
 
 from account_access import KIOSK_ACCOUNT_ID, account_can_access
@@ -80,23 +81,29 @@ def test_central_policy_allows_only_kiosk_identity_on_kiosk_page():
         assert account_can_access(identity, "kiosk") is False
 
 
-def test_practice_shell_starts_at_login_and_displays_milliseconds_and_mic_review():
+def test_practice_shell_keeps_millisecond_timers_and_moves_review_to_competition_day():
     source = (ROOT / "templates" / "appliance_practice.html").read_text(
         encoding="utf-8"
     )
     assert 'id="kiosk-login-form"' in source
     assert 'value="kiosk" readonly' in source
     assert 'id="kiosk-app"' in source
-    assert 'id="mode-review"' in source and 'id="panel-review"' in source
-    assert 'id="review-mic"' in source and "getUserMedia" in source
-    assert "new MediaRecorder" in source and "audioBitsPerSecond: 16000" in source
+    assert 'id="mode-review"' not in source and 'id="panel-review"' not in source
     assert 'id="single-display">0:00.000' in source
     assert 'id="free-pro-display">0:00.000' in source
     assert 'id="free-con-display">0:00.000' in source
     assert "String(ms).padStart(3" in source
-    assert "/api/kiosk/match-review/upload-intent" in source
-    assert "/api/kiosk/match-review/analyze" in source
-    assert "AI 結果只屬第二意見" in source
+    contest = (ROOT / "templates" / "projector_display.html").read_text(
+        encoding="utf-8"
+    )
+    control = (ROOT / "templates" / "projector_control.html").read_text(
+        encoding="utf-8"
+    )
+    assert "AI評判易" in contest and "AI評判易" in control
+    assert "audioBitsPerSecond: 16000" in contest
+    assert "/api/kiosk/match-review/upload-intent" in contest
+    assert "/api/kiosk/match-review/analyze" in contest
+    assert "90:00.000" in control
 
 
 def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
@@ -105,6 +112,21 @@ def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
     monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
     monkeypatch.setattr(proxy, "get_vote_db", lambda: db)
     monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: "secret")
+    monkeypatch.setattr(
+        kiosk_api,
+        "_official_match",
+        lambda _db, match_id: {
+            "match_id": match_id,
+            "topic": "中學生應否使用人工智能",
+            "pro_team": "甲隊",
+            "con_team": "乙隊",
+            "debate_format": "校園隨想",
+            "free_debate_minutes": None,
+            "match_date": "2026-07-14",
+            "match_time": "16:00",
+        },
+    )
+    monkeypatch.setattr(kiosk_api, "_paid_gemini_project_confirmed", lambda: True)
     monkeypatch.setattr(r2_storage, "configured", lambda: True)
     monkeypatch.setattr(
         r2_storage,
@@ -137,6 +159,7 @@ def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
     )
     digest = "a" * 64
     body = kiosk_api.MatchReviewUploadIntentBody(
+        match_id="M1",
         mime_type="audio/webm;codecs=opus",
         byte_size=4096,
         sha256=digest,
@@ -151,6 +174,7 @@ def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
     assert response.headers["cache-control"] == "no-store"
     claim = captured["claim"]
     assert claim["kind"] == "kiosk_match_review" and claim["user"] == "kiosk"
+    assert claim["match_id"] == "M1"
     assert claim["pending_r2_key"].startswith(
         "pending/audio/kiosk-match-review/"
     )
@@ -167,6 +191,141 @@ def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
     }
 
 
+def test_kiosk_limit_is_ninety_minutes_without_raising_inline_byte_cap():
+    assert system_limits.KIOSK_MATCH_REVIEW_MAX_SECONDS == 90 * 60
+    assert system_limits.KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES == 12 * 1024 * 1024
+    body = kiosk_api.MatchReviewUploadIntentBody(
+        match_id="M1",
+        byte_size=10_800_000,
+        sha256="a" * 64,
+        duration_seconds=90 * 60,
+    )
+    assert body.duration_seconds == 5400
+
+
+def test_official_match_endpoint_exposes_no_passwords_or_roster_tokens(monkeypatch):
+    queries = []
+
+    class _Db:
+        def query(self, sql, params):
+            queries.append((sql, params))
+            return pd.DataFrame(
+                [
+                    {
+                        "match_id": "M1",
+                        "match_date": "2026-07-14",
+                        "match_time": "16:00",
+                        "topic_text": "正式辯題",
+                        "pro_team": "甲隊",
+                        "con_team": "乙隊",
+                        "debate_format": "聯中",
+                        "free_debate_minutes": 5,
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: _Db())
+    response = kiosk_api.match_review_matches(_request())
+    payload = json.loads(response.body)
+
+    assert payload["matches"][0] == {
+        "match_id": "M1",
+        "match_date": "2026-07-14",
+        "match_time": "16:00",
+        "topic": "正式辯題",
+        "pro_team": "甲隊",
+        "con_team": "乙隊",
+        "debate_format": "聯中",
+        "free_debate_minutes": 5.0,
+    }
+    sql = queries[0][0].lower()
+    assert "access_code" not in sql
+    assert "review_password" not in sql
+    assert "roster" not in sql
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_preflight_is_read_only_and_reports_shared_quota(monkeypatch):
+    db = object()
+    monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: db)
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda _name: "key")
+    monkeypatch.setattr(kiosk_api, "_paid_gemini_project_confirmed", lambda: True)
+    monkeypatch.setattr(
+        kiosk_api,
+        "_official_match_records",
+        lambda _db: [{"match_id": "M1"}],
+    )
+    monkeypatch.setattr(kiosk_api.shutil, "which", lambda _name: "/usr/bin/tool")
+    monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "connection_ready", lambda: True)
+    monkeypatch.setattr(
+        r2_storage,
+        "storage_budget_status",
+        lambda _db, refresh=False: {"blocked": False},
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "upload_intent_quota_status",
+        lambda _db, **_kwargs: {
+            "user_daily_used": 2,
+            "user_daily_limit": 5,
+            "user_daily_remaining": 3,
+            "global_monthly_used": 40,
+            "global_monthly_limit": 100,
+            "global_monthly_remaining": 60,
+            "allowed": True,
+            "blocked_scope": "",
+        },
+    )
+    monkeypatch.setattr(
+        ai_model_config,
+        "get_feature_model",
+        lambda _feature: (
+            "Central model",
+            {
+                "provider": "gemini",
+                "supports_audio": True,
+                "api_key": "GEMINI_API_KEY",
+            },
+        ),
+    )
+
+    response = asyncio.run(kiosk_api.match_review_preflight(_request()))
+    payload = json.loads(response.body)
+    assert payload["ok"] is True
+    assert payload["does_not_call_ai"] is True
+    assert payload["quota"]["user_daily_remaining"] == 3
+    assert "今日 kiosk 共用剩餘 3 場" in payload["checks"]["quota"]["detail"]
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_marker_validation_rejects_reverse_or_out_of_recording_order():
+    with pytest.raises(HTTPException, match="時間先後"):
+        kiosk_api._validated_markers(
+            [
+                kiosk_api.MatchReviewSpeakerMarker(
+                    offset_seconds=20, side="pro", segment="主辯"
+                ),
+                kiosk_api.MatchReviewSpeakerMarker(
+                    offset_seconds=10, side="con", segment="主辯"
+                ),
+            ],
+            120,
+        )
+    with pytest.raises(HTTPException, match="超出實際錄音"):
+        kiosk_api._validated_markers(
+            [
+                kiosk_api.MatchReviewSpeakerMarker(
+                    offset_seconds=121.5, side="pro", segment="主辯"
+                )
+            ],
+            120,
+        )
+
+
 def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
     audio = b"bounded-full-match-audio" * 100
     digest = hashlib.sha256(audio).hexdigest()
@@ -176,7 +335,9 @@ def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
     claim = {
         "kind": "kiosk_match_review",
         "intent_id": "intent-1",
+        "operation_id": "session-1",
         "user": "kiosk",
+        "match_id": "M1",
         "pending_r2_key": key,
         "mime_type": "audio/webm",
         "byte_size": len(audio),
@@ -193,6 +354,21 @@ def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
         "output_price_per_million": 3,
     }
     monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
+    monkeypatch.setattr(kiosk_api, "_paid_gemini_project_confirmed", lambda: True)
+    monkeypatch.setattr(
+        kiosk_api,
+        "_official_match",
+        lambda _db, match_id: {
+            "match_id": match_id,
+            "match_date": "2026-07-14",
+            "match_time": "16:00",
+            "topic": "中學生應否使用人工智能",
+            "pro_team": "甲隊",
+            "con_team": "乙隊",
+            "debate_format": "校園隨想",
+            "free_debate_minutes": None,
+        },
+    )
     monkeypatch.setattr(proxy, "get_vote_db", lambda: db)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: "secret")
@@ -233,6 +409,11 @@ def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
     )
     monkeypatch.setattr(
         kiosk_api,
+        "_set_review_intent_provider_status",
+        lambda _db, intent, status: events.append(("intent_status", intent, status)),
+    )
+    monkeypatch.setattr(
+        kiosk_api,
         "probe_audio",
         lambda data, mime, claimed, max_seconds: {
             "duration": 120,
@@ -242,6 +423,14 @@ def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
             "mime": mime,
             "sha256": hashlib.sha256(data).hexdigest(),
         },
+    )
+    monkeypatch.setattr(
+        kiosk_api,
+        "transcode_audio_for_provider",
+        lambda data, mime, max_output_bytes: events.append(
+            ("transcode", mime, max_output_bytes)
+        )
+        or (data, "audio/mpeg"),
     )
     monkeypatch.setattr(
         ai_model_config,
@@ -261,10 +450,11 @@ def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
 def _analysis_body():
     return kiosk_api.MatchReviewBody(
         upload_token="x" * 40,
-        topic="中學生應否使用人工智能",
-        debate_format="校園隨想",
-        pro_team="甲隊",
-        con_team="乙隊",
+        match_id="M1",
+        speaker_markers=[
+            {"offset_seconds": 0, "side": "unknown", "segment": "開場"},
+            {"offset_seconds": 10, "side": "pro", "segment": "主辯"},
+        ],
         recording_notice_confirmed=True,
     )
 
@@ -275,8 +465,14 @@ def test_raw_recording_is_deleted_before_central_audio_model_runs(monkeypatch):
     async def generate(config, system, user, **kwargs):
         events.append(("provider", config, system, user, kwargs))
         assert kwargs["audio_base64"]
-        assert kwargs["audio_mime"] == "audio/webm"
-        return "建議勝方：未能判定", {
+        assert kwargs["audio_mime"] == "audio/mpeg"
+        assert kwargs["require_complete"] is True
+        text = (
+            "[00:00.000–00:10.000] [未能確定] [講者 A] 開場\n"
+            if "專業逐字員" in system
+            else "建議勝方：未能判定"
+        )
+        return text, {
             "input_tokens": 10,
             "audio_tokens": 20,
             "output_tokens": 30,
@@ -289,17 +485,42 @@ def test_raw_recording_is_deleted_before_central_audio_model_runs(monkeypatch):
 
     event_names = [event[0] for event in events]
     assert event_names.index("claim") < event_names.index("download")
+    assert event_names.index("download") < event_names.index("transcode")
     assert event_names.index("delete") < event_names.index("provider")
     assert event_names.count("delete") == 1
-    provider = next(event for event in events if event[0] == "provider")
-    assert provider[1]["model"] == "central-model"
-    assert "正式賽果以評判團為準" in provider[3]
-    assert "不可因聲線、性別、口音或身份" in provider[2]
+    providers = [event for event in events if event[0] == "provider"]
+    assert len(providers) == 2
+    assert providers[0][1]["model"] == "central-model"
+    assert "專業逐字員" in providers[0][2]
+    assert "正式賽果以評判團為準" in providers[1][3]
+    assert "不可因性別、年齡、口音、姓名或身份" in providers[1][2]
+    assert "自由辯論本來就只有「雙方」環節標記" in providers[1][2]
+    assert "transcript_evidence" in providers[1][3]
     assert payload["recording_deleted"] is True
     assert payload["model_label"] == "Central audio model"
     assert payload["audio"]["duration_seconds"] == 120
+    assert payload["match"]["match_id"] == "M1"
+    assert payload["speaker_marker_count"] == 2
+    assert "講者 A" in payload["transcript"]
     assert response.headers["cache-control"] == "no-store"
-    assert len(usage_logs) == 1 and usage_logs[0][0][3] is True
+    assert len(usage_logs) == 2
+    assert all(item[0][3] is True for item in usage_logs)
+    assert [item[1]["operation_id"] for item in usage_logs] == [
+        "session-1",
+        "session-1",
+    ]
+    assert [item[1]["operation_stage"] for item in usage_logs] == [
+        "transcription",
+        "judgement",
+    ]
+    first_status = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "intent_status" and event[2] == "provider_processing"
+    )
+    first_provider = event_names.index("provider")
+    first_bandwidth = event_names.index("bandwidth")
+    assert first_bandwidth < first_status < first_provider
     assert audio not in response.body
 
 
@@ -317,6 +538,131 @@ def test_privacy_delete_failure_cancels_provider_call(monkeypatch):
     assert raised.value.status_code == 502
     assert "保障私隱" in raised.value.detail
     assert "provider" not in [event[0] for event in events]
+    assert usage_logs == []
+
+
+def test_pre_provider_size_failure_releases_quota_without_ai_fund_call(monkeypatch):
+    _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)
+    monkeypatch.setattr(kiosk_api, "GEMINI_INLINE_REQUEST_SAFE_BYTES", 1)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("provider must not run before local size gate passes")
+
+    monkeypatch.setattr(ai_provider, "generate_text", forbidden)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(kiosk_api.analyze_match_review(_analysis_body(), _request()))
+
+    assert raised.value.status_code == 400
+    assert [event[0] for event in events].count("delete") == 1
+    assert "provider" not in [event[0] for event in events]
+    assert "intent_status" not in [event[0] for event in events]
+    assert usage_logs == []
+
+
+def test_pre_provider_bandwidth_failure_releases_quota_without_phantom_attempt(
+    monkeypatch,
+):
+    _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)
+
+    def fail_bandwidth(*_args, **_kwargs):
+        raise RuntimeError("ledger unavailable")
+
+    monkeypatch.setattr(proxy, "record_bandwidth_usage", fail_bandwidth)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("provider must not run before bandwidth gate passes")
+
+    monkeypatch.setattr(ai_provider, "generate_text", forbidden)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(kiosk_api.analyze_match_review(_analysis_body(), _request()))
+
+    assert raised.value.status_code == 502
+    assert "provider" not in [event[0] for event in events]
+    assert "intent_status" not in [event[0] for event in events]
+    assert usage_logs == []
+
+
+def test_judgement_preflight_failure_keeps_transcript_spend_without_phantom_call(
+    monkeypatch,
+):
+    _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)
+    provider_calls = []
+
+    async def transcribe_only(*_args, **_kwargs):
+        provider_calls.append(True)
+        return "[00:00.000] [正方] [講者 A] 測試", {
+            "input_tokens": 10,
+            "audio_tokens": 20,
+            "output_tokens": 30,
+        }
+
+    monkeypatch.setattr(ai_provider, "generate_text", transcribe_only)
+    monkeypatch.setattr(
+        kiosk_api,
+        "_match_review_prompts",
+        lambda *_args: ("X" * (kiosk_api.GEMINI_INLINE_REQUEST_SAFE_BYTES + 1), ""),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(kiosk_api.analyze_match_review(_analysis_body(), _request()))
+
+    assert raised.value.status_code == 400
+    assert len(provider_calls) == 1
+    assert [(item[0][3], item[1]["operation_stage"]) for item in usage_logs] == [
+        (True, "transcription")
+    ]
+    assert [event[2] for event in events if event[0] == "intent_status"] == [
+        "provider_processing",
+        "consumed",
+    ]
+
+
+def test_failed_judgement_provider_attempt_is_logged_in_same_operation(monkeypatch):
+    _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)
+    calls = 0
+
+    async def generate(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "[00:00.000] [正方] [講者 A] 測試", {
+                "input_tokens": 10,
+                "audio_tokens": 20,
+                "output_tokens": 30,
+            }
+        raise RuntimeError("provider timeout")
+
+    monkeypatch.setattr(ai_provider, "generate_text", generate)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(kiosk_api.analyze_match_review(_analysis_body(), _request()))
+
+    assert raised.value.status_code == 502
+    assert calls == 2
+    assert [(item[0][3], item[1]["operation_stage"]) for item in usage_logs] == [
+        (True, "transcription"),
+        (False, "judgement"),
+    ]
+    assert {item[1]["operation_id"] for item in usage_logs} == {"session-1"}
+    assert [event[2] for event in events if event[0] == "intent_status"] == [
+        "provider_processing",
+        "consumed",
+    ]
+
+
+def test_missing_provider_key_is_not_recorded_as_a_provider_attempt(monkeypatch):
+    _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda _name: "")
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("provider must not run without an API key")
+
+    monkeypatch.setattr(ai_provider, "generate_text", forbidden)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(kiosk_api.analyze_match_review(_analysis_body(), _request()))
+
+    assert raised.value.status_code == 503
+    assert "provider" not in [event[0] for event in events]
+    assert "intent_status" not in [event[0] for event in events]
     assert usage_logs == []
 
 
@@ -392,6 +738,15 @@ def test_usage_schema_and_migration_register_kiosk_review():
     assert "'kiosk_match_review'" in schema_source
     assert '"kiosk_match_review"' in funds_source
     assert "kiosk_match_review" in migration
+    assert '"kiosk_match_review": "AI評判易（Kiosk）"' in funds_source
+    ai_fund_source = (ROOT / "frontend" / "ai_fund" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'kiosk_match_review: "AI評判易（Kiosk）"' in ai_fund_source
+    prompt_source = (ROOT / "api" / "kiosk_api.py").read_text(
+        encoding="utf-8"
+    )
+    assert "以下『AI評判易』結果只屬 AI 輔助評語" in prompt_source
     assert ai_model_config.get_feature_model("kiosk_match_review")[1][
         "supports_audio"
     ] is True

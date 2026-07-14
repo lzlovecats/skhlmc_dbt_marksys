@@ -34,6 +34,16 @@ class ChapterItem(BaseModel):
 
 class ChaptersBody(BaseModel):
     chapters: list[ChapterItem] = Field(max_length=30)
+    best_debater_role: str | None = Field(default=None, max_length=40)
+
+
+class RosterItem(BaseModel):
+    role_label: str = Field(max_length=40)
+    user_id: str | None = Field(default=None, max_length=200)
+
+
+class RosterBody(BaseModel):
+    assignments: list[RosterItem] = Field(max_length=10)
 
 
 def _db():
@@ -86,4 +96,25 @@ def import_videos(body: ImportBody, request: Request):
 def save_chapters(video_id: int, body: ChaptersBody, request: Request):
     from core import media_logic as logic
     _require_admin(request)
-    return logic.save_chapters(video_id, [item.model_dump() for item in body.chapters], db=_db())
+    best_role = (
+        body.best_debater_role
+        if "best_debater_role" in body.model_fields_set
+        else logic.PRESERVE_BEST_DEBATER
+    )
+    return logic.save_chapters(
+        video_id,
+        [item.model_dump() for item in body.chapters],
+        best_debater_role=best_role,
+        db=_db(),
+    )
+
+
+@router.post("/videos/{video_id}/roster")
+def save_roster(video_id: int, body: RosterBody, request: Request):
+    from core import media_logic as logic
+    _require_admin(request)
+    return logic.save_video_roster(
+        video_id,
+        [item.model_dump() for item in body.assignments],
+        db=_db(),
+    )

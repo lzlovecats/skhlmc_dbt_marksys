@@ -11,3 +11,11 @@ def test_ai_coach_html_versions_shared_ai_parity_without_placeholder():
 
     assert f'src="/shared/ai-parity.js?v={proxy.APP_VERSION}"' in html
     assert "__APP_VERSION__" not in html
+
+
+def test_match_photos_html_versions_metadata_editor_script():
+    response = asyncio.run(proxy.match_photos_page())
+    html = response.body.decode("utf-8")
+
+    assert f'src="/shared/server-tables.js?v={proxy.APP_VERSION}"' in html
+    assert "__APP_VERSION__" not in html
