@@ -205,10 +205,18 @@
       }
       .chapter {
         display: grid;
-        grid-template-columns: 9rem 1fr;
+        grid-template-columns: 9rem minmax(0, 1fr) 4.5rem;
         gap: 0.5rem;
         align-items: center;
         margin: 0.5rem 0;
+      }
+      .best-check,
+      .best-check input {
+        width: auto;
+      }
+      .best-check input {
+        min-height: auto;
+        margin: 0 0.25rem 0 0;
       }
       .roster-grid {
         display: grid;
@@ -239,7 +247,7 @@
           margin: 0.3rem 0;
         }
         .chapter {
-          grid-template-columns: 7rem 1fr;
+          grid-template-columns: 7rem minmax(0, 1fr) 4rem;
         }
       }
     </style>
@@ -434,7 +442,7 @@
           <section class="card">
             <h2>章節時間表</h2>
             <div class="caption">
-              時間可輸入秒數、mm:ss 或 hh:mm:ss；未啟用的章節不會在前台顯示。
+              時間可輸入秒數、mm:ss 或 hh:mm:ss；未啟用的章節不會在前台顯示。個人發言章節可勾選多位佳辯，所選辯位須同時啟用並填寫時間。
             </div>
             <form id="chapterForm">
               <div id="chapterInputs"></div>
@@ -553,7 +561,8 @@
           $("chapterInputs").innerHTML = state.chapter_labels
             .map((label) => {
               const c = chapters[label];
-              return `<div class="chapter"><label><input type="checkbox" data-label="${label}" ${c ? "checked" : ""}> ${label}</label><input data-time="${label}" value="${c ? c.label : ""}" placeholder="例：12:34"></div>`;
+              const canBeBest = (state.individual_speech_labels || []).includes(label);
+              return `<div class="chapter"><label><input type="checkbox" data-label="${label}" ${c ? "checked" : ""}> ${label}</label><input data-time="${label}" value="${c ? c.label : ""}" placeholder="例：12:34">${canBeBest ? `<label class="best-check"><input type="checkbox" data-best="${label}" ${c && c.is_best_debater ? "checked" : ""}>佳辯</label>` : "<span></span>"}</div>`;
             })
             .join("");
           const roster = Object.fromEntries(
@@ -586,10 +595,12 @@
               return `<div><label for="${selectId}">${esc(label)}</label><select id="${selectId}" data-roster-role="${esc(label)}">${options.join("")}</select></div>`;
             })
             .join("");
-          if (state.best_debater_role) {
-            const bestUser = roster[state.best_debater_role];
+          const bestRoles = state.chapters
+            .filter((chapter) => chapter.is_best_debater)
+            .map((chapter) => chapter.chapter_label);
+          if (bestRoles.length) {
             $("rosterBestDebater").textContent =
-              `🏆 本片段目前標示的最佳辯論員：${state.best_debater_role}${bestUser ? `（${bestUser}）` : "（尚未連結帳戶）"}`;
+              `🏆 本片段目前標示的最佳辯論員：${bestRoles.map((role) => `${role}${roster[role] ? `（${roster[role]}）` : "（尚未連結帳戶）"}`).join("、")}`;
             $("rosterBestDebater").classList.remove("hidden");
           } else {
             $("rosterBestDebater").classList.add("hidden");
@@ -820,6 +831,8 @@
               enabled: document.querySelector(`[data-label="${label}"]`)
                 .checked,
               time_text: document.querySelector(`[data-time="${label}"]`).value,
+              is_best_debater:
+                document.querySelector(`[data-best="${label}"]`)?.checked || false,
             })),
             r = await fetch(
               `/api/video-admin/videos/${selected().id}/chapters`,

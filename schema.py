@@ -1311,8 +1311,6 @@ CREATE INDEX IF NOT EXISTS idx_video_votes_video_choice
     ON {TABLE_VIDEO_VOTES}(video_id, vote_choice);
 CREATE INDEX IF NOT EXISTS idx_video_progress_user_updated
     ON {TABLE_VIDEO_PROGRESS}(user_id, updated_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_video_chapters_one_best_debater
-    ON {TABLE_VIDEO_CHAPTERS}(video_id) WHERE is_best_debater = TRUE;
 CREATE INDEX IF NOT EXISTS idx_video_roster_member_video
     ON {TABLE_VIDEO_ROSTER}(member_user_id, video_id);
 CREATE INDEX IF NOT EXISTS idx_match_photos_album_created

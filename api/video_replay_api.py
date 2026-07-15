@@ -22,6 +22,7 @@ class ChapterItem(BaseModel):
     chapter_label: str = Field(max_length=80)
     enabled: bool
     time_text: str = Field(default="", max_length=20)
+    is_best_debater: bool | None = None
 
 
 class ChaptersBody(BaseModel):
@@ -78,7 +79,7 @@ def chapters(body: ChaptersBody, request: Request):
     )
     return logic.save_chapters(
         body.video_id,
-        [item.model_dump() for item in body.chapters],
+        [item.model_dump(exclude_unset=True) for item in body.chapters],
         best_debater_role=best_role,
         db=db,
     )
