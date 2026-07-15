@@ -1321,8 +1321,16 @@ def export_recording_manifest(request: Request, speaker: str = ""):
         ORDER BY r.id LIMIT :export_limit""", {**params, "export_limit": RECORDING_MANIFEST_MAX_ROWS + 1}))
     require_row_limit(rows, limit=RECORDING_MANIFEST_MAX_ROWS, label="錄音 manifest 匯出")
     from core import r2_storage
-    if not r2_storage.configured():
+    if not r2_storage.configured() or not r2_storage.connection_ready():
         raise HTTPException(503, "Cloudflare R2 暫時不可用")
+    if rows:
+        probe_key = str(rows[0].get("r2_key") or "")
+        if not probe_key:
+            raise HTTPException(409, f"錄音 {rows[0]['id']} 尚未完成R2遷移")
+        try:
+            r2_storage.head(probe_key)
+        except Exception as exc:
+            raise HTTPException(503, "Cloudflare R2 暫時不可讀取錄音") from exc
     manifest = []
     for row in rows:
         r2_key = str(row.get("r2_key") or "")

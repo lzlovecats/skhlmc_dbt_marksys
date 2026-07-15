@@ -26,6 +26,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -99,6 +100,42 @@ def _write_json(path: Path, value: object) -> None:
 def _public_error(value: object) -> str:
     message = URL_RE.sub("[URL hidden]", str(value or "Preparation failed"))
     return message[:800]
+
+
+def _safe_r2_error_code(error: urllib.error.HTTPError) -> str:
+    """Return only a bounded S3/R2 XML error code, never the response message."""
+    try:
+        root = ET.fromstring(error.read(16 * 1024))
+    except Exception:
+        return ""
+    code = ""
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] == "Code":
+            code = str(element.text or "").strip()
+            break
+    return code if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", code) else ""
+
+
+def _download_denied_message(recording_id: str, error: urllib.error.HTTPError) -> str:
+    code = _safe_r2_error_code(error)
+    detail = f"HTTP {error.code}" + (f", R2 {code}" if code else ", no R2 error code")
+    if code in {"ExpiredToken", "RequestExpired"}:
+        action = "export a fresh manifest and use it within one hour"
+    elif code in {
+        "AuthorizationQueryParametersError",
+        "InvalidAccessKeyId",
+        "SignatureDoesNotMatch",
+    }:
+        action = "check the production R2 signing credentials and endpoint"
+    elif code == "RequestTimeTooSkewed":
+        action = "check the production signer clock"
+    elif code == "AccessDenied":
+        action = "check the production R2 token and object read permission"
+    elif not code:
+        action = "check whether a network proxy or security gateway blocked the R2 request"
+    else:
+        action = "check the production R2 configuration"
+    return f"download denied for recording {recording_id} ({detail}; {action})"
 
 
 class _ProgressReporter:
@@ -231,10 +268,7 @@ def _download_https_audio(
         except Exception as exc:
             partial.unlink(missing_ok=True)
             if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
-                raise RuntimeError(
-                    f"download failed for recording {recording_id} "
-                    "(signed URL expired or unauthorized; export a fresh manifest)"
-                ) from None
+                raise RuntimeError(_download_denied_message(recording_id, exc)) from None
             else:
                 last_error_name = type(exc).__name__
             if attempt < DOWNLOAD_ATTEMPTS:

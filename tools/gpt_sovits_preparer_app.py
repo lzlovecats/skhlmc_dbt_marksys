@@ -106,7 +106,9 @@ def _validated_output_root(value: object) -> Path:
     if not expanded.is_absolute():
         raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出根目錄必須使用絕對路徑或 ~/ 開頭。")
     try:
-        root = expanded.resolve()
+        # Avoid Path.resolve(): on Windows and some network/external volumes it
+        # may require metadata permissions that are not needed to write there.
+        root = expanded.absolute()
         if root.exists() and not root.is_dir():
             raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出路徑現時係檔案，唔係資料夾。")
         # Do not chmod an existing user-selected parent such as ~/Documents.
@@ -114,6 +116,12 @@ def _validated_output_root(value: object) -> Path:
         _ensure_private_dir(root, chmod_existing=False)
     except RequestRejected:
         raise
+    except PermissionError as exc:
+        suggestion = Path.home() / "private-ai-training"
+        raise RequestRejected(
+            HTTPStatus.FORBIDDEN,
+            f"冇權限建立或使用「{raw}」；請揀你帳戶可寫入嘅資料夾，例如 {suggestion}。",
+        ) from exc
     except OSError as exc:
         raise RequestRejected(
             HTTPStatus.BAD_REQUEST,
@@ -133,6 +141,19 @@ def _validated_output_root(value: object) -> Path:
             HTTPStatus.CONFLICT,
             f"輸出磁碟只有 {free_bytes / 1024**3:.1f} GB 可用；最少需要 10 GB。",
         )
+    try:
+        _ensure_private_dir(root / ".incoming")
+    except PermissionError as exc:
+        suggestion = Path.home() / "private-ai-training"
+        raise RequestRejected(
+            HTTPStatus.FORBIDDEN,
+            f"可以讀取「{raw}」但冇權限寫入；請改用例如 {suggestion}。",
+        ) from exc
+    except OSError as exc:
+        raise RequestRejected(
+            HTTPStatus.BAD_REQUEST,
+            f"未能喺輸出根目錄建立私人工作資料夾（{type(exc).__name__}）。",
+        ) from exc
     return root
 
 

@@ -4,6 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import JSONResponse
 
@@ -69,6 +71,8 @@ class _Db:
 def test_recording_manifest_normalises_mixed_nullable_metadata(monkeypatch):
     monkeypatch.setattr(ai_training_api, "_admin", lambda _request: ("admin", _Db()))
     monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "connection_ready", lambda: True)
+    monkeypatch.setattr(r2_storage, "head", lambda _key: {"ContentLength": 1024})
     monkeypatch.setattr(
         r2_storage,
         "presign_get",
@@ -87,6 +91,46 @@ def test_recording_manifest_normalises_mixed_nullable_metadata(monkeypatch):
 
     # Exercise the same final encoder path FastAPI uses in production.
     JSONResponse(jsonable_encoder(result))
+
+
+def test_recording_manifest_fails_before_signing_when_r2_is_not_reachable(monkeypatch):
+    monkeypatch.setattr(ai_training_api, "_admin", lambda _request: ("admin", _Db()))
+    monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "connection_ready", lambda: False)
+    monkeypatch.setattr(
+        r2_storage,
+        "presign_get",
+        lambda *_args, **_kwargs: pytest.fail("must not sign with an unreachable R2 configuration"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        ai_training_api.export_recording_manifest(None)
+
+    assert raised.value.status_code == 503
+    assert "R2" in str(raised.value.detail)
+
+
+def test_recording_manifest_fails_before_signing_when_first_object_is_not_readable(monkeypatch):
+    monkeypatch.setattr(ai_training_api, "_admin", lambda _request: ("admin", _Db()))
+    monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "connection_ready", lambda: True)
+    monkeypatch.setattr(
+        r2_storage,
+        "head",
+        lambda _key: (_ for _ in ()).throw(RuntimeError("private credential detail")),
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "presign_get",
+        lambda *_args, **_kwargs: pytest.fail("must not sign an unreadable R2 object"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        ai_training_api.export_recording_manifest(None)
+
+    assert raised.value.status_code == 503
+    assert "R2" in str(raised.value.detail)
+    assert "credential" not in str(raised.value.detail)
 
 
 def test_admin_speaker_filter_is_a_readiness_backed_dropdown():

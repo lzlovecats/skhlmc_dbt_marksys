@@ -1,6 +1,7 @@
 """Offline regressions for the GPT-SoVITS dataset preparation helper."""
 
 import hashlib
+import io
 import json
 import stat
 from types import SimpleNamespace
@@ -40,6 +41,27 @@ def _write_manifest(path, items):
 
 def test_clean_text_replaces_pipe_with_chinese_comma():
     assert preparer._clean_text("  第一句|第二句\n  第三句  ") == "第一句，第二句 第三句"
+
+
+def test_r2_signature_error_reports_safe_code_without_response_details():
+    error = preparer.urllib.error.HTTPError(
+        "https://r2.example/audio?signature=secret",
+        403,
+        "Forbidden",
+        {},
+        io.BytesIO(
+            b"<Error><Code>SignatureDoesNotMatch</Code>"
+            b"<Message>credential-secret</Message></Error>"
+        ),
+    )
+
+    message = preparer._download_denied_message("9", error)
+
+    assert "HTTP 403" in message
+    assert "R2 SignatureDoesNotMatch" in message
+    assert "production R2 signing credentials" in message
+    assert "credential-secret" not in message
+    assert "signature=secret" not in message
 
 
 def test_split_for_is_stable_and_keeps_a_group_together():

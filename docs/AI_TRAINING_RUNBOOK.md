@@ -36,7 +36,9 @@ Browser 會自動開啟「GPT-SoVITS 本機資料準備器」。把 AI Training 
 
 每個工作仍會在所選根目錄下建立權限為 `700` 的獨立 `tts-日期-編號` workspace。需要在
 啟動時固定路徑亦可使用 `./tools/start_gpt_sovits_preparer.sh --output-root /absolute/path`。
-若處理失敗，紅色提示會顯示已移除 signed URL 的實際驗證或下載錯誤。
+若處理失敗，紅色提示會顯示已移除 signed URL 的實際驗證或下載錯誤；R2 401／403 亦會
+保留安全錯誤碼，例如 `SignatureDoesNotMatch`，方便分辨 signer 設定同網絡代理問題。
+自訂路徑如被 OS 拒絕，應改用目前登入帳戶可寫入的位置（通常係 home 目錄之下）。
 
 參數 profile 鎖定正式 release `20250606v2pro`、commit
 `d7c2210da8c013e81a94bfc7b811a477c99fd506`；epoch 沿用該 release default，batch 才按

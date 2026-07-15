@@ -186,7 +186,7 @@ TTS_UPLOAD_INTENTS_PER_USER_DAY = _limit("TTS_UPLOAD_INTENTS_PER_USER_DAY", 30, 
 TTS_UPLOAD_INTENTS_GLOBAL_MONTH = _limit("TTS_UPLOAD_INTENTS_GLOBAL_MONTH", 1_000, minimum=1, maximum=1_000, group="ai", description="TTS upload intents system/month")
 TTS_REVIEW_CONCURRENCY = _limit("TTS_REVIEW_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent TTS quality reviews")
 AI_COACH_MAX_AUDIO_BYTES = _limit("AI_COACH_MAX_AUDIO_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MIB, group="ai", description="AI Coach decoded audio bytes")
-AI_COACH_MAX_AUDIO_SECONDS = _limit("AI_COACH_MAX_AUDIO_SECONDS", 60, minimum=1, maximum=60, group="ai", description="AI Coach browser recording duration")
+AI_COACH_MAX_AUDIO_SECONDS = _limit("AI_COACH_MAX_AUDIO_SECONDS", 6 * 60, minimum=1, maximum=6 * 60, group="ai", description="AI Coach browser recording duration")
 AI_COACH_CONCURRENCY = _limit("AI_COACH_CONCURRENCY", 3, minimum=1, maximum=3, group="ai", description="Concurrent AI Coach requests")
 KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES = _limit("KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES", 12 * MIB, minimum=MIB, maximum=12 * MIB, group="ai", description="Temporary full-match kiosk recording bytes")
 KIOSK_MATCH_REVIEW_MAX_SECONDS = _limit("KIOSK_MATCH_REVIEW_MAX_SECONDS", 90 * 60, minimum=10 * 60, maximum=90 * 60, group="ai", description="Full-match kiosk recording duration")

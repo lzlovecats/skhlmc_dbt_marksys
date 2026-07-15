@@ -459,11 +459,15 @@
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks = [];
       const limits = {
-        audio_max_seconds: 180,
+        audio_max_seconds: 360,
         audio_max_bytes: 2 * 1024 * 1024,
         ...(meta.resource_limits || {}),
       };
-      const activeRecorder = new MediaRecorder(stream);
+      // 32kbps Opus is ample for speech analysis and keeps a full six-minute
+      // recording (~1.44MB plus container overhead) within the 2MiB API cap.
+      const activeRecorder = new MediaRecorder(stream, {
+        audioBitsPerSecond: 32_000,
+      });
       let recordedBytes = 0;
       let exceededByteLimit = false;
       recorder = activeRecorder;
@@ -524,9 +528,12 @@
         syncModel();
       };
       activeRecorder.start(1000);
+      // Stop just before the hard media-probe boundary. Browser timers can
+      // fire late under load, and an exact 360-second timer can otherwise
+      // produce a 360.x-second container that the server correctly rejects.
       recordStopTimer = setTimeout(() => {
         if (activeRecorder.state === "recording") activeRecorder.stop();
-      }, limits.audio_max_seconds * 1000);
+      }, Math.max(1, limits.audio_max_seconds * 1000 - 500));
       $("record").textContent = "停止錄音";
       $("recordState").textContent = "錄音中…";
     } catch (error) {
