@@ -234,12 +234,11 @@
         border-color: rgba(255, 138, 128, 0.8);
         color: var(--error);
       }
-      #kioskPrimeButton {
+      #kioskPrimeButton,
+      #kioskBackupButton {
         position: fixed;
         z-index: 80;
-        left: 50%;
         bottom: 4.5vh;
-        transform: translateX(-50%);
         border: 2px solid var(--accent);
         border-radius: 12px;
         background: #17233d;
@@ -248,6 +247,14 @@
         font-weight: 800;
         padding: 0.8rem 1.2rem;
         cursor: pointer;
+      }
+      #kioskPrimeButton {
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      #kioskBackupButton {
+        right: 1.4vw;
+        border-color: var(--error);
       }
       #conn {
         position: fixed;
@@ -423,6 +430,9 @@
     <button id="kioskPrimeButton" type="button" style="display: none">
       啟用收音咪及聲音
     </button>
+    <button id="kioskBackupButton" type="button" style="display: none">
+      下載本機錄音備份
+    </button>
     <div id="conn"></div>
 
     <script>
@@ -436,6 +446,8 @@
         const COMMAND_POLL_MS = 850;
         const HEARTBEAT_MS = 5000;
         const HARDWARE_TTL_MS = 30 * 60 * 1000;
+        const RECORDING_DB_NAME = "marksys-kiosk-recordings-v1";
+        const RECORDING_DB_VERSION = 1;
         const DEFAULT_ADVISORY =
           "以下「AI評判易」結果只屬 AI 輔助評語，正式賽果以評判團為準。";
         const $ = (id) => document.getElementById(id);
@@ -485,6 +497,8 @@
         let bellLoading = null;
         let wakeLock = null;
         let mediaPrimed = false;
+        let recordingDbPromise = null;
+        let recoverySessionId = "";
 
         function newClientId() {
           try {
@@ -497,6 +511,244 @@
               Math.random().toString(36).slice(2, 12)
             );
           }
+        }
+
+        function recordingTransactionDone(transaction) {
+          return new Promise((resolve, reject) => {
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () =>
+              reject(transaction.error || new Error("本機錄音資料庫寫入失敗"));
+            transaction.onabort = () =>
+              reject(transaction.error || new Error("本機錄音資料庫操作已取消"));
+          });
+        }
+
+        function recordingRequestValue(request) {
+          return new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () =>
+              reject(request.error || new Error("本機錄音資料庫讀取失敗"));
+          });
+        }
+
+        function openRecordingDb() {
+          if (!window.indexedDB) {
+            return Promise.reject(new Error("瀏覽器不支援本機持久錄音備份"));
+          }
+          if (recordingDbPromise) return recordingDbPromise;
+          recordingDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(RECORDING_DB_NAME, RECORDING_DB_VERSION);
+            request.onupgradeneeded = () => {
+              const db = request.result;
+              if (!db.objectStoreNames.contains("sessions")) {
+                db.createObjectStore("sessions", { keyPath: "session_id" });
+              }
+              if (!db.objectStoreNames.contains("chunks")) {
+                const chunks = db.createObjectStore("chunks", { keyPath: "id" });
+                chunks.createIndex("session_id", "session_id", { unique: false });
+              }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => {
+              recordingDbPromise = null;
+              reject(request.error || new Error("未能開啟本機錄音資料庫"));
+            };
+            request.onblocked = () => {
+              recordingDbPromise = null;
+              reject(new Error("本機錄音資料庫正被另一個 Kiosk 分頁佔用"));
+            };
+          });
+          return recordingDbPromise;
+        }
+
+        function recordingManifest(state, status = "recording") {
+          return {
+            session_id: state.session_id,
+            match_id: state.match_id,
+            topic: String(state.match?.topic || "").slice(0, 500),
+            mime_type: state.mime_type,
+            started_at: state.started_at_iso || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            status,
+            bytes: Math.max(0, state.bytes || 0),
+            chunk_count: Math.max(0, state.chunk_sequence || 0),
+            persistence_error: String(state.persistence_error || "").slice(0, 500),
+          };
+        }
+
+        async function saveRecordingManifest(state, status = "recording") {
+          const db = await openRecordingDb();
+          const transaction = db.transaction("sessions", "readwrite");
+          const done = recordingTransactionDone(transaction);
+          transaction.objectStore("sessions").put(recordingManifest(state, status));
+          await done;
+        }
+
+        async function persistRecordingChunk(state, chunk) {
+          const db = await openRecordingDb();
+          const sequence = state.chunk_sequence;
+          state.chunk_sequence += 1;
+          const transaction = db.transaction(["sessions", "chunks"], "readwrite");
+          const done = recordingTransactionDone(transaction);
+          transaction.objectStore("chunks").put({
+            id: state.session_id + ":" + String(sequence).padStart(8, "0"),
+            session_id: state.session_id,
+            sequence,
+            blob: chunk,
+            byte_size: chunk.size,
+            created_at: new Date().toISOString(),
+          });
+          transaction.objectStore("sessions").put(recordingManifest(state));
+          await done;
+        }
+
+        async function loadPersistedRecording(sessionId) {
+          const db = await openRecordingDb();
+          const transaction = db.transaction(["sessions", "chunks"], "readonly");
+          const done = recordingTransactionDone(transaction);
+          const manifestRequest = transaction.objectStore("sessions").get(sessionId);
+          const chunksRequest = transaction
+            .objectStore("chunks")
+            .index("session_id")
+            .getAll(IDBKeyRange.only(sessionId));
+          const [manifest, chunks] = await Promise.all([
+            recordingRequestValue(manifestRequest),
+            recordingRequestValue(chunksRequest),
+          ]);
+          await done;
+          return {
+            manifest: manifest || null,
+            chunks: (chunks || [])
+              .sort((a, b) => finite(a.sequence) - finite(b.sequence))
+              .map((item) => item.blob)
+              .filter((blob) => blob?.size),
+          };
+        }
+
+        async function clearPersistedRecording(sessionId) {
+          if (!sessionId) return;
+          const db = await openRecordingDb();
+          const transaction = db.transaction(["sessions", "chunks"], "readwrite");
+          const done = recordingTransactionDone(transaction);
+          transaction.objectStore("sessions").delete(sessionId);
+          const chunkStore = transaction.objectStore("chunks");
+          const keys = await recordingRequestValue(
+            chunkStore.index("session_id").getAllKeys(IDBKeyRange.only(sessionId)),
+          );
+          for (const key of keys || []) chunkStore.delete(key);
+          await done;
+          if (recoverySessionId === sessionId) recoverySessionId = "";
+          show($("kioskBackupButton"), Boolean(recoverySessionId), "block");
+        }
+
+        async function refreshRecordingRecovery() {
+          if (!KIOSK_MODE) return;
+          try {
+            const db = await openRecordingDb();
+            const transaction = db.transaction("sessions", "readonly");
+            const done = recordingTransactionDone(transaction);
+            const sessions = await recordingRequestValue(
+              transaction.objectStore("sessions").getAll(),
+            );
+            await done;
+            const recoverable = (sessions || [])
+              .filter((item) => finite(item.bytes) > 0)
+              .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+            recoverySessionId = String(recoverable[0]?.session_id || "");
+            show($("kioskBackupButton"), Boolean(recoverySessionId), "block");
+          } catch (_) {
+            recoverySessionId = "";
+            show($("kioskBackupButton"), false);
+          }
+        }
+
+        async function downloadPersistedRecording(sessionId) {
+          const recovered = await loadPersistedRecording(sessionId);
+          if (!recovered.chunks.length) throw new Error("本機備份沒有可下載錄音片段");
+          const mime = String(recovered.manifest?.mime_type || "audio/webm");
+          const blob = new Blob(recovered.chunks, { type: mime });
+          const extension = mime.includes("ogg") ? "ogg" : mime.includes("mp4") ? "m4a" : "webm";
+          const safeMatch = String(recovered.manifest?.match_id || "match")
+            .replace(/[^a-zA-Z0-9_-]+/g, "-")
+            .slice(0, 60);
+          const link = document.createElement("a");
+          const url = URL.createObjectURL(blob);
+          link.href = url;
+          link.download = safeMatch + "-kiosk-local-backup-" + sessionId.slice(0, 12) + "." + extension;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+          return blob.size;
+        }
+
+        async function ensureRecordingStorage() {
+          const db = await openRecordingDb();
+          const testId = "__hardware_test__";
+          const transaction = db.transaction("sessions", "readwrite");
+          const done = recordingTransactionDone(transaction);
+          transaction.objectStore("sessions").put({
+            session_id: testId,
+            bytes: 0,
+            updated_at: new Date().toISOString(),
+          });
+          transaction.objectStore("sessions").delete(testId);
+          await done;
+          let persistent = false;
+          if (navigator.storage?.persist) {
+            try {
+              persistent = await navigator.storage.persist();
+            } catch (_) {}
+          }
+          return { available: true, persistent };
+        }
+
+        async function uploadBlobWithRetry(url, headers, blob, label = "錄音") {
+          let lastError = null;
+          for (let attempt = 1; attempt <= 4; attempt += 1) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 120000);
+            try {
+              const response = await fetch(url, {
+                method: "PUT",
+                headers,
+                body: blob,
+                signal: controller.signal,
+              });
+              if (response.ok) return response;
+              lastError = new Error(label + "上載失敗（HTTP " + response.status + "）");
+              if (response.status >= 400 && response.status < 500) throw lastError;
+            } catch (error) {
+              lastError = error;
+              if (error?.message?.includes("HTTP 4")) throw error;
+            } finally {
+              clearTimeout(timeout);
+            }
+            if (attempt < 4) {
+              setEngine("processing", label + "上載中斷，正在重試（" + attempt + "／4）");
+              await sleep(1000 * Math.min(8, 2 ** (attempt - 1)));
+            }
+          }
+          throw lastError || new Error(label + "上載失敗");
+        }
+
+        async function runBrowserR2UploadProbe() {
+          const bytes = crypto.getRandomValues(new Uint8Array(1024));
+          const blob = new Blob([bytes], { type: "application/octet-stream" });
+          const digest = await sha256Hex(blob);
+          const intent = await fetchJson("/api/kiosk/match-review/upload-probe-intent", {
+            method: "POST",
+            body: { byte_size: blob.size, sha256: digest },
+          });
+          await uploadBlobWithRetry(intent.url, intent.headers, blob, "瀏覽器至 R2 測試檔");
+          const completed = await fetchJson(
+            "/api/kiosk/match-review/upload-probe-complete",
+            { method: "POST", body: { upload_token: intent.upload_token } },
+          );
+          if (!completed.ok || !completed.probe_deleted) {
+            throw new Error("瀏覽器至 R2 測試檔未能驗證及刪除");
+          }
+          return { bytes: blob.size, verified: true, deleted: true };
         }
 
         function setKioskBadge(message, kind = "") {
@@ -694,6 +946,7 @@
             show($("kioskPrimeButton"), !mediaPrimed, "block");
             startPrivateLoops();
             setEngine("idle", "已連接，等待 Projector Control 指令");
+            await refreshRecordingRecovery();
             await sendHeartbeat();
           } catch (error) {
             showLogin(error.status === 403 ? "此頁面只限 kiosk account。" : "請登入 kiosk。 ");
@@ -721,6 +974,7 @@
             setEngine("idle", "登入成功，等待 Projector Control 指令");
             await mediaActivation;
             show($("kioskPrimeButton"), !mediaPrimed, "block");
+            await refreshRecordingRecovery();
             await sendHeartbeat();
           } catch (error) {
             $("loginError").textContent = error.message || "kiosk 登入失敗";
@@ -750,6 +1004,17 @@
           } catch (error) {
             show($("kioskPrimeButton"), true, "block");
             setEngine("error", "未能啟用收音咪及聲音", error.message);
+          }
+        });
+
+        $("kioskBackupButton").addEventListener("click", async () => {
+          try {
+            if (!recoverySessionId) await refreshRecordingRecovery();
+            if (!recoverySessionId) throw new Error("未有保留中的本機錄音備份");
+            const bytes = await downloadPersistedRecording(recoverySessionId);
+            setEngine("error", "已下載本機錄音備份（" + humanBytes(bytes) + "）", "請保留備份，並由工作人員跟進；系統不會自動刪除。 ");
+          } catch (error) {
+            setEngine("error", "未能下載本機錄音備份", error.message);
           }
         });
 
@@ -843,6 +1108,11 @@
                 ? Math.round(recordingElapsed() * 1000) / 1000
                 : 0,
               recording_bytes: recording?.bytes || 0,
+              microphone_muted: Boolean(recording?.microphone_muted),
+              local_recording_backup: Boolean(
+                recording && !recording.persistence_error,
+              ),
+              recovery_backup_available: Boolean(recoverySessionId),
               processing: Boolean(processing),
               speech_playing: Boolean(speech && !speech.audio.paused),
               tts_available: Boolean(command.tts_available),
@@ -951,7 +1221,7 @@
                   command.action === "play" && command.tts_status === "playing";
                 if (lostActiveState || interruptedSpeech) {
                   const detail = lostActiveState
-                    ? "Kiosk 頁面曾重新載入，本機原有錄音／分析狀態已遺失"
+                    ? "Kiosk 頁面曾重新載入；錄音流程已中斷，已保留的本機片段可由 Kiosk 下載備份"
                     : "Kiosk 頁面重新載入，粵語播放已中斷";
                   setEngine("error", detail, detail);
                   commandChain = commandChain.then(() =>
@@ -1126,6 +1396,9 @@
             secure_context: Boolean(results.secure_context?.ok),
             media_recorder: Boolean(results.media_recorder?.ok),
             crypto: Boolean(results.crypto?.ok),
+            local_recording_storage: Boolean(results.local_recording_storage?.ok),
+            persistent_storage: Boolean(results.local_recording_storage?.persistent),
+            browser_r2_upload: Boolean(results.browser_r2_upload?.ok),
             fullscreen: Boolean(results.fullscreen?.ok),
             microphone: Boolean(results.microphone?.ok),
             microphone_label: String(results.microphone?.label || "").slice(0, 200),
@@ -1336,6 +1609,37 @@
               window.crypto?.subtle ? "SHA-256 功能可用" : "SHA-256 功能不可用",
             );
             essential.push(results.crypto.ok);
+            try {
+              const storage = await ensureRecordingStorage();
+              results.local_recording_storage = checkResult(
+                storage.available,
+                storage.persistent
+                  ? "本機持久錄音備份可用，瀏覽器已授予持久儲存"
+                  : "本機持久錄音備份可用；瀏覽器未保證永久保留，完成後應另行下載備份",
+                { persistent: Boolean(storage.persistent) },
+              );
+            } catch (error) {
+              results.local_recording_storage = checkResult(
+                false,
+                "本機持久錄音備份不可用：" + error.message,
+              );
+            }
+            essential.push(results.local_recording_storage.ok);
+
+            try {
+              const probe = await runBrowserR2UploadProbe();
+              results.browser_r2_upload = checkResult(
+                probe.verified && probe.deleted,
+                "已實測 Kiosk 瀏覽器可直傳、驗證及刪除 R2 測試檔",
+                probe,
+              );
+            } catch (error) {
+              results.browser_r2_upload = checkResult(
+                false,
+                "Kiosk 瀏覽器至 R2 實際上載測試失敗：" + error.message,
+              );
+            }
+            essential.push(results.browser_r2_upload.ok);
             results.fullscreen = checkResult(true, "大屏閃爍測試已執行");
             await flashHardwareScreen();
 
@@ -1547,12 +1851,46 @@
               hard_stop: 0,
               size_stop_started: false,
               recorder_error: "",
+              chunk_sequence: 0,
+              persist_chain: Promise.resolve(),
+              persistence_error: "",
+              microphone_muted: false,
             };
             recording = state;
+            const microphoneTrack = stream.getAudioTracks()[0];
+            microphoneTrack?.addEventListener("mute", () => {
+              state.microphone_muted = true;
+              setEngine(
+                "recording",
+                "正式場次錄音中；收音咪暫時沒有訊號",
+                "請立即檢查收音咪接線、電源及靜音狀態",
+              );
+              sendHeartbeat();
+            });
+            microphoneTrack?.addEventListener("unmute", () => {
+              state.microphone_muted = false;
+              setEngine("recording", "正式場次錄音中；收音咪訊號已恢復");
+              sendHeartbeat();
+            });
+            microphoneTrack?.addEventListener("ended", () => {
+              if (mediaRecorder.state === "inactive" || state.finish_promise) return;
+              state.recorder_error = "正式錄音期間收音咪連線中斷";
+              stopAndAnalyze(state.start_command, "microphone_ended");
+            });
             mediaRecorder.ondataavailable = (event) => {
               if (!event.data?.size) return;
               state.chunks.push(event.data);
               state.bytes += event.data.size;
+              state.persist_chain = state.persist_chain
+                .then(() => persistRecordingChunk(state, event.data))
+                .catch((error) => {
+                  state.persistence_error = error.message || String(error);
+                  setEngine(
+                    "recording",
+                    "正式場次錄音中；本機備份寫入失敗",
+                    state.persistence_error,
+                  );
+                });
               // Leave margin for the recorder's final pending chunk.
               if (
                 state.bytes >= kioskLimits.max_bytes * 0.97 &&
@@ -1581,10 +1919,13 @@
                 resolve();
               };
             });
-            mediaRecorder.start(5000);
+            // Persist a playable continuation every two seconds so a browser or
+            // power failure loses as little of the irreplaceable match as possible.
+            mediaRecorder.start(2000);
             await started;
             state.started_at_performance = performance.now();
             state.started_at_iso = new Date().toISOString();
+            await saveRecordingManifest(state);
             state.hard_stop = setTimeout(
               () => stopAndAnalyze(state.start_command, "duration_limit"),
               kioskLimits.max_seconds * 1000,
@@ -1599,6 +1940,11 @@
               started_at: state.started_at_iso,
             });
           } catch (error) {
+            if (recording?.recorder?.state !== "inactive") {
+              try {
+                recording.recorder.stop();
+              } catch (_) {}
+            }
             if (stream) stream.getTracks().forEach((track) => track.stop());
             recording = null;
             setEngine("error", "未能開始錄音", error.message);
@@ -1609,7 +1955,14 @@
         async function stopRecorder(state) {
           if (!state || !state.recorder) throw new Error("沒有可停止的錄音");
           if (state.recorder.state === "inactive") {
-            return new Blob(state.chunks, { type: state.mime_type });
+            await state.persist_chain;
+            const persisted = await loadPersistedRecording(state.session_id).catch(
+              () => ({ chunks: [] }),
+            );
+            const chunks = persisted.chunks.length >= state.chunks.length
+              ? persisted.chunks
+              : state.chunks;
+            return new Blob(chunks, { type: state.mime_type });
           }
           const stopped = new Promise((resolve) => {
             const previous = state.recorder.onstop;
@@ -1625,7 +1978,15 @@
           state.recorder.stop();
           await stopped;
           await sleep(60);
-          return new Blob(state.chunks, { type: state.mime_type });
+          await state.persist_chain;
+          await saveRecordingManifest(state, "ready_for_upload");
+          const persisted = await loadPersistedRecording(state.session_id).catch(
+            () => ({ chunks: [] }),
+          );
+          const chunks = persisted.chunks.length >= state.chunks.length
+            ? persisted.chunks
+            : state.chunks;
+          return new Blob(chunks, { type: state.mime_type });
         }
 
         async function sha256Hex(blob) {
@@ -1782,15 +2143,8 @@
               });
               uploadToken = intent.upload_token;
               processing.stage = "上載私人暫存";
-              setEngine("processing", "正在將錄音上載到私人暫存區");
-              const upload = await fetch(intent.url, {
-                method: "PUT",
-                headers: intent.headers,
-                body: blob,
-              });
-              if (!upload.ok) throw new Error("錄音上載失敗（HTTP " + upload.status + "）");
-              blob = null;
-              state.chunks = [];
+              setEngine("processing", "正在將錄音上載到私人暫存區（本機備份繼續保留）");
+              await uploadBlobWithRetry(intent.url, intent.headers, blob, "錄音");
               processing.stage = "AI逐字及評審";
               setEngine("processing", "AI 正在整理全場逐字稿及評語，請勿關閉 Kiosk");
               const analysis = await fetchJson("/api/kiosk/match-review/analyze", {
@@ -1806,6 +2160,14 @@
               uploadToken = "";
               processing.stage = "傳送結果到 Projector Control";
               const saved = await postResult(activeCommand(), state, analysis);
+              try {
+                await clearPersistedRecording(state.session_id);
+                state.chunks = [];
+                blob = null;
+              } catch (_) {
+                recoverySessionId = state.session_id;
+                show($("kioskBackupButton"), true, "block");
+              }
               processing = null;
               recording = null;
               hardware.passed = false;
@@ -1818,17 +2180,26 @@
               try {
                 state.stream.getTracks().forEach((track) => track.stop());
               } catch (_) {}
-              state.chunks = [];
-              blob = null;
+              try {
+                await saveRecordingManifest(state, "retained_after_failure");
+              } catch (_) {}
+              recoverySessionId = state.session_id;
+              show($("kioskBackupButton"), true, "block");
               processing = null;
               recording = null;
               hardware.passed = false;
               await releaseWakeLock();
-              setEngine("error", "AI評判易未能完成", error.message);
+              setEngine(
+                "error",
+                "AI評判易未能完成；本機錄音備份已保留",
+                error.message,
+              );
               await acknowledge(activeCommand(), "error", error.message, {
                 reason,
                 stage: failedStage,
                 error: error.message,
+                local_recording_backup_retained: true,
+                local_recording_backup_session_id: state.session_id,
               });
               return null;
             } finally {

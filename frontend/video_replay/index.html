@@ -678,7 +678,7 @@
           if (restart)
             restart.addEventListener("click", () => select(selected.id, 0));
           $("chapters").innerHTML = data.chapters.length
-            ? `<div class="caption">章節跳轉</div><div class="chapter-grid">${data.chapters.map((c) => `<button type="button" data-start="${c.start_seconds}"><span>${esc(c.chapter_label)}${c.is_best_debater ? "（佳辯）" : ""}　${esc(c.label)}</span>${c.speaker_user_id ? `<span class="chapter-speaker">👤 ${esc(c.speaker_user_id)}</span>` : ""}</button>`).join("")}</div>`
+            ? `<div class="caption">章節跳轉</div><div class="chapter-grid">${data.chapters.map((c) => `<button type="button" data-start="${c.start_seconds}"><span>${esc(c.chapter_label)}${c.is_best_debater ? "（佳辯👑）" : ""}　${esc(c.label)}</span>${c.speaker_user_id ? `<span class="chapter-speaker">👤 ${esc(c.speaker_user_id)}</span>` : ""}</button>`).join("")}</div>`
             : '<div class="caption">此片段暫未設定章節。</div>';
           $("chapters")
             .querySelectorAll("button[data-start]")
