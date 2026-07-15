@@ -1,5 +1,12 @@
 # Release notes
 
+## 4.5.2 — AI Coach login bootstrap hotfix
+
+- 修正4.5.0月度資源設定由database經pandas讀取後包含非原生boolean／日期值，令已登入
+  AI Coach的`/api/ai-coach/data`在JSON序列化時回500。
+- AI Coach只有在登入後資料完整載入成功先顯示「已登入」；bootstrap失敗會保留登入畫面
+  及錯誤提示，避免登入畫面與app同時隱藏。
+
 ## 4.5.1 — Video replay best-debater multi-select
 
 - 比賽片段重溫及管理頁的章節設定改為逐個個人發言辯位勾選「佳辯」，同一片段可標示多位最佳辯論員。
