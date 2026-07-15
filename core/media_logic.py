@@ -246,6 +246,7 @@ def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
             "chapter_labels": CHAPTER_LABELS,
             "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
             "best_debater_role": None,
+            "best_debater_roles": [],
         }
     ids = {video["id"] for video in videos}
     selected_id = safe_int(selected_video_id, videos[0]["id"])
@@ -275,10 +276,9 @@ def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
         for _, row in chapters.iterrows()
     ]
     chapter_items.sort(key=lambda row: (CHAPTER_ORDER.get(row["chapter_label"], row["display_order"] + len(CHAPTER_LABELS)), row["start_seconds"]))
-    best_debater_role = next(
-        (row["chapter_label"] for row in chapter_items if row["is_best_debater"]),
-        None,
-    )
+    best_debater_roles = [
+        row["chapter_label"] for row in chapter_items if row["is_best_debater"]
+    ]
     comment_items = []
     vote = db.query(f"SELECT vote_choice FROM {TABLE_VIDEO_VOTES} WHERE video_id = :video_id AND user_id = :user_id", {"video_id": selected_id, "user_id": user_id})
     my_vote = clean_text(vote.iloc[0]["vote_choice"]) if not vote.empty else None
@@ -287,7 +287,9 @@ def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
         "comments": comment_items, "my_vote": my_vote,
         "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS,
         "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
-        "best_debater_role": best_debater_role,
+        # Keep the singular field temporarily for older replay clients.
+        "best_debater_role": best_debater_roles[0] if best_debater_roles else None,
+        "best_debater_roles": best_debater_roles,
     }
 
 
@@ -353,28 +355,47 @@ def save_chapters(video_id, chapters, best_debater_role=PRESERVE_BEST_DEBATER, d
     if invalid:
         return {"ok": False, "message": "以下章節時間格式無效：" + "、".join(invalid)}
     db = _resolve_db(db)
-    preserving_best = best_debater_role is PRESERVE_BEST_DEBATER
-    if preserving_best:
+    has_chapter_markers = any("is_best_debater" in item for item in chapters)
+    preserving_best = (
+        not has_chapter_markers
+        and best_debater_role is PRESERVE_BEST_DEBATER
+    )
+    if has_chapter_markers:
+        best_roles = {
+            clean_text(item.get("chapter_label"))
+            for item in chapters
+            if safe_bool(item.get("is_best_debater"))
+        }
+    elif preserving_best:
         existing = db.query(
             f"""SELECT chapter_label FROM {TABLE_VIDEO_CHAPTERS}
-                WHERE video_id=:video_id AND is_best_debater=TRUE LIMIT 1""",
+                WHERE video_id=:video_id AND is_best_debater=TRUE""",
             {"video_id": int(video_id)},
         )
-        best_role = clean_text(existing.iloc[0]["chapter_label"]) if not existing.empty else ""
+        best_roles = {
+            clean_text(value)
+            for value in existing.get("chapter_label", [])
+            if clean_text(value)
+        }
     else:
-        best_role = clean_text(best_debater_role)
-    if best_role and best_role not in INDIVIDUAL_SPEECH_LABELS:
+        legacy_best_role = clean_text(best_debater_role)
+        best_roles = {legacy_best_role} if legacy_best_role else set()
+    if best_roles - set(INDIVIDUAL_SPEECH_LABELS):
         return {"ok": False, "message": "最佳辯論員必須選擇個人發言辯位。"}
     enabled_labels = {label for label, _index, _seconds in values}
-    if best_role and best_role not in enabled_labels:
+    disabled_best_roles = best_roles - enabled_labels
+    if disabled_best_roles:
         if preserving_best:
-            best_role = ""
+            best_roles -= disabled_best_roles
         else:
             return {"ok": False, "message": "最佳辯論員必須同時啟用該辯位的章節時間。"}
+    ordered_best_roles = [
+        label for label in INDIVIDUAL_SPEECH_LABELS if label in best_roles
+    ]
     params = [
         {"video_id": int(video_id), "chapter_label": label,
          "start_seconds": seconds, "display_order": index,
-         "is_best_debater": label == best_role, "updated_at": now_hkt()}
+         "is_best_debater": label in best_roles, "updated_at": now_hkt()}
         for label, index, seconds in values
     ]
     with db.transaction() as conn:
@@ -385,7 +406,13 @@ def save_chapters(video_id, chapters, best_debater_role=PRESERVE_BEST_DEBATER, d
                 (video_id,chapter_label,start_seconds,display_order,is_best_debater,updated_at)
                 VALUES(:video_id,:chapter_label,:start_seconds,:display_order,:is_best_debater,:updated_at)"""),
                 params)
-    return {"ok": True, "message": "章節時間表已更新。", "best_debater_role": best_role or None}
+    return {
+        "ok": True,
+        "message": "章節時間表已更新。",
+        # Keep the singular field temporarily for older replay clients.
+        "best_debater_role": ordered_best_roles[0] if ordered_best_roles else None,
+        "best_debater_roles": ordered_best_roles,
+    }
 
 
 def _match_rows(db):
@@ -492,7 +519,7 @@ def video_admin_data(selected_video_id=None, page=1, page_size=API_PAGE_SIZE, db
         selected_id = videos[0]["id"]
     chapters = []
     roster = []
-    best_debater_role = None
+    best_debater_roles = []
     if selected_id:
         rows = db.query(
             f"""SELECT c.chapter_label, c.start_seconds,
@@ -515,10 +542,9 @@ def video_admin_data(selected_video_id=None, page=1, page_size=API_PAGE_SIZE, db
             for _, row in rows.iterrows()
         ]
         chapters.sort(key=lambda row: CHAPTER_ORDER.get(row["chapter_label"], len(CHAPTER_LABELS)))
-        best_debater_role = next(
-            (row["chapter_label"] for row in chapters if row["is_best_debater"]),
-            None,
-        )
+        best_debater_roles = [
+            row["chapter_label"] for row in chapters if row["is_best_debater"]
+        ]
         roster_rows = db.query(
             f"""SELECT role_label, member_user_id FROM {TABLE_VIDEO_ROSTER}
                 WHERE video_id=:video_id""",
@@ -537,7 +563,9 @@ def video_admin_data(selected_video_id=None, page=1, page_size=API_PAGE_SIZE, db
         "selected_video_id": selected_id or None, "chapters": chapters,
         "chapter_labels": CHAPTER_LABELS,
         "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
-        "best_debater_role": best_debater_role,
+        # Keep the singular field temporarily for older admin clients.
+        "best_debater_role": best_debater_roles[0] if best_debater_roles else None,
+        "best_debater_roles": best_debater_roles,
         "member_accounts": member_account_options(db), "roster": roster,
         "source_existing": SOURCE_EXISTING,
         "source_standalone": SOURCE_STANDALONE,

@@ -2,7 +2,7 @@
 
 更新日期：2026-07-15
 
-目前已核實的Render production為 **4.2.1**；repo release版本為 **4.5.0**，尚未
+目前已核實的Render production為 **4.2.1**；repo release版本為 **4.5.1**，尚未
 部署，程式碼版本唯一來源仍是[`version.py`](../version.py)。Production migration
 head為`20260714_0002`；兩個legacy BYTEA columns及
 legacy `system_config`已由versioned migrations退役。45張相片、45張縮圖及148段錄音共238個R2 objects

@@ -47,7 +47,7 @@ P0聯機Live direct media、P3粵語讀音、P4自家TTS、P5自家辯論LLM及P
 | Phase | 未來能力／結果 | 類型 | 現況及下一個gate |
 |---|---|---|---|
 | **P0** | Mode A STUN-only P2P direct media | 使用者功能／成本 | Repo已實作；下一gate係browser自動回歸、真機／嚴格NAT矩陣及授權deploy後zero-audio-through-Render驗證 |
-| **P0** | `4.5.0`授權deploy後smoke、admin／SQL credential rotation | 運維／安全 | Repo已ready，production仍是`4.2.1`；本roadmap不授權deploy或secret變更 |
+| **P0** | `4.5.1`授權deploy後smoke、admin／SQL credential rotation | 運維／安全 | Repo已ready，production仍是`4.2.1`；本roadmap不授權deploy或secret變更 |
 | **P1** | 可重現staging／空DB、schema cleanup、不可變motion ID、時區及roster token收口 | 資料庫 | 先完成staging restore及migration replay |
 | **P2** | Supabase最小權限、trusted request context及全面RLS | 安全 | Runtime仍使用`BYPASSRLS`角色，需分批canary |
 | **P3** | 粵語讀音回歸集、字典、G2P及provider-neutral preprocessing | 使用者功能 | 未建固定eval corpus，以現有Azure path做baseline |
@@ -99,7 +99,7 @@ zero audio bytes、Render control bandwidth、Free／Mock timer／bells／roster
   無個人quota的Solo browser-direct Free／Mock、Mode A P2P／逐字稿失敗降級、AI Coach R2→Google
   Files錄音分析、AI基金月度通知及adult-only consent smoke。
 
-**Gate P0-A（`4.2.1`達成 2026-07-14）：**主要登入workflow已smoke，production無新增5xx、DB pool、WebSocket或quota異常。`4.5.0` deploy後smoke仍是open item。
+**Gate P0-A（`4.2.1`達成 2026-07-14）：**主要登入workflow已smoke，production無新增5xx、DB pool、WebSocket或quota異常。`4.5.1` deploy後smoke仍是open item。
 
 ### P0.3 Cloudflare R2及舊BYTEA
 

@@ -1,5 +1,11 @@
 # Release notes
 
+## 4.5.1 — Video replay best-debater multi-select
+
+- 比賽片段重溫及管理頁的章節設定改為逐個個人發言辯位勾選「佳辯」，同一片段可標示多位最佳辯論員。
+- 佳辯章節按鈕會以「正主（佳辯）」格式顯示；舊版單選API欄位暫時保留作向後相容。
+- 套用前必須先執行`20260715_0002_allow_multiple_video_best_debaters` migration，移除每條片段只可一位佳辯的唯一索引。
+
 ## 4.5.0 — AI resource and network-practice breaking change
 
 - AI／media每日、每週及每月使用次數quota，以及Developer Solo exemption已移除；
