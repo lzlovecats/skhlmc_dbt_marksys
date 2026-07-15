@@ -53,6 +53,10 @@ _LIVE_BRIEF_TABLE = TABLE_AI_COACH_LIVE_BRIEFS
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
 MAX_COACH_AUDIO_BYTES = AI_COACH_MAX_AUDIO_BYTES
+# Gemini's documented usage metadata remains authoritative after a call.  Use
+# its current 32 audio-token/second rate as the bounded pre-call/fallback
+# estimate when a provider omits usage metadata.
+MAX_COACH_AUDIO_TOKEN_ESTIMATE = 32 * AI_COACH_MAX_AUDIO_SECONDS
 AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 AI_PROVIDER_PUBLIC_ERROR = "AI 服務暫時無法完成請求，請稍後再試。"
@@ -222,7 +226,7 @@ def _config(label, db=None):
 
 
 def _estimate(feature, config, has_audio=False):
-    inp,out=FEATURE_TOKEN_ESTIMATES.get(feature,(0,0));audio=1200 if has_audio else 0
+    inp,out=FEATURE_TOKEN_ESTIMATES.get(feature,(0,0));audio=MAX_COACH_AUDIO_TOKEN_ESTIMATE if has_audio else 0
     usd=(inp*(config.get("input_price_per_million") or 0)+audio*(config.get("audio_input_price_per_million") or config.get("input_price_per_million") or 0)+out*(config.get("output_price_per_million") or 0))/1_000_000
     if feature in ("web_research","fact_check"):usd+=config.get("web_search_price_per_call") or 0
     return {"usd":round(usd,4),"hkd":round(usd*7.8,4)}
@@ -250,7 +254,7 @@ def _usage(
     audio = int(
         actual["audio_tokens"]
         if actual.get("audio_tokens") is not None
-        else (1200 if has_audio else 0)
+        else (MAX_COACH_AUDIO_TOKEN_ESTIMATE if has_audio else 0)
     )
     search = int(
         actual["search_calls"]

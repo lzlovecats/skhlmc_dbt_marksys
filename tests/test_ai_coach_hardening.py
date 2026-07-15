@@ -57,6 +57,25 @@ def test_ai_coach_ui_prices_search_fallback_with_actual_default_model():
     assert '$("researchForm"), $("factForm")' in sync_model
 
 
+def test_speech_review_supports_six_minute_bounded_recording():
+    source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
+
+    assert system_limits.AI_COACH_MAX_AUDIO_SECONDS == 6 * 60
+    assert "audio_max_seconds: 360" in source
+    assert "audioBitsPerSecond: 32_000" in source
+    assert "limits.audio_max_seconds * 1000 - 500" in source
+    assert ai_coach_api.MAX_COACH_AUDIO_TOKEN_ESTIMATE == 32 * 6 * 60
+    assert ai_coach_api.CoachRequest(
+        feature="speech_review",
+        audio_duration_seconds=6 * 60,
+    ).audio_duration_seconds == 6 * 60
+    with pytest.raises(ValidationError):
+        ai_coach_api.CoachRequest(
+            feature="speech_review",
+            audio_duration_seconds=6 * 60 + 2,
+        )
+
+
 def test_ai_coach_runtime_honours_provider_allowlist_and_default(monkeypatch):
     from core import config_store
 
@@ -1556,11 +1575,11 @@ def test_ai_coach_data_is_private_no_store(monkeypatch):
     assert payload["server_tts_configured"] is False
 
 
-def test_actual_61_second_audio_is_rejected_before_provider(monkeypatch):
+def test_actual_audio_over_six_minutes_is_rejected_before_provider(monkeypatch):
     ffprobe = SimpleNamespace(
         returncode=0,
         stdout=(
-            '{"format":{"format_name":"matroska,webm","duration":"61.0"},'
+            '{"format":{"format_name":"matroska,webm","duration":"361.0"},'
             '"streams":[{"codec_type":"audio","sample_rate":"16000","channels":1}]}'
         ),
     )
@@ -1588,7 +1607,7 @@ def test_actual_61_second_audio_is_rejected_before_provider(monkeypatch):
     body = ai_coach_api.CoachRequest(
         feature="speech_review", topic="辯題",
         audio_base64=base64.b64encode(b"small-compressed-audio").decode("ascii"),
-        audio_mime="audio/webm", audio_duration_seconds=60,
+        audio_mime="audio/webm", audio_duration_seconds=360,
     )
     with pytest.raises(HTTPException) as raised:
         asyncio.run(ai_coach_api.run(body, _request("US")))

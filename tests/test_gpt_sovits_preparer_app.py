@@ -341,6 +341,26 @@ def test_output_root_rejects_relative_paths(local_server):
     assert "絕對路徑" in json.loads(payload)["error"]
 
 
+def test_output_root_permission_error_is_actionable(tmp_path, monkeypatch):
+    denied_root = (tmp_path / "denied-output").absolute()
+    original = app._ensure_private_dir
+
+    def deny_selected_root(path, **kwargs):
+        if path == denied_root:
+            raise PermissionError("test-only denied path")
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(app, "_ensure_private_dir", deny_selected_root)
+
+    with pytest.raises(app.RequestRejected) as raised:
+        app._validated_output_root(str(denied_root))
+
+    assert raised.value.status == 403
+    assert str(denied_root) in str(raised.value)
+    assert "可寫入" in str(raised.value)
+    assert "private-ai-training" in str(raised.value)
+
+
 def test_worker_error_uses_progress_message_and_redacts_url(tmp_path):
     def failing_worker(_input_path, _workspace, progress_path):
         progress_path.write_text(

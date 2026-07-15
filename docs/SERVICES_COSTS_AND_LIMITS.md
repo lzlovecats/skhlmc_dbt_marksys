@@ -101,7 +101,7 @@ TOAST空間，未經maintenance評估不為追求dashboard數字而跑`VACUUM FU
 - Uvicorn 同時連線／request 上限預設20；壓力測試後才考慮調高。
 - HTTP request body預設最多5MB；middleware會逐個ASGI chunk累計實際bytes，
   `Content-Length`只作早期拒絕，chunked request不能繞過。AI Coach臨時分析錄音
-  最多2MB及60秒。
+  最多2MB及6分鐘；browser以32kbps speech bitrate錄製，令完整6分鐘仍可留在2MB內。
 - AI Coach文字／錄音分析最多同時3個request；TTS音質檢查維持最多同時2個。
 
 超額訊息：
