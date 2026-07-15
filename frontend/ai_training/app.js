@@ -663,6 +663,11 @@
     syncRecordingExport();
     loadRecordings(true);
   };
+  $("recordExport").onclick = () => {
+    const url = new URL($("recordExport").href, location.origin);
+    url.searchParams.set("_fresh", String(Date.now()));
+    $("recordExport").href = url.pathname + url.search;
+  };
   $("lexiconForm").onsubmit = (e) =>
     saveForm(e, "/api/ai-training/lexicon", {
       lexicon_id: $("lexiconId").value,

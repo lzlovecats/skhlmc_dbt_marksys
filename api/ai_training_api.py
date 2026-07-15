@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -1306,8 +1306,11 @@ async def regenerate_suggestions(request: Request):
 
 
 @router.get("/export/recordings.json")
-def export_recording_manifest(request: Request, speaker: str = ""):
+def export_recording_manifest(request: Request, response: Response, speaker: str = ""):
     """Return metadata and direct R2 URLs; never proxy binary through Render."""
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     _user, db = _admin(request)
     where, params = "status='accepted'", {}
     if speaker.strip(): where += " AND speaker_user_id=:speaker"; params["speaker"] = speaker.strip()
@@ -1344,8 +1347,13 @@ def export_recording_manifest(request: Request, speaker: str = ""):
             expires=R2_BULK_LINK_TTL_SECONDS,
         )
         manifest.append(row)
+    generated_at = datetime.now(timezone.utc)
     return json_safe({
         "storage": "r2",
+        "generated_at": generated_at.isoformat(),
+        "expires_at": (
+            generated_at + timedelta(seconds=R2_BULK_LINK_TTL_SECONDS)
+        ).isoformat(),
         "expires_seconds": R2_BULK_LINK_TTL_SECONDS,
         "items": manifest,
     })

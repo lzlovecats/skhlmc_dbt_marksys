@@ -119,7 +119,7 @@ def _safe_r2_error_code(error: urllib.error.HTTPError) -> str:
 def _download_denied_message(recording_id: str, error: urllib.error.HTTPError) -> str:
     code = _safe_r2_error_code(error)
     detail = f"HTTP {error.code}" + (f", R2 {code}" if code else ", no R2 error code")
-    if code in {"ExpiredToken", "RequestExpired"}:
+    if code in {"ExpiredRequest", "ExpiredToken", "RequestExpired"}:
         action = "export a fresh manifest and use it within one hour"
     elif code in {
         "AuthorizationQueryParametersError",

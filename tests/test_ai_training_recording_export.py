@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import JSONResponse
 
@@ -79,8 +79,14 @@ def test_recording_manifest_normalises_mixed_nullable_metadata(monkeypatch):
         lambda key, **_kwargs: f"https://r2.example/{key}",
     )
 
-    result = ai_training_api.export_recording_manifest(None)
+    response = Response()
+    result = ai_training_api.export_recording_manifest(None, response)
 
+    assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
+    assert response.headers["Pragma"] == "no-cache"
+    assert response.headers["Expires"] == "0"
+    assert result["generated_at"].endswith("+00:00")
+    assert result["expires_at"].endswith("+00:00")
     assert result["items"][0]["size_bytes"] == 1024
     assert result["items"][0]["duration_seconds"] == 4.25
     assert result["items"][1]["sample_rate_hz"] is None
@@ -104,7 +110,7 @@ def test_recording_manifest_fails_before_signing_when_r2_is_not_reachable(monkey
     )
 
     with pytest.raises(HTTPException) as raised:
-        ai_training_api.export_recording_manifest(None)
+        ai_training_api.export_recording_manifest(None, Response())
 
     assert raised.value.status_code == 503
     assert "R2" in str(raised.value.detail)
@@ -126,7 +132,7 @@ def test_recording_manifest_fails_before_signing_when_first_object_is_not_readab
     )
 
     with pytest.raises(HTTPException) as raised:
-        ai_training_api.export_recording_manifest(None)
+        ai_training_api.export_recording_manifest(None, Response())
 
     assert raised.value.status_code == 503
     assert "R2" in str(raised.value.detail)
@@ -144,3 +150,4 @@ def test_admin_speaker_filter_is_a_readiness_backed_dropdown():
     assert "ready.speakers || []" in script
     assert '$("speakerFilter").onchange' in script
     assert "syncRecordingExport();" in script
+    assert 'url.searchParams.set("_fresh", String(Date.now()))' in script
