@@ -14,7 +14,11 @@ import pytest
 
 import deploy.proxy as proxy
 from debate_timing import get_full_mock_sequence, split_mock_into_sessions
-from prompts import LIVE_RUNTIME_PROMPTS, build_full_mock_live_prompt
+from prompts import (
+    LIVE_RUNTIME_PROMPTS,
+    build_free_debate_live_prompt,
+    build_full_mock_live_prompt,
+)
 
 
 def _mock_payload():
@@ -45,6 +49,22 @@ def test_mock_rebrand_never_rewrites_injected_payloads():
     assert json.dumps(LIVE_RUNTIME_PROMPTS, ensure_ascii=False) in html
     assert "開始Mock" in html
     assert "開始自由辯論" not in html
+
+
+def test_free_and_mock_feedback_prompts_require_comparative_review_sections():
+    free_system = build_free_debate_live_prompt("測試辯題", "正方")
+    mock_system = build_full_mock_live_prompt("測試辯題", "正方", "聯中", 5)
+    for prompt in (
+        free_system,
+        mock_system,
+        LIVE_RUNTIME_PROMPTS["feedback_free"],
+        LIVE_RUNTIME_PROMPTS["feedback_mock"],
+    ):
+        assert "自行訂立 4 至 6 項" in prompt
+        assert "主要討論範圍" in prompt
+        assert "範圍之外" in prompt
+        assert "可供同學參考" in prompt
+        assert "真人學生" in prompt
 
 
 def test_free_debate_render_keeps_original_copy_and_prompt():

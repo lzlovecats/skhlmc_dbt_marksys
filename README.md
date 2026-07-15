@@ -91,7 +91,7 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
 | 功能 | Secrets |
 |---|---|
 | Gemini及Gemini Live | `GEMINI_API_KEY` |
-| AI評判易學生全場錄音 | 上述 `GEMINI_API_KEY` 必須屬已啟用 billing 的 paid project，並設定 `GEMINI_PAID_TIER_CONFIRMED=true`；未確認會 fail closed。語音只在有可用 TTS provider 時生成，否則只投影文字 |
+| AI評判易學生全場錄音 | 測試期間可使用上述 `GEMINI_API_KEY` 的 Gemini Free Tier；系統不再因未設定 `GEMINI_PAID_TIER_CONFIRMED` 而主動封鎖，但預檢會清楚警告 Free Tier 內容可能用於改善產品及由人手審閱。正式學生比賽應使用已啟用 billing 的 Paid Tier project 並設定 `GEMINI_PAID_TIER_CONFIRMED=true`。第一輪以原音製作逐字稿；第二輪同時送出同一段原音、逐字稿、正式場次及出賽名單作交叉核對評審。語音只在有可用 TTS provider 時生成，否則只投影文字 |
 | OpenRouter models | `OPENROUTER_API_KEY` |
 | Azure TTS | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, optional voice/rate/output format |
 | Custom TTS | `TTS_PROVIDER=custom`, `CUSTOM_TTS_URL`, `CUSTOM_TTS_API_KEY`, `CUSTOM_TTS_MODEL_VERSION` |
