@@ -235,3 +235,76 @@ def probe_audio(
         "mime": canonical_mime,
         "sha256": hashlib.sha256(audio).hexdigest(),
     }
+
+
+def probe_audio_file(
+    source_path: str,
+    mime: str,
+    claimed_duration: float | None,
+    *,
+    max_seconds: float,
+) -> dict:
+    """Probe an on-disk streamed upload without loading it into Python RAM."""
+    canonical_mime = canonical_audio_mime(mime)
+    try:
+        claimed = float(claimed_duration) if claimed_duration is not None else None
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MediaProbeError("錄音長度資料無效，請重新錄製") from exc
+    if claimed is not None and not 1 <= claimed <= float(max_seconds):
+        raise MediaProbeError(f"錄音長度必須為 1 至 {int(max_seconds)} 秒")
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries",
+                "format=format_name,duration:stream=codec_type,sample_rate,channels,duration",
+                "-of", "json", source_path,
+            ],
+            capture_output=True, text=True,
+            timeout=MEDIA_PROBE_TIMEOUT_SECONDS, check=False,
+        )
+        if result.returncode != 0:
+            raise MediaProbeError("錄音檔案損壞或實際格式不受支援")
+        info = json.loads(result.stdout or "{}")
+        fmt = info.get("format") or {}
+        stream = next(
+            item for item in (info.get("streams") or [])
+            if item.get("codec_type") == "audio"
+        )
+        duration = float(fmt.get("duration") or stream.get("duration") or 0)
+        sample_rate = int(stream.get("sample_rate") or 0)
+        channels = int(stream.get("channels") or 0)
+        format_names = {
+            item.strip().lower()
+            for item in str(fmt.get("format_name") or "").split(",")
+            if item.strip()
+        }
+        if duration <= 0:
+            duration = _decoded_duration_seconds(source_path, max_seconds)
+    except MediaProbeError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MediaProbeError(
+            "伺服器未能執行音訊格式驗證", service_unavailable=True,
+        ) from exc
+    except (ValueError, TypeError, StopIteration, json.JSONDecodeError) as exc:
+        raise MediaProbeError("錄音未包含可讀取的聲音軌") from exc
+    if not 1 <= duration <= float(max_seconds):
+        raise MediaProbeError(f"錄音實際長度必須為 1 至 {int(max_seconds)} 秒")
+    if claimed is not None and abs(duration - claimed) > max(2.0, duration * 0.2):
+        raise MediaProbeError("錄音實際長度與瀏覽器回報不符，請重新錄製")
+    if not format_names.intersection(_FORMAT_NAMES[canonical_mime]):
+        raise MediaProbeError("錄音宣稱格式與實際檔案格式不符")
+    if sample_rate <= 0 or channels <= 0:
+        raise MediaProbeError("錄音未包含可讀取的聲音軌")
+    digest = hashlib.sha256()
+    with open(source_path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return {
+        "duration": round(duration, 3), "sample_rate": sample_rate,
+        "channels": channels, "format": ",".join(sorted(format_names)),
+        "mime": canonical_mime, "sha256": digest.hexdigest(),
+    }

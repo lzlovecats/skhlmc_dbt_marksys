@@ -34,11 +34,9 @@ from core.media_probe import (
 from schema import TABLE_MATCHES, TABLE_R2_UPLOAD_INTENTS
 from system_limits import (
     KIOSK_MATCH_REVIEW_CONCURRENCY,
-    KIOSK_MATCH_REVIEW_DAILY_LIMIT,
     KIOSK_MATCH_REVIEW_MARKER_LIMIT,
     KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
     KIOSK_MATCH_REVIEW_MAX_SECONDS,
-    KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
     KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS,
     KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS,
     KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_OUTPUT_TOKENS,
@@ -199,7 +197,7 @@ def match_review_matches(request: Request):
 
 @router.get("/match-review/preflight")
 async def match_review_preflight(request: Request):
-    """Check deployment readiness without uploading audio or spending AI quota."""
+    """Check readiness without uploading audio or calling a paid AI provider."""
     from ai_model_config import get_feature_model
     from core import r2_storage
     from deploy.proxy import (
@@ -278,37 +276,10 @@ async def match_review_preflight(request: Request):
         ),
     }
 
-    try:
-        quota = r2_storage.upload_intent_quota_status(
-            db,
-            user_id=user_id,
-            media_kind="kiosk_match_review",
-            user_daily_limit=KIOSK_MATCH_REVIEW_DAILY_LIMIT,
-            global_monthly_limit=KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
-        )
-    except Exception:
-        quota = {
-            "user_daily_used": KIOSK_MATCH_REVIEW_DAILY_LIMIT,
-            "user_daily_limit": KIOSK_MATCH_REVIEW_DAILY_LIMIT,
-            "user_daily_remaining": 0,
-            "global_monthly_used": KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
-            "global_monthly_limit": KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
-            "global_monthly_remaining": 0,
-            "allowed": False,
-            "blocked_scope": "status_unavailable",
-        }
-    checks["quota"] = {
-        "ok": bool(quota["allowed"]),
-        "detail": (
-            f"今日 kiosk 共用剩餘 {quota['user_daily_remaining']} 場；"
-            f"本月全系統剩餘 {quota['global_monthly_remaining']} 場"
-        ),
-    }
     return JSONResponse(
         {
             "ok": all(bool(item.get("ok")) for item in checks.values()),
             "checks": checks,
-            "quota": quota,
             "model_label": label,
             "does_not_call_ai": True,
         },
@@ -375,9 +346,7 @@ def _storage_error(scope: str, storage_budget: dict) -> str:
     if scope == "storage_global":
         stop_gb = float(storage_budget.get("stop_bytes") or 0) / 1_000_000_000
         return f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新錄音。"
-    if scope == "user_daily":
-        return f"AI評判易今日最多可分析 {KIOSK_MATCH_REVIEW_DAILY_LIMIT} 場。"
-    return "AI評判易本月全系統分析次數已達上限。"
+    return "R2全系統儲存保護上限已啟用，暫停新錄音。"
 
 
 @router.post("/match-review/upload-intent")
@@ -453,7 +422,7 @@ def match_review_upload_intent(
     try:
         upload_url = r2_storage.presign_put(key, mime, digest, body.byte_size)
     except Exception as exc:
-        # Do not reserve a daily/monthly slot when no upload URL can be issued.
+        # Do not reserve system-wide R2 capacity when no URL can be issued.
         raise HTTPException(503, "暫時未能建立錄音上載連結，請稍後再試。") from exc
     reserved, scope = r2_storage.reserve_upload_intent(
         db,
@@ -462,8 +431,6 @@ def match_review_upload_intent(
         media_kind="kiosk_match_review",
         object_keys=[key],
         declared_bytes=body.byte_size,
-        user_daily_limit=KIOSK_MATCH_REVIEW_DAILY_LIMIT,
-        global_monthly_limit=KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
     )
     if not reserved:
         raise HTTPException(429, _storage_error(scope, storage_budget))
@@ -527,9 +494,9 @@ def _set_review_intent_provider_status(db, intent_id: str, status: str) -> None:
         },
     )
     if status == "provider_processing" and int(updated or 0) != 1:
-        # Never call the paid provider unless the quota reservation has been
+        # Never call the paid provider unless the usage reservation has been
         # durably converted from a released upload into a provider-spend slot.
-        raise RuntimeError("kiosk review provider quota transition failed")
+        raise RuntimeError("kiosk review provider usage transition failed")
 
 
 @router.post("/match-review/discard")

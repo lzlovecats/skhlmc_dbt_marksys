@@ -1,8 +1,7 @@
-"""Focused tests for read-only R2 and shared upload-intent quota helpers."""
+"""Focused tests for R2 ownership and system-wide storage reservations."""
 
-import datetime as dt
+import json
 from contextlib import contextmanager
-from zoneinfo import ZoneInfo
 
 from core import r2_storage
 
@@ -16,17 +15,21 @@ class _ScalarResult:
 
 
 class _Session:
-    def __init__(self):
+    def __init__(self, current_declared=0):
+        self.current_declared = current_declared
         self.statements = []
 
     def execute(self, statement, params=None):
-        self.statements.append((" ".join(str(statement).split()), params or {}))
+        sql = " ".join(str(statement).split())
+        self.statements.append((sql, params or {}))
+        if "SELECT COALESCE(SUM(declared_bytes),0)" in sql:
+            return _ScalarResult(self.current_declared)
         return _ScalarResult()
 
 
 class _Db:
-    def __init__(self):
-        self.session = _Session()
+    def __init__(self, current_declared=0):
+        self.session = _Session(current_declared)
 
     @contextmanager
     def transaction(self):
@@ -36,224 +39,131 @@ class _Db:
 def test_connection_ready_performs_only_one_minimal_read(monkeypatch):
     calls = []
 
-    class _Client:
+    class Client:
         def list_objects_v2(self, **kwargs):
             calls.append(kwargs)
             return {"Contents": []}
 
     monkeypatch.setattr(r2_storage, "configured", lambda: True)
     monkeypatch.setattr(r2_storage, "settings", lambda: {"bucket": "private-media"})
-    monkeypatch.setattr(r2_storage, "client", lambda: _Client())
-
+    monkeypatch.setattr(r2_storage, "client", lambda: Client())
     assert r2_storage.connection_ready() is True
     assert calls == [{"Bucket": "private-media", "MaxKeys": 1}]
 
 
-def test_connection_ready_is_false_without_configuration_or_on_sdk_error(monkeypatch):
+def test_connection_ready_fails_closed_without_leaking_sdk_errors(monkeypatch):
     monkeypatch.setattr(r2_storage, "configured", lambda: False)
     monkeypatch.setattr(
-        r2_storage,
-        "client",
+        r2_storage, "client",
         lambda: (_ for _ in ()).throw(AssertionError("client must not run")),
     )
     assert r2_storage.connection_ready() is False
 
-    class _FailingClient:
+    class Client:
         def list_objects_v2(self, **_kwargs):
-            raise RuntimeError("credential and endpoint details must stay private")
+            raise RuntimeError("credential details")
 
     monkeypatch.setattr(r2_storage, "configured", lambda: True)
     monkeypatch.setattr(r2_storage, "settings", lambda: {"bucket": "private-media"})
-    monkeypatch.setattr(r2_storage, "client", lambda: _FailingClient())
-    assert r2_storage.connection_ready() is False
-
-    monkeypatch.setattr(
-        r2_storage,
-        "configured",
-        lambda: (_ for _ in ()).throw(RuntimeError("secret lookup failed")),
-    )
+    monkeypatch.setattr(r2_storage, "client", lambda: Client())
     assert r2_storage.connection_ready() is False
 
 
-def test_upload_intent_window_uses_hong_kong_calendar_boundaries():
-    now_hk = dt.datetime(2026, 8, 1, 0, 30, tzinfo=ZoneInfo("Asia/Hong_Kong"))
-
-    now_utc, day_utc, month_utc = r2_storage._upload_intent_quota_window(now_hk)
-
-    assert now_utc == dt.datetime(2026, 7, 31, 16, 30)
-    assert day_utc == dt.datetime(2026, 7, 31, 16, 0)
-    assert month_utc == dt.datetime(2026, 7, 31, 16, 0)
-    assert now_utc.tzinfo is day_utc.tzinfo is month_utc.tzinfo is None
-
-
-def test_status_and_reservation_share_windows_and_count_semantics(monkeypatch):
-    now_utc = dt.datetime(2026, 7, 14, 4, 0)
-    day_utc = dt.datetime(2026, 7, 13, 16, 0)
-    month_utc = dt.datetime(2026, 6, 30, 16, 0)
-    count_calls = []
-
+def test_reservation_has_no_member_or_calendar_quota_and_is_owner_bound(monkeypatch):
+    db = _Db(current_declared=100)
     monkeypatch.setattr(
-        r2_storage,
-        "_upload_intent_quota_window",
-        lambda: (now_utc, day_utc, month_utc),
+        r2_storage, "get_configs_from_connection",
+        lambda *_args: {"r2_storage_usage_snapshot": {
+            "bytes": 800, "intent_bytes_snapshot": 50,
+        }},
     )
-
-    def counts(session, **kwargs):
-        count_calls.append((session, kwargs))
-        return 2, 7
-
-    monkeypatch.setattr(r2_storage, "_upload_intent_counts", counts)
-    monkeypatch.setattr(r2_storage, "get_configs_from_connection", lambda *_args: {})
-
-    status_db = _Db()
-    status = r2_storage.upload_intent_quota_status(
-        status_db,
-        user_id="kiosk",
-        media_kind="kiosk_match_review",
-        user_daily_limit=5,
-        global_monthly_limit=10,
+    accepted = r2_storage.reserve_upload_intent(
+        db,
+        intent_id="intent-1", user_id="alice", media_kind="ai_coach_audio",
+        object_keys=["pending/ai-coach/alice/intent-1.webm"],
+        declared_bytes=100, storage_stop_bytes=1_000,
+        metadata={"sha256": "a" * 64, "mime_type": "audio/webm"},
     )
-    assert status == {
-        "user_daily_used": 2,
-        "user_daily_limit": 5,
-        "user_daily_remaining": 3,
-        "global_monthly_used": 7,
-        "global_monthly_limit": 10,
-        "global_monthly_remaining": 3,
-        "allowed": True,
-        "blocked_scope": "",
-    }
-
-    reserve_db = _Db()
-    reserved = r2_storage.reserve_upload_intent(
-        reserve_db,
-        intent_id="intent-1",
-        user_id="kiosk",
-        media_kind="kiosk_match_review",
-        object_keys=["pending/audio/kiosk-match-review/test.webm"],
-        declared_bytes=1_000,
-        user_daily_limit=5,
-        global_monthly_limit=10,
+    assert accepted == (True, "")
+    sqls = [sql for sql, _params in db.session.statements]
+    assert any("pg_advisory_xact_lock" in sql for sql in sqls)
+    assert not any("usage_date" in sql or "month_start" in sql for sql in sqls)
+    insert_sql, insert = next(
+        item for item in db.session.statements
+        if item[0].startswith("INSERT INTO r2_upload_intents")
     )
-    assert reserved == (True, "")
-    assert [call[1] for call in count_calls] == [
-        {
-            "user_id": "kiosk",
-            "media_kind": "kiosk_match_review",
-            "day_utc": day_utc,
-            "month_utc": month_utc,
-        },
-        {
-            "user_id": "kiosk",
-            "media_kind": "kiosk_match_review",
-            "day_utc": day_utc,
-            "month_utc": month_utc,
-        },
-    ]
-    insert = next(
-        params for sql, params in reserve_db.session.statements
-        if sql.startswith("INSERT INTO r2_upload_intents")
-    )
-    assert insert["now"] == now_utc
-    reserve_sql = [sql for sql, _params in reserve_db.session.statements]
-    assert any(
-        "status='provider_processing' AND created_at<:cutoff" in sql
-        for sql in reserve_sql
-    )
-    assert any(
-        "status NOT IN ('orphan_deleted','provider_processing','consumed')" in sql
-        for sql in reserve_sql
-    )
+    assert insert["user"] == "alice" and insert["kind"] == "ai_coach_audio"
+    assert json.loads(insert["metadata"])["sha256"] == "a" * 64
+    assert "intent_metadata" in insert_sql
 
 
-def test_quota_status_clamps_remaining_and_reports_authoritative_scope(monkeypatch):
+def test_system_wide_storage_projection_blocks_atomically(monkeypatch):
+    db = _Db(current_declared=100)
     monkeypatch.setattr(
-        r2_storage,
-        "_upload_intent_counts",
-        lambda *_args, **_kwargs: (6, 11),
+        r2_storage, "get_configs_from_connection",
+        lambda *_args: {"r2_storage_usage_snapshot": {
+            "bytes": 800, "intent_bytes_snapshot": 50,
+        }},
     )
-    status = r2_storage.upload_intent_quota_status(
-        _Db(),
-        user_id="kiosk",
-        media_kind="kiosk_match_review",
-        user_daily_limit=5,
-        global_monthly_limit=10,
+    blocked = r2_storage.reserve_upload_intent(
+        db,
+        intent_id="intent-2", user_id="alice", media_kind="match_photo",
+        object_keys=["pending/photo"], declared_bytes=200,
+        storage_stop_bytes=1_000,
     )
-    assert status["user_daily_remaining"] == 0
-    assert status["global_monthly_remaining"] == 0
-    assert status["allowed"] is False
-    assert status["blocked_scope"] == "user_daily"
+    assert blocked == (False, "storage_global")
+    assert not any(
+        sql.startswith("INSERT INTO r2_upload_intents")
+        for sql, _params in db.session.statements
+    )
 
 
-def test_shared_count_query_includes_every_status_and_exact_windows():
-    captured = {}
-
-    class _MappingsResult:
-        def mappings(self):
-            return self
-
-        def one(self):
-            return {"user_daily_used": 4, "global_monthly_used": 9}
-
-    class _CountSession:
-        def execute(self, statement, params):
-            captured["sql"] = " ".join(str(statement).split())
-            captured["params"] = params
-            return _MappingsResult()
-
-    day_utc = dt.datetime(2026, 7, 13, 16)
-    month_utc = dt.datetime(2026, 6, 30, 16)
-    assert r2_storage._upload_intent_counts(
-        _CountSession(),
-        user_id="kiosk",
-        media_kind="kiosk_match_review",
-        day_utc=day_utc,
-        month_utc=month_utc,
-    ) == (4, 9)
-    assert "WHERE media_kind=:kind AND created_at>=:month_start" in captured["sql"]
-    assert "user_id=:user AND created_at>=:day_start" in captured["sql"]
-    assert "status IN ('issued','processing','provider_processing','consumed')" in captured["sql"]
-    assert captured["params"] == {
-        "user": "kiosk",
-        "kind": "kiosk_match_review",
-        "day_start": day_utc,
-        "month_start": month_utc,
-    }
-
-
-def test_deleted_or_provider_started_recordings_do_not_reserve_storage_bytes():
+def test_provider_processing_still_reserves_storage_until_object_is_deleted():
     captured = []
 
-    class _Rows:
+    class Rows:
         empty = False
+        iloc = [{"total": 1234}]
 
-        @property
-        def iloc(self):
-            class _Index:
-                def __getitem__(_self, _index):
-                    return {"total": 1234}
-
-            return _Index()
-
-    class _QueryDb:
+    class Db:
         def query(self, statement):
             captured.append(" ".join(statement.split()))
-            return _Rows()
+            return Rows()
 
-    assert r2_storage._intent_declared_bytes(_QueryDb()) == 1234
-    assert "status NOT IN ('orphan_deleted','provider_processing','consumed')" in captured[0]
+    assert r2_storage._intent_declared_bytes(Db()) == 1234
+    assert "status NOT IN ('orphan_deleted','consumed')" in captured[0]
+    assert "provider_processing" not in captured[0]
 
 
-def test_late_discard_cannot_release_provider_started_or_consumed_quota():
+def test_complete_and_claim_are_owner_kind_scoped_and_single_use():
     executions = []
 
-    class _DeleteDb:
+    class Db:
+        def execute_count(self, statement, params):
+            executions.append((" ".join(statement.split()), params))
+            return 1
+
+    db = Db()
+    assert r2_storage.complete_upload_intent(
+        db, "intent", user_id="alice", media_kind="ai_coach_audio",
+    )
+    assert r2_storage.claim_completed_upload_intent(
+        db, "intent", user_id="alice", media_kind="ai_coach_audio",
+    )
+    assert "status='issued'" in executions[0][0]
+    assert "status='completed'" in executions[1][0]
+    assert all(item[1]["user"] == "alice" for item in executions)
+
+
+def test_discard_releases_completed_temp_but_not_provider_started_or_consumed_object():
+    executions = []
+
+    class Db:
         def execute(self, statement, params):
             executions.append((" ".join(statement.split()), params))
 
-    r2_storage.mark_upload_intent_deleted(_DeleteDb(), "intent-1")
+    r2_storage.mark_upload_intent_deleted(Db(), "intent-1")
     sql, params = executions[0]
-    assert "status IN ('issued','processing','orphan_deleted')" in sql
-    assert "provider_processing" not in sql
-    assert "consumed" not in sql
+    assert "status IN ('issued','completed','processing','orphan_deleted')" in sql
+    assert "provider_processing" not in sql and "consumed" not in sql
     assert params["id"] == "intent-1"

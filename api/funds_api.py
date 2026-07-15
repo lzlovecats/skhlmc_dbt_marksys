@@ -289,6 +289,12 @@ class AdminBody(BaseModel):
     balance_usd: float | None = None
 
 
+class AiBudgetBody(BaseModel):
+    budget_month: str = Field(pattern=r"^\d{4}-\d{2}-01$")
+    fx_hkd_per_usd: float = Field(default=7.8, gt=0, le=1000)
+    allocations: dict = Field(default_factory=dict)
+
+
 @router.get("/ai-fund/data")
 def ai_data(request: Request):
     from core import funds_logic as logic
@@ -439,3 +445,32 @@ def ai_settings(body: AdminBody, request: Request):
     except PermissionError as exc: raise HTTPException(403, str(exc))
     except ValueError as exc: raise HTTPException(400, str(exc))
     return {"ok": True, **(result or {})}
+
+
+@router.post("/ai-fund/admin/budget")
+def ai_budget_save(body: AiBudgetBody, request: Request):
+    from core import funds_logic as logic
+    user, db = _context(request)
+    try:
+        budget = logic.save_ai_budget(user, body.model_dump(), db=db)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "monthly_budget": budget}
+
+
+@router.post("/ai-fund/admin/budget/notify")
+def ai_budget_notify(request: Request):
+    from core import funds_logic as logic
+    from deploy.proxy import _get_vapid
+    user, db = _context(request)
+    try:
+        result = logic.notify_ai_budget(user, db, _get_vapid())
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    return {"ok": True, **result}

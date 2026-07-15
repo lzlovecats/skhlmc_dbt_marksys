@@ -32,8 +32,7 @@
   let meta;
   let selectedMatchId = "";
   let recorder = null;
-  let recordStopTimer = null;
-  let audioBase64 = "";
+  let audioIntentId = "";
   let audioMime = "audio/webm";
   let audioDurationSeconds = 0;
   let timer = null;
@@ -103,15 +102,13 @@
   }
 
   function clearRecordedAudio() {
-    if (recordStopTimer) clearTimeout(recordStopTimer);
-    recordStopTimer = null;
     const activeRecorder = recorder;
     recorder = null;
     if (activeRecorder) {
       activeRecorder.discard = true;
       if (activeRecorder.state === "recording") activeRecorder.stop();
     }
-    audioBase64 = "";
+    audioIntentId = "";
     audioMime = "audio/webm";
     audioDurationSeconds = 0;
     const preview = $("audioPreview");
@@ -458,35 +455,18 @@
       if (recorder) return recorder.stop();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks = [];
-      const limits = {
-        audio_max_seconds: 360,
-        audio_max_bytes: 2 * 1024 * 1024,
-        ...(meta.resource_limits || {}),
-      };
-      // 32kbps Opus is ample for speech analysis and keeps a full six-minute
-      // recording (~1.44MB plus container overhead) within the 2MiB API cap.
+      // Speech-quality mono Opus without an application-defined duration or
+      // byte quota. Provider and system-wide storage/network boundaries remain.
       const activeRecorder = new MediaRecorder(stream, {
         audioBitsPerSecond: 32_000,
       });
-      let recordedBytes = 0;
-      let exceededByteLimit = false;
       recorder = activeRecorder;
       activeRecorder.startedAt = Date.now();
       activeRecorder.ondataavailable = (event) => {
         if (!event.data?.size) return;
         chunks.push(event.data);
-        recordedBytes += event.data.size;
-        if (
-          recordedBytes > limits.audio_max_bytes &&
-          activeRecorder.state === "recording"
-        ) {
-          exceededByteLimit = true;
-          activeRecorder.stop();
-        }
       };
       activeRecorder.onstop = async () => {
-        if (recordStopTimer) clearTimeout(recordStopTimer);
-        recordStopTimer = null;
         const blob = new Blob(chunks, {
           type: activeRecorder.mimeType || "audio/webm",
         });
@@ -494,46 +474,57 @@
         stream.getTracks().forEach((track) => track.stop());
         if (recorder === activeRecorder) recorder = null;
         if (activeRecorder.discard) return;
-        if (
-          duration < 1 ||
-          duration > limits.audio_max_seconds ||
-          exceededByteLimit ||
-          blob.size > limits.audio_max_bytes
-        ) {
-          audioBase64 = "";
+        if (duration < 1 || !blob.size) {
+          audioIntentId = "";
           audioDurationSeconds = 0;
           $("record").textContent = "重新錄音";
           $("recordState").textContent = "錄音無效";
           toast(
-            `⚠️ 錄音必須為1–${limits.audio_max_seconds}秒並且不超過${(limits.audio_max_bytes / 1024 / 1024).toFixed(2)}MB。`,
+            "⚠️ 錄音必須至少 1 秒。",
           );
           return;
         }
         audioMime = activeRecorder.mimeType || "audio/webm";
         const bytes = new Uint8Array(await blob.arrayBuffer());
-        let binary = "";
-        for (let index = 0; index < bytes.length; index += 32768) {
-          binary += String.fromCharCode(
-            ...bytes.subarray(index, index + 32768),
-          );
-        }
-        audioBase64 = btoa(binary);
+        const digest = Array.from(
+          new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+        ).map((value) => value.toString(16).padStart(2, "0")).join("");
         audioDurationSeconds = duration;
         const preview = $("audioPreview");
         if (preview.src.startsWith("blob:")) URL.revokeObjectURL(preview.src);
         preview.src = URL.createObjectURL(blob);
         preview.classList.remove("hidden");
-        $("recordState").textContent = "已錄音，可分析";
+        $("recordState").textContent = "正在直傳 R2…";
         $("record").textContent = "重新錄音";
-        syncModel();
+        try {
+          const intent = await api("/api/ai-coach/recording-intent", {
+            method: "POST",
+            body: JSON.stringify({
+              mime_type: audioMime,
+              byte_size: blob.size,
+              sha256: digest,
+            }),
+          });
+          const uploaded = await fetch(intent.upload.url, {
+            method: "PUT",
+            headers: intent.upload.headers,
+            body: blob,
+          });
+          if (!uploaded.ok) throw new Error(`R2 HTTP ${uploaded.status}`);
+          await api("/api/ai-coach/recording-complete", {
+            method: "POST",
+            body: JSON.stringify({ intent_id: intent.intent_id }),
+          });
+          audioIntentId = intent.intent_id;
+          $("recordState").textContent = "已錄音並安全上載，可分析";
+          syncModel();
+        } catch (error) {
+          audioIntentId = "";
+          $("recordState").textContent = "錄音上載失敗";
+          toast(`⚠️ ${error.message}`);
+        }
       };
       activeRecorder.start(1000);
-      // Stop just before the hard media-probe boundary. Browser timers can
-      // fire late under load, and an exact 360-second timer can otherwise
-      // produce a 360.x-second container that the server correctly rejects.
-      recordStopTimer = setTimeout(() => {
-        if (activeRecorder.state === "recording") activeRecorder.stop();
-      }, Math.max(1, limits.audio_max_seconds * 1000 - 500));
       $("record").textContent = "停止錄音";
       $("recordState").textContent = "錄音中…";
     } catch (error) {
@@ -580,7 +571,7 @@
       `主線策劃 ${estimateText(model.estimates.strategy)}；發言分析 ${estimateText(model.estimates.speech_review)}；搵料及 Fact Check ${searchModel ? `會使用 ${searchModel.label}，已包括一次搜尋工具，估算為 ${searchEstimate("web_research")}` : "因搜尋模型不可用而暫停"}。`;
     $("strategyEstimate").textContent =
       `估算成本：${estimateText(model.estimates.strategy)}。`;
-    const reviewEstimate = audioBase64
+    const reviewEstimate = audioIntentId
       ? model.estimates.speech_review_audio
       : model.estimates.speech_review;
     $("reviewEstimate").textContent =
@@ -737,7 +728,6 @@
   }
 
   function syncRoom() {
-    const mode = $("roomMode").value;
     const structure = $("roomStructure").value;
     const free = structure === "free";
     $("roomFormat")
@@ -755,23 +745,9 @@
         ? "Mock 自由辯論每邊時間（分鐘）"
         : "自由辯論每邊時間（分鐘）";
     $("roomMinutes").min = structure === "mock" ? "2" : ".5";
-    $("roomCapacityWrap").classList.toggle(
-      "hidden",
-      mode !== "B" || structure === "mock",
-    );
-    $("roomSideLabel").firstChild.textContent =
-      mode === "B" ? "你的立場（AI 代表另一方）" : "你的立場";
-    if (mode === "B" && structure === "mock") {
-      const capacity = format === "星島" ? 3 : 4;
-      $("roomModeInfo").textContent =
-        `完整 Mock（多人對 AI）：隊員輪流負責我方各段發言，AI 會在對方段落自動代入發言。必須 ${capacity} 位隊員全部入房並先選好辯位。`;
-    } else if (mode === "B") {
-      $("roomModeInfo").textContent =
-        "自由辯論（多人對 AI）：隊員輪流發言，AI 扮演另一方即時攻防。";
-    } else {
-      $("roomModeInfo").textContent =
-        "真人對真人（1 對 1），完成後可請 AI 根據逐字稿評判。";
-    }
+    $("roomSideLabel").firstChild.textContent = "你的立場";
+    $("roomModeInfo").textContent =
+      "真人對真人（1 對 1），聲音經 STUN-only P2P 直傳；完成後可請 AI 根據逐字稿評判。";
     $("roomTimeNote").textContent =
       !adjustable && free ? "校園隨想自由辯論為每邊 2:30。" : "";
   }
@@ -783,17 +759,15 @@
     $("showCreate").classList.toggle("active", create);
     $("showJoin").classList.toggle("active", !create);
   }
-  function roomOpen(code, mode = "A") {
+  function roomOpen(code) {
     $("roomCode").textContent = code;
     $("activeRoomNote").textContent =
-      mode === "B"
-        ? "多人對 AI：隊員輪流開始及停止發言，AI 會扮演另一方即時攻防，全房一齊聽到。"
-        : "真人對真人練習；雙方逐字稿、音訊及 AI 評判會在同一房間同步。";
+      "真人對真人練習；音訊由兩部裝置 P2P 直傳，Render 只同步逐字稿、計時及 AI 評判。";
     $("roomFrame").src = `/ai-coach/room/${encodeURIComponent(code)}`;
     $("activeRoom").classList.remove("hidden");
     $("roomSetup").classList.add("hidden");
     sessionStorage.aiRoom = code;
-    sessionStorage.aiRoomMode = mode;
+    sessionStorage.aiRoomMode = "A";
   }
   async function roomInfo(code) {
     const data = await api(`/api/room/${encodeURIComponent(code)}`);
@@ -921,7 +895,7 @@
   $("liveMinutes").addEventListener("input", syncLive);
   $("mockFormat").addEventListener("change", syncMock);
   $("mockMinutes").addEventListener("change", syncMock);
-  [$("roomMode"), $("roomStructure"), $("roomFormat")].forEach((element) =>
+  [$("roomStructure"), $("roomFormat")].forEach((element) =>
     element.addEventListener("change", syncRoom),
   );
   $("showCreate").addEventListener("click", () => switchRoomAction("create"));
@@ -955,11 +929,11 @@
       }
       if (!previousReviewMarkdown)
         return toast("⚠️ 缺少上次 AI 評語，請重新完成首次分析。");
-      if (!audioBase64)
+      if (!audioIntentId)
         return toast("⚠️ 請先錄製一段全新錄音，再檢查有冇改進。");
       if (!currentModel()?.supports_audio)
         return toast("⚠️ 改進檢查必須使用支援錄音分析嘅模型。");
-    } else if (!review.text && !audioBase64) {
+    } else if (!review.text && !audioIntentId) {
       return toast("⚠️ 請輸入文字稿或錄音。");
     }
     const data = await run(
@@ -974,7 +948,7 @@
         review_attempt: isRetake ? "retake" : "initial",
         previous_review: isRetake ? previousReviewMarkdown : "",
         text: review.text,
-        audio_base64: audioBase64,
+        audio_intent_id: audioIntentId,
         audio_mime: audioMime,
         audio_duration_seconds: audioDurationSeconds,
       },
@@ -1055,31 +1029,21 @@
     event.preventDefault();
     busy(true);
     try {
-      const mode = $("roomMode").value;
       const structure = $("roomStructure").value;
       const format = $("roomFormat").value;
       const payload = {
-        mode,
+        mode: "A",
         structure,
         debate_format: format,
         topic: $("roomTopic").value.trim(),
         free_minutes: format === "聯中" ? Number($("roomMinutes").value) : 2.5,
       };
-      if (mode === "A") payload.side = $("roomSide").value;
-      else {
-        payload.human_side = $("roomSide").value;
-        payload.capacity =
-          structure === "mock"
-            ? format === "星島"
-              ? 3
-              : 4
-            : Number($("roomCapacity").value);
-      }
+      payload.side = $("roomSide").value;
       const data = await api("/api/room/create", {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      roomOpen(data.code, mode);
+      roomOpen(data.code);
       toast("✅ 房間已建立。");
     } catch (error) {
       toast(`⚠️ ${error.message}`);

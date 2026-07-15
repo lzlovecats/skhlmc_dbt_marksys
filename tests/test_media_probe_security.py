@@ -1,7 +1,5 @@
 """Offline security contracts for the shared audio probe and AI Coach byte gate."""
 
-import asyncio
-import base64
 import hashlib
 import json
 import subprocess
@@ -11,8 +9,7 @@ import pytest
 from fastapi import HTTPException, Request
 
 from api import ai_coach_api
-from core import ai_provider, media_probe
-import deploy.proxy as proxy
+from core import media_probe
 
 
 def _probe_result(*, format_name="webm,matroska", duration=5, returncode=0):
@@ -235,51 +232,13 @@ def _request():
     })
 
 
-def test_ai_coach_rejects_decoded_audio_over_two_mib_before_probe_or_provider(monkeypatch):
-    oversized = b"x" * (ai_coach_api.MAX_COACH_AUDIO_BYTES + 1)
-    provider_calls = []
-    probe_calls = []
-
+def test_ai_coach_legacy_base64_contract_returns_gone_before_database(monkeypatch):
     monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
-    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
-    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
-    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
-    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: {
-        "provider": "gemini",
-        "model": "offline-model",
-        "api_key": "GEMINI_API_KEY",
-        "supports_audio": True,
-        "supports_web_search": False,
-    })
-    monkeypatch.setattr(ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user"))
-    monkeypatch.setattr(ai_coach_api, "_usage", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        ai_coach_api,
-        "probe_audio",
-        lambda *_args, **_kwargs: probe_calls.append(1),
-    )
-
-    from core import rag
-
-    async def no_rag(*_args, **_kwargs):
-        return ""
-
-    async def no_provider(*_args, **_kwargs):
-        provider_calls.append(1)
-        return "must not run", {}
-
-    monkeypatch.setattr(rag, "retrieve_rag_context", no_rag)
-    monkeypatch.setattr(ai_provider, "generate_text", no_provider)
     body = ai_coach_api.CoachRequest(
-        feature="speech_review",
-        audio_base64=base64.b64encode(oversized).decode("ascii"),
-        audio_mime="audio/webm",
-        audio_duration_seconds=1,
+        feature="speech_review", audio_base64="YQ==",
+        audio_mime="audio/webm", audio_duration_seconds=1,
     )
-
     with pytest.raises(HTTPException) as raised:
-        asyncio.run(ai_coach_api.run(body, _request()))
-
-    assert raised.value.status_code == 413
-    assert provider_calls == []
-    assert probe_calls == []
+        ai_coach_api._validate_coach_request(body)
+    assert raised.value.status_code == 410
+    assert "base64" in str(raised.value.detail)

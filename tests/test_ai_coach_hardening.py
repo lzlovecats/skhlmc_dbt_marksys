@@ -1,21 +1,19 @@
-"""Security, quota and provider regressions for direct Solo Gemini Live."""
+"""Security, lifecycle and provider regressions for direct Solo Gemini Live."""
 
 import asyncio
-import base64
 import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
-from api import admin_console_api, ai_coach_api
-from core import ai_provider, funds_logic, media_probe
+from api import ai_coach_api
+from core import ai_provider, funds_logic, google_files, media_probe
 import ai_model_config
 import deploy.proxy as proxy
 import system_limits
@@ -29,6 +27,16 @@ def _isolate_live_token_response_cache():
     proxy._clear_solo_live_token_response_cache()
     yield
     proxy._clear_solo_live_token_response_cache()
+
+
+@pytest.fixture(autouse=True)
+def _safe_bandwidth_default(monkeypatch):
+    monkeypatch.setattr(proxy, "bandwidth_budget_status", lambda **_kwargs: {
+        "total_bytes": 0,
+        "warn_bytes": 3 * 1024**3,
+        "stop_live_bytes": int(3.5 * 1024**3),
+        "essential_only_bytes": 4 * 1024**3,
+    })
 
 
 def _request(country=None, host="testserver", query=b""):
@@ -57,23 +65,23 @@ def test_ai_coach_ui_prices_search_fallback_with_actual_default_model():
     assert '$("researchForm"), $("factForm")' in sync_model
 
 
-def test_speech_review_supports_six_minute_bounded_recording():
+def test_speech_review_has_no_application_duration_or_two_mib_limit():
     source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
 
-    assert system_limits.AI_COACH_MAX_AUDIO_SECONDS == 6 * 60
-    assert "audio_max_seconds: 360" in source
+    assert not hasattr(system_limits, "AI_COACH_MAX_AUDIO_SECONDS")
+    assert not hasattr(system_limits, "AI_COACH_MAX_AUDIO_BYTES")
     assert "audioBitsPerSecond: 32_000" in source
-    assert "limits.audio_max_seconds * 1000 - 500" in source
-    assert ai_coach_api.MAX_COACH_AUDIO_TOKEN_ESTIMATE == 32 * 6 * 60
+    assert "recording-intent" in source and "recording-complete" in source
+    assert "audio_base64" not in source
+    assert "setTimeout(activeRecorder.stop" not in source
     assert ai_coach_api.CoachRequest(
         feature="speech_review",
-        audio_duration_seconds=6 * 60,
-    ).audio_duration_seconds == 6 * 60
-    with pytest.raises(ValidationError):
-        ai_coach_api.CoachRequest(
-            feature="speech_review",
-            audio_duration_seconds=6 * 60 + 2,
-        )
+        audio_duration_seconds=8 * 60 * 60,
+        audio_intent_id="a" * 32,
+    ).audio_duration_seconds == 8 * 60 * 60
+    assert ai_coach_api.AudioIntentBody(
+        mime_type="audio/webm", byte_size=3 * 1024 * 1024, sha256="a" * 64,
+    ).byte_size > 2 * 1024 * 1024
 
 
 def test_ai_coach_runtime_honours_provider_allowlist_and_default(monkeypatch):
@@ -198,51 +206,32 @@ def _install_quota_engine(monkeypatch, engine):
     monkeypatch.setattr(funds_logic, "prune_ai_usage", lambda _db: None)
 
 
-def test_free_quota_two_per_day_and_practice_id_is_idempotent(monkeypatch):
+def test_free_practices_have_no_usage_count_cap_and_practice_id_is_idempotent(monkeypatch):
     engine = _QuotaEngine()
     _install_quota_engine(monkeypatch, engine)
     first = _claim("alice", "practice_free_001")
     assert proxy._reserve_solo_live_slot(first) is None
     assert proxy._reserve_solo_live_slot(first) is None
-    assert proxy._reserve_solo_live_slot(_claim("alice", "practice_free_002")) is None
-    assert proxy._reserve_solo_live_slot(_claim("alice", "practice_free_003"))
-    assert len(engine.rows) == system_limits.SOLO_FREE_DAILY_LIMIT == 2
+    for index in range(2, 22):
+        assert proxy._reserve_solo_live_slot(
+            _claim("alice", f"practice_free_{index:03d}"),
+        ) is None
+    assert len(engine.rows) == 21
     assert all("gemini_live_token_reservation" in sql for sql in engine.insert_sql)
     assert all("relay" not in sql for sql in engine.insert_sql)
 
 
-def test_mock_weekly_and_global_monthly_quotas(monkeypatch):
+def test_mock_practices_have_no_weekly_or_monthly_count_cap(monkeypatch):
     engine = _QuotaEngine()
     _install_quota_engine(monkeypatch, engine)
-    assert proxy._reserve_solo_live_slot(
-        _claim("alice", "practice_mock_001", "mock", [300, 600]),
-    ) is None
-    assert proxy._reserve_solo_live_slot(
-        _claim("alice", "practice_mock_002", "mock", [300]),
-    )
-
-    seeded = [
-        {"user": f"u{index}", "feature": "full_mock_live", "marker": f"m{index}"}
-        for index in range(system_limits.SOLO_MOCK_MONTHLY_LIMIT)
-    ]
-    global_engine = _QuotaEngine(seeded)
-    _install_quota_engine(monkeypatch, global_engine)
-    assert proxy._reserve_solo_live_slot(
-        _claim("new-user", "practice_mock_new", "mock", [300]),
-    ) == proxy.GLOBAL_LIVE_LIMIT_MESSAGE
+    for index in range(20):
+        assert proxy._reserve_solo_live_slot(
+            _claim("alice", f"practice_mock_{index:03d}", "mock", [300, 600]),
+        ) is None
+    assert len(engine.rows) == 20
 
 
-def test_free_global_sixty_and_concurrent_race(monkeypatch):
-    seeded = [
-        {"user": f"u{index}", "feature": "free_debate_live", "marker": f"m{index}"}
-        for index in range(system_limits.SOLO_FREE_MONTHLY_LIMIT)
-    ]
-    global_engine = _QuotaEngine(seeded)
-    _install_quota_engine(monkeypatch, global_engine)
-    assert proxy._reserve_solo_live_slot(
-        _claim("new-user", "practice_free_new"),
-    ) == proxy.GLOBAL_LIVE_LIMIT_MESSAGE
-
+def test_solo_lifecycle_marker_is_concurrency_idempotent_without_global_cap(monkeypatch):
     race_engine = _QuotaEngine()
     _install_quota_engine(monkeypatch, race_engine)
     same = _claim("racer", "practice_free_race")
@@ -260,8 +249,8 @@ def test_free_global_sixty_and_concurrent_race(monkeypatch):
             ),
             range(10),
         ))
-    assert sum(result is None for result in results) == 2
-    assert len(unique_engine.rows) == 2
+    assert results == [None] * 10
+    assert len(unique_engine.rows) == 10
 
 
 def test_mock_ledger_binds_claim_order_schedule_and_one_absolute_deadline(monkeypatch):
@@ -445,7 +434,6 @@ def test_endpoint_never_returns_or_caches_token_after_delivery_window(monkeypatc
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_practice_live_rate_check", lambda _user: None)
-    monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
     monkeypatch.setattr(
         proxy, "_mint_gemini_live_token",
         lambda *_args, **_kwargs: ("slow-token", None),
@@ -469,184 +457,19 @@ def test_endpoint_never_returns_or_caches_token_after_delivery_window(monkeypatc
             _request("US"),
         ))
     assert raised.value.status_code == 502
-    assert "未有扣除限額" in raised.value.detail
+    assert "未有建立練習記錄" in raised.value.detail
     assert proxy._get_cached_solo_live_token(claim, 0) == ""
 
 
-def test_temporary_solo_exemption_is_mode_scoped_and_expiry_fail_closed():
-    now = datetime.datetime(2026, 7, 14, tzinfo=datetime.timezone.utc)
-    active = {
-        "alice": {"mode": "free", "expires_at": "2026-07-15T00:00:00Z"},
-    }
-    assert proxy._solo_quota_exempt(active, "alice", "free", now_utc=now) is True
-    assert proxy._solo_quota_exempt(active, "alice", "mock", now_utc=now) is False
-    assert proxy._solo_quota_exempt(
-        {"alice": {"mode": "all", "expires_at": "2026-07-13T00:00:00Z"}},
-        "alice", "free", now_utc=now,
-    ) is False
-    assert proxy._solo_quota_exempt(
-        {"alice": {"mode": "all", "expires_at": "2026-07-15T00:00:00"}},
-        "alice", "free", now_utc=now,
-    ) is False
-    assert proxy._solo_quota_exempt(
-        {"alice": {"mode": "all", "expires_at": "2026-08-13T00:00:01Z"}},
-        "alice", "free", now_utc=now,
-    ) is False
-
-
-def test_solo_exemption_config_sanitizer_enforces_timezone_and_maximum_duration():
-    now = datetime.datetime(2026, 7, 14, tzinfo=datetime.timezone.utc)
-    values = {
-        "valid": {"mode": "all", "expires_at": "2026-08-13T00:00:00Z"},
-        "offset": {"mode": "free", "expires_at": "2026-07-15T08:00:00+08:00"},
-        "too_long": {"mode": "all", "expires_at": "2026-08-13T00:00:01Z"},
-        "naive": {"mode": "all", "expires_at": "2026-07-15T00:00:00"},
-    }
-
-    active = admin_console_api._active_solo_quota_mapping(values, now=now)
-
-    assert active == {
-        "valid": {"mode": "all", "expires_at": "2026-08-13T00:00:00Z"},
-        "offset": {"mode": "free", "expires_at": "2026-07-15T00:00:00Z"},
-    }
-
-
-def test_solo_exemption_endpoints_require_developer_session():
-    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
-    body = admin_console_api.SoloQuotaExemptionBody(
-        user_id="alice", mode="free", expires_at="2026-07-15T00:00",
-    )
-
-    for operation in (
-        lambda: admin_console_api.list_solo_quota_exemptions(request),
-        lambda: admin_console_api.set_solo_quota_exemption(body, request),
-        lambda: admin_console_api.revoke_solo_quota_exemption("alice", request),
-    ):
-        with pytest.raises(HTTPException) as exc:
-            operation()
-        assert exc.value.status_code == 401
-
-
-def test_solo_exemption_rejects_system_accounts_before_database_lookup(monkeypatch):
-    monkeypatch.setattr(admin_console_api, "_require", lambda *_args: None)
-    monkeypatch.setattr(
-        admin_console_api, "_db",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("system account must be rejected before database lookup")
-        ),
-    )
-    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
-
-    for user_id in ("", "admin", "developer"):
-        body = admin_console_api.SoloQuotaExemptionBody(
-            user_id=user_id, mode="all", expires_at="2026-07-15T00:00",
-        )
-        with pytest.raises(HTTPException) as exc:
-            admin_console_api.set_solo_quota_exemption(body, request)
-        assert exc.value.status_code == 400
-
-
-def test_solo_exemption_post_enforces_maximum_and_stores_naive_hk_as_utc(monkeypatch):
-    events = []
-    written = {}
-
-    class _Frame:
-        empty = False
-
-    class _Connection:
-        def execute(self, statement, _params=None):
-            events.append(str(statement))
-
-    class _Db:
-        def query(self, *_args, **_kwargs):
-            return _Frame()
-
-        @contextmanager
-        def transaction(self):
-            yield _Connection()
-
-    def configs(_conn, _keys):
-        assert any("pg_advisory_xact_lock" in event for event in events)
-        return {"solo_quota_exemptions": {}, "login_disabled_accounts": []}
-
-    monkeypatch.setattr(admin_console_api, "_require", lambda *_args: None)
-    monkeypatch.setattr(admin_console_api, "_db", lambda: _Db())
-    monkeypatch.setattr(admin_console_api, "get_configs_from_connection", configs)
-    monkeypatch.setattr(
-        admin_console_api, "set_configs_on_connection",
-        lambda _conn, values: written.update(values),
-    )
-    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
-
-    too_long = (
-        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=31)
-    ).isoformat()
-    with pytest.raises(HTTPException) as exc:
-        admin_console_api.set_solo_quota_exemption(
-            admin_console_api.SoloQuotaExemptionBody(
-                user_id="alice", mode="free", expires_at=too_long,
-            ),
-            request,
-        )
-    assert exc.value.status_code == 400
-    assert written == {}
-
-    expiry_hk = (
-        datetime.datetime.now(ZoneInfo("Asia/Hong_Kong"))
-        + datetime.timedelta(hours=1)
-    ).replace(tzinfo=None, microsecond=0)
-    result = admin_console_api.set_solo_quota_exemption(
-        admin_console_api.SoloQuotaExemptionBody(
-            user_id="alice", mode="free", expires_at=expiry_hk.isoformat(),
-        ),
-        request,
-    )
-    expected = (
-        expiry_hk.replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
-        .astimezone(datetime.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-    assert result["exemptions"]["alice"] == {
-        "mode": "free", "expires_at": expected,
-    }
-    assert written["solo_quota_exemptions"] == result["exemptions"]
-
-
-def test_solo_exemption_skips_only_user_cap_but_still_ledgers_and_honours_global(monkeypatch):
-    expiry = (
-        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
-    ).isoformat().replace("+00:00", "Z")
-    active = {
-        "solo_quota_exemptions": {
-            "alice": {"mode": "free", "expires_at": expiry},
-            "new-user": {"mode": "all", "expires_at": expiry},
-        },
-    }
-    monkeypatch.setattr(proxy, "get_configs_from_connection", lambda *_args: active)
-
-    user_capped = _QuotaEngine([
-        {"user": "alice", "feature": "free_debate_live", "marker": f"old-{index}"}
-        for index in range(system_limits.SOLO_FREE_DAILY_LIMIT)
-    ])
-    _install_quota_engine(monkeypatch, user_capped)
-    assert proxy._reserve_solo_live_slot(
-        _claim("alice", "practice_free_exempt"),
-    ) is None
-    assert len(user_capped.rows) == system_limits.SOLO_FREE_DAILY_LIMIT + 1
-    assert user_capped.rows[-1]["marker"].startswith(
-        "direct_practice:practice_free_exempt",
-    )
-
-    global_capped = _QuotaEngine([
-        {"user": f"u{index}", "feature": "free_debate_live", "marker": f"old-{index}"}
-        for index in range(system_limits.SOLO_FREE_MONTHLY_LIMIT)
-    ])
-    _install_quota_engine(monkeypatch, global_capped)
-    assert proxy._reserve_solo_live_slot(
-        _claim("new-user", "practice_free_global_exempt"),
-    ) == proxy.GLOBAL_LIVE_LIMIT_MESSAGE
-    assert len(global_capped.rows) == system_limits.SOLO_FREE_MONTHLY_LIMIT
+def test_solo_quota_exemption_contract_is_fully_removed():
+    assert not hasattr(proxy, "_solo_quota_exempt")
+    assert not hasattr(proxy, "_solo_live_quota_error")
+    source = "\n".join((
+        (ROOT / "api/admin_console_api.py").read_text(encoding="utf-8"),
+        (ROOT / "frontend/dev_settings/index.html").read_text(encoding="utf-8"),
+        (ROOT / "system_limits.py").read_text(encoding="utf-8"),
+    ))
+    assert "solo_quota_exemptions" not in source
 
 
 def test_ephemeral_token_is_single_use_short_start_and_constrained(monkeypatch):
@@ -1020,7 +843,6 @@ def test_initial_token_mints_and_reserves_only_on_start_with_same_token_retry(
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: claim)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_practice_live_rate_check", lambda _user: None)
-    monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
     monkeypatch.setattr(proxy, "_solo_live_practice_reserved", lambda _claim: reserved)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: reserved)
     monkeypatch.setattr(
@@ -1076,7 +898,6 @@ def test_initial_cross_worker_loser_never_discloses_or_caches_extra_token(monkey
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: claim)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_practice_live_rate_check", lambda _user: None)
-    monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_solo_live_token_issued", lambda *_args: False)
     monkeypatch.setattr(
@@ -1158,7 +979,7 @@ def test_initial_token_rejects_claim_that_cannot_cover_full_start_lifecycle(monk
     monkeypatch.setattr(
         proxy, "_reserve_solo_live_slot",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("short-lived claim must not reserve quota"),
+            AssertionError("short-lived claim must not create lifecycle row"),
         ),
     )
 
@@ -1167,7 +988,7 @@ def test_initial_token_rejects_claim_that_cannot_cover_full_start_lifecycle(monk
         asyncio.run(ai_coach_api.mint_live_token(body, _request("US")))
 
     assert raised.value.status_code == 409
-    assert "未有扣除限額" in raised.value.detail
+    assert "未有建立練習記錄" in raised.value.detail
 
 
 @pytest.mark.parametrize("mode", ["free", "mock"])
@@ -1181,7 +1002,6 @@ def test_initial_live_html_contains_claim_but_never_mints_or_reserves(monkeypatc
     )
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
-    monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_planned_live_practice_claim", lambda *_args: "planned-claim")
     monkeypatch.setattr(ai_coach_api, "consume_live_brief", lambda *_args: "")
@@ -1461,9 +1281,7 @@ def test_prepare_live_provider_failure_has_safe_ledger_reason_and_no_store(monke
     monkeypatch.setattr(proxy, "_new_live_practice_claim", lambda *_args: "signed-claim")
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "get_vote_db", lambda: db)
-    monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
     monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
-    monkeypatch.setattr(ai_coach_api, "_reserve_prepare_live", lambda *_args: None)
     monkeypatch.setattr(rag, "retrieve_rag_context", no_rag)
     monkeypatch.setattr(ai_coach_api, "_generate", failed_provider)
     monkeypatch.setattr(
@@ -1575,44 +1393,23 @@ def test_ai_coach_data_is_private_no_store(monkeypatch):
     assert payload["server_tts_configured"] is False
 
 
-def test_actual_audio_over_six_minutes_is_rejected_before_provider(monkeypatch):
+def test_actual_audio_over_six_minutes_is_allowed_up_to_google_boundary(monkeypatch, tmp_path):
+    source = tmp_path / "long.webm"
+    source.write_bytes(b"bounded-test-audio")
     ffprobe = SimpleNamespace(
         returncode=0,
         stdout=(
-            '{"format":{"format_name":"matroska,webm","duration":"361.0"},'
-            '"streams":[{"codec_type":"audio","sample_rate":"16000","channels":1}]}'
+            "{\"format\":{\"format_name\":\"matroska,webm\",\"duration\":\"361.0\"},"
+            "\"streams\":[{\"codec_type\":\"audio\",\"sample_rate\":\"16000\",\"channels\":1}]}"
         ),
     )
     monkeypatch.setattr(media_probe.subprocess, "run", lambda *_args, **_kwargs: ffprobe)
-    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
-    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
-    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
-    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
-    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: {
-        "provider": "gemini", "api_key": "GEMINI_API_KEY", "supports_audio": True,
-    })
-    monkeypatch.setattr(ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user"))
-    monkeypatch.setattr(ai_coach_api, "_usage", lambda *_args, **_kwargs: None)
-
-    async def no_rag(*_args, **_kwargs):
-        return ""
-
-    async def provider_must_not_run(*_args, **_kwargs):
-        raise AssertionError("provider must not receive unverified audio")
-
-    from core import rag
-
-    monkeypatch.setattr(rag, "retrieve_rag_context", no_rag)
-    monkeypatch.setattr(ai_provider, "generate_text", provider_must_not_run)
-    body = ai_coach_api.CoachRequest(
-        feature="speech_review", topic="辯題",
-        audio_base64=base64.b64encode(b"small-compressed-audio").decode("ascii"),
-        audio_mime="audio/webm", audio_duration_seconds=360,
+    result = media_probe.probe_audio_file(
+        str(source), "audio/webm", 361,
+        max_seconds=google_files.GOOGLE_AUDIO_MAX_SECONDS,
     )
-    with pytest.raises(HTTPException) as raised:
-        asyncio.run(ai_coach_api.run(body, _request("US")))
-    assert raised.value.status_code == 400
-    assert "實際長度" in raised.value.detail and "60" in raised.value.detail
+    assert result["duration"] == 361.0
+    assert google_files.GOOGLE_AUDIO_MAX_SECONDS == int(9.5 * 60 * 60)
 
 
 def _install_custom_fallback_test_path(monkeypatch, ledger):
@@ -1750,49 +1547,37 @@ def test_custom_strategy_fallback_logs_both_real_attempts_as_one_operation(monke
     assert next(iter(operation_ids)).startswith("coach-")
 
 
-def test_custom_local_preflight_failure_does_not_create_phantom_attempt(monkeypatch):
+def test_custom_audio_uri_falls_back_without_phantom_custom_attempt(monkeypatch):
     ledger = []
     custom = {
-        "provider": "custom",
-        "model": "school-model",
-        "api_key": "CUSTOM_LLM_API_KEY",
-        "supports_audio": False,
+        "provider": "custom", "model": "school-model",
+        "api_key": "CUSTOM_LLM_API_KEY", "supports_audio": False,
         "supports_web_search": False,
     }
     monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
     monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: custom)
-    monkeypatch.setattr(
-        ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user")
-    )
+    monkeypatch.setattr(ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user"))
     monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
     monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
-    monkeypatch.setattr(proxy, "record_bandwidth_usage", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        ai_coach_api,
-        "probe_audio",
-        lambda *_args, **_kwargs: {"mime": "audio/webm"},
-    )
-    monkeypatch.setattr(
-        ai_coach_api,
-        "_usage",
+        ai_coach_api, "_usage",
         lambda *args, **kwargs: ledger.append((args, kwargs)),
     )
 
-    async def fallback(config, *_args, **_kwargs):
-        assert config["provider"] == "gemini"
+    async def generate(config, *_args, on_provider_attempt=None, **_kwargs):
+        if config["provider"] == "custom":
+            raise HTTPException(400, "錄音分析只支援 Google Gemini Files API。")
+        on_provider_attempt()
         return "fallback ok", {}
 
-    monkeypatch.setattr(ai_provider, "generate_text", fallback)
+    monkeypatch.setattr(ai_coach_api, "_generate", generate)
     body = ai_coach_api.CoachRequest(
-        feature="speech_review",
-        model_label="自家辯論 LLM",
-        topic="測試辯題",
-        audio_base64=base64.b64encode(b"audio").decode("ascii"),
-        audio_duration_seconds=1,
+        feature="speech_review", model_label="自家辯論 LLM",
+        topic="測試辯題", audio_intent_id="a" * 32,
+        audio_duration_seconds=361,
     )
     response = asyncio.run(ai_coach_api.run(body, _request("US")))
-
     assert json.loads(response.body)["markdown"] == "fallback ok"
     assert len(ledger) == 1
     assert ledger[0][0][4]["provider"] == "gemini"
@@ -1991,9 +1776,6 @@ def test_bandwidth_35gb_blocks_solo_server_tts_not_direct_quota(monkeypatch):
     assert raised.value.status_code == 429
     assert "Gemini原生聲音" in raised.value.detail
 
-    engine = _QuotaEngine()
-    _install_quota_engine(monkeypatch, engine)
-    assert proxy._solo_live_quota_error("alice", "free") is None
 
 
 def test_bandwidth_4gb_blocks_initial_and_jit_token_provider_calls(monkeypatch):
@@ -2008,7 +1790,6 @@ def test_bandwidth_4gb_blocks_initial_and_jit_token_provider_calls(monkeypatch):
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_practice_live_rate_check", lambda _user: None)
-    monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: message)
     monkeypatch.setattr(
         proxy, "_mint_gemini_live_token",

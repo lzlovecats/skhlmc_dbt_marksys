@@ -234,17 +234,12 @@
           </div>
         </details>
         <details class="guide" open>
-          <summary>📊 練習限額及網絡傳輸量保護</summary>
+          <summary>📊 系統資源及網絡傳輸量保護</summary>
           <div class="sub">
             <p id="bandwidthUsage">正在讀取本月系統用量…</p>
             <ul>
               <li>
-                單人及聯機 Free De／完整 Mock
-                都有每人時段quota、全系統每月quota及server時間上限。
-              </li>
-              <li>
-                同時房間數、房間人數及每條 Gemini Live
-                連線傳輸量均由伺服器集中限制。
+                委員沒有每日、每週或每月使用次數 quota；系統只保留全站 Render、R2、provider 預算及技術安全邊界。
               </li>
               <li>
                 實際用量及現時生效門檻會由伺服器讀取後顯示，不會依賴頁面寫死數值。
@@ -252,9 +247,7 @@
             </ul>
             <p>
               實際 bandwidth
-              門檻會由伺服器集中設定並顯示於上方；達停止門檻後不再建立 Gemini
-              Live／聯機房間，達必要功能門檻後只保留一般頁面、JSON、R2
-              媒體及管理功能。
+              門檻會由伺服器集中設定並顯示於上方；3.5GB 後停止新錄音分析及 server TTS，4GB 後停止一般 AI 及聯機 AI 評判。真人 P2P 練習仍可在沒有 AI 評判下繼續。
             </p>
           </div>
         </details>
@@ -550,10 +543,9 @@
           <section class="card">
             <h2>🎧 連線練習</h2>
             <p class="caption">
-              與其他委員即時連線練習。模式 A：真人對真人（1 對 1），AI
-              擔任評判；模式 B：多人一起對 AI 練習（完整 Mock 按賽制要求 3 或 4
-              位隊員）。使用房間代碼加入同一場練習。
+              與另一位委員作真人對真人（1 對 1）Free De 或完整 Mock，完成後由 AI 根據逐字稿評判。音訊以 STUN-only WebRTC 直接傳送，不會經 Render。
             </p>
+            <p class="caption">建議全員使用電腦版 Chrome；電話可以練習，但逐字稿可能因 browser、Siri、鎖屏或轉 app 而停用 AI 評判。</p>
           </section>
           <div id="activeRoom" class="card hidden">
             <h2>連線練習房間</h2>
@@ -578,11 +570,6 @@
               <h2>建立房間</h2>
               <div class="field-grid">
                 <label
-                  >模式<select id="roomMode">
-                    <option value="A">真人對真人（1 對 1）</option>
-                    <option value="B">多人對 AI</option>
-                  </select></label
-                ><label
                   >形式<select id="roomStructure">
                     <option value="free">自由辯論</option>
                     <option value="mock">完整 Mock</option>
@@ -594,14 +581,7 @@
                     <option>星島</option>
                     <option>基本法盃</option>
                   </select></label
-                ><label id="roomCapacityWrap" class="hidden"
-                  >隊員人數上限<input
-                    id="roomCapacity"
-                    type="number"
-                    min="1"
-                    max="4"
-                    value="4"
-                /></label>
+                >
               </div>
               <p id="roomModeInfo" class="caption"></p>
               <div

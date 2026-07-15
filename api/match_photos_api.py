@@ -12,8 +12,7 @@ from pydantic import BaseModel, Field
 from api.access import require_page_user
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from system_limits import (
-    PHOTO_BATCH_MAX_ITEMS, PHOTO_DAILY_USER_LIMIT, PHOTO_MAX_BYTES,
-    PHOTO_MAX_DIMENSION, PHOTO_MONTHLY_GLOBAL_LIMIT,
+    PHOTO_BATCH_MAX_ITEMS, PHOTO_MAX_BYTES, PHOTO_MAX_DIMENSION,
     PHOTO_THUMBNAIL_MAX_BYTES, PHOTO_THUMBNAIL_MAX_DIMENSION,
     R2_MEDIA_LINK_TTL_SECONDS,
     R2_OBJECT_CACHE_MAX_AGE_SECONDS, R2_UPLOAD_CLAIM_TTL_SECONDS,
@@ -67,8 +66,6 @@ def data(request: Request):
     result["storage_budget"] = r2_storage.storage_budget_status(db, refresh=True)
     result["limits"] = {
         "batch_max_items": PHOTO_BATCH_MAX_ITEMS,
-        "daily_user_limit": PHOTO_DAILY_USER_LIMIT,
-        "monthly_global_limit": PHOTO_MONTHLY_GLOBAL_LIMIT,
         "photo_max_bytes": PHOTO_MAX_BYTES,
         "photo_max_dimension": PHOTO_MAX_DIMENSION,
         "thumbnail_max_bytes": PHOTO_THUMBNAIL_MAX_BYTES,
@@ -183,16 +180,10 @@ def upload_intent(body: PhotoUploadIntentBody, request: Request):
             pending_original_key, pending_thumbnail_key, original_key, thumbnail_key,
         ],
         declared_bytes=body.byte_size + body.thumbnail_byte_size,
-        user_daily_limit=PHOTO_DAILY_USER_LIMIT,
-        global_monthly_limit=PHOTO_MONTHLY_GLOBAL_LIMIT,
     )
     if not reserved:
         stop_gb = storage_budget["stop_bytes"] / 1_000_000_000
-        message = f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新相片上載。" if scope == "storage_global" else (
-            f"你今日申請的圖片上載次數已達{PHOTO_DAILY_USER_LIMIT}次，請翌日再試。"
-            if scope == "user_daily" else "本月全系統圖片上載申請已達上限。"
-        )
-        raise HTTPException(429, message)
+        raise HTTPException(429, f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新相片上載。")
     return {
         "upload_token": token,
         "original": {
@@ -229,26 +220,11 @@ def upload_complete(body: PhotoCompleteBody, request: Request):
         raise HTTPException(400, f"每次必須上載一至{PHOTO_BATCH_MAX_ITEMS}張圖片。")
     if any(len(token) > 20_000 for token in body.upload_tokens):
         raise HTTPException(400, "圖片上載憑證格式無效。")
-    now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
     if body.photo_date:
         try:
             datetime.strptime(body.photo_date, "%Y-%m-%d")
         except ValueError as exc:
             raise HTTPException(400, "相片日期格式無效。") from exc
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_start = day_start.replace(day=1)
-    usage = db.query("""SELECT
-        COUNT(*) FILTER (WHERE uploaded_by=:user AND created_at>=:day_start) AS user_today,
-        COUNT(*) FILTER (WHERE created_at>=:month_start) AS global_month
-        FROM match_photos""", {
-        "user": user_id, "day_start": day_start, "month_start": month_start,
-    })
-    user_today = int(usage.iloc[0]["user_today"] or 0) if not usage.empty else 0
-    global_month = int(usage.iloc[0]["global_month"] or 0) if not usage.empty else 0
-    if user_today + len(body.upload_tokens) > PHOTO_DAILY_USER_LIMIT:
-        raise HTTPException(429, f"為控制儲存及網絡傳輸量，每位委員每日最多可上載{PHOTO_DAILY_USER_LIMIT}張相片。")
-    if global_month + len(body.upload_tokens) > PHOTO_MONTHLY_GLOBAL_LIMIT:
-        raise HTTPException(429, "本月全系統相片上載限額已用完，請於下月再試。")
     secret = _get_relay_cookie_secret()
     files = []
     seen_intents = set()

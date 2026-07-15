@@ -1,8 +1,8 @@
 # 系統服務、成本及用量限制
 
-更新日期：2026-07-14
+更新日期：2026-07-15
 
-目前已核實的Render production為 **4.2.1**；repo release版本為 **4.2.2**，尚未
+目前已核實的Render production為 **4.2.1**；repo release版本為 **4.5.0**，尚未
 部署，程式碼版本唯一來源仍是[`version.py`](../version.py)。Production migration
 head為`20260714_0002`；兩個legacy BYTEA columns及
 legacy `system_config`已由versioned migrations退役。45張相片、45張縮圖及148段錄音共238個R2 objects
@@ -20,7 +20,7 @@ Provider 價格可隨時調整；付款前應以各 provider dashboard 及官方
 
 | 服務 | 用途 | 目前方案 | 固定月費 | 主要限制 |
 |---|---|---:|---:|---|
-| Render | FastAPI、HTML、普通AI／TTS、多人Live WebSocket rooms | Starter | US$7，約 HK$55 | 512MB RAM、0.5 CPU；目前帳戶顯示 5GB outbound/月 |
+| Render | FastAPI、HTML、普通AI／TTS、Mode A control／signaling | Starter | US$7，約 HK$55 | 512MB RAM、0.5 CPU；app以3／3.5／4GB system-wide門檻保護 |
 | Supabase | PostgreSQL database | Free | US$0 | 500MB database、500MB RAM、5GB egress、5GB cached egress、1GB Storage |
 | Cloudflare R2 | Private 相片、縮圖、TTS 錄音及 AI評判易短暫錄音 | Standard Free Tier | 預期 US$0 | 10GB-month、1M Class A、10M Class B；Internet egress 免費 |
 | Google Gemini API | AI Coach、審核、Gemini Live；未來RAG embedding | Free／paid usage | US$0 起，按使用量 | 模型 token、Search grounding、Live API rate limits；RAG schema未provision時會在provider call前停止 |
@@ -51,27 +51,33 @@ OpenRouter、Azure 或其他 AI provider 的實際變動費用。
 一般 HTML／JSON
 Browser ⇄ Render ⇄ Supabase PostgreSQL
 
-相片／錄音（R2 migration 後）
+相片／TTS錄音／AI Coach暫存錄音
 Browser ⇄ Render：登入、metadata、短期 presigned URL
 Browser ⇄ Cloudflare R2：binary PUT／GET
 Render ⇄ Supabase：只傳 metadata
 
-普通AI／搵料／Fact Check／錄音分析
+普通AI／搵料／Fact Check
 Browser ⇄ Render ⇄ AI provider
 
+AI Coach錄音分析
+Browser → R2：32kbps Opus direct PUT
+R2 → Render → Google Files API：bounded raw stream（沒有base64膨脹）
+Render → Gemini：temporary file URI分析；finally刪Google file及R2 object
+
 Solo Gemini Live
-Browser ⇄ Render：登入、地區提示、配額、prompt、一次性ephemeral token
+Browser ⇄ Render：登入、地區提示、prompt、一次性ephemeral token
 Browser ⇄ Google Gemini Live：WebSocket audio及session（直連）
 
-多人Gemini Live
-Browser ⇄ Render WebSocket room ⇄ Google Gemini Live
+Mode A真人聯機
+Browser ⇄ Browser：STUN-only WebRTC Opus audio
+Browser ⇄ Render WebSocket：SDP／ICE、roster、turn、timer、逐字稿、文字AI評判
 ```
 
-Solo Gemini Live只有短小的HTML、prompt及token response經Render，Live audio直接在
-browser與Google之間傳送；長期Gemini／OpenRouter key永遠只留在server。普通AI及
-多人Live仍經Render。Cloudflare R2只處理private media，與Gemini Live路徑無關。
-多人Live實時media plane未來搬離Render的候選架構、安全／成本gate、canary及
-rollback見[`ROADMAP.md` P0.1](ROADMAP.md)；現行production資料流沒有改變。
+Solo Gemini Live只有短小HTML、prompt及token response經Render，Live audio直接在
+browser與Google之間傳送；長期Gemini／OpenRouter key永遠只留在server。Mode A只在Render
+傳送低流量control／signaling／逐字稿，沒有TURN、SFU或Render audio fallback。Mode B已移除。
+未deploy前production資料流仍以實際production版本為準；真機及cutover gate見
+[`ROADMAP.md` P0.1](ROADMAP.md)。
 網站custom domain及靜態edge cache屬optional；只可cache公開CSS、JS、manifest及圖示，
 不可對HTML、API、登入、WebSocket或private R2 URL使用`Cache Everything`。
 
@@ -86,109 +92,50 @@ TOAST空間，未經maintenance評估不為追求dashboard數字而跑`VACUUM FU
 
 ## 已實施限制
 
-### 聯機練習
+系統不再設AI／media每日、每週或每月使用次數quota。以下只保留system-wide資源gate、
+資料完整性及技術安全邊界；`monthly_resource_limits`係每月Render、R2、AI基金及provider
+預算的DB authoritative source，process只在DB暫時失敗時使用last-known cache／安全預設。
 
-- 每位委員每日一次聯機 Free De。
-- 每位委員每日一次聯機完整 Mock。
-- Free De 及 Mock 分開計算。
-- 以香港日期計算。
-- 重連同一房間不會重複扣次數。
-- 新房間預設最多同時存在兩個（`MAX_ROOMS=2`）。
-- 全系統每月最多20個聯機Free De房及10個聯機Mock房。
-- 聯機Free De時間由server強制限制為最多10分鐘，不能只靠前端欄位繞過。
-- Gemini upstream WebSocket 單一 message 上限4MB；browser WebSocket message 上限2MB。
-- Server-side TTS native fallback 每個 turn 最多保留8MB。
-- Uvicorn 同時連線／request 上限預設20；壓力測試後才考慮調高。
-- HTTP request body預設最多5MB；middleware會逐個ASGI chunk累計實際bytes，
-  `Content-Length`只作早期拒絕，chunked request不能繞過。AI Coach臨時分析錄音
-  最多2MB及6分鐘；browser以32kbps speech bitrate錄製，令完整6分鐘仍可留在2MB內。
-- AI Coach文字／錄音分析最多同時3個request；TTS音質檢查維持最多同時2個。
+### Mode A真人聯機
 
-超額訊息：
+- 只接受兩位真人的Mode A；`mode=B`明確400。Free De及完整Mock保留。
+- 音訊為Cloudflare public STUN-only WebRTC Opus mono P2P；不設TURN、SFU或Render fallback。
+- Render只轉發authenticated SDP／ICE及低流量control；訊息受member、roster generation、
+  byte、rate、room capacity、90分鐘TTL及兩房並行上限保護，ICE不寫log／database。
+- 每部裝置由使用者按鍵做咪／播放、ICE、data-channel、remote packets／energy及8秒粵語
+  final transcript測試。Media失敗阻止開始；transcript失敗只會全房停AI評判。
+- 每次發言用server簽發`turn_id`及ordered final chunks；terminal error、空commit或sequence
+  缺漏會sticky停用AI評判，但P2P聲音及timer繼續。
+- P2P中斷先暫停timer，只做一次10秒ICE restart；失敗安全完場，永不改經Render。
 
-> 由於系統每月可用的網絡傳輸量有限，為控制營運預算並確保所有委員均能使用服務，每位委員每日只可進行一次聯機自由辯論及一次聯機完整模擬練習。你今日已使用此類別的練習限額，請於翌日再試。
+### AI Coach錄音分析
 
-### 相片
+- Browser以32kbps Opus錄音，沒有6分鐘／2MB app上限；正式賽制計時器保留。
+- 每次初錄及retake建立獨立user／operation-bound R2 intent，直接PUT並綁size、MIME、SHA256。
+- Render在分析前重做owner、HEAD、SHA、MIME及ffprobe；原子預留3.5GB前剩餘bandwidth。
+- R2原檔以bounded temporary-file stream送Google Files API，ACTIVE後用file URI分析，避免
+  base64約33%膨脹；按實際raw uploaded bytes結算。
+- 成功、provider error、timeout及取消均在`finally`刪Google file、R2 object及Render暫存檔。
+- 唯一大小／時間邊界係Google 2GB／9.5小時，以及R2／Render system-wide剩餘容量。
 
-- 每次最多五張。
-- Browser 上載前縮至最長邊 2000px。
-- 原圖壓縮後最多2MB。
-- 另建最長邊480px、最多300KB thumbnail。
-- 每位委員每日最多20張，全系統每月最多500張。
-- 新檔案直接上載 private R2，不經 Render request body。
-- Gallery 每頁20筆，圖片使用 lazy loading。
+### Solo Live、研究、Kiosk及AI Training
 
-### TTS 錄音
+- Solo Free／Mock、賽前研究、Kiosk全場分析及LLM training沒有使用次數quota。
+- Solo仍保留三秒重複mint防護、single in-flight token、operation idempotency、正式賽制／
+  overall deadline、provider token／response／timeout及地區技術gate。
+- Kiosk仍只接受專用kiosk account及正式場次，保留10秒至90分鐘、12MiB、media probe、
+  paid-project確認、單一全場分析並行及兩小時加密結果TTL；這些是技術／私隱邊界。
+- TTS training每段仍為1至60秒及2MiB，並保留consent、inventory、probe、single-use review
+  claim及兩個並行；LLM training保留每筆20,000字、duplicate及全庫5,000筆inventory。
 
-- 每段1至60秒。
-- 每段預設最多2MB（可用 `MAX_AUDIO_BYTES`調整）。
-- Browser先直接上載private R2，音質檢查request不再包含base64錄音。
-- 音質檢查最多同時兩個，每次只由R2讀取一段已驗證錄音。
-- Presigned PUT簽署時綁定確實`Content-Length`；完成上載後再核對R2大小及SHA256。
-- 所有R2 PUT intent均寫入`r2_upload_intents`：相片每人每日最多20個、全系統
-  每月最多500個；錄音每人每日最多30個、全系統每月最多1,000個。即使申請者
-  上載後不完成登記，亦會計入intent限額，避免孤兒檔洪水。
-- 錄音技術metadata由server重新下載並probe；AI預檢結果使用短期HMAC token綁定
-  使用者、句子、R2 key及SHA256，browser不能自行修改後入庫。
-- Render錄音ZIP endpoint已移除，改為metadata及一小時R2直連下載清單。
-- Dataset snapshot只使用R2 key及SHA256，不讀取任何BYTEA。
-- PostgreSQL connection pool 預設3個、overflow最多2個。
-- 新檔案先上載至`pending/photos/...`或`pending/audio/tts/...`，server驗證後用R2
-  內部copy升格到正式key；中斷上載由48小時lifecycle及orphan cleaner清理。
-- R2總量7GB開始警告、8GB停止簽發新PUT，保留至少2GB free-tier緩衝。
+### R2 upload intents及相片
 
-### AI評判易全場錄音
-
-- 只接受 kiosk account，並綁定資料庫內正式場次；辯題、隊名、賽制及聯中自由辯論時間不由 browser 自行聲稱。
-- 每段10秒至90分鐘，最多12MiB；browser目標16kbps。開始前短錄音會按實際 recorder bitrate 推算90分鐘大小，超過上限便不准開始。
-- 每日5場係所有裝置共用固定 `kiosk` identity；每月100場係全系統共用。兩者以香港日／月計算。簽發 upload intent 時先保留名額；上載後放棄、或未呼叫 provider 前失敗且已成功刪除錄音，會釋放名額。一旦開始實際 AI provider 呼叫，無論成功或失敗都計一場；刪檔失敗時亦會保守地佔用至孤兒檔清理完成。
-- 暫存 key 只會是 `pending/audio/kiosk-match-review/{UTC年}/{月}/{intent_id}.{ext}`，不會升格成 durable object，也不會寫入 media table。
-- Render下載後會用ffprobe驗證，再以ffmpeg轉成單聲道16kHz／16kbps MP3。R2原檔成功刪除後先可呼叫provider；刪除失敗即取消分析。
-- Gemini先以完整原音產生附時間碼逐字稿，再以同一原音＋逐字稿＋正式場次及 Projector 環節標記評審，因此每場係兩個 provider calls，但只扣一個 app 場次 quota。原錄音會在 provider 呼叫前由 R2 刪除；逐字稿、完整評語及可選 TTS 音軌只以加密形式短暫保留最多兩小時，不會放入公開 projector state。
-- 單一房間咪只可做匿名 speaker diarization，不能靠聲線或其他個人特徵判斷站方。正式環節由 Projector Control 每次轉環節自動留下 server-side 時間標記。現有自由辯論環節只標示「雙方」，不增加正／反手動按鈕；AI 要先利用正式環節建立匿名講者站方錨點，再依論點、立場、稱呼及回應上下文判斷自由辯論每句屬邊方；證據不足必須標「未能確定」。
-- 停止後結果只在 `/projector/control` 給已登入主席主持易的賽會人員私人預覽，絕不自動公開。操作員可在正式人手賽果公布前手動投影 AI 第二意見。
-- 投影摘要最多 1,200 字。沒有可用 TTS provider 時只投影文字，不會讀出；Azure TTS 已設定時，只會在操作員明確發布／播放後合成及讀出上述 1,200 字內粵語摘要。這是本 app 的上限，不是聲稱 Azure 平台硬上限。
-- 逐字稿、評審及 TTS 的實際 provider attempts 共用同一 `operation_id`，但分別記錄 `transcription`、`judgement`及 `result_tts` stage。AI基金以一個場次任務顯示，同時保留每次 AI／TTS provider call、成敗、tokens、TTS 計費字元及估算成本。沒有 provider call 便沒有 TTS 支出。
-- 因錄音可能包含學生個人資料，只容許已確認paid Gemini project；部署必須設定 `GEMINI_PAID_TIER_CONFIRMED=true`，否則preflight及上載均fail closed。
-- 一鍵 preflight 檢查 R2、模型／key、paid 確認、ffprobe／ffmpeg、bandwidth、正式場次、app quota，並在 Kiosk 實測咪、短錄音、90分鐘預計檔案大小、投影畫面及本機鈴聲。有 TTS 才另外播放測試句；無 TTS 只列警告，不阻止錄音。測試不上載咪錄音、不呼叫 AI 或扣 AI 場次 quota；若實際呼叫 TTS 測試句，該 TTS provider attempt 仍會按實際支出記入 AI基金。
-
-R2 object tree：
-
-```text
-pending/photos/original/{safe_user}/{uuid}.{ext}
-pending/photos/thumb/{safe_user}/{uuid}.{ext}
-pending/audio/tts/{safe_user}/{intent_id}.{ext}
-pending/audio/kiosk-match-review/{UTC YYYY}/{MM}/{intent_id}.{ext}
-photos/original/{safe_user}/{uuid}.{ext}
-photos/thumb/{safe_user}/{uuid}.{ext}
-audio/tts/{safe_user}/{intent_id}.{ext}
-```
-
-只有相片及TTS會由`pending/`升格至最後三個durable prefixes；AI評判易永不升格。`pending/`由兩日lifecycle及48小時orphan cleaner兜底，規則不得擴到durable prefixes。
-
-### 單人Gemini Live
-
-- 單人Free De每人每日2次，全系統每月60次；使用者及AI發言各自最多10分鐘。
-  使用者以實際收音時間、AI以實際output PCM bytes／sample rate累計，停頓、網絡／
-  provider latency、重連及總結不扣兩邊發言budget。整節overall hard deadline為30分鐘，
-  不會在雙方合共20分鐘時強制斷線。
-- 單人完整Mock每人每星期1次，全系統每月20次，沿用正式賽制時間；跨section token
-  採just-in-time簽發，同一場只扣一次配額。
-- 限額以香港時間計算；usage log以UTC儲存及查詢，香港午夜、星期及月份邊界
-  均先轉換成UTC，Render重啟不會重設或造成八小時繞過窗口。
-- Render先回傳不含token的Live HTML；委員按「開始」時才just-in-time簽發初始token，
-  再以transaction、PostgreSQL advisory lock及`practice_id` idempotency原子reserve，只有
-  贏得reserve的request可取得token。短期同token重試、重連及Mock後續section不會重複扣數。
-- Browser只取得鎖定model及安全config、短new-session開始窗口的single-use ephemeral
-  token；Live使用context-window compression及session resumption，30分鐘deadline與token
-  有效期互相配合。長期provider key不會落到browser。
-- `CF-IPCountry=HK`時不簽發Solo token，頁面會提示先連接Google支援地區網絡／VPN，
-  再按「重新檢查」；系統不儲存或記錄raw IP。Header缺失只在local／staging／test容許嘗試。
-- Developer可在設定頁為指定委員加入最長30日、可隨時撤銷及自動到期的Solo個人次數
-  豁免，並可只限Free或Mock。豁免只略過該委員的每日／每週限制；登入、地區、rate limit、
-  全系統月限、3.5／4.0GB保護及provider安全限制仍然生效，使用紀錄亦照常寫入。
-- `prepare-live`每人每小時最多1次、每日最多3次，失敗嘗試同樣計算，防止重覆
-  賽前研究燒AI tokens。
+- 相片、TTS錄音及其他R2 PUT intent沒有每日／每月次數quota。
+- Intent仍用於ownership、declared bytes、SHA、object lifecycle、single-use及孤兒清理；
+  它不是quota counter。所有binary都browser直傳private R2，不經Render request body。
+- 相片每批最多5張、原圖2MiB／2000px、thumbnail 300KiB／480px，屬request及media技術界限。
+- R2當月DB門檻預設7GB warning、8GB stop／hard；48小時pending lifecycle及orphan cleaner
+  保留。Durable相片／TTS prefixes不受pending lifecycle誤刪。
 
 ## 單人 Gemini Live bandwidth 評估
 
@@ -199,48 +146,38 @@ audio/tts/{safe_user}/{intent_id}.{ext}
 - 雙向理論上限約384MB／Live小時，未計 WebSocket／JSON overhead。
 - 10分鐘 session 最壞約64MB；完整 Mock 可達約190–380MB，視長度及實際發言比例。
 
-4.2.2改為browser直連Google後，Solo audio不再進出Render；只剩登入、quota、prompt、
+改為browser直連Google後，Solo audio不再進出Render；只剩登入、prompt、
 HTML及ephemeral token等短小response。按上述audio量級與控制流量相比，預計每場可節省
-約 **95–99% Solo Render bandwidth**。這不會減少Gemini provider用量，普通AI及多人Live
-仍會消耗Render outbound，因此5GB月度預算及保護門檻仍然需要保留。
+約 **95–99% Solo Render bandwidth**。這不會減少Gemini provider用量；普通AI、server TTS、
+AI Coach向Google Files上載及Mode A控制流量仍會消耗Render outbound，所以system-wide門檻保留。
 
-## 4.2.2 release用量上限（部署後生效）
+## System-wide月度資源及AI基金預算
 
-| 功能 | 每人限制 | 全系統限制 | 時間上限 |
-|---|---:|---:|---:|
-| 單人 Free De | 每日2次 | 每月60次 | 每邊10分鐘；整節overall hard deadline 30分鐘 |
-| 單人完整 Mock | 每週1次 | 每月20次 | 按一場正式賽制；同場跨section只扣一次 |
-| 聯機 Free De | 每日建立1房 | 每月20房 | 每房最多10分鐘（沿用4.2.1限制） |
-| 聯機完整 Mock | 每日建立1房 | 每月10房 | 每房一場正式賽制 |
-| 錄音bulk download | 不經Render | R2免費egress範圍內 | 清單內URL一小時有效 |
+`monthly_resource_limits`以`period_month + limit_key`保存Render、R2、AI基金可用額及
+`provider:{name}`分配；數值非負，Render必須`warning ≤ stop ≤ hard`。只保留62日內已完結
+月份；current／future月份不會被retention刪除。PUBLIC、`anon`及`authenticated`沒有直接權限。
 
-系統每30秒checkpoint多人聯機房經Render實際轉發的bytes，結束時只補寫餘額；
-Render crash最多遺失最後一個checkpoint interval。同一房間的checkpoint會在當月
-同一行累加，不會每30秒新增一行；log預設只保留62日。記錄會
-加上Render dashboard既有用量基線，執行全系統月度預算：
+Render web process在設定`RENDER_API_KEY`及`RENDER_SERVICE_ID`後每小時讀官方
+`/v1/metrics/bandwidth`作每小時total真值，並以`/v1/metrics/bandwidth-sources`補充
+HTTP／WebSocket／NAT／PrivateLink分類；單位統一換算成bytes後idempotent寫入62日ledger。
+分類只供audit，唔會同total重複相加。月度計算為
+最新官方完整bucket累計，加該bucket後本地即時tracker；rollout首月官方retention不足時才加
+manual baseline，完整月份後自動停止依賴baseline。Developer另有手動sync endpoint。
 
-- 3.0GB：只發出一次全體push及developer warning，不停用功能。
-- 3.5GB：停止Solo Azure／custom server TTS及新多人Live房；現有多人Live會在下一個
-  30秒checkpoint結束。Solo browser-direct Live仍可使用Google native audio；普通AI
-  暫時維持，直到4.0GB門檻。
-- 4.0GB：停止普通AI、server TTS及其他非必要provider流量，只保留一般HTML／JSON、
-  R2 media及管理功能。
+預設門檻：
 
-Render沒有向app提供即時billing meter API。更新dashboard baseline時必須同時
-保存以下三個同一時刻snapshot，避免重覆計算更新前已tracked的bytes：
+- 3GB：一次性全體委員push及developer warning。
+- 3.5GB：停止新AI Coach錄音分析傳輸及server TTS；Mode A P2P真人練習及文字AI可用。
+- 4GB：停止一般AI及Mode A AI評判；Mode A仍可作無AI評判真人練習。
+- R2 7GB warning、8GB stop／hard；停止新PUT intent但不影響讀取。
 
-```text
-BANDWIDTH_MONTH_BASE_BYTES=<dashboard當時累計bytes>
-BANDWIDTH_BASELINE_AS_OF=<ISO timestamp，例如2026-07-13T12:00:00+08:00>
-BANDWIDTH_BASELINE_TRACKED_BYTES=<該刻bandwidth_usage_logs本月累計bytes>
-```
-
-計算為`baseline + max(0, tracked_now - tracked_snapshot)`。缺少snapshot時會沿用
-保守舊算法，可能高估但不會低估；`baseline_as_of`不是當月時會忽略舊baseline。
-
-AI Coach／TTS送往provider的錄音bytes、Render回傳的TTS audio，以及所有CSV／JSONL
-export bytes亦會寫入同一bandwidth tracker；Solo direct Gemini audio不經Render，故不會
-當作Render bytes記錄。個別功能限額見上文「已實施限制」。
+AI基金每期香港時間上月25日00:00（包括）至本月25日00:00（不包括），只加總
+`member_deposit`且`status='confirmed'`的`confirmed_at`，供下一budget month使用。管理員在
+25號後手動設定月度HKD/USD匯率及Google／OpenRouter／Azure／其他分配；總額不得超過捐款。
+Google外部cap最高為`allocated_hkd ÷ fx × 90%`，其他provider為100%。正數分配必須確認已在
+provider後台更新cap。手動「結算並通知」以advisory lock及single-flight claim發送一次Web Push，
+tag為`ai-fund-budget-YYYY-MM`；零成功delivery不標記完成，可安全重試。相同內容以負數
+`-YYYYMM`通知ID成為登入公告，沒有push的active非kiosk委員下次登入仍會看到。
 
 ## Repo-wide RAM／storage保護
 
@@ -251,7 +188,7 @@ export bytes亦會寫入同一bandwidth tracker；Solo direct Gemini audio不經
 | HTTP | request body實際stream累計5MB；同時最多4個body buffer；1KB以上文字回應gzip |
 | 管理員SQL | statement timeout 10秒；最多500行／1MB；binary cell不回傳；禁止maintenance DDL |
 | CSV／JSONL | 最多5,000行及5MB；超額明確413，不會產生看似完整的截斷backup |
-| LLM training | Active收集：每筆20,000字、每人每日10筆、全庫最多5,000筆，export先在DB計算bytes；future snapshot registry未provision，計劃上限為每個500筆／共200個 |
+| LLM training | Active收集：每筆20,000字、duplicate protection、全庫最多5,000筆，export先在DB計算bytes；future snapshot registry未provision，計劃上限為每個500筆／共200個 |
 | RAG | 目前fail-closed且embedding前先做cached schema gate；正式provision後才啟用每次10份文件／100 chunks、最多1,000 active文件、3個embedding並行及單一pgvector storage |
 | AI／TTS | AI分析最多3個並行；TTS最多2個並行及4MB response；prompt／response token均有上限 |
 | 資料庫inventory | 辯題2,000、場次500、每場評判50、影片2,000、AI training項目2,000、帳戶1,000 |
@@ -259,8 +196,9 @@ export bytes亦會寫入同一bandwidth tracker；Solo direct Gemini audio不經
 | Push／互動 | 每人最多5個active push devices；舊inactive subscription 90日後刪除；影片view每人每片24小時只記一次 |
 | 其他輸入 | 抽籤最多128隊；投票理由每項500字；影片章節最多30段；評分JSON只保留schema需要欄位 |
 
-以上預設值全部由[`system_limits.py`](../system_limits.py)提供；同名environment
-variable只係有記錄的部署override。增加前要一併檢查Render 512MB RAM、5GB outbound
+技術安全邊界預設值由[`system_limits.py`](../system_limits.py)提供；Render、R2及provider
+月度數值則以`monthly_resource_limits`當月DB row為準，DB暫時失敗才fallback到process cache／
+安全預設。增加前要一併檢查Render 512MB RAM、account outbound
 及Supabase 500MB database，而不是只提高單一endpoint限制。目前Render static回應仍是
 `CF-Cache-Status: DYNAMIC`；日後有Cloudflare custom domain時可只cache公開CSS、JS、
 manifest及圖示。HTML、API、登入、WebSocket及private R2 URL不可套`Cache Everything`；
@@ -276,15 +214,18 @@ R2 media及YouTube影片保持browser直連，不能恢復經Render proxy binary
 ./venv/bin/python system_limits.py --json
 ```
 
-Render environment同名值會override repo default；低於安全minimum會被提升，格式或
-threshold次序錯誤會令worker fail fast。固定值應盡量留在`system_limits.py`，只有有記錄
-的短期調整先用environment。Bandwidth dashboard snapshot三個值則必須留在Render：
+固定技術值由`system_limits.py`或短期有audit的environment設定；Render／R2月度門檻由
+`monthly_resource_limits`管理。格式或threshold次序錯誤必須fail fast。以下dashboard
+snapshot只供官方metrics rollout當月補回API retention未覆蓋的月初流量：
 
 ```text
 BANDWIDTH_MONTH_BASE_BYTES
 BANDWIDTH_BASELINE_AS_OF
 BANDWIDTH_BASELINE_TRACKED_BYTES
 ```
+
+完成一個完整官方月份後便停止依賴baseline；日常同步以`RENDER_API_KEY`及
+`RENDER_SERVICE_ID`每小時讀取官方bandwidth buckets。
 
 Production以`main`auto-deploy。先在`develop`完成review及驗證，再於低流量窗口合併／push
 一次到`main`；部署後核對版本、health、登入、media、Live、RAM、5xx及WebSocket close。
@@ -309,5 +250,5 @@ bucket Object Read & Write；不要為讀bucket admin設定而擴權。
 4. R2 storage、Class A／B operations、失敗 PUT／GET。
 5. Gemini及OpenRouter實際帳單與 `ai_fund_usage_logs`。
 6. 各類 Live session 次數、分鐘及估算 bytes。
-7. 被 daily／monthly limit 拒絕的用戶及次數。
+7. 被Render／R2／provider system-wide gate或技術安全邊界拒絕的操作及原因。
 8. R2 snapshot、`pending/`孤兒、7GB／8GB gate及lifecycle最近執行情況。

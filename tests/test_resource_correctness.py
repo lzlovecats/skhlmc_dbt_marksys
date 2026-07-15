@@ -196,59 +196,13 @@ def test_startup_contract_is_named_and_includes_uvicorn_queue():
     assert '--ws-max-queue "$UVICORN_WS_MAX_QUEUE"' in script
 
 
-def test_multiplayer_gemini_connect_bounds_queue_and_disables_compression(monkeypatch):
-    captured = {}
-
-    class FakeWebSocket:
-        async def close(self):
-            return None
-
-    async def connect(url, **kwargs):
-        captured.update(url=url, **kwargs)
-        return FakeWebSocket()
-
-    async def send_setup(_room, _gws, setup):
-        captured["setup"] = setup
-
-    async def pump(_room, _gws, _generation, *, resuming=False):
-        if (
-            _room.gemini_setup_future is not None
-            and not _room.gemini_setup_future.done()
-        ):
-            _room.gemini_setup_future.set_result(True)
-        return None
-
-    monkeypatch.setattr(proxy.websockets, "connect", connect)
-    monkeypatch.setattr(proxy, "_room_gemini_send", send_setup)
-    monkeypatch.setattr(proxy, "_room_gemini_pump", pump)
-    monkeypatch.setattr(proxy, "tts_provider_configured", lambda: False)
-    room = SimpleNamespace(
-        mode="B",
-        gemini={"tokens": ["ephemeral"], "model": "gemini-live", "prompt": "p"},
-        gemini_ws=None,
-        gemini_session_index=0,
-        gemini_connect_lock=asyncio.Lock(),
-        gemini_generation=0,
-        gemini_connect_epoch=0,
-        gemini_resume_handle="",
-        gemini_resume_attempts=0,
-        gemini_setup_future=None,
-        transcript=[],
-        code="TEST",
-    )
-
-    assert asyncio.run(proxy._room_start_gemini_if_needed(room)) is True
-    assert captured["max_size"] == system_limits.GEMINI_WS_MAX_SIZE
-    assert captured["max_queue"] == system_limits.GEMINI_WS_MAX_QUEUE == 4
-    assert captured["compression"] is None
-    config = captured["setup"]["setup"]
-    assert config["contextWindowCompression"] == {
-        "triggerTokens": system_limits.LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS,
-        "slidingWindow": {
-            "targetTokens": system_limits.LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS,
-        },
-    }
-    assert config["sessionResumption"] == {}
+def test_multiplayer_server_gemini_and_media_connectors_are_removed():
+    source = (ROOT / "deploy/proxy.py").read_text(encoding="utf-8")
+    assert not hasattr(proxy, "_room_start_gemini_if_needed")
+    assert not hasattr(proxy, "_room_gemini_pump")
+    assert not hasattr(proxy, "_room_handle_audio")
+    assert "import websockets" not in source
+    assert "peer_audio" not in source and "serverContent" not in source
 
 
 def test_hong_kong_month_start_is_shared_by_bandwidth_writes():
@@ -355,7 +309,8 @@ def test_registry_contains_new_bounded_limits_and_no_dead_finalizer_limit():
     specs = system_limits.effective_limits()
     assert not [name for name, spec in specs.items() if spec["maximum"] is None]
     assert specs["UVICORN_WS_MAX_QUEUE"]["value"] == 4
-    assert specs["GEMINI_WS_MAX_QUEUE"]["value"] == 4
+    assert "GEMINI_WS_MAX_QUEUE" not in specs
+    assert "ROOM_AUDIO_FRAME_MAX_BYTES" not in specs
     assert specs["REQUEST_BODY_BUFFER_CONCURRENCY"]["maximum"] == 4
     assert specs["RAG_SCHEMA_CHECK_TTL_SECONDS"]["value"] == 300
     assert "R2_FINALIZER_BATCH_SIZE" not in specs

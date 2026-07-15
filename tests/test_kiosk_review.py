@@ -182,9 +182,8 @@ def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
         claim["pending_r2_key"]
     ]
     assert captured["reservation"]["declared_bytes"] == 4096
-    assert captured["reservation"]["user_daily_limit"] == (
-        system_limits.KIOSK_MATCH_REVIEW_DAILY_LIMIT
-    )
+    assert "user_daily_limit" not in captured["reservation"]
+    assert "global_monthly_limit" not in captured["reservation"]
     assert payload["limits"] == {
         "max_bytes": system_limits.KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
         "max_seconds": system_limits.KIOSK_MATCH_REVIEW_MAX_SECONDS,
@@ -246,7 +245,7 @@ def test_official_match_endpoint_exposes_no_passwords_or_roster_tokens(monkeypat
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_preflight_is_read_only_and_reports_shared_quota(monkeypatch):
+def test_preflight_is_read_only_and_reports_system_resource_gates(monkeypatch):
     db = object()
     monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
     monkeypatch.setattr(proxy, "get_vote_db", lambda: db)
@@ -267,20 +266,6 @@ def test_preflight_is_read_only_and_reports_shared_quota(monkeypatch):
         lambda _db, refresh=False: {"blocked": False},
     )
     monkeypatch.setattr(
-        r2_storage,
-        "upload_intent_quota_status",
-        lambda _db, **_kwargs: {
-            "user_daily_used": 2,
-            "user_daily_limit": 5,
-            "user_daily_remaining": 3,
-            "global_monthly_used": 40,
-            "global_monthly_limit": 100,
-            "global_monthly_remaining": 60,
-            "allowed": True,
-            "blocked_scope": "",
-        },
-    )
-    monkeypatch.setattr(
         ai_model_config,
         "get_feature_model",
         lambda _feature: (
@@ -297,8 +282,9 @@ def test_preflight_is_read_only_and_reports_shared_quota(monkeypatch):
     payload = json.loads(response.body)
     assert payload["ok"] is True
     assert payload["does_not_call_ai"] is True
-    assert payload["quota"]["user_daily_remaining"] == 3
-    assert "今日 kiosk 共用剩餘 3 場" in payload["checks"]["quota"]["detail"]
+    assert "quota" not in payload and "quota" not in payload["checks"]
+    assert payload["checks"]["r2"]["ok"] is True
+    assert payload["checks"]["bandwidth"]["ok"] is True
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -541,7 +527,7 @@ def test_privacy_delete_failure_cancels_provider_call(monkeypatch):
     assert usage_logs == []
 
 
-def test_pre_provider_size_failure_releases_quota_without_ai_fund_call(monkeypatch):
+def test_pre_provider_size_failure_cleans_object_without_ai_fund_call(monkeypatch):
     _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)
     monkeypatch.setattr(kiosk_api, "GEMINI_INLINE_REQUEST_SAFE_BYTES", 1)
 
@@ -559,7 +545,7 @@ def test_pre_provider_size_failure_releases_quota_without_ai_fund_call(monkeypat
     assert usage_logs == []
 
 
-def test_pre_provider_bandwidth_failure_releases_quota_without_phantom_attempt(
+def test_pre_provider_bandwidth_failure_cleans_object_without_phantom_attempt(
     monkeypatch,
 ):
     _audio, _digest, events, usage_logs = _install_analysis_path(monkeypatch)

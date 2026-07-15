@@ -4,11 +4,13 @@ This module keeps model choices and prompts server-side with credentials and acc
 server so the browser never receives either.
 """
 import asyncio
-import base64
 import math
 import os
+import re
 import secrets
-from datetime import datetime, timedelta, timezone
+import tempfile
+import uuid
+from datetime import datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -23,7 +25,7 @@ from ai_model_config import (
     resolve_interactive_model_settings,
 )
 from api.access import require_page_user
-from core.media_probe import MediaProbeError, probe_audio
+from core.media_probe import MediaProbeError, canonical_audio_mime, audio_extension, probe_audio_file
 from prompts import (
     FACT_CHECK_SYSTEM_PROMPT, QA_REVIEW_SYSTEM_PROMPT, SPEECH_RETAKE_SYSTEM_PROMPT,
     SPEECH_REVIEW_SYSTEM_PROMPT,
@@ -37,26 +39,17 @@ from schema import (
     TABLE_AI_MODEL_VERSIONS,
 )
 from system_limits import (
-    AI_COACH_CONCURRENCY, AI_COACH_MATCH_LIMIT, AI_COACH_MAX_AUDIO_BYTES,
-    AI_COACH_MAX_AUDIO_SECONDS, AI_COACH_TOPIC_LIMIT,
+    AI_COACH_CONCURRENCY, AI_COACH_MATCH_LIMIT, AI_COACH_TOPIC_LIMIT,
     LIVE_BRIEF_MAX_CHARS, LIVE_BRIEF_TTL_MINUTES, LIVE_FREE_MAX_MINUTES,
     LIVE_FREE_SESSION_MAX_SECONDS, LIVE_PRACTICE_CLAIM_MAX_CHARS,
     LIVE_MOCK_OVERALL_GRACE_SECONDS, LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS,
-    MAX_ROOMS, MULTIPLAYER_FREE_MONTHLY_ROOMS, MULTIPLAYER_MOCK_MONTHLY_ROOMS,
-    PREPARE_LIVE_USAGE_RETENTION_DAYS, PREPARE_LIVE_USER_DAILY_LIMIT,
-    PREPARE_LIVE_USER_HOURLY_LIMIT, SOLO_FREE_DAILY_LIMIT,
-    SOLO_FREE_MONTHLY_LIMIT, SOLO_MOCK_MONTHLY_LIMIT, SOLO_MOCK_WEEKLY_LIMIT,
+    MAX_ROOMS, R2_OBJECT_CACHE_MAX_AGE_SECONDS,
 )
 
 router = APIRouter(prefix="/api/ai-coach", tags=["ai-coach"])
 _LIVE_BRIEF_TABLE = TABLE_AI_COACH_LIVE_BRIEFS
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
-MAX_COACH_AUDIO_BYTES = AI_COACH_MAX_AUDIO_BYTES
-# Gemini's documented usage metadata remains authoritative after a call.  Use
-# its current 32 audio-token/second rate as the bounded pre-call/fallback
-# estimate when a provider omits usage metadata.
-MAX_COACH_AUDIO_TOKEN_ESTIMATE = 32 * AI_COACH_MAX_AUDIO_SECONDS
 AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 AI_PROVIDER_PUBLIC_ERROR = "AI 服務暫時無法完成請求，請稍後再試。"
@@ -71,9 +64,10 @@ class CoachRequest(BaseModel):
     text: str = Field(default="", max_length=20_000)
     position: int = 1
     research_need: str = Field(default="", max_length=2000)
-    audio_base64: str = Field(default="", max_length=3_000_000)
+    audio_base64: str = Field(default="", max_length=1000)
+    audio_intent_id: str = Field(default="", max_length=64)
     audio_mime: str = Field(default="audio/webm", max_length=80)
-    audio_duration_seconds: float = Field(default=0, ge=0, le=AI_COACH_MAX_AUDIO_SECONDS + 1)
+    audio_duration_seconds: float = Field(default=0, ge=0)
     match_id: str = Field(default="", max_length=100)
     review_mode: Literal["台上發言", "台下發問", "交互答問"] = "台上發言"
     review_attempt: Literal["initial", "retake"] = "initial"
@@ -91,34 +85,15 @@ class LiveTokenRequest(BaseModel):
     practice_id: str = Field(min_length=40, max_length=LIVE_PRACTICE_CLAIM_MAX_CHARS)
     session_index: int = Field(ge=0, le=31)
 
-def _reserve_prepare_live(db, user_id: str) -> str | None:
-    """Atomically cap repeated pre-live research before provider tokens burn."""
-    now_hk = datetime.now(ZoneInfo("Asia/Hong_Kong"))
-    hour_start = now_hk.replace(minute=0, second=0, microsecond=0)
-    day_start = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
-    now_utc = now_hk.astimezone(timezone.utc).replace(tzinfo=None)
-    hour_utc = hour_start.astimezone(timezone.utc).replace(tzinfo=None)
-    day_utc = day_start.astimezone(timezone.utc).replace(tzinfo=None)
-    with db.transaction() as conn:
-        from sqlalchemy import text
-        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('ai_coach_prepare_live_quota'))"))
-        conn.execute(text("DELETE FROM ai_coach_prepare_usage WHERE created_at<:cutoff"),
-                     {"cutoff": day_utc - timedelta(days=PREPARE_LIVE_USAGE_RETENTION_DAYS)})
-        hourly = int(conn.execute(text("""SELECT COUNT(*) FROM ai_coach_prepare_usage
-            WHERE user_id=:user AND created_at>=:start"""), {
-            "user": user_id, "start": hour_utc,
-        }).scalar() or 0)
-        if hourly >= PREPARE_LIVE_USER_HOURLY_LIMIT:
-            return "賽前研究每人每小時只可執行一次，請稍後再試。"
-        daily = int(conn.execute(text("""SELECT COUNT(*) FROM ai_coach_prepare_usage
-            WHERE user_id=:user AND created_at>=:start"""), {
-            "user": user_id, "start": day_utc,
-        }).scalar() or 0)
-        if daily >= PREPARE_LIVE_USER_DAILY_LIMIT:
-            return f"賽前研究每人每日最多{PREPARE_LIVE_USER_DAILY_LIMIT}次，請翌日再試。"
-        conn.execute(text("""INSERT INTO ai_coach_prepare_usage(user_id,created_at)
-            VALUES(:user,:now)"""), {"user": user_id, "now": now_utc})
-    return None
+
+class AudioIntentBody(BaseModel):
+    mime_type: str = Field(max_length=80)
+    byte_size: int = Field(gt=0, le=2_000_000_000)
+    sha256: str = Field(min_length=64, max_length=64)
+
+
+class AudioCompleteBody(BaseModel):
+    intent_id: str = Field(min_length=16, max_length=64)
 
 
 def consume_live_brief(brief_id, user_id):
@@ -226,7 +201,7 @@ def _config(label, db=None):
 
 
 def _estimate(feature, config, has_audio=False):
-    inp,out=FEATURE_TOKEN_ESTIMATES.get(feature,(0,0));audio=MAX_COACH_AUDIO_TOKEN_ESTIMATE if has_audio else 0
+    inp,out=FEATURE_TOKEN_ESTIMATES.get(feature,(0,0));audio=0
     usd=(inp*(config.get("input_price_per_million") or 0)+audio*(config.get("audio_input_price_per_million") or config.get("input_price_per_million") or 0)+out*(config.get("output_price_per_million") or 0))/1_000_000
     if feature in ("web_research","fact_check"):usd+=config.get("web_search_price_per_call") or 0
     return {"usd":round(usd,4),"hkd":round(usd*7.8,4)}
@@ -254,7 +229,7 @@ def _usage(
     audio = int(
         actual["audio_tokens"]
         if actual.get("audio_tokens") is not None
-        else (MAX_COACH_AUDIO_TOKEN_ESTIMATE if has_audio else 0)
+        else 0
     )
     search = int(
         actual["search_calls"]
@@ -351,6 +326,8 @@ def _topic_context(db, topic):
 
 def _validate_coach_request(body: CoachRequest) -> None:
     """Reject malformed review cycles before any database or provider work."""
+    if body.audio_base64:
+        raise HTTPException(410, "舊版 base64 錄音接口已停用，請重新載入 AI Coach。")
     previous_review = body.previous_review.strip()
     if body.feature != "speech_review":
         if body.review_attempt != "initial" or previous_review:
@@ -365,12 +342,12 @@ def _validate_coach_request(body: CoachRequest) -> None:
             raise HTTPException(400, "改進檢查只適用於台上發言。")
         if not previous_review:
             raise HTTPException(400, "改進檢查缺少上次 AI 評語。")
-        if not body.audio_base64:
+        if not body.audio_intent_id:
             raise HTTPException(400, "請重新錄製一段新錄音，再要求 AI 檢查改進。")
         return
     if previous_review:
         raise HTTPException(400, "首次發言分析不可附帶上次 AI 評語。")
-    if not body.text.strip() and not body.audio_base64:
+    if not body.text.strip() and not body.audio_intent_id:
         raise HTTPException(400, "請輸入文字稿或錄音。")
 
 
@@ -417,6 +394,87 @@ def _message(body: CoachRequest, db=None):
     raise HTTPException(400, "不支援的 AI 功能")
 
 
+def _verified_intent(user_id: str, intent_id: str, *, require_completed=True):
+    from core import r2_storage
+    from deploy.proxy import get_vote_db
+    db = get_vote_db()
+    intent = r2_storage.get_upload_intent(db, intent_id, user_id, "ai_coach_audio")
+    if not intent or (require_completed and intent.get("status") != "completed"):
+        raise HTTPException(404, "找不到可分析的錄音，請重新錄製。")
+    metadata = intent.get("intent_metadata") or {}
+    keys = intent.get("object_keys") or []
+    if len(keys) != 1:
+        raise HTTPException(400, "錄音上載資料不完整。")
+    try:
+        info = r2_storage.head(keys[0])
+    except Exception as exc:
+        raise HTTPException(400, "R2 錄音檔案不存在，請重新錄製。") from exc
+    expected_size = int(intent.get("declared_bytes") or 0)
+    expected_sha = str(metadata.get("sha256") or "").lower()
+    expected_mime = canonical_audio_mime(str(metadata.get("mime_type") or ""))
+    actual_sha = str((info.get("Metadata") or {}).get("sha256") or "").lower()
+    actual_mime = str(info.get("ContentType") or "").split(";", 1)[0].lower()
+    if int(info.get("ContentLength") or 0) != expected_size:
+        raise HTTPException(400, "錄音大小與上載申報不符。")
+    if actual_sha != expected_sha:
+        raise HTTPException(400, "錄音 SHA256 驗證失敗。")
+    if actual_mime != expected_mime:
+        raise HTTPException(400, "錄音 MIME 驗證失敗。")
+    return db, intent, keys[0], expected_mime, expected_sha, expected_size
+
+
+def _discard_audio_intent(user_id: str, intent_id: str) -> None:
+    """Best-effort cleanup for an owned recording rejected before provider use."""
+    from core import r2_storage
+    from deploy.proxy import get_vote_db
+
+    try:
+        db = get_vote_db()
+        intent = r2_storage.get_upload_intent(
+            db, str(intent_id), str(user_id), "ai_coach_audio",
+        )
+        if not intent:
+            return
+        r2_storage.delete_intent_objects(
+            db, str(intent_id), intent.get("object_keys") or (),
+        )
+    except Exception:
+        # The still-open intent remains visible to conservative accounting and
+        # the normal orphan cleanup path.
+        pass
+
+
+def _stage_r2_audio(key: str, mime: str, expected_size: int) -> str:
+    from core import r2_storage
+    response = r2_storage.client().get_object(**r2_storage._params(key))
+    body = response["Body"]
+    handle = tempfile.NamedTemporaryFile(
+        suffix="." + audio_extension(mime), delete=False,
+    )
+    total = 0
+    try:
+        while True:
+            chunk = body.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > expected_size:
+                raise ValueError("R2 object exceeds declared size")
+            handle.write(chunk)
+        handle.flush()
+        if total != expected_size:
+            raise ValueError("R2 object size changed during download")
+        return handle.name
+    except Exception:
+        os.unlink(handle.name)
+        raise
+    finally:
+        handle.close()
+        close = getattr(body, "close", None)
+        if callable(close):
+            close()
+
+
 async def _generate(
     config, system, user, body, user_id="", *, on_provider_attempt=None
 ):
@@ -427,46 +485,177 @@ async def _generate(
         raise HTTPException(503, f"未設定 {key_name}")
     from core.ai_provider import generate_text
     async with AI_COACH_SEMAPHORE:
-        audio_mime = body.audio_mime
-        if body.audio_base64:
-            if not config.get("supports_audio"):
-                raise HTTPException(400, "所選模型不支援錄音分析，請改貼逐字稿或選 Gemini。")
+        if not body.audio_intent_id:
             try:
-                audio_bytes = base64.b64decode(body.audio_base64, validate=True)
+                if on_provider_attempt is not None:
+                    on_provider_attempt()
+                return await generate_text(
+                    config, system, user, api_key=key,
+                    web_search=body.feature in ("web_research", "fact_check"),
+                )
             except Exception as exc:
-                raise HTTPException(400, "錄音資料無法讀取") from exc
-            if len(audio_bytes) > MAX_COACH_AUDIO_BYTES:
-                raise HTTPException(413, "錄音不可超過2MB")
+                raise HTTPException(502, AI_PROVIDER_PUBLIC_ERROR) from exc
+        if config.get("provider") != "gemini" or not config.get("supports_audio"):
+            raise HTTPException(400, "錄音分析只支援 Google Gemini Files API。")
+
+        from core import google_files, r2_storage
+        from deploy import proxy
+        db, intent, key_name_r2, audio_mime, expected_sha, byte_size = await asyncio.to_thread(
+            _verified_intent, str(user_id), body.audio_intent_id,
+        )
+        reservation_id = await asyncio.to_thread(
+            proxy.reserve_bandwidth_transfer,
+            f"ai-coach:{body.audio_intent_id}", byte_size,
+        )
+        if reservation_id is None:
+            await asyncio.to_thread(
+                _discard_audio_intent, str(user_id), body.audio_intent_id,
+            )
+            raise HTTPException(429, "本月 Render 傳輸量已接近 3.5GB，暫停新的錄音分析。")
+        staged_path = ""
+        google_file = None
+        uploaded_bytes = 0
+        if not r2_storage.claim_completed_upload_intent(
+            db, body.audio_intent_id, user_id=str(user_id),
+            media_kind="ai_coach_audio",
+        ):
             try:
-                probe = await asyncio.to_thread(
-                    probe_audio,
-                    audio_bytes,
-                    body.audio_mime,
-                    body.audio_duration_seconds,
-                    max_seconds=AI_COACH_MAX_AUDIO_SECONDS,
-                )
-                audio_mime = probe["mime"]
-            except MediaProbeError as exc:
-                raise HTTPException(
-                    503 if exc.service_unavailable else 400, str(exc),
-                ) from exc
-        try:
-            if body.audio_base64:
-                from deploy.proxy import record_bandwidth_usage
                 await asyncio.to_thread(
-                    record_bandwidth_usage, "ai_coach_audio_provider",
-                    len(body.audio_base64.encode("ascii")), str(user_id),
-                    aggregate_key=f"user={str(user_id)[:120]}",
+                    proxy.settle_bandwidth_transfer,
+                    reservation_id, 0, success=False,
                 )
+            except Exception:
+                pass
+            raise HTTPException(409, "錄音已經分析緊或已被使用，請重新錄製。")
+
+        def count_uploaded(count):
+            nonlocal uploaded_bytes
+            uploaded_bytes += max(0, int(count or 0))
+        try:
+            staged_path = await asyncio.to_thread(
+                _stage_r2_audio, key_name_r2, audio_mime, byte_size,
+            )
+            probe = await asyncio.to_thread(
+                probe_audio_file, staged_path, audio_mime,
+                body.audio_duration_seconds or None,
+                max_seconds=google_files.GOOGLE_AUDIO_MAX_SECONDS,
+            )
+            if probe["sha256"] != expected_sha:
+                raise HTTPException(400, "錄音內容 SHA256 驗證失敗。")
             if on_provider_attempt is not None:
                 on_provider_attempt()
-            return await generate_text(config, system, user, api_key=key,
-                audio_base64=body.audio_base64, audio_mime=audio_mime,
-                web_search=body.feature in ("web_research", "fact_check"))
+            google_file = await google_files.upload_audio_file(
+                staged_path, audio_mime, key, on_chunk=count_uploaded,
+            )
+            google_file = await google_files.wait_until_active(google_file, key)
+            return await generate_text(
+                config, system, user, api_key=key,
+                audio_file_uri=google_file["uri"], audio_mime=audio_mime,
+                web_search=False,
+            )
+        except HTTPException:
+            raise
+        except MediaProbeError as exc:
+            raise HTTPException(503 if exc.service_unavailable else 400, str(exc)) from exc
         except Exception as exc:
-            # httpx exception strings may include the authenticated request
-            # URL. Keep secrets out of the browser and the usage ledger.
             raise HTTPException(502, AI_PROVIDER_PUBLIC_ERROR) from exc
+        finally:
+            try:
+                await google_files.delete_file(google_file, key)
+            except Exception:
+                pass
+            if staged_path:
+                try:
+                    os.unlink(staged_path)
+                except OSError:
+                    pass
+            try:
+                await asyncio.to_thread(
+                    r2_storage.delete_intent_objects,
+                    db, body.audio_intent_id, [key_name_r2],
+                )
+            except Exception:
+                # The intent remains open and the normal orphan sweep retries.
+                pass
+            try:
+                await asyncio.to_thread(
+                    proxy.settle_bandwidth_transfer,
+                    reservation_id, uploaded_bytes,
+                    success=uploaded_bytes == byte_size,
+                )
+            except Exception:
+                # Cleanup/accounting outages must not replace the provider result.
+                pass
+
+
+@router.post("/recording-intent")
+def recording_intent(body: AudioIntentBody, request: Request):
+    user_id = _context(request)
+    from core import google_files, r2_storage
+    from deploy import proxy
+    from deploy.proxy import get_vote_db
+    if not r2_storage.configured():
+        raise HTTPException(503, "Cloudflare R2 尚未完成設定。")
+    try:
+        mime = canonical_audio_mime(body.mime_type)
+    except MediaProbeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    sha = body.sha256.lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise HTTPException(400, "錄音 SHA256 格式無效。")
+    if body.byte_size > google_files.GOOGLE_FILE_MAX_BYTES:
+        raise HTTPException(413, "錄音超出 Google Files API 2GB 技術邊界。")
+    bandwidth = proxy.bandwidth_budget_status(notify=True)
+    stop_bytes = int(bandwidth.get("stop_live_bytes") or 0)
+    if stop_bytes and int(bandwidth.get("total_bytes") or 0) >= stop_bytes:
+        raise HTTPException(429, "本月 Render 傳輸量已達 3.5GB，暫停新的錄音分析。")
+    db = get_vote_db()
+    storage = r2_storage.storage_budget_status(db, refresh=True)
+    if storage["blocked"]:
+        raise HTTPException(429, "R2 已達全系統儲存保護上限。")
+    intent_id = uuid.uuid4().hex
+    safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", str(user_id))[:48] or "member"
+    object_key = f"pending/ai-coach/{safe_user}/{intent_id}.{audio_extension(mime)}"
+    try:
+        upload_url = r2_storage.presign_put(
+            object_key, mime, sha, body.byte_size,
+        )
+    except Exception as exc:
+        raise HTTPException(503, "暫時未能建立錄音上載連結，請稍後再試。") from exc
+    reserved, scope = r2_storage.reserve_upload_intent(
+        db, intent_id=intent_id, user_id=str(user_id), media_kind="ai_coach_audio",
+        object_keys=[object_key], declared_bytes=body.byte_size,
+        metadata={"sha256": sha, "mime_type": mime},
+    )
+    if not reserved:
+        raise HTTPException(429, "R2 已達全系統儲存保護上限。")
+    return {
+        "intent_id": intent_id,
+        "upload": {
+            "url": upload_url,
+            "headers": {
+                "Content-Type": mime,
+                "Cache-Control": f"private, max-age={R2_OBJECT_CACHE_MAX_AGE_SECONDS}",
+                "x-amz-meta-sha256": sha,
+            },
+        },
+    }
+
+
+@router.post("/recording-complete")
+def recording_complete(body: AudioCompleteBody, request: Request):
+    user_id = _context(request)
+    from core import r2_storage
+    db, _intent, _key, _mime, _sha, _size = _verified_intent(
+        str(user_id), body.intent_id, require_completed=False,
+    )
+    if _intent.get("status") != "issued":
+        raise HTTPException(409, "錄音 intent 已完成或已使用。")
+    if not r2_storage.complete_upload_intent(
+        db, body.intent_id, user_id=str(user_id), media_kind="ai_coach_audio",
+    ):
+        raise HTTPException(409, "錄音 intent 已完成或已使用。")
+    return {"ok": True, "intent_id": body.intent_id}
 
 
 @router.get("/data")
@@ -530,14 +719,8 @@ def data(request: Request):
         "country_status": proxy._solo_live_country_status(request),
         "bandwidth_budget": bandwidth,
         "resource_limits": {
-            "audio_max_bytes": AI_COACH_MAX_AUDIO_BYTES,
-            "audio_max_seconds": AI_COACH_MAX_AUDIO_SECONDS,
-            "solo_free_daily": SOLO_FREE_DAILY_LIMIT,
-            "solo_free_monthly": SOLO_FREE_MONTHLY_LIMIT,
-            "solo_mock_weekly": SOLO_MOCK_WEEKLY_LIMIT,
-            "solo_mock_monthly": SOLO_MOCK_MONTHLY_LIMIT,
-            "multiplayer_free_monthly": MULTIPLAYER_FREE_MONTHLY_ROOMS,
-            "multiplayer_mock_monthly": MULTIPLAYER_MOCK_MONTHLY_ROOMS,
+            **__import__("core.resource_limits", fromlist=["system_limits_payload"])
+                .system_limits_payload(db),
             "free_max_minutes": LIVE_FREE_MAX_MINUTES,
             "free_session_max_seconds": LIVE_FREE_SESSION_MAX_SECONDS,
             "max_rooms": MAX_ROOMS,
@@ -572,7 +755,12 @@ async def run(body: CoachRequest, request: Request):
     _validate_coach_request(body)
     from deploy.proxy import get_vote_db, _get_proxy_secret, _bandwidth_essential_gate_error
     budget_error = _bandwidth_essential_gate_error()
-    if budget_error: raise HTTPException(429, budget_error)
+    if budget_error:
+        if body.audio_intent_id:
+            await asyncio.to_thread(
+                _discard_audio_intent, str(user_id), body.audio_intent_id,
+            )
+        raise HTTPException(429, budget_error)
     db = get_vote_db()
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
     model_label = _requested_model_label(body, runtime_default_model)
@@ -687,7 +875,7 @@ async def run(body: CoachRequest, request: Request):
                 )
             raise
     _usage(db, user_id, body.feature, model_label, config, True,
-           actual=actual, has_audio=bool(body.audio_base64),
+           actual=actual, has_audio=bool(body.audio_intent_id),
            operation_id=operation_id, operation_stage=completed_stage)
     return JSONResponse(
         {"ok": True, "markdown": result},
@@ -697,11 +885,11 @@ async def run(body: CoachRequest, request: Request):
 @router.post("/prepare-live")
 async def prepare_live(body:LivePrepareRequest,request:Request):
     user_id = _context(request)
-    proxy = __import__('deploy.proxy', fromlist=['get_vote_db', '_solo_live_quota_error'])
+    proxy = __import__('deploy.proxy', fromlist=['get_vote_db'])
     country=proxy._solo_live_country_status(request)
     if not country["supported"]: raise HTTPException(403,country["message"])
-    # Validate signing capability before consuming prepare quota or making a
-    # paid provider request. The opaque claim is returned only after research.
+    # Validate signing capability before making a paid provider request. The
+    # opaque claim is returned only after research.
     practice_id=proxy._new_live_practice_claim(user_id,body.mode)
     if not practice_id: raise HTTPException(503,"伺服器未能簽發練習授權，請稍後再試。")
     budget_error=proxy._bandwidth_essential_gate_error()
@@ -711,10 +899,6 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     model_label = _requested_model_label(body, runtime_default_model)
     config = _config(model_label, db)
     _require_enabled_model(model_label, config, enabled_providers)
-    quota_error=proxy._solo_live_quota_error(user_id,body.mode)
-    if quota_error: raise HTTPException(429,quota_error)
-    prepare_error=_reserve_prepare_live(db,user_id)
-    if prepare_error: raise HTTPException(429,prepare_error)
     if not config.get("supports_web_search"):
         config=AI_MODEL_OPTIONS[runtime_default_model]
         model_label=runtime_default_model
@@ -755,8 +939,8 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
 async def mint_live_token(body: LiveTokenRequest, request: Request):
     """Mint one Solo Live section token just in time.
 
-    Section zero atomically reserves the practice quota only after the provider
-    returns a usable token.  A short process-local response cache lets the
+    Section zero atomically records the practice only after the provider
+    returns a usable token. A short process-local response cache lets the
     browser recover the *same* token when the HTTP response is lost, while the
     persistent ledger prevents another worker from disclosing a second token.
     """
@@ -794,7 +978,7 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
         if claim_seconds_left < overall_seconds + LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS:
             raise HTTPException(
                 409,
-                "練習頁已開啟太久，未能安全覆蓋整場時限；未有扣除限額，請返回重新建立練習。",
+                "練習頁已開啟太久，未能安全覆蓋整場時限；未有建立練習記錄，請返回重新建立練習。",
             )
     budget_error = proxy._bandwidth_essential_gate_error()
     if budget_error:
@@ -829,7 +1013,7 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
                 "這一節連線憑證已簽發，但安全重試時限已過。請返回 AI Coach 重新開始練習。",
             )
         if body.session_index > 0 and not reserved:
-            raise HTTPException(409, "Mock初始練習尚未完成配額預留，請返回重新開始。")
+            raise HTTPException(409, "Mock初始練習尚未完成開始記錄，請返回重新開始。")
         ledger_state = None
         if body.session_index > 0:
             ledger_state = await asyncio.to_thread(
@@ -851,8 +1035,7 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
             raise HTTPException(429, rate_error)
         if body.session_index == 0:
             # Waiting behind a slow mint can consume the signed claim's
-            # remaining lifetime.  Recheck under the process issue lock before
-            # any quota hit or provider provisioning.
+            # remaining lifetime. Recheck before provider provisioning.
             claim_seconds_left = int(claim.get("exp") or 0) - int(
                 proxy.time.time()
             )
@@ -861,13 +1044,8 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
             ):
                 raise HTTPException(
                     409,
-                    "練習頁已開啟太久，未能安全覆蓋整場時限；未有扣除限額，請返回重新建立練習。",
+                    "練習頁已開啟太久，未能安全覆蓋整場時限；未有建立練習記錄，請返回重新建立練習。",
                 )
-            quota_error = await asyncio.to_thread(
-                proxy._solo_live_quota_error, user_id, mode,
-            )
-            if quota_error:
-                raise HTTPException(429, quota_error)
         initial_started_at = int(proxy.time.time()) if body.session_index == 0 else None
         absolute_expire_at = (
             initial_started_at + proxy._solo_live_lifecycle_seconds(claim)
@@ -903,7 +1081,7 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
             if elapsed + proxy.LIVE_TOKEN_RESPONSE_CACHE_SAFETY_SECONDS >= (
                 proxy.LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS
             ):
-                message = "Gemini 建立練習連線逾時，未有扣除限額，請立即再試。"
+                message = "Gemini 建立練習連線逾時，未有建立練習記錄，請立即再試。"
                 provisioned["delivery_error"] = message
                 return message
             return None
@@ -920,12 +1098,12 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
                 )
             except Exception:
                 raise HTTPException(
-                    503, "練習配額服務暫時繁忙；未有扣除限額，請稍後再試。",
+                    503, "練習記錄服務暫時繁忙；未有簽發新憑證，請稍後再試。",
                 ) from None
             if reserve_error:
                 status = 502 if (
                     provisioned.get("error") or provisioned.get("delivery_error")
-                ) else 429
+                ) else 409
                 raise HTTPException(status, reserve_error)
             if not created:
                 raise HTTPException(
@@ -944,7 +1122,7 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
                 )
             except Exception:
                 raise HTTPException(
-                    503, "練習配額服務暫時繁忙；未有簽發新憑證，請稍後再試。",
+                    503, "練習記錄服務暫時繁忙；未有簽發新憑證，請稍後再試。",
                 ) from None
             if not marked:
                 status = 502 if (

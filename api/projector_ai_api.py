@@ -28,10 +28,8 @@ from account_access import KIOSK_ACCOUNT_ID
 from api.access import require_competition_staff, require_page_user
 from system_limits import (
     KIOSK_MATCH_REVIEW_MARKER_LIMIT,
-    KIOSK_MATCH_REVIEW_DAILY_LIMIT,
     KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
     KIOSK_MATCH_REVIEW_MAX_SECONDS,
-    KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
     KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS,
     TTS_MAX_RESPONSE_BYTES,
     TTS_TEXT_MAX_CHARS,
@@ -603,29 +601,11 @@ def operator_status(request: Request, display: str = "main"):
     from deploy.proxy import tts_provider_configured
 
     payload["control"]["tts_available"] = bool(tts_provider_configured())
-    try:
-        from core.r2_storage import upload_intent_quota_status
-
-        quota = upload_intent_quota_status(
-            _db(),
-            user_id=KIOSK_ACCOUNT_ID,
-            media_kind="kiosk_match_review",
-            user_daily_limit=KIOSK_MATCH_REVIEW_DAILY_LIMIT,
-            global_monthly_limit=KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
-        )
-    except Exception:
-        quota = {
-            "allowed": False,
-            "user_daily_remaining": 0,
-            "global_monthly_remaining": 0,
-            "blocked_scope": "status_unavailable",
-        }
     payload["limits"] = {
         "max_seconds": KIOSK_MATCH_REVIEW_MAX_SECONDS,
         "max_bytes": KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
         "tts_max_chars": TTS_TEXT_MAX_CHARS,
         "result_ttl_seconds": int(RESULT_TTL.total_seconds()),
-        "quota": quota,
     }
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
@@ -700,26 +680,6 @@ def start_session(body: StartBody, request: Request):
     )
     if current.empty or str(current.iloc[0].get("match_id") or "") != match["match_id"]:
         raise HTTPException(409, "投影控制所選場次與 AI評判易場次不一致。")
-    try:
-        from core.r2_storage import upload_intent_quota_status
-
-        quota = upload_intent_quota_status(
-            db,
-            user_id=KIOSK_ACCOUNT_ID,
-            media_kind="kiosk_match_review",
-            user_daily_limit=KIOSK_MATCH_REVIEW_DAILY_LIMIT,
-            global_monthly_limit=KIOSK_MATCH_REVIEW_MONTHLY_LIMIT,
-        )
-    except Exception as exc:
-        raise HTTPException(503, "未能確認 AI評判易目前配額，為免白錄已暫停開始。") from exc
-    if not quota.get("allowed"):
-        scope = str(quota.get("blocked_scope") or "")
-        detail = (
-            "AI評判易今日 kiosk 共用場次已用完，不能開始錄音。"
-            if scope == "user_daily"
-            else "AI評判易本月全系統場次已用完，不能開始錄音。"
-        )
-        raise HTTPException(429, detail)
     session_id = uuid.uuid4().hex
     with db.transaction() as conn:
         _ensure_control(conn, display, now)

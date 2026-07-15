@@ -406,6 +406,20 @@
                 ><button class="primary">更新設定</button>
               </form>
               <hr />
+              <h2>下月 AI provider 預算</h2>
+              <p id="budgetWindow" class="caption"></p>
+              <form id="budgetForm">
+                <label>預算月份<input id="budgetMonth" readonly /></label>
+                <label>月度 HKD/USD 匯率<input id="budgetFx" type="number" min="0.000001" step="0.000001" required /></label>
+                <div id="budgetProviders"></div>
+                <p id="budgetTotals" class="caption"></p>
+                <button id="budgetSave" class="primary">保存分配及 cap 確認</button>
+              </form>
+              <button id="budgetNotify" type="button" class="mobile-wide">
+                結算並通知所有委員
+              </button>
+              <p id="budgetStatus" class="caption"></p>
+              <hr />
               <h2>重置 AI 用量紀錄</h2>
               <p class="caption">
                 刪除所有 AI 用量估算紀錄。此操作不可復原，不影響現金帳交易。
@@ -767,6 +781,60 @@
           $("target").value = st.target_hkd;
           $("low").value = st.low_balance_hkd;
           $("settingsInstruction").value = st.payment_instruction;
+          const budget = data.monthly_budget,
+            providerNames = {
+              google: "Google AI Studio（外部 cap 為分配 90%）",
+              openrouter: "OpenRouter",
+              azure: "Azure",
+              other: "其他 provider",
+            };
+          $("budgetWindow").textContent =
+            `捐款窗口：${budget.donation_window.start}（包括）至 ${budget.donation_window.end}（不包括）｜已確認捐款 ${money(budget.available_hkd)}`;
+          $("budgetMonth").value = budget.budget_month;
+          $("budgetFx").value = budget.fx_hkd_per_usd || 7.8;
+          $("budgetProviders").innerHTML = budget.providers
+            .map((p) => `<fieldset data-budget-provider="${esc(p.name)}">
+              <legend>${esc(providerNames[p.name] || p.name)}</legend>
+              <label>分配（HKD）<input class="budget-amount" type="number" min="0" step="0.01" value="${Number(p.allocated_hkd || 0)}" required /></label>
+              <p class="caption budget-cap">外部 spending cap 上限：US$${Number(p.external_cap_usd || 0).toFixed(4)}</p>
+              <label class="checkline"><input class="budget-confirmed" type="checkbox" ${p.external_cap_confirmed ? "checked" : ""} /><span>已在 provider 後台更新 cap</span></label>
+            </fieldset>`)
+            .join("");
+          $("budgetTotals").textContent =
+            `已分配 ${money(budget.allocated_hkd)}｜未分配 ${money(budget.unallocated_hkd)}`;
+          $("budgetStatus").textContent = budget.notified_at
+            ? `已由 ${budget.notified_by || "管理員"} 於 ${budget.notified_at} 通知。`
+            : budget.needs_external_cap_update
+              ? "待更新並確認外部 provider cap。"
+              : "預算已可手動通知；系統不會自動發送。";
+          $("budgetSave").disabled = !!budget.notified_at || !budget.can_settle || !data.is_treasurer;
+          $("budgetNotify").disabled = !!budget.notified_at || !budget.configured || !budget.can_settle || budget.needs_external_cap_update || !data.is_treasurer;
+          const updateBudgetPreview = (markDirty) => {
+            const fx = Number($("budgetFx").value || 0);
+            let total = 0;
+            document.querySelectorAll("[data-budget-provider]").forEach((box) => {
+              const amount = Math.max(0, Number(box.querySelector(".budget-amount").value || 0));
+              total += amount;
+              const factor = box.dataset.budgetProvider === "google" ? 0.9 : 1;
+              const cap = fx > 0 ? amount / fx * factor : 0;
+              box.querySelector(".budget-cap").textContent =
+                `外部 spending cap 上限：US$${cap.toFixed(4)}`;
+            });
+            $("budgetTotals").textContent =
+              `已分配 ${money(total)}｜未分配 ${money(Math.max(0, Number(budget.available_hkd || 0) - total))}`;
+            if (markDirty) {
+              $("budgetStatus").textContent = total > Number(budget.available_hkd || 0)
+                ? "分配高於本期可用額，請先調整。"
+                : "有未保存改動；請先保存並更新 provider 後台 cap。";
+              $("budgetNotify").disabled = true;
+            }
+          };
+          $("budgetFx").oninput = () => updateBudgetPreview(true);
+          document.querySelectorAll(".budget-amount,.budget-confirmed").forEach((input) => {
+            input.oninput = () => updateBudgetPreview(true);
+            input.onchange = () => updateBudgetPreview(true);
+          });
+          updateBudgetPreview(false);
         }
         async function load() {
           VoteUI.setBusy($("busy"), true);
@@ -873,6 +941,33 @@
               }),
             },
             "AI基金設定已更新。",
+          );
+        };
+        $("budgetForm").onsubmit = (e) => {
+          e.preventDefault();
+          const allocations = {};
+          document.querySelectorAll("[data-budget-provider]").forEach((box) => {
+            allocations[box.dataset.budgetProvider] = {
+              allocated_hkd: +box.querySelector(".budget-amount").value,
+              external_cap_confirmed: box.querySelector(".budget-confirmed").checked,
+            };
+          });
+          mutate(
+            "/ai-fund/admin/budget",
+            { method: "POST", body: JSON.stringify({
+              budget_month: $("budgetMonth").value,
+              fx_hkd_per_usd: +$("budgetFx").value,
+              allocations,
+            }) },
+            "下月 provider 預算及外部 cap 確認已保存。",
+          );
+        };
+        $("budgetNotify").onclick = () => {
+          if (!confirm("確定發出一次性 Web Push 及登入公告？通知後本月預算不能再修改。")) return;
+          mutate(
+            "/ai-fund/admin/budget/notify",
+            { method: "POST", body: "{}" },
+            "月度 AI基金通知已發出。",
           );
         };
         document.addEventListener("click", (e) => {

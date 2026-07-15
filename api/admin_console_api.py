@@ -60,7 +60,6 @@ class AccountAccessBody(BaseModel): disabled: bool
 class JsonSettings(BaseModel): values: dict
 class PushBody(BaseModel): title: str = Field(max_length=200); body: str = Field(max_length=2000); url: str = Field(default="/vote", max_length=500); target_user: str | None = Field(default=None, max_length=200); confirmed: bool = False
 class BypassBody(BaseModel): users: list[str] = Field(default_factory=list, max_length=ACCOUNT_INVENTORY_LIMIT); expires_at: str = Field(default="", max_length=40); revoke_user: str = Field(default="", max_length=200); revoke_all: bool = False
-class SoloQuotaExemptionBody(BaseModel): user_id: str = Field(max_length=200); mode: str = Field(default="all", max_length=10); expires_at: str = Field(max_length=40)
 
 
 def _db():
@@ -255,7 +254,7 @@ def dev_logout(request:Request,response:Response):
 @router.get("/developer/data")
 def dev_data(request:Request):
     _require(request,"developer"); db=_db()
-    config_keys=("maintenance_mode","maintenance_deadline","bypass_active_check_until","solo_quota_exemptions","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")
+    config_keys=("maintenance_mode","maintenance_deadline","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")
     loaded_configs=_configs(db,(*config_keys,"login_disabled_accounts"))
     configs={key:_display_config(loaded_configs.get(key)) for key in config_keys}
     enabled_providers, effective_default_model = resolve_interactive_model_settings(
@@ -266,9 +265,6 @@ def dev_data(request:Request):
     # have ever been saved, so the controls never appear blank/write-only.
     configs["ai_enabled_providers"] = _display_config(list(enabled_providers))
     configs["ai_default_model"] = _display_config(effective_default_model)
-    # The settings page is also the human-facing list operation.  Never show an
-    # expired/malformed grant as though it were still bypassing a quota.
-    configs["solo_quota_exemptions"]=_display_config(_active_solo_quota_exemptions(db))
     disabled_values=loaded_configs.get("login_disabled_accounts") or []
     if isinstance(disabled_values,str):
         try: disabled_values=json.loads(disabled_values)
@@ -370,12 +366,11 @@ def set_account_access(uid:str,body:AccountAccessBody,request:Request):
     if not uid or is_protected_account(uid): raise HTTPException(400,"不可停用系統帳戶")
     db=_db()
     if db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:uid",{"uid":uid}).empty: raise HTTPException(404,"帳戶不存在")
-    access_keys=("login_disabled_accounts","tts_recording_reviewers","lateness_fund_managers","tts_recording_allowed_users","ai_fund_treasurers","bypass_active_check_until","solo_quota_exemptions")
+    access_keys=("login_disabled_accounts","tts_recording_reviewers","lateness_fund_managers","tts_recording_allowed_users","ai_fund_treasurers","bypass_active_check_until")
     with db.transaction() as conn:
-        # Serialize the read/derive/write sequence with both quota reservation
-        # and exemption administration. Reading before this lock allowed two
-        # concurrent account PATCHes to overwrite one another's removals.
-        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_quota'))"))
+        # Serialize account access-list updates. Reading before this lock
+        # allowed concurrent PATCHes to overwrite one another's removals.
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('account_access_config'))"))
         access_config=get_configs_from_connection(conn,access_keys)
         disabled=set(_list_value(access_config.get("login_disabled_accounts")))
         updates={}
@@ -394,14 +389,6 @@ def set_account_access(uid:str,body:AccountAccessBody,request:Request):
                 except (TypeError,ValueError,json.JSONDecodeError): bypass={}
             if isinstance(bypass,dict) and uid in bypass:
                 bypass=dict(bypass); bypass.pop(uid,None); updates["bypass_active_check_until"]=bypass
-            solo = access_config.get("solo_quota_exemptions") or {}
-            if isinstance(solo,str):
-                try: solo=json.loads(solo)
-                except (TypeError,ValueError,json.JSONDecodeError): solo={}
-            if isinstance(solo, dict) and uid in solo:
-                solo = dict(solo)
-                solo.pop(uid, None)
-                updates["solo_quota_exemptions"] = solo
             disabled.add(uid)
         else:
             disabled.discard(uid)
@@ -424,6 +411,19 @@ def send_manual_push(body:PushBody,request:Request):
     from deploy.proxy import _get_vapid
     sent=notify_committee(db,_get_vapid(),body.title.strip(),body.body.strip(),target_user=body.target_user,tag=f"manual-push-{_now().strftime('%Y%m%d%H%M%S')}",url=url)
     return {"ok":True,"sent":sent}
+
+
+@router.post("/developer/render-bandwidth/sync")
+async def sync_render_bandwidth(request: Request):
+    _require(request, "developer")
+    from deploy.proxy import sync_render_bandwidth_metrics
+    try:
+        result = await sync_render_bandwidth_metrics()
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except Exception:
+        raise HTTPException(502, "Render bandwidth 官方數據同步失敗。")
+    return {"ok": True, **result}
 
 @router.post("/developer/bypass")
 def update_bypass(body:BypassBody,request:Request):
@@ -450,128 +450,6 @@ def update_bypass(body:BypassBody,request:Request):
     _set(db,"bypass_active_check_until",current)
     return {"ok":True,"bypasses":current}
 
-
-def _solo_quota_exemptions(db):
-    value = _config(db, "solo_quota_exemptions") or {}
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            value = {}
-    return value if isinstance(value, dict) else {}
-
-
-def _active_solo_quota_exemptions(db):
-    return _active_solo_quota_mapping(_solo_quota_exemptions(db))
-
-
-def _active_solo_quota_mapping(value, *, now=None):
-    now = now or datetime.datetime.now(datetime.timezone.utc)
-    now = (
-        now.replace(tzinfo=datetime.timezone.utc)
-        if now.tzinfo is None
-        else now.astimezone(datetime.timezone.utc)
-    )
-    latest_allowed_expiry = now + datetime.timedelta(days=30)
-    active = {}
-    for user_id, entry in (value.items() if isinstance(value, dict) else ()):
-        if not isinstance(entry, dict) or entry.get("mode") not in ("free", "mock", "all"):
-            continue
-        try:
-            expiry = datetime.datetime.fromisoformat(
-                str(entry.get("expires_at") or "").replace("Z", "+00:00")
-            )
-        except (TypeError, ValueError):
-            continue
-        expiry_utc = (
-            expiry.astimezone(datetime.timezone.utc)
-            if expiry.tzinfo is not None
-            else None
-        )
-        if expiry_utc is not None and now < expiry_utc <= latest_allowed_expiry:
-            active[str(user_id)] = {
-                "mode": entry["mode"],
-                "expires_at": expiry_utc.isoformat().replace("+00:00", "Z"),
-            }
-    return active
-
-
-@router.get("/developer/solo-quota-exemptions")
-def list_solo_quota_exemptions(request: Request):
-    _require(request, "developer")
-    return {"exemptions": _active_solo_quota_exemptions(_db())}
-
-
-@router.post("/developer/solo-quota-exemptions")
-def set_solo_quota_exemption(body: SoloQuotaExemptionBody, request: Request):
-    _require(request, "developer")
-    user_id = body.user_id.strip()
-    mode = body.mode.strip().lower()
-    if not user_id:
-        raise HTTPException(400, "請選擇委員帳戶")
-    if is_non_member_account(user_id):
-        raise HTTPException(400, "不可為系統帳戶設定 Solo 豁免")
-    if mode not in ("free", "mock", "all"):
-        raise HTTPException(400, "豁免類別只可選 free、mock 或 all")
-    db = _db()
-    account = db.query(
-        f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:user_id "
-        "AND COALESCE(account_disabled,FALSE)=FALSE LIMIT 1",
-        {"user_id": user_id},
-    )
-    if account.empty:
-        raise HTTPException(404, "委員帳戶不存在或已停用")
-    try:
-        expiry = datetime.datetime.fromisoformat(body.expires_at.strip())
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(400, "到期時間格式不正確") from exc
-    hk = ZoneInfo("Asia/Hong_Kong")
-    expiry = expiry.replace(tzinfo=hk) if expiry.tzinfo is None else expiry
-    expiry_utc = expiry.astimezone(datetime.timezone.utc)
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    if expiry_utc <= now_utc:
-        raise HTTPException(400, "到期時間必須在未來")
-    if expiry_utc > now_utc + datetime.timedelta(days=30):
-        raise HTTPException(400, "臨時豁免最長只可設定30日")
-    with db.transaction() as conn:
-        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_quota'))"))
-        locked_now = datetime.datetime.now(datetime.timezone.utc)
-        if expiry_utc <= locked_now:
-            raise HTTPException(400, "到期時間必須在未來")
-        configs = get_configs_from_connection(
-            conn, ("solo_quota_exemptions", "login_disabled_accounts"),
-        )
-        disabled = set(_list_value(configs.get("login_disabled_accounts")))
-        if user_id in disabled:
-            raise HTTPException(409, "此委員帳戶已停用，不可設定豁免")
-        current = _active_solo_quota_mapping(
-            configs.get("solo_quota_exemptions") or {}, now=locked_now,
-        )
-        current[user_id] = {
-            "mode": mode,
-            "expires_at": expiry_utc.isoformat().replace("+00:00", "Z"),
-        }
-        set_configs_on_connection(
-            conn, {"solo_quota_exemptions": current},
-        )
-    return {"ok": True, "exemptions": current}
-
-
-@router.delete("/developer/solo-quota-exemptions/{user_id}")
-def revoke_solo_quota_exemption(user_id: str, request: Request):
-    _require(request, "developer")
-    db = _db()
-    with db.transaction() as conn:
-        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('solo_live_quota'))"))
-        raw = get_configs_from_connection(
-            conn, ("solo_quota_exemptions",),
-        ).get("solo_quota_exemptions") or {}
-        current = _active_solo_quota_mapping(raw)
-        current.pop(user_id.strip(), None)
-        set_configs_on_connection(
-            conn, {"solo_quota_exemptions": current},
-        )
-    return {"ok": True, "exemptions": current}
 
 @router.post("/developer/settings")
 def developer_settings(body:JsonSettings,request:Request):

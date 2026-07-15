@@ -499,7 +499,7 @@
         等待比賽日 Kiosk 回報狀態…
       </div>
       <div class="substatus" id="commandStatus"></div>
-      <div class="substatus" id="quotaStatus"></div>
+      <div class="substatus" id="resourceStatus"></div>
 
       <section class="result-card" id="aiResult" hidden>
         <div class="section-title">
@@ -1020,7 +1020,6 @@
             audio: "粵語聲音",
             tts: "粵語語音服務",
             network: "網絡",
-            quota: "AI評判易配額",
           };
           var source =
             hardware.checks && typeof hardware.checks === "object"
@@ -1142,19 +1141,11 @@
           );
           el("aiClockLimit").textContent =
             "上限 " + formatDuration(maxDurationSeconds);
-          var quota = limits.quota || limits;
           var parts = [];
-          if (quota.user_daily_remaining !== undefined)
-            parts.push("今日 kiosk 共用剩餘 " + quota.user_daily_remaining + " 場");
-          else if (quota.daily_remaining !== undefined)
-            parts.push("今日剩餘 " + quota.daily_remaining + " 場");
-          if (quota.global_monthly_remaining !== undefined)
-            parts.push("本月全系統剩餘 " + quota.global_monthly_remaining + " 場");
-          else if (quota.monthly_remaining !== undefined)
-            parts.push("本月剩餘 " + quota.monthly_remaining + " 場");
           if (limits.max_bytes)
             parts.push("錄音上限 " + formatBytes(limits.max_bytes));
-          el("quotaStatus").textContent = parts.join(" · ");
+          parts.push("沒有每日／每月場次限額；仍受全站 Render、R2 及 provider 預算保護");
+          el("resourceStatus").textContent = parts.join(" · ");
         }
 
         function ttsProviderAvailable(control, session) {

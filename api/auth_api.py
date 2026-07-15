@@ -31,7 +31,7 @@ class PasswordBody(BaseModel):
     confirm_password: str = Field(max_length=512)
 
 
-def _current_notification():
+def _file_notification():
     path = Path(__file__).resolve().parents[1] / "assets" / "noti.md"
     if not path.exists():
         return None
@@ -54,6 +54,49 @@ def _current_notification():
     if noti_id is None or not title:
         return None
     return {"id": noti_id, "title": title, "content": "\n".join(lines[content_start:]).strip()}
+
+
+def _fund_notifications(db):
+    """Return recent manual AI-fund announcements as negative notification IDs."""
+    from schema import TABLE_MONTHLY_RESOURCE_LIMITS
+    try:
+        rows = db.query(f"""SELECT period_month,allocated_hkd,notification_audit
+            FROM {TABLE_MONTHLY_RESOURCE_LIMITS}
+            WHERE limit_key='ai_fund_available'
+              AND (notified_at IS NOT NULL
+                   OR notification_audit->>'announcement_at' IS NOT NULL)
+            ORDER BY period_month DESC LIMIT 2""")
+    except Exception:
+        return []
+    notices = []
+    for row in rows.to_dict("records"):
+        month = str(row.get("period_month") or "")[:7]
+        if len(month) != 7:
+            continue
+        audit = row.get("notification_audit") or {}
+        if isinstance(audit, str):
+            import json
+            try:
+                audit = json.loads(audit)
+            except ValueError:
+                audit = {}
+        notices.append({
+            "id": -int(month.replace("-", "")),
+            "title": str(audit.get("title") or f"AI基金 {month} 月度預算")[:300],
+            "content": (
+                str(audit.get("body") or f"{month} 可用 AI 預算 HKD {float(row.get('allocated_hkd') or 0):.2f}")
+                + "\n\n[查看 AI基金詳情](/ai-fund)"
+            ),
+        })
+    return notices
+
+
+def _current_notifications(db=None):
+    notices = _fund_notifications(db) if db is not None else []
+    file_notice = _file_notification()
+    if file_notice:
+        notices.append(file_notice)
+    return notices
 
 
 def _prune_notification_reads(db, now):
@@ -140,15 +183,19 @@ def notification(request: Request):
     from schema import TABLE_NOTIFICATION_READS
 
     user_id = require_page_user(request, "member_profile")
-    notice = _current_notification()
-    if not notice:
-        return {"notification": None}
     db = get_vote_db()
-    seen = db.query(
-        f"SELECT 1 FROM {TABLE_NOTIFICATION_READS} WHERE notification_id = :nid AND user_id = :uid",
-        {"nid": notice["id"], "uid": user_id},
-    )
-    return {"notification": None if not seen.empty else notice}
+    notices = _current_notifications(db)
+    if not notices:
+        return {"notification": None}
+    ids = [int(item["id"]) for item in notices]
+    seen = db.query(f"""SELECT notification_id FROM {TABLE_NOTIFICATION_READS}
+        WHERE user_id=:uid AND notification_id=ANY(:ids)""", {
+        "uid": user_id, "ids": ids,
+    })
+    seen_ids = {int(value) for value in seen.get("notification_id", [])}
+    return {"notification": next(
+        (item for item in notices if int(item["id"]) not in seen_ids), None,
+    )}
 
 
 class NotificationReadBody(BaseModel):
@@ -164,10 +211,11 @@ def notification_read(body: NotificationReadBody, request: Request):
     from schema import TABLE_NOTIFICATION_READS
 
     user_id = require_page_user(request, "member_profile")
-    current = _current_notification()
-    if not current or body.notification_id != current["id"]:
-        raise HTTPException(400, "通知已更新，請重新載入")
     db = get_vote_db()
+    current = next((item for item in _current_notifications(db)
+                    if int(item["id"]) == body.notification_id), None)
+    if not current:
+        raise HTTPException(400, "通知已更新，請重新載入")
     now = datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
     db.execute(
         f"INSERT INTO {TABLE_NOTIFICATION_READS} "

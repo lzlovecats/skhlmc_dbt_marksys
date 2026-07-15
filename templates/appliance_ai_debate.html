@@ -339,13 +339,13 @@
         <div id="message" class="message" role="status"></div>
 
         <details class="panel-card">
-          <summary><strong>📊 練習限額及網絡傳輸量保護</strong></summary>
-          <p>由於系統每月可用的網絡傳輸量及營運預算有限，現設以下限制：</p>
+          <summary><strong>📊 系統資源及網絡傳輸量保護</strong></summary>
+          <p>委員沒有每日、每週或每月使用次數 quota；系統保留以下全站保護：</p>
           <ul>
-            <li>單人及聯機 Free De／完整 Mock 均設每人時段quota、全系統每月quota及server時間上限。</li>
-            <li>實際限額由伺服器集中設定；超額時會顯示下一個可用週期。</li>
+            <li>Render、R2、provider 月度預算及登入、檔案、並行、房間容量／TTL等技術安全邊界。</li>
+            <li>實際限額由伺服器集中設定；到達 system-wide 門檻時會停用相應高流量或 AI 功能。</li>
           </ul>
-          <p>達伺服器設定的 bandwidth 保護門檻後，系統會停止新的 Gemini Live 及聯機房間。</p>
+          <p>聯機真人聲音以 STUN-only P2P 直傳；Render 只同步房間控制、逐字稿及 AI 評判。</p>
         </details>
 
         <section class="panel-card">
@@ -484,13 +484,7 @@
 
           <form id="create-room-form">
             <section class="panel-card">
-              <div class="field">
-                <label class="title" for="room-mode">對戰模式</label>
-                <select id="room-mode">
-                  <option value="A">真人對真人（AI 評判）</option>
-                  <option value="B">多人一隊對 AI</option>
-                </select>
-              </div>
+              <div class="field"><div class="info">真人對真人（1 對 1，STUN-only P2P 音訊；逐字稿可用時由 AI 評判）</div></div>
               <div class="field">
                 <label class="title">練習模式</label>
                 <div class="toggle-row">
@@ -534,17 +528,8 @@
                     <option>反方</option>
                   </select>
                 </div>
-                <div class="field hidden" id="room-capacity-field">
-                  <label class="title" for="room-capacity">隊員人數上限</label
-                  ><select id="room-capacity">
-                    <option value="1">1 人</option>
-                    <option value="2">2 人</option>
-                    <option value="3">3 人</option>
-                    <option value="4" selected>4 人</option>
-                  </select>
-                </div>
               </div>
-              <div class="field"><div class="info" id="room-info"></div></div>
+              <div class="field"><div class="info" id="room-info">建議全員使用電腦版 Chrome；電話可以練習，但逐字稿可能因 browser、Siri、鎖屏或轉 app 而停用 AI 評判。</div></div>
               <button type="submit" class="start-btn secondary">
                 ➕ 建立並進入房間
               </button>
@@ -686,31 +671,14 @@
         );
       }
       function syncRoom() {
-        var mode = $("room-mode").value,
-          structure = selected("room_structure");
+        var structure = selected("room_structure");
         fillFormats("room-format", structure);
         var format = $("room-format").value;
         $("room-minutes-field").classList.toggle("hidden", format !== "聯中");
-        $("room-capacity-field").classList.toggle(
-          "hidden",
-          mode !== "B" || structure === "mock",
-        );
-        $("room-side-title").textContent =
-          mode === "B" ? "你哋嘅立場（AI 代表另一方）" : "你嘅立場";
-        if (mode === "B" && structure === "mock") {
-          var count = format === "星島" ? 3 : 4;
-          $("room-info").textContent =
-            "完整 Mock（多人對 AI）：必須啱啱好 " +
-            count +
-            " 位隊員入房並選好辯位；AI 自動負責另一方。";
-        } else if (mode === "B") {
-          $("room-info").textContent =
-            "Free De（多人對 AI）：1–4 位隊員輪流發言，AI 代表另一方即時攻防。";
-        } else {
-          $("room-info").textContent =
-            (structure === "mock" ? "完整 Mock" : "Free De") +
-            "（真人對真人）：雙方連線練習，完成後由 AI 根據逐字稿評判。";
-        }
+        $("room-side-title").textContent = "你嘅立場";
+        $("room-info").textContent =
+          (structure === "mock" ? "完整 Mock" : "Free De") +
+          "（真人對真人）：STUN-only P2P 音訊，完成後由 AI 根據逐字稿評判。建議全員使用電腦版 Chrome。";
       }
       function syncSession() {
         var room = selected("session_type") === "room";
@@ -759,7 +727,6 @@
           x.addEventListener("change", syncRoom);
         });
       $("topic-search").addEventListener("input", filterTopics);
-      $("room-mode").addEventListener("change", syncRoom);
       $("room-format").addEventListener("change", function () {
         var mode = selected("room_structure");
         var chosen = $("room-format").value;
@@ -793,27 +760,17 @@
         var button = event.submitter;
         button.disabled = true;
         try {
-          var mode = $("room-mode").value,
-            structure = selected("room_structure"),
+          var structure = selected("room_structure"),
             format = $("room-format").value;
           var payload = {
-            mode: mode,
+            mode: "A",
             structure: structure,
             debate_format: format,
             topic: topic,
             free_minutes:
               format === "聯中" ? Number($("room-minutes").value) : 2.5,
           };
-          if (mode === "A") payload.side = $("room-side").value;
-          else {
-            payload.human_side = $("room-side").value;
-            payload.capacity =
-              structure === "mock"
-                ? format === "星島"
-                  ? 3
-                  : 4
-                : Number($("room-capacity").value);
-          }
+          payload.side = $("room-side").value;
           var data = await api("/api/room/create", {
             method: "POST",
             body: JSON.stringify(payload),

@@ -1,10 +1,14 @@
 """Ledger logic shared by the lateness and AI fund APIs."""
 
 import math
+import json
+import secrets
 import threading
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from sqlalchemy import text
 
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
 from ai_model_config import (
@@ -18,6 +22,7 @@ from schema import (
     TABLE_ACCOUNTS, TABLE_AI_FUND_TRANSACTIONS,
     TABLE_AI_FUND_USAGE_LOGS, TABLE_LATENESS_FUND_EXPENSES,
     TABLE_LATENESS_FUND_PERIODS, TABLE_LATENESS_FUND_RECORDS,
+    TABLE_MONTHLY_RESOURCE_LIMITS,
 )
 from system_limits import (
     ACCOUNT_LIST_LIMIT,
@@ -66,6 +71,7 @@ LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
 _AI_PRUNE_LOCK = threading.Lock()
 _AI_LAST_PRUNE = None
 _NON_MEMBER_ACCOUNT_SQL = sql_account_id_literals((*NON_MEMBER_ACCOUNT_DB_KEYS, ""))
+AI_BUDGET_PROVIDERS = ("google", "openrouter", "azure", "other")
 
 
 def _now():
@@ -468,6 +474,326 @@ def is_ai_treasurer(user_id, db=None):
     return user_id in {str(value).strip() for value in values if str(value).strip()}
 
 
+def _month_shift(value: date, offset: int) -> date:
+    index = value.year * 12 + value.month - 1 + int(offset)
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def ai_budget_cycle(now=None):
+    """Return the latest closed 25th-to-25th donation window in Hong Kong."""
+    value = now or datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+    else:
+        value = value.astimezone(ZoneInfo("Asia/Hong_Kong"))
+    month = value.date().replace(day=1)
+    cutoff_month = month if value.day >= 25 else _month_shift(month, -1)
+    window_end = datetime(
+        cutoff_month.year, cutoff_month.month, 25,
+        tzinfo=ZoneInfo("Asia/Hong_Kong"),
+    )
+    previous = _month_shift(cutoff_month, -1)
+    window_start = datetime(
+        previous.year, previous.month, 25,
+        tzinfo=ZoneInfo("Asia/Hong_Kong"),
+    )
+    return {
+        "window_start": window_start,
+        "window_end": window_end,
+        "budget_month": _month_shift(cutoff_month, 1),
+        "can_settle": value >= window_end,
+    }
+
+
+def _budget_amount(db, cycle) -> float:
+    frame = db.query(f"""SELECT COALESCE(SUM(amount_hkd),0) AS amount
+        FROM {TABLE_AI_FUND_TRANSACTIONS}
+        WHERE transaction_type='member_deposit' AND status='confirmed'
+          AND confirmed_at>=:window_start AND confirmed_at<:window_end""", {
+        # Existing fund timestamps are stored as naive Hong Kong wall time.
+        "window_start": cycle["window_start"].replace(tzinfo=None),
+        "window_end": cycle["window_end"].replace(tzinfo=None),
+    })
+    return round(_float(frame.iloc[0]["amount"] if not frame.empty else 0), 2)
+
+
+def ai_budget_data(db, now=None) -> dict:
+    cycle = ai_budget_cycle(now)
+    amount = _budget_amount(db, cycle)
+    month = cycle["budget_month"]
+    try:
+        rows = db.query(f"""SELECT * FROM {TABLE_MONTHLY_RESOURCE_LIMITS}
+            WHERE period_month=:month
+              AND (limit_key='ai_fund_available' OR limit_key LIKE 'provider:%')
+            ORDER BY limit_key""", {"month": month})
+        values = _rows(rows)
+    except Exception:
+        values = []
+    fund = next((row for row in values if row["limit_key"] == "ai_fund_available"), {})
+    providers = []
+    for name in AI_BUDGET_PROVIDERS:
+        row = next((item for item in values if item["limit_key"] == f"provider:{name}"), {})
+        allocated = _float(row.get("allocated_hkd"))
+        fx = _float(row.get("fx_hkd_per_usd"), 7.8) or 7.8
+        factor = 0.9 if name == "google" else 1.0
+        providers.append({
+            "name": name,
+            "allocated_hkd": allocated,
+            "external_cap_usd": round(allocated / fx * factor, 4) if allocated else 0,
+            "external_cap_confirmed": bool(row.get("external_cap_confirmed")),
+            "external_cap_confirmed_by": row.get("external_cap_confirmed_by") or "",
+            "external_cap_confirmed_at": row.get("external_cap_confirmed_at") or "",
+        })
+    allocated_total = round(sum(item["allocated_hkd"] for item in providers), 2)
+    snapshot_amount = fund.get("allocated_hkd")
+    available = amount if snapshot_amount is None else _float(snapshot_amount)
+    return {
+        "donation_window": {
+            "start": cycle["window_start"].isoformat(),
+            "end": cycle["window_end"].isoformat(),
+            "confirmed_member_deposits_hkd": amount,
+        },
+        "budget_month": month.isoformat(),
+        "available_hkd": available,
+        "fx_hkd_per_usd": _float(fund.get("fx_hkd_per_usd"), 7.8) or 7.8,
+        "providers": providers,
+        "allocated_hkd": allocated_total,
+        "unallocated_hkd": round(max(0, available - allocated_total), 2),
+        "notified_at": fund.get("notified_at") or "",
+        "notified_by": fund.get("notified_by") or "",
+        "notification_audit": fund.get("notification_audit") or {},
+        "configured": bool(fund),
+        "can_settle": cycle["can_settle"],
+        "needs_external_cap_update": any(
+            item["allocated_hkd"] > 0 and not item["external_cap_confirmed"]
+            for item in providers
+        ),
+        "needs_notification": not bool(fund.get("notified_at")),
+    }
+
+
+def save_ai_budget(user_id, payload, db=None, now=None):
+    db = _resolve_db(db)
+    if not is_ai_treasurer(user_id, db=db):
+        raise PermissionError("只有 AI基金管理員可分配 provider 預算。")
+    cycle = ai_budget_cycle(now)
+    if not cycle["can_settle"]:
+        raise ValueError("本期捐款窗口尚未結算。")
+    requested_month = str(payload.get("budget_month") or "")
+    if requested_month != cycle["budget_month"].isoformat():
+        raise ValueError("預算月份已更新，請重新載入。")
+    fx = _float(payload.get("fx_hkd_per_usd"), 7.8)
+    if fx <= 0 or fx > 1000:
+        raise ValueError("月度匯率無效。")
+    raw_allocations = payload.get("allocations") or {}
+    if not isinstance(raw_allocations, dict):
+        raise ValueError("Provider 分配格式無效。")
+    allocations = {}
+    confirmations = {}
+    for name in AI_BUDGET_PROVIDERS:
+        item = raw_allocations.get(name) or {}
+        if not isinstance(item, dict):
+            raise ValueError("Provider 分配格式無效。")
+        amount = round(_float(item.get("allocated_hkd")), 2)
+        if amount < 0:
+            raise ValueError("Provider 分配不能為負數。")
+        confirmed = bool(item.get("external_cap_confirmed"))
+        if amount > 0 and not confirmed:
+            raise ValueError(f"請先確認已在 {name} 後台更新 spending cap。")
+        allocations[name] = amount
+        confirmations[name] = confirmed
+    now_value = now or datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    with db.transaction() as session:
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('ai_fund_monthly_budget'))"))
+        available = round(_float(session.execute(text(f"""SELECT COALESCE(SUM(amount_hkd),0)
+            FROM {TABLE_AI_FUND_TRANSACTIONS}
+            WHERE transaction_type='member_deposit' AND status='confirmed'
+              AND confirmed_at>=:start AND confirmed_at<:end"""), {
+            "start": cycle["window_start"].replace(tzinfo=None),
+            "end": cycle["window_end"].replace(tzinfo=None),
+        }).scalar()), 2)
+        if round(sum(allocations.values()), 2) > available:
+            raise ValueError("Provider 分配總額不能高於本期已確認捐款。")
+        existing = session.execute(text(f"""SELECT notified_at,notification_audit
+            FROM {TABLE_MONTHLY_RESOURCE_LIMITS}
+            WHERE period_month=:month AND limit_key='ai_fund_available'"""), {
+            "month": cycle["budget_month"],
+        }).mappings().one_or_none()
+        prior_audit = (existing or {}).get("notification_audit") or {}
+        if isinstance(prior_audit, str):
+            try:
+                prior_audit = json.loads(prior_audit)
+            except ValueError:
+                prior_audit = {}
+        if existing and (existing.get("notified_at") or prior_audit.get("announcement_at")):
+            raise ValueError("本月預算已通知，不能再修改。")
+        session.execute(text(f"""INSERT INTO {TABLE_MONTHLY_RESOURCE_LIMITS}
+            (period_month,limit_key,unit,allocated_hkd,fx_hkd_per_usd,
+             funding_window_start,funding_window_end,updated_by,updated_at)
+            VALUES(:month,'ai_fund_available','hkd',:available,:fx,:start,:end,:user,:now)
+            ON CONFLICT(period_month,limit_key) DO UPDATE SET
+              allocated_hkd=EXCLUDED.allocated_hkd,fx_hkd_per_usd=EXCLUDED.fx_hkd_per_usd,
+              funding_window_start=EXCLUDED.funding_window_start,
+              funding_window_end=EXCLUDED.funding_window_end,
+              updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at"""), {
+            "month": cycle["budget_month"], "available": available, "fx": fx,
+            "start": cycle["window_start"], "end": cycle["window_end"],
+            "user": user_id, "now": now_value,
+        })
+        for name in AI_BUDGET_PROVIDERS:
+            amount = allocations[name]
+            cap = amount / fx * (0.9 if name == "google" else 1.0)
+            session.execute(text(f"""INSERT INTO {TABLE_MONTHLY_RESOURCE_LIMITS}
+                (period_month,limit_key,unit,hard_value,allocated_hkd,fx_hkd_per_usd,
+                 external_cap_confirmed,external_cap_confirmed_by,
+                 external_cap_confirmed_at,updated_by,updated_at)
+                VALUES(:month,:key,'usd',:cap,:amount,:fx,:confirmed,
+                       CASE WHEN :confirmed THEN :user ELSE NULL END,
+                       CASE WHEN :confirmed THEN :now ELSE NULL END,:user,:now)
+                ON CONFLICT(period_month,limit_key) DO UPDATE SET
+                  hard_value=EXCLUDED.hard_value,allocated_hkd=EXCLUDED.allocated_hkd,
+                  fx_hkd_per_usd=EXCLUDED.fx_hkd_per_usd,
+                  external_cap_confirmed=EXCLUDED.external_cap_confirmed,
+                  external_cap_confirmed_by=EXCLUDED.external_cap_confirmed_by,
+                  external_cap_confirmed_at=EXCLUDED.external_cap_confirmed_at,
+                  updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at"""), {
+                "month": cycle["budget_month"], "key": f"provider:{name}",
+                "cap": round(cap, 4), "amount": amount, "fx": fx,
+                "confirmed": confirmations[name], "user": user_id, "now": now_value,
+            })
+    return ai_budget_data(db, now=now)
+
+
+def notify_ai_budget(user_id, db, vapid, now=None):
+    if not is_ai_treasurer(user_id, db=db):
+        raise PermissionError("只有 AI基金管理員可發出預算通知。")
+    cycle = ai_budget_cycle(now)
+    if not cycle["can_settle"]:
+        raise ValueError("本期捐款窗口尚未結算。")
+    month = cycle["budget_month"]
+    claim = secrets.token_urlsafe(18)
+    now_value = now or datetime.now(ZoneInfo("Asia/Hong_Kong"))
+    if now_value.tzinfo is None:
+        now_value = now_value.replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+    else:
+        now_value = now_value.astimezone(ZoneInfo("Asia/Hong_Kong"))
+    with db.transaction() as session:
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('ai_fund_monthly_budget'))"))
+        fund = session.execute(text(f"""SELECT allocated_hkd,fx_hkd_per_usd,
+                funding_window_start,funding_window_end,notified_at,notification_audit
+            FROM {TABLE_MONTHLY_RESOURCE_LIMITS}
+            WHERE period_month=:month AND limit_key='ai_fund_available'
+            FOR UPDATE"""), {"month": month}).mappings().one_or_none()
+        if fund is None:
+            raise ValueError("請先保存 provider 預算分配。")
+        if fund.get("notified_at"):
+            raise ValueError("本預算月份已經通知。")
+        prior_audit = fund.get("notification_audit") or {}
+        if isinstance(prior_audit, str):
+            try:
+                prior_audit = json.loads(prior_audit)
+            except ValueError:
+                prior_audit = {}
+        if prior_audit.get("state") == "sending":
+            try:
+                claimed_at = datetime.fromisoformat(str(prior_audit.get("claimed_at")))
+                if claimed_at.tzinfo is None:
+                    claimed_at = claimed_at.replace(tzinfo=ZoneInfo("Asia/Hong_Kong"))
+            except (TypeError, ValueError):
+                claimed_at = now_value
+            if (now_value - claimed_at).total_seconds() < 15 * 60:
+                raise ValueError("本預算通知正在發送中，請稍後再檢查。")
+        provider_rows = session.execute(text(f"""SELECT limit_key,allocated_hkd,
+                hard_value,external_cap_confirmed
+            FROM {TABLE_MONTHLY_RESOURCE_LIMITS}
+            WHERE period_month=:month AND limit_key LIKE 'provider:%'
+            ORDER BY limit_key"""), {"month": month}).mappings().all()
+        by_name = {str(row["limit_key"])[9:]: row for row in provider_rows}
+        if any(name not in by_name for name in AI_BUDGET_PROVIDERS):
+            raise ValueError("Provider 預算資料不完整，請重新保存。")
+        available = round(_float(fund.get("allocated_hkd")), 2)
+        allocated = round(sum(
+            _float(by_name[name].get("allocated_hkd"))
+            for name in AI_BUDGET_PROVIDERS
+        ), 2)
+        if allocated > available:
+            raise ValueError("Provider 分配總額高於可用金額。")
+        if any(
+            _float(by_name[name].get("allocated_hkd")) > 0
+            and not bool(by_name[name].get("external_cap_confirmed"))
+            for name in AI_BUDGET_PROVIDERS
+        ):
+            raise ValueError("仍有 provider spending cap 未確認更新。")
+        title = f"AI基金 {month.strftime('%Y-%m')} 月度預算"
+        start = str(fund.get("funding_window_start") or cycle["window_start"])[:10]
+        end = str(fund.get("funding_window_end") or cycle["window_end"])[:10]
+        body = (
+            f"{start} 至 {end} 收到已確認捐款 HKD {available:.2f}；"
+            f"{month.strftime('%Y-%m')} 可用 HKD {available:.2f}。"
+        )
+        snapshot = {
+            "state": "sending", "claim": claim,
+            "claimed_at": now_value.isoformat(), "available_hkd": available,
+            "allocated_hkd": allocated,
+            # The login announcement is durable even when every Web Push
+            # delivery fails. Its stable negative month ID makes retries safe.
+            "announcement_at": now_value.isoformat(),
+            "title": title, "body": body,
+            "providers": {
+                name: {
+                    "allocated_hkd": _float(by_name[name].get("allocated_hkd")),
+                    "external_cap_usd": _float(by_name[name].get("hard_value")),
+                }
+                for name in AI_BUDGET_PROVIDERS
+            },
+        }
+        session.execute(text(f"""UPDATE {TABLE_MONTHLY_RESOURCE_LIMITS}
+            SET notification_audit=CAST(:audit AS jsonb),updated_by=:user,updated_at=:now
+            WHERE period_month=:month AND limit_key='ai_fund_available'
+              AND notified_at IS NULL"""), {
+            "audit": json.dumps(snapshot, ensure_ascii=False), "user": user_id,
+            "now": now_value, "month": month,
+        })
+
+    from core.push import notify_committee
+    try:
+        sent = notify_committee(
+            db, vapid, title, body,
+            tag=f"ai-fund-budget-{month.strftime('%Y-%m')}",
+            url="/ai-fund", committee_only=True,
+        )
+    except Exception:
+        sent = 0
+    if sent <= 0:
+        db.execute_count(f"""UPDATE {TABLE_MONTHLY_RESOURCE_LIMITS}
+            SET notification_audit=CAST(:audit AS jsonb),updated_by=:user,updated_at=:now
+            WHERE period_month=:month AND limit_key='ai_fund_available'
+              AND notified_at IS NULL AND notification_audit->>'claim'=:claim""", {
+            "audit": json.dumps({
+                **snapshot, "state": "retryable",
+                "last_error": "zero_successful_delivery",
+                "attempted_at": now_value.isoformat(),
+            }, ensure_ascii=False),
+            "user": user_id, "now": now_value, "month": month, "claim": claim,
+        })
+        raise RuntimeError("Web Push 未有成功送達；資料未標記為已通知，可安全重試。")
+    audit = json.dumps({
+        **snapshot, "state": "sent", "sent": sent, "title": title, "body": body,
+        "sent_at": now_value.isoformat(),
+    }, ensure_ascii=False)
+    changed = db.execute_count(f"""UPDATE {TABLE_MONTHLY_RESOURCE_LIMITS}
+        SET notified_by=:user,notified_at=:now,notification_audit=CAST(:audit AS jsonb),
+            updated_by=:user,updated_at=:now
+        WHERE period_month=:month AND limit_key='ai_fund_available'
+          AND notified_at IS NULL AND notification_audit->>'claim'=:claim""", {
+        "user": user_id, "now": now_value, "audit": audit, "month": month,
+        "claim": claim,
+    })
+    if not changed:
+        raise ValueError("本預算月份已經通知。")
+    return {"sent": sent, "budget": ai_budget_data(db, now=now)}
+
+
 def ai_data(user_id, db=None):
     db = _resolve_db(db)
     config = _configs(db, (
@@ -525,7 +851,7 @@ def ai_data(user_id, db=None):
     total_row = totals.iloc[0] if not totals.empty else {}
     amount = _float(total_row.get("balance")); account_count = len(accounts)
     google = config.get("google_ai_studio_balance_usd")
-    return {
+    result = {
         "user_id": user_id,
         "is_treasurer": treasurer,
         "settings": settings,
@@ -550,6 +876,8 @@ def ai_data(user_id, db=None):
             "updated_by": config.get("google_ai_studio_balance_updated_by") or "",
         },
     }
+    result["monthly_budget"] = ai_budget_data(db)
+    return result
 
 
 def add_ai_transaction(user_id, transaction_type, amount, provider="general", payment_method="", reference_no="", note="", confirmed=False, db=None):
