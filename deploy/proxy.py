@@ -2213,15 +2213,14 @@ async def appliance_practice_timer_config(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Appliance AI free-debate practice (committee-gated direct browser Live)
+# Shared appliance / AI Coach practice renderer (direct browser Live)
 #
-# The kiosk 練習頁 links here. Reuses the SAME Gemini Live engine
-# (templates/live_debate.html) and prompt builder as the committee AI
-# coach (ai_coach.py) so behaviour stays consistent — the only differences are a
-# big-text setup page and that the ephemeral-token mint happens here in the
-# proxy (which has no Streamlit `st.secrets`) instead of in ai_coach. Minting is
-# gated on the dedicated kiosk cookie
-# and rate-limited so the appliance can't be abused into burning AI budget.
+# The kiosk 練習頁 and ordinary /ai-coach page both link here. They reuse the
+# same Gemini Live engine (templates/live_debate.html), prompt builder and
+# Start-time token endpoint. Access follows the central AI Coach account policy
+# (ordinary members plus the dedicated kiosk identity), while the kiosk setup
+# page and all other kiosk APIs remain kiosk-only. Token minting is rate-limited
+# per authenticated user so neither entry point can burn AI budget unchecked.
 # ---------------------------------------------------------------------------
 
 # Backwards-compatible alias; the model choice itself is centrally managed.
@@ -2230,8 +2229,8 @@ FREE_DEBATE_LIVE_MODEL = GEMINI_LIVE_MODEL
 # Only formats with a free-debate segment are offered for standalone Free De.
 _PRACTICE_LIVE_FORMATS = list(FREE_DEBATE_FORMATS)
 
-# In-process rate limit for token minting, keyed by committee user. Single-kiosk
-# scale, so a plain dict that resets on restart is enough.
+# In-process rate limit for token minting, keyed by authenticated AI Coach user.
+# Persistent daily/weekly/monthly quotas remain authoritative across restarts.
 _practice_live_hits: dict = {}
 _PRACTICE_LIVE_MAX_PER_HOUR = PRACTICE_LIVE_MAX_PER_HOUR
 _PRACTICE_LIVE_MIN_GAP_SEC = PRACTICE_LIVE_MIN_GAP_SECONDS
@@ -3280,11 +3279,18 @@ async def appliance_ai_debate_live(request: Request):
 
 async def _appliance_ai_debate_live_locked(request: Request):
     try:
-        user_id = require_kiosk_user(request)
+        # This Live renderer is shared by the dedicated practice appliance and
+        # the ordinary /ai-coach page.  Both identities are already covered by
+        # the central AI Coach policy; requiring the kiosk-only policy here
+        # incorrectly rejects every signed-in committee member after
+        # /api/ai-coach/prepare-live has issued their member-bound claim.
+        user_id = require_page_user(request, "ai_coach")
     except HTTPException:
+        from_coach = request.query_params.get("source") == "coach"
         return _practice_error_page(
-            "需要 kiosk 登入",
-            "AI 辯論練習只限專用 kiosk 帳戶。請返回練習首頁登入。",
+            "需要登入",
+            "請先登入可使用 AI 辯論練習的帳戶。",
+            "/ai-coach" if from_coach else "/practice/ai-debate",
         )
 
     q = request.query_params

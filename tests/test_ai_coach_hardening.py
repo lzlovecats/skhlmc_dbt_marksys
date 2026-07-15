@@ -381,7 +381,11 @@ def test_identity_only_reload_guard_matches_enriched_reserved_claim(monkeypatch)
     assert proxy._solo_live_practice_reserved(launch) is False
     assert proxy._solo_live_practice_exists(launch) is True
 
-    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
+    requested_pages = []
+    monkeypatch.setattr(
+        proxy, "require_page_user",
+        lambda _request, page: requested_pages.append(page) or "alice",
+    )
     monkeypatch.setattr(
         proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch,
     )
@@ -389,6 +393,7 @@ def test_identity_only_reload_guard_matches_enriched_reserved_claim(monkeypatch)
         "US", query=b"mode=free&topic=test&practice_id=signed-claim",
     )))
     assert "練習憑證已簽發" in response.body.decode("utf-8")
+    assert requested_pages == ["ai_coach"]
 
 
 def test_delivery_window_failure_rolls_back_initial_ledger(monkeypatch):
@@ -1152,7 +1157,9 @@ def test_initial_live_html_contains_claim_but_never_mints_or_reserves(monkeypatc
         "user_id": "alice", "mode": mode, "practice_id": f"practice_{mode}_001",
         "session_seconds": [], "system_prompt": "", "exp": 0,
     }
-    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
+    monkeypatch.setattr(
+        proxy, "require_page_user", lambda _request, _page: "alice",
+    )
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_solo_live_quota_error", lambda *_args: None)
@@ -1335,7 +1342,9 @@ def test_reload_of_reserved_initial_practice_never_mints_again(monkeypatch):
         "user_id": "alice", "mode": "free", "practice_id": "practice_free_001",
         "session_seconds": [], "system_prompt": "",
     }
-    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
+    monkeypatch.setattr(
+        proxy, "require_page_user", lambda _request, _page: "alice",
+    )
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: True)
     monkeypatch.setattr(
@@ -1974,7 +1983,9 @@ def test_bandwidth_4gb_blocks_initial_and_jit_token_provider_calls(monkeypatch):
         "user_id": "alice", "mode": "free", "practice_id": "practice-free",
         "session_seconds": [], "system_prompt": "",
     }
-    monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "alice")
+    monkeypatch.setattr(
+        proxy, "require_page_user", lambda _request, _page: "alice",
+    )
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: launch)
     monkeypatch.setattr(proxy, "_solo_live_practice_exists", lambda _claim: False)
     monkeypatch.setattr(proxy, "_practice_live_rate_check", lambda _user: None)

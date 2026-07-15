@@ -51,6 +51,8 @@ LOOPBACK_HOST = "127.0.0.1"
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 PROGRESS_MAX_BYTES = 1024 * 1024
 RESULT_MAX_BYTES = 2 * 1024 * 1024
+SETTINGS_MAX_BYTES = 16 * 1024
+MIN_FREE_OUTPUT_BYTES = 10 * 1024**3
 ACTIVE_STATUSES = frozenset({"queued", "running"})
 URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 
@@ -62,27 +64,76 @@ class JobConflict(RuntimeError):
     """Raised when a second preparation is submitted while one is active."""
 
 
-class UploadRejected(ValueError):
-    """A safe, user-facing upload validation failure."""
+class RequestRejected(ValueError):
+    """A safe, user-facing request validation failure."""
 
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
 
 
+class UploadRejected(RequestRejected):
+    """A safe, user-facing upload validation failure."""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _ensure_private_dir(path: Path) -> Path:
+def _ensure_private_dir(path: Path, *, chmod_existing: bool = True) -> Path:
+    existed = path.exists()
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        path.chmod(0o700)
+        if chmod_existing or not existed:
+            path.chmod(0o700)
     except OSError:
         # Windows and some mounted filesystems do not expose POSIX modes.  The
         # application still never serves files from this directory.
         pass
     return path
+
+
+def _validated_output_root(value: object) -> Path:
+    if not isinstance(value, str):
+        raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出根目錄必須係文字路徑。")
+    raw = value.strip()
+    if not raw or "\x00" in raw or "\r" in raw or "\n" in raw:
+        raise RequestRejected(HTTPStatus.BAD_REQUEST, "請輸入有效嘅輸出根目錄。")
+    try:
+        expanded = Path(raw).expanduser()
+    except (OSError, RuntimeError) as exc:
+        raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出根目錄格式不正確。") from exc
+    if not expanded.is_absolute():
+        raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出根目錄必須使用絕對路徑或 ~/ 開頭。")
+    try:
+        root = expanded.resolve()
+        if root.exists() and not root.is_dir():
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出路徑現時係檔案，唔係資料夾。")
+        # Do not chmod an existing user-selected parent such as ~/Documents.
+        # Every workspace and incoming directory created below it remains 0700.
+        _ensure_private_dir(root, chmod_existing=False)
+    except RequestRejected:
+        raise
+    except OSError as exc:
+        raise RequestRejected(
+            HTTPStatus.BAD_REQUEST,
+            f"未能建立或使用輸出根目錄（{type(exc).__name__}）。",
+        ) from exc
+    if not os.access(root, os.W_OK | os.X_OK):
+        raise RequestRejected(HTTPStatus.BAD_REQUEST, "輸出根目錄不可寫入。")
+    try:
+        free_bytes = shutil.disk_usage(root).free
+    except OSError as exc:
+        raise RequestRejected(
+            HTTPStatus.BAD_REQUEST,
+            f"未能檢查輸出磁碟（{type(exc).__name__}）。",
+        ) from exc
+    if free_bytes < MIN_FREE_OUTPUT_BYTES:
+        raise RequestRejected(
+            HTTPStatus.CONFLICT,
+            f"輸出磁碟只有 {free_bytes / 1024**3:.1f} GB 可用；最少需要 10 GB。",
+        )
+    return root
 
 
 def _safe_payload(value):
@@ -266,6 +317,16 @@ class JobManager:
         with self._lock:
             return str(self._job.get("status")) in ACTIVE_STATUSES
 
+    def set_output_root(self, value: object) -> Path:
+        with self._lock:
+            if str(self._job.get("status")) in ACTIVE_STATUSES:
+                raise JobConflict("資料準備進行期間唔可以更改輸出根目錄")
+            output_root = _validated_output_root(value)
+            incoming_dir = _ensure_private_dir(output_root / ".incoming")
+            self.output_root = output_root
+            self.incoming_dir = incoming_dir
+            return output_root
+
     def start(self, input_path: Path) -> dict[str, object]:
         with self._lock:
             if str(self._job.get("status")) in ACTIVE_STATUSES:
@@ -321,6 +382,8 @@ class JobManager:
             progress = _load_small_json(progress_path, PROGRESS_MAX_BYTES) or {}
             if return_code != 0:
                 progress_error = progress.get("error")
+                if not progress_error and progress.get("stage") == "error":
+                    progress_error = progress.get("message")
                 error = (
                     str(_safe_payload(progress_error))
                     if progress_error
@@ -420,6 +483,13 @@ class PreparerHTTPServer(ThreadingHTTPServer):
                     self.system_provider(self.output_root)
                 )
             return dict(self._system_cache)
+
+    def update_output_root(self, value: object) -> dict[str, object]:
+        root = self.jobs.set_output_root(value)
+        self.output_root = root
+        with self._system_lock:
+            self._system_cache = None
+        return self.system_snapshot()
 
 
 class PreparerRequestHandler(BaseHTTPRequestHandler):
@@ -535,10 +605,14 @@ class PreparerRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "找不到頁面。"})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
-        if urlsplit(self.path).path != "/api/prepare":
+        path = urlsplit(self.path).path
+        if path not in {"/api/output-root", "/api/prepare"}:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "找不到頁面。"})
             return
         if not self._authorised(require_origin=True):
+            return
+        if path == "/api/output-root":
+            self._update_output_root()
             return
         if not bool(self.server.system_snapshot().get("ready")):
             self._send_json(HTTPStatus.CONFLICT, {
@@ -582,6 +656,53 @@ class PreparerRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
+
+    def _update_output_root(self) -> None:
+        try:
+            payload = self._read_small_json()
+            system = self.server.update_output_root(payload.get("output_root"))
+        except RequestRejected as exc:
+            self._send_json(exc.status, {"ok": False, "error": str(exc)})
+            return
+        except JobConflict as exc:
+            self._send_json(HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+            return
+        except Exception:
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False,
+                "error": "未能更新輸出根目錄；請核對路徑及資料夾權限。",
+            })
+            return
+        self._send_json(HTTPStatus.OK, {
+            "ok": True,
+            "system": system,
+            "job": self.server.jobs.snapshot(),
+        })
+
+    def _read_small_json(self) -> dict[str, object]:
+        if self.headers.get("Transfer-Encoding"):
+            raise RequestRejected(HTTPStatus.LENGTH_REQUIRED, "請以一般 JSON request 提交設定。")
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise RequestRejected(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "設定只接受 JSON。")
+        try:
+            size = int(self.headers.get("Content-Length", ""))
+        except ValueError as exc:
+            raise RequestRejected(HTTPStatus.LENGTH_REQUIRED, "設定內容大小不正確。") from exc
+        if size <= 0:
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "設定內容係空嘅。")
+        if size > SETTINGS_MAX_BYTES:
+            raise RequestRejected(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "設定內容過大。")
+        raw = self.rfile.read(size)
+        if len(raw) != size:
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "設定內容傳送中途停止。")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "設定 JSON 格式不正確。") from exc
+        if not isinstance(payload, dict):
+            raise RequestRejected(HTTPStatus.BAD_REQUEST, "設定 JSON 必須係 object。")
+        return payload
 
     def _validate_upload_headers(self) -> tuple[str, str, int]:
         if self.headers.get("Transfer-Encoding"):

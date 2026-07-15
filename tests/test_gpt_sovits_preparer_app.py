@@ -107,6 +107,15 @@ def _upload_headers(server, filename="recordings.json", **extra):
     )
 
 
+def _settings_headers(server, **extra):
+    return _api_headers(
+        server,
+        Origin=server.expected_origin,
+        **{"Content-Type": "application/json"},
+        **extra,
+    )
+
+
 def _manifest_bytes():
     return json.dumps({
         "items": [{
@@ -144,6 +153,7 @@ def test_html_and_api_require_exact_host_and_token(local_server):
     )
     assert status == 200
     assert b"GPT-SoVITS" in body
+    assert b'id="outputRoot"' in body
     assert "default-src 'none'" in headers["Content-Security-Policy"]
     assert headers["Referrer-Policy"] == "no-referrer"
 
@@ -290,6 +300,87 @@ def test_valid_upload_runs_worker_redacts_urls_and_deletes_temp(local_server):
     assert b"signature=secret" not in body
 
 
+def test_output_root_can_be_changed_before_upload(local_server):
+    custom_root = local_server.output_root.parent / "custom-output"
+    body = json.dumps({"output_root": str(custom_root)}).encode("utf-8")
+    status, _headers, payload = _request(
+        local_server,
+        "POST",
+        "/api/output-root",
+        body=body,
+        headers=_settings_headers(local_server),
+    )
+    assert status == 200
+    response = json.loads(payload)
+    assert response["system"]["output_root"] == str(custom_root.resolve())
+    assert local_server.output_root == custom_root.resolve()
+    assert local_server.jobs.incoming_dir == custom_root.resolve() / ".incoming"
+
+    status, _headers, _payload = _request(
+        local_server,
+        "POST",
+        "/api/prepare",
+        body=_manifest_bytes(),
+        headers=_upload_headers(local_server),
+    )
+    assert status == 202
+    job = _wait_for_terminal_job(local_server)
+    assert Path(job["workspace"]).parent == custom_root.resolve()
+
+
+def test_output_root_rejects_relative_paths(local_server):
+    body = json.dumps({"output_root": "relative/output"}).encode("utf-8")
+    status, _headers, payload = _request(
+        local_server,
+        "POST",
+        "/api/output-root",
+        body=body,
+        headers=_settings_headers(local_server),
+    )
+    assert status == 400
+    assert "絕對路徑" in json.loads(payload)["error"]
+
+
+def test_worker_error_uses_progress_message_and_redacts_url(tmp_path):
+    def failing_worker(_input_path, _workspace, progress_path):
+        progress_path.write_text(
+            json.dumps({
+                "stage": "error",
+                "message": "download failed: https://r2.example/audio?signature=secret",
+            }),
+            encoding="utf-8",
+        )
+        return 1
+
+    server = app.create_server(
+        port=0,
+        output_root=tmp_path / "private",
+        token=TOKEN,
+        worker=failing_worker,
+        system_provider=_system,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _headers, _payload = _request(
+            server,
+            "POST",
+            "/api/prepare",
+            body=_manifest_bytes(),
+            headers=_upload_headers(server),
+        )
+        assert status == 202
+        job = _wait_for_terminal_job(server)
+        assert job["status"] == "error"
+        assert "download failed" in job["error"]
+        assert "r2.example" not in json.dumps(job, ensure_ascii=False)
+        assert "[已隱藏 URL]" in job["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_only_one_background_job_can_run(tmp_path):
     started = threading.Event()
     release = threading.Event()
@@ -323,6 +414,18 @@ def test_only_one_background_job_can_run(tmp_path):
         )
         assert status == 202
         assert started.wait(timeout=1)
+
+        blocked_root = tmp_path / "blocked-while-running"
+        status, _headers, payload = _request(
+            server,
+            "POST",
+            "/api/output-root",
+            body=json.dumps({"output_root": str(blocked_root)}).encode("utf-8"),
+            headers=_settings_headers(server),
+        )
+        assert status == 409
+        assert "唔可以更改" in json.loads(payload)["error"]
+        assert not blocked_root.exists()
 
         status, _headers, payload = _request(
             server,

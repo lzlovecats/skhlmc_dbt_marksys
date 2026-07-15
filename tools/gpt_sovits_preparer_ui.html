@@ -205,6 +205,51 @@
         padding: 10px 16px;
       }
 
+      .output-settings {
+        margin-top: 18px;
+        text-align: left;
+      }
+
+      .output-settings label {
+        display: block;
+        margin-bottom: 7px;
+        font-size: 0.86rem;
+        font-weight: 800;
+      }
+
+      .output-row {
+        display: flex;
+        gap: 8px;
+        align-items: stretch;
+      }
+
+      .output-path {
+        min-width: 0;
+        flex: 1;
+        padding: 10px 11px;
+        border: 1px solid #aebbc6;
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.92);
+        color: var(--ink);
+        font: 0.86rem ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .output-path:focus {
+        border-color: var(--teal);
+        outline: 3px solid rgba(22, 132, 122, 0.14);
+      }
+
+      .output-help {
+        margin: 7px 0 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .apply-button {
+        padding: 9px 13px;
+        white-space: nowrap;
+      }
+
       .copy-button {
         padding: 7px 11px;
         background: #e6edf2;
@@ -508,6 +553,11 @@
         .result-grid {
           grid-template-columns: 1fr;
         }
+
+        .output-row {
+          align-items: stretch;
+          flex-direction: column;
+        }
       }
     </style>
   </head>
@@ -536,6 +586,21 @@
               <button id="pickButton" class="pick-button" type="button" disabled>揀檔案</button>
               <input id="fileInput" type="file" accept=".json,.zip,application/json,application/zip" disabled />
             </div>
+          </div>
+          <div class="output-settings">
+            <label for="outputRoot">輸出根目錄</label>
+            <div class="output-row">
+              <input
+                id="outputRoot"
+                class="output-path"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="例如 ~/private-ai-training 或 /Volumes/Training/data"
+              />
+              <button id="applyOutputRoot" class="apply-button" type="button">套用路徑</button>
+            </div>
+            <p class="output-help">每次工作會喺呢個位置建立獨立嘅 <code>tts-日期-編號</code> 資料夾。</p>
           </div>
         </article>
 
@@ -627,6 +692,8 @@
         let pollTimer = null;
         let active = false;
         let preflightReady = false;
+        let outputRootDirty = false;
+        let configuringOutput = false;
 
         const statusLabels = {
           idle: "等待檔案",
@@ -708,6 +775,10 @@
         function renderSystem(payload) {
           system = payload.system;
           preflightReady = Boolean(system.ready);
+          const configuredOutputRoot = text(system.output_root, "");
+          $("outputRoot").value = configuredOutputRoot;
+          $("outputRoot").dataset.appliedValue = configuredOutputRoot;
+          outputRootDirty = false;
           const hardware = system.hardware || {};
           const memory = Number(hardware.memory_gb);
           const facts = [
@@ -754,6 +825,15 @@
           }
         }
 
+        function syncControls() {
+          const inputBlocked = active || !preflightReady || configuringOutput;
+          $("dropZone").classList.toggle("disabled", inputBlocked);
+          $("pickButton").disabled = inputBlocked;
+          $("fileInput").disabled = inputBlocked;
+          $("outputRoot").disabled = active || configuringOutput;
+          $("applyOutputRoot").disabled = active || configuringOutput;
+        }
+
         function progressValue(job) {
           const progress = job.progress || {};
           let value = Number(progress.percent ?? progress.progress_percent);
@@ -798,10 +878,7 @@
           const progressTrack = $("progressBar").parentElement;
           progressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
 
-          const inputBlocked = active || !preflightReady;
-          $("dropZone").classList.toggle("disabled", inputBlocked);
-          $("pickButton").disabled = inputBlocked;
-          $("fileInput").disabled = inputBlocked;
+          syncControls();
 
           const error = text(job.error, "");
           $("errorNotice").textContent = error;
@@ -911,8 +988,39 @@
           $("errorNotice").classList.remove("hidden");
         }
 
+        async function applyOutputRoot() {
+          if (active || configuringOutput) return false;
+          const outputRoot = $("outputRoot").value.trim();
+          if (!outputRoot) {
+            showError("請輸入輸出根目錄；可使用絕對路徑或 ~/ 開頭。");
+            return false;
+          }
+          configuringOutput = true;
+          syncControls();
+          $("errorNotice").classList.add("hidden");
+          try {
+            const payload = await request("/api/output-root", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({output_root: outputRoot}),
+            });
+            renderSystem(payload);
+            return true;
+          } catch (error) {
+            showError(error.message);
+            return false;
+          } finally {
+            configuringOutput = false;
+            syncControls();
+          }
+        }
+
         async function prepare(file) {
           if (!file || active) return;
+          if (outputRootDirty) {
+            const applied = await applyOutputRoot();
+            if (!applied) return;
+          }
           if (!preflightReady) {
             showError("本機預檢未通過，未有開始下載任何錄音。");
             return;
@@ -947,9 +1055,7 @@
             renderJob(payload.job || {});
           } catch (error) {
             active = false;
-            $("dropZone").classList.toggle("disabled", !preflightReady);
-            $("pickButton").disabled = !preflightReady;
-            $("fileInput").disabled = !preflightReady;
+            syncControls();
             showError(error.message);
           }
         }
@@ -972,6 +1078,16 @@
         });
         $("pickButton").addEventListener("click", () => $("fileInput").click());
         $("fileInput").addEventListener("change", (event) => prepare(event.target.files?.[0]));
+        $("outputRoot").addEventListener("input", () => {
+          outputRootDirty = $("outputRoot").value.trim() !== $("outputRoot").dataset.appliedValue;
+        });
+        $("outputRoot").addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            applyOutputRoot();
+          }
+        });
+        $("applyOutputRoot").addEventListener("click", applyOutputRoot);
         $("copyPath").addEventListener("click", async () => {
           const path = $("workspacePath").textContent;
           if (!path) return;
@@ -988,6 +1104,9 @@
           showError("本機工作階段已失效，請關閉頁面並重新啟動工具。");
           $("dropZone").classList.add("disabled");
           $("pickButton").disabled = true;
+          $("fileInput").disabled = true;
+          $("outputRoot").disabled = true;
+          $("applyOutputRoot").disabled = true;
           return;
         }
         request("/api/system")
