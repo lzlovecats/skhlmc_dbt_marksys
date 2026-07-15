@@ -50,7 +50,6 @@ from system_limits import (
     DATASET_SNAPSHOT_MAX_COUNT,
     DATASET_SNAPSHOT_MAX_ITEMS, LLM_CONTENT_MAX_CHARS,
     LLM_REVIEW_CONCURRENCY, LLM_SUBMISSION_MAX_TOTAL,
-    LLM_SUBMISSION_RATE_WINDOW_HOURS, LLM_SUBMISSIONS_PER_USER_DAY,
     MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_AUDIO_BYTES,
     RAG_DOCUMENT_MAX_TOTAL,
     RAG_REINDEX_MAX_CHUNKS, RAG_REINDEX_MAX_DOCUMENTS,
@@ -59,7 +58,6 @@ from system_limits import (
     RECORDING_MANIFEST_MAX_ROWS, TTS_AI_ANALYSIS_SCRIPT_LIMIT,
     TTS_MAX_DURATION_SECONDS, TTS_REVIEW_CONCURRENCY,
     TTS_REVIEW_CLAIM_TTL_SECONDS,
-    TTS_UPLOAD_INTENTS_GLOBAL_MONTH, TTS_UPLOAD_INTENTS_PER_USER_DAY,
 )
 
 router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
@@ -515,8 +513,6 @@ def data(request: Request):
     result["limits"] = {
         "max_audio_bytes": MAX_AUDIO_BYTES,
         "max_duration_seconds": TTS_MAX_DURATION_SECONDS,
-        "upload_intents_per_user_day": TTS_UPLOAD_INTENTS_PER_USER_DAY,
-        "upload_intents_global_month": TTS_UPLOAD_INTENTS_GLOBAL_MONTH,
         "r2_object_cache_max_age_seconds": R2_OBJECT_CACHE_MAX_AGE_SECONDS,
     }
     if admin:
@@ -652,16 +648,10 @@ def recording_upload_intent(body: RecordingUploadIntentBody, request: Request):
     reserved, scope = r2_storage.reserve_upload_intent(
         db, intent_id=intent_id, user_id=str(user), media_kind="tts",
         object_keys=[pending_key, key], declared_bytes=body.byte_size,
-        user_daily_limit=TTS_UPLOAD_INTENTS_PER_USER_DAY,
-        global_monthly_limit=TTS_UPLOAD_INTENTS_GLOBAL_MONTH,
     )
     if not reserved:
         stop_gb = storage_budget["stop_bytes"] / 1_000_000_000
-        message = f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新錄音上載。" if scope == "storage_global" else (
-            "你今日申請的錄音上載次數已達上限，請翌日再試。"
-            if scope == "user_daily" else "本月全系統錄音上載申請已達上限。"
-        )
-        raise HTTPException(429, message)
+        raise HTTPException(429, f"R2儲存量已達{stop_gb:g}GB保護上限，暫停新錄音上載。")
     return {
         "upload_token": token,
         "url": r2_storage.presign_put(pending_key, mime, body.sha256, body.byte_size),
@@ -976,12 +966,6 @@ async def llm(body: LlmBody, request: Request):
     fingerprint = hashlib.sha256(normalized.encode()).hexdigest()
     duplicate = db.query(f"SELECT id FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE submitted_by=:user AND md5(COALESCE(data_type,'')||'|'||COALESCE(side,'')||'|'||COALESCE(title,'')||'|'||COALESCE(topic_text,'')||'|'||COALESCE(content_text,'')||'|'||COALESCE(source_note,''))=md5(:raw) AND status!='withdrawn'", {"user":user,"raw":"|".join([body.data_type,body.side,body.title.strip(),body.topic_text.strip(),body.content_text.strip(),body.source_note.strip()])})
     if not duplicate.empty: raise HTTPException(409,"此資料已提交，請勿重複提交")
-    rate_cutoff = datetime.now() - timedelta(hours=LLM_SUBMISSION_RATE_WINDOW_HOURS)
-    recent = db.query(f"""SELECT COUNT(*) AS n FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
-        WHERE submitted_by=:user AND created_at >= :rate_cutoff""",
-        {"user": user, "rate_cutoff": rate_cutoff})
-    if int(recent.iloc[0]["n"] or 0) >= LLM_SUBMISSIONS_PER_USER_DAY:
-        raise HTTPException(429, f"每位用戶24小時內最多提交 {LLM_SUBMISSIONS_PER_USER_DAY} 份文字訓練資料。")
     total = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_LLM_TRAINING_SUBMISSIONS}")
     if not total.empty and int(total.iloc[0]["n"] or 0) >= LLM_SUBMISSION_MAX_TOTAL:
         raise HTTPException(409, "LLM訓練資料已達保護上限，請先封存或清理舊提交。")
@@ -1011,13 +995,10 @@ async def llm(body: LlmBody, request: Request):
               "ai_status":review_status,"review":_bounded_json_param(review, "LLM AI預檢結果"),
               "raw":"|".join([body.data_type,body.side,body.title.strip(),body.topic_text.strip(),
                                 body.content_text.strip(),body.source_note.strip()]),
-              "now":datetime.now(), "rate_cutoff": rate_cutoff}
+              "now":datetime.now()}
     with db.transaction() as conn:
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
                      {"key": f"llm_submission:{user}"})
-        final_recent = int(conn.execute(text(f"""SELECT COUNT(*) FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
-            WHERE submitted_by=:user AND created_at>=:rate_cutoff"""),
-            params).scalar() or 0)
         final_total = int(conn.execute(text(f"SELECT COUNT(*) FROM {TABLE_LLM_TRAINING_SUBMISSIONS}")).scalar() or 0)
         final_duplicate = conn.execute(text(f"""SELECT 1 FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
             WHERE submitted_by=:user
@@ -1025,8 +1006,6 @@ async def llm(body: LlmBody, request: Request):
               AND status!='withdrawn' LIMIT 1"""), params).fetchone()
         if final_duplicate:
             raise HTTPException(409, "此資料已提交，請勿重複提交")
-        if final_recent >= LLM_SUBMISSIONS_PER_USER_DAY:
-            raise HTTPException(429, f"每位用戶24小時內最多提交 {LLM_SUBMISSIONS_PER_USER_DAY} 份文字訓練資料。")
         if final_total >= LLM_SUBMISSION_MAX_TOTAL:
             raise HTTPException(409, "LLM訓練資料已達保護上限，請先封存或清理舊提交。")
         conn.execute(text(f"""INSERT INTO {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by,data_type,title,topic_text,side,content_text,source_note,anonymized,permission_confirmed,ai_review_status,ai_review_json,status,created_at)

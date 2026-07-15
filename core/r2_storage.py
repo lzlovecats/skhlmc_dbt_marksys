@@ -16,7 +16,6 @@ import threading
 import time
 import datetime as dt
 from functools import lru_cache
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -38,7 +37,6 @@ from system_limits import (
 
 
 _usage_refresh_lock = threading.Lock()
-_HONG_KONG = ZoneInfo("Asia/Hong_Kong")
 
 
 def _nonnegative_int(value) -> int:
@@ -239,7 +237,7 @@ def _intent_declared_bytes(db) -> int:
     from schema import TABLE_R2_UPLOAD_INTENTS
     rows = db.query(f"""SELECT COALESCE(SUM(declared_bytes),0) AS total
         FROM {TABLE_R2_UPLOAD_INTENTS}
-        WHERE status NOT IN ('orphan_deleted','provider_processing','consumed')""")
+        WHERE status NOT IN ('orphan_deleted','consumed')""")
     return int(rows.iloc[0]["total"] or 0) if not rows.empty else 0
 
 
@@ -281,118 +279,51 @@ def storage_budget_status(db, *, refresh: bool = False) -> dict:
     base = _nonnegative_int(snapshot.get("bytes"))
     intent_snapshot = _nonnegative_int(snapshot.get("intent_bytes_snapshot"))
     total = base + max(0, intent_bytes - intent_snapshot)
+    try:
+        from core.resource_limits import get_monthly_limit
+        limits = get_monthly_limit(db, "r2_storage")
+        warn_bytes = int(limits.get("warning_value") or R2_STORAGE_WARN_BYTES)
+        stop_bytes = int(limits.get("stop_value") or R2_STORAGE_STOP_BYTES)
+        hard_bytes = int(limits.get("hard_value") or stop_bytes)
+    except Exception:
+        warn_bytes = R2_STORAGE_WARN_BYTES
+        stop_bytes = R2_STORAGE_STOP_BYTES
+        hard_bytes = stop_bytes
     return {
         "total_bytes": total, "snapshot_bytes": base,
         "snapshot_as_of": str(snapshot.get("as_of") or ""),
         "intent_bytes": intent_bytes,
         "intent_bytes_after_snapshot": max(0, intent_bytes - intent_snapshot),
-        "snapshot_stale": stale, "warning": total >= R2_STORAGE_WARN_BYTES,
-        "blocked": total >= R2_STORAGE_STOP_BYTES,
-        "warn_bytes": R2_STORAGE_WARN_BYTES, "stop_bytes": R2_STORAGE_STOP_BYTES,
-    }
-
-
-def _upload_intent_quota_window(
-    now: dt.datetime | None = None,
-) -> tuple[dt.datetime, dt.datetime, dt.datetime]:
-    """Return naive UTC ``(now, HK-day-start, HK-month-start)`` values."""
-    if now is None:
-        now_hk = dt.datetime.now(_HONG_KONG)
-    elif now.tzinfo is None:
-        now_hk = now.replace(tzinfo=_HONG_KONG)
-    else:
-        now_hk = now.astimezone(_HONG_KONG)
-    day_hk = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_hk = day_hk.replace(day=1)
-    return tuple(
-        value.astimezone(dt.timezone.utc).replace(tzinfo=None)
-        for value in (now_hk, day_hk, month_hk)
-    )
-
-
-def _upload_intent_counts(
-    session,
-    *,
-    user_id: str,
-    media_kind: str,
-    day_utc: dt.datetime,
-    month_utc: dt.datetime,
-) -> tuple[int, int]:
-    """Count the same intent rows used by the authoritative quota gate."""
-    from schema import TABLE_R2_UPLOAD_INTENTS
-
-    kiosk_status_filter = (
-        "AND status IN ('issued','processing','provider_processing','consumed')"
-        if str(media_kind) == "kiosk_match_review" else ""
-    )
-    row = session.execute(text(f"""SELECT
-            COUNT(*) FILTER (
-                WHERE user_id=:user AND created_at>=:day_start
-            ) AS user_daily_used,
-            COUNT(*) AS global_monthly_used
-        FROM {TABLE_R2_UPLOAD_INTENTS}
-        WHERE media_kind=:kind AND created_at>=:month_start
-        {kiosk_status_filter}"""), {
-        "user": str(user_id), "kind": str(media_kind),
-        "day_start": day_utc, "month_start": month_utc,
-    }).mappings().one()
-    return int(row["user_daily_used"] or 0), int(row["global_monthly_used"] or 0)
-
-
-def upload_intent_quota_status(
-    db,
-    *,
-    user_id: str,
-    media_kind: str,
-    user_daily_limit: int,
-    global_monthly_limit: int,
-) -> dict:
-    """Return advisory intent usage using the authoritative HK quota windows.
-
-    Reservation remains the final authority because another request can consume
-    a slot immediately after this read-only status check.
-    """
-    _now_utc, day_utc, month_utc = _upload_intent_quota_window()
-    with db.transaction() as session:
-        user_count, global_count = _upload_intent_counts(
-            session,
-            user_id=user_id,
-            media_kind=media_kind,
-            day_utc=day_utc,
-            month_utc=month_utc,
-        )
-    daily_limit = max(0, int(user_daily_limit))
-    monthly_limit = max(0, int(global_monthly_limit))
-    daily_remaining = max(0, daily_limit - user_count)
-    monthly_remaining = max(0, monthly_limit - global_count)
-    blocked_scope = (
-        "user_daily" if user_count >= daily_limit
-        else "global_monthly" if global_count >= monthly_limit
-        else ""
-    )
-    return {
-        "user_daily_used": user_count,
-        "user_daily_limit": daily_limit,
-        "user_daily_remaining": daily_remaining,
-        "global_monthly_used": global_count,
-        "global_monthly_limit": monthly_limit,
-        "global_monthly_remaining": monthly_remaining,
-        "allowed": not blocked_scope,
-        "blocked_scope": blocked_scope,
+        "snapshot_stale": stale, "warning": total >= warn_bytes,
+        "blocked": total >= stop_bytes,
+        "warn_bytes": warn_bytes, "stop_bytes": stop_bytes,
+        "hard_bytes": hard_bytes,
     }
 
 
 def reserve_upload_intent(
     db, *, intent_id: str, user_id: str, media_kind: str, object_keys: list[str],
-    declared_bytes: int, user_daily_limit: int, global_monthly_limit: int,
-    storage_stop_bytes: int = R2_STORAGE_STOP_BYTES,
+    declared_bytes: int, storage_stop_bytes: int | None = None,
+    metadata: dict | None = None,
 ) -> tuple[bool, str]:
-    """Persistently cap issued PUT URLs, including uploads never finalized."""
+    """Reserve an owned upload intent under the system-wide storage gate."""
     from schema import TABLE_R2_UPLOAD_INTENTS
 
-    now_utc, day_utc, month_utc = _upload_intent_quota_window()
+    # Resolve the DB-backed monthly threshold before taking a transaction-level
+    # lock. RuntimeDb would otherwise borrow a second pooled connection while
+    # this reservation held the first one, which can exhaust the size-3 pool.
+    if storage_stop_bytes is None:
+        try:
+            from core.resource_limits import get_monthly_limit
+            storage_stop_bytes = int(
+                get_monthly_limit(db, "r2_storage").get("stop_value")
+                or R2_STORAGE_STOP_BYTES
+            )
+        except Exception:
+            storage_stop_bytes = R2_STORAGE_STOP_BYTES
+    now_utc = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     with db.transaction() as session:
-        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_quota'))"))
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_storage'))"))
         session.execute(text(f"""DELETE FROM {TABLE_R2_UPLOAD_INTENTS}
             WHERE (status IN ('completed','orphan_deleted','consumed')
                    AND completed_at<:cutoff)
@@ -405,39 +336,73 @@ def reserve_upload_intent(
             storage_snapshot = {}
         current_declared = int(session.execute(text(f"""SELECT COALESCE(SUM(declared_bytes),0)
             FROM {TABLE_R2_UPLOAD_INTENTS}
-            WHERE status NOT IN ('orphan_deleted','provider_processing','consumed')""")).scalar() or 0)
+            WHERE status NOT IN ('orphan_deleted','consumed')""")).scalar() or 0)
         base_bytes = _nonnegative_int(storage_snapshot.get("bytes"))
         intent_snapshot = _nonnegative_int(storage_snapshot.get("intent_bytes_snapshot"))
         projected = base_bytes + max(0, current_declared - intent_snapshot) + int(declared_bytes)
         if projected >= int(storage_stop_bytes):
             return False, "storage_global"
-        user_count, global_count = _upload_intent_counts(
-            session,
-            user_id=user_id,
-            media_kind=media_kind,
-            day_utc=day_utc,
-            month_utc=month_utc,
-        )
-        if user_count >= int(user_daily_limit):
-            return False, "user_daily"
-        if global_count >= int(global_monthly_limit):
-            return False, "global_monthly"
         session.execute(text(f"""INSERT INTO {TABLE_R2_UPLOAD_INTENTS}
-            (intent_id,user_id,media_kind,object_keys,declared_bytes,status,created_at)
-            VALUES(:id,:user,:kind,:keys,:bytes,'issued',:now)"""), {
+            (intent_id,user_id,media_kind,object_keys,declared_bytes,
+             intent_metadata,status,created_at)
+            VALUES(:id,:user,:kind,:keys,:bytes,CAST(:metadata AS jsonb),'issued',:now)"""), {
             "id": intent_id, "user": user_id, "kind": media_kind,
             "keys": json.dumps(object_keys, separators=(",", ":")),
-            "bytes": int(declared_bytes), "now": now_utc,
+            "bytes": int(declared_bytes),
+            "metadata": json.dumps(metadata or {}, separators=(",", ":")),
+            "now": now_utc,
         })
     return True, ""
 
 
-def complete_upload_intent(db, intent_id: str) -> None:
+def complete_upload_intent(
+    db, intent_id: str, *, user_id: str, media_kind: str,
+) -> bool:
     from schema import TABLE_R2_UPLOAD_INTENTS
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-    db.execute(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+    changed = db.execute_count(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
         SET status='completed',completed_at=:now
-        WHERE intent_id=:id AND status='issued'""", {"id": intent_id, "now": now})
+        WHERE intent_id=:id AND user_id=:user AND media_kind=:kind
+          AND status='issued'""", {
+        "id": intent_id, "user": user_id, "kind": media_kind, "now": now,
+    })
+    return int(changed or 0) == 1
+
+
+def claim_completed_upload_intent(
+    db, intent_id: str, *, user_id: str, media_kind: str,
+) -> bool:
+    """Atomically make one completed temporary upload single-use."""
+    from schema import TABLE_R2_UPLOAD_INTENTS
+    changed = db.execute_count(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+        SET status='processing',completed_at=NULL
+        WHERE intent_id=:id AND user_id=:user AND media_kind=:kind
+          AND status='completed'""", {
+        "id": intent_id, "user": user_id, "kind": media_kind,
+    })
+    return int(changed or 0) == 1
+
+
+def get_upload_intent(db, intent_id: str, user_id: str, media_kind: str) -> dict | None:
+    from schema import TABLE_R2_UPLOAD_INTENTS
+    frame = db.query(f"""SELECT intent_id,user_id,media_kind,object_keys,
+            declared_bytes,intent_metadata,status,created_at,completed_at
+        FROM {TABLE_R2_UPLOAD_INTENTS}
+        WHERE intent_id=:id AND user_id=:user AND media_kind=:kind""", {
+        "id": str(intent_id), "user": str(user_id), "kind": str(media_kind),
+    })
+    if frame.empty:
+        return None
+    row = dict(frame.iloc[0])
+    for field, fallback in (("object_keys", []), ("intent_metadata", {})):
+        value = row.get(field)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                value = fallback
+        row[field] = value if isinstance(value, type(fallback)) else fallback
+    return row
 
 
 def mark_upload_intent_deleted(db, intent_id: str) -> None:
@@ -445,7 +410,7 @@ def mark_upload_intent_deleted(db, intent_id: str) -> None:
     db.execute(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
         SET status='orphan_deleted',completed_at=:now
         WHERE intent_id=:id
-          AND status IN ('issued','processing','orphan_deleted')""", {
+          AND status IN ('issued','completed','processing','orphan_deleted')""", {
         "id": intent_id, "now": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
     })
 

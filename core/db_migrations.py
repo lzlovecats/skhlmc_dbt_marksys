@@ -42,6 +42,13 @@ _REVOKE_TABLE_STATEMENT = re.compile(
     r"(?P<tables>.*?)\s+FROM\s+(?P<roles>[^;]+);",
     re.IGNORECASE | re.DOTALL,
 )
+_PUBLIC_THEN_DYNAMIC_REVOKE = re.compile(
+    r"\bREVOKE\s+ALL\s+PRIVILEGES\s+ON\s+TABLE\s+"
+    r"(?P<table>(?:(?:[A-Za-z_][A-Za-z0-9_$]*)\.)?"
+    r"[A-Za-z_][A-Za-z0-9_$]*)\s+FROM\s+PUBLIC\s*;"
+    r"(?P<block>\s*DO\s+\$\$.*?END\s+\$\$\s*;)",
+    re.IGNORECASE | re.DOTALL,
+)
 _BROWSER_ROLES = {"public", "anon", "authenticated"}
 _LEGACY_PRIVILEGE_COMPANIONS = {
     "20260713_0001": "20260713_0002",
@@ -376,6 +383,34 @@ def browser_privilege_revokes(sql: str) -> set[str]:
             table = raw_table.strip().strip('"').rsplit(".", 1)[-1].strip('"')
             if _IDENTIFIER.fullmatch(table):
                 revoked.add(table)
+    # Fresh PostgreSQL databases may not have Supabase's optional browser roles.
+    # Accept the guarded equivalent only when the block explicitly discovers
+    # both roles, quotes the discovered identifier, and revokes the same table.
+    for match in _PUBLIC_THEN_DYNAMIC_REVOKE.finditer(sql):
+        raw_table = match.group("table")
+        table = raw_table.rsplit(".", 1)[-1]
+        block = match.group("block")
+        discovered_roles = {
+            role.lower()
+            for role in re.findall(
+                r"['\"](anon|authenticated)['\"]", block,
+                flags=re.IGNORECASE,
+            )
+        }
+        same_table_revoke = re.search(
+            r"EXECUTE\s+['\"]REVOKE\s+ALL\s+PRIVILEGES\s+ON\s+TABLE\s+"
+            + re.escape(raw_table)
+            + r"\s+FROM\s+['\"]",
+            block,
+            flags=re.IGNORECASE,
+        )
+        if (
+            discovered_roles == {"anon", "authenticated"}
+            and same_table_revoke
+            and re.search(r"quote_ident\s*\(\s*role_name\s*\)", block, re.IGNORECASE)
+            and _IDENTIFIER.fullmatch(table)
+        ):
+            revoked.add(table)
     return revoked
 
 

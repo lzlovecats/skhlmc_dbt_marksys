@@ -185,6 +185,12 @@
         </section>
         <section id="system" class="pane">
           <section class="card">
+            <h2>Render Bandwidth 官方同步</h2>
+            <p class="caption">Web process 每小時會自動同步一次；此按鈕只供檢查或補同步，不會修改門檻。</p>
+            <p id="renderBandwidthSyncStatus">尚未手動同步。</p>
+            <button id="syncRenderBandwidth" class="primary" type="button">立即同步官方數據</button>
+          </section>
+          <section class="card">
             <h2>維護模式</h2>
             <p class="caption">開啟後除本頁外，所有頁面均會顯示維護中訊息。</p>
             <p id="maintState">正在讀取目前維護模式…</p>
@@ -201,15 +207,6 @@
             <label>選擇委員<select id="bypassUsers" multiple size="6"></select></label>
             <label>到期時間<input id="bypassExpiry" type="datetime-local" /></label>
             <div class="actions"><button id="saveBypass" class="primary">啟用臨時權限</button><button id="revokeAllBypass" class="danger">全部撤銷</button></div>
-          </section>
-          <section class="card">
-            <h2>Solo 練習臨時豁免</h2>
-            <p class="caption">只略過指定委員的個人次數限制；全系統月限、地區、網絡及安全限制仍然生效。最長30日。</p>
-            <div id="soloQuotaExemptions"></div>
-            <label>委員<select id="soloQuotaUser"></select></label>
-            <label>類別<select id="soloQuotaMode"><option value="all">Free + Mock</option><option value="free">只限 Free</option><option value="mock">只限 Mock</option></select></label>
-            <label>到期時間（香港時間）<input id="soloQuotaExpiry" type="datetime-local" /></label>
-            <button id="saveSoloQuotaExemption" class="primary">設定臨時豁免</button>
           </section>
           <form id="pushForm" class="card">
             <h2>手動推送通知</h2>
@@ -484,25 +481,6 @@
             date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
             $("bypassExpiry").value = date.toISOString().slice(0, 16);
           }
-          const soloExemptions = parseBypasses(c.solo_quota_exemptions);
-          $("soloQuotaExemptions").innerHTML =
-            Object.entries(soloExemptions)
-              .map(([uid, entry]) => {
-                const mode = entry?.mode === "free" ? "Free" : entry?.mode === "mock" ? "Mock" : "Free + Mock";
-                const expiry = entry?.expires_at
-                  ? new Date(entry.expires_at).toLocaleString("zh-HK", { timeZone: "Asia/Hong_Kong" })
-                  : "無效";
-                return `<div class="actions"><span>${esc(uid)}（${esc(mode)}；至 ${esc(expiry)} 香港時間）</span><button data-revoke-solo-quota="${esc(uid)}" class="danger">撤銷</button></div>`;
-              })
-              .join("") || '<p class="caption">目前沒有有效的 Solo 次數豁免。</p>';
-          $("soloQuotaUser").innerHTML = (data.account_options || [])
-            .map((uid) => `<option value="${esc(uid)}">${esc(uid)}</option>`)
-            .join("");
-          if (!$("soloQuotaExpiry").value) {
-            const date = new Date(Date.now() + 86400000);
-            date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-            $("soloQuotaExpiry").value = date.toISOString().slice(0, 16);
-          }
           $("pushTarget").innerHTML =
             '<option value="">所有已訂閱委員</option>' +
             (data.subscriptions || [])
@@ -649,6 +627,22 @@
             "維護模式已更新。",
           );
         };
+        $("syncRenderBandwidth").onclick = async () => {
+          busy(true);
+          try {
+            const result = await api("/api/developer/render-bandwidth/sync", {
+              method: "POST",
+            });
+            const status = result.status || {};
+            $("renderBandwidthSyncStatus").textContent =
+              `收到 ${result.received || 0} 個 bucket，寫入／更新 ${result.stored_complete || 0} 個完整 bucket；本月合計約 ${(Number(status.total_bytes || 0) / 1e9).toFixed(3)}GB。`;
+            toast("✅ Render bandwidth 官方數據已同步。");
+          } catch (e) {
+            toast("⚠️ " + e.message);
+          } finally {
+            busy(false);
+          }
+        };
         $("saveBypass").onclick = () => {
           const users = [...$("bypassUsers").selectedOptions].map(
             (option) => option.value,
@@ -669,22 +663,6 @@
         $("revokeAllBypass").onclick = async () => {
           if (!(await askAction("全部撤銷？", "所有臨時提案權限會立即失效。"))) return;
           mutate("/api/developer/bypass", { method: "POST", body: JSON.stringify({ revoke_all: true }) }, "所有臨時提案權限已撤銷。");
-        };
-        $("saveSoloQuotaExemption").onclick = () => {
-          if (!$("soloQuotaUser").value || !$("soloQuotaExpiry").value)
-            return toast("⚠️ 請選擇委員及到期時間。");
-          mutate(
-            "/api/developer/solo-quota-exemptions",
-            {
-              method: "POST",
-              body: JSON.stringify({
-                user_id: $("soloQuotaUser").value,
-                mode: $("soloQuotaMode").value,
-                expires_at: $("soloQuotaExpiry").value,
-              }),
-            },
-            "Solo 練習臨時豁免已設定。",
-          );
         };
         $("pushForm").onsubmit = async (e) => {
           e.preventDefault();
@@ -747,12 +725,6 @@
           }
           if (b.dataset.revokeBypass)
             mutate("/api/developer/bypass", { method: "POST", body: JSON.stringify({ revoke_user: b.dataset.revokeBypass }) }, `已撤銷 ${b.dataset.revokeBypass} 的臨時權限。`);
-          if (b.dataset.revokeSoloQuota)
-            mutate(
-              "/api/developer/solo-quota-exemptions/" + encodeURIComponent(b.dataset.revokeSoloQuota),
-              { method: "DELETE" },
-              `已撤銷 ${b.dataset.revokeSoloQuota} 的 Solo 練習豁免。`,
-            );
           if (b.dataset.reset) {
             askAction("重設帳戶密碼", `為 ${b.dataset.reset} 輸入新密碼。`, true).then((password) => {
             if (password)

@@ -54,15 +54,14 @@ TABLE_LATENESS_FUND_RECORDS = "lateness_fund_records"
 TABLE_LATENESS_FUND_EXPENSES = "lateness_fund_expenses"
 TABLE_LATENESS_FUND_PERIODS = "lateness_fund_periods"
 TABLE_BUG_REPORTS = "bug_reports"
-TABLE_PRACTICE_DAILY_USAGE = "practice_daily_usage"
 TABLE_BANDWIDTH_USAGE_LOGS = "bandwidth_usage_logs"
 TABLE_R2_UPLOAD_INTENTS = "r2_upload_intents"
+TABLE_MONTHLY_RESOURCE_LIMITS = "monthly_resource_limits"
 TABLE_PROJECTOR_STATE = "projector_state"
 TABLE_PROJECTOR_AI_SESSIONS = "projector_ai_sessions"
 TABLE_PROJECTOR_AI_CONTROLS = "projector_ai_controls"
 TABLE_PROJECTOR_AI_MARKERS = "projector_ai_markers"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
-TABLE_AI_COACH_PREPARE_USAGE = "ai_coach_prepare_usage"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
@@ -624,23 +623,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_RECORDINGS} (
 );
 """
 
-# One consumed slot per committee member, practice category and Hong Kong day.
-# room_code makes reconnecting to the same room idempotent while preventing a
-# second room of the same category that day.
-CREATE_PRACTICE_DAILY_USAGE = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_PRACTICE_DAILY_USAGE} (
-    user_id       TEXT,
-    practice_kind TEXT CHECK (practice_kind IN ('multiplayer_free', 'multiplayer_mock')),
-    usage_date    DATE,
-    room_code     TEXT NOT NULL,
-    created_at    TIMESTAMP DEFAULT NOW(),
-    PRIMARY KEY (user_id, practice_kind, usage_date),
-    CONSTRAINT fk_practice_daily_usage_user
-        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE CASCADE
-);
-"""
-
 CREATE_BANDWIDTH_USAGE_LOGS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_BANDWIDTH_USAGE_LOGS} (
     id          BIGSERIAL PRIMARY KEY,
@@ -648,6 +630,11 @@ CREATE TABLE IF NOT EXISTS {TABLE_BANDWIDTH_USAGE_LOGS} (
     user_id     TEXT,
     bytes_out   BIGINT NOT NULL CHECK (bytes_out >= 0),
     details     TEXT,
+    official_bucket_id TEXT,
+    traffic_category TEXT,
+    bucket_start TIMESTAMP,
+    bucket_end TIMESTAMP,
+    official_complete BOOLEAN NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMP DEFAULT NOW(),
     CONSTRAINT fk_bandwidth_usage_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
@@ -661,6 +648,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
     user_id         TEXT NOT NULL,
     media_kind      TEXT NOT NULL,
     object_keys     TEXT NOT NULL,
+    intent_metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     declared_bytes  BIGINT NOT NULL CHECK (declared_bytes > 0),
     status          TEXT NOT NULL DEFAULT 'issued',
     created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -669,6 +657,72 @@ CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
 );
+"""
+
+# Monthly system-wide infrastructure and provider budgets.  One row is the
+# complete audit record for one key and budget month; browsers never access it
+# directly.
+CREATE_MONTHLY_RESOURCE_LIMITS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_MONTHLY_RESOURCE_LIMITS} (
+    period_month             DATE NOT NULL,
+    limit_key                TEXT NOT NULL,
+    unit                     TEXT NOT NULL,
+    warning_value            NUMERIC(20,4),
+    stop_value               NUMERIC(20,4),
+    hard_value               NUMERIC(20,4),
+    allocated_hkd            NUMERIC(12,2),
+    fx_hkd_per_usd           NUMERIC(12,6),
+    funding_window_start     TIMESTAMPTZ,
+    funding_window_end       TIMESTAMPTZ,
+    external_cap_confirmed   BOOLEAN NOT NULL DEFAULT FALSE,
+    external_cap_confirmed_by TEXT,
+    external_cap_confirmed_at TIMESTAMPTZ,
+    notified_by              TEXT,
+    notified_at              TIMESTAMPTZ,
+    notification_audit       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    updated_by               TEXT,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (period_month, limit_key),
+    CONSTRAINT monthly_resource_limits_month_start
+        CHECK (period_month = date_trunc('month', period_month)::date),
+    CONSTRAINT monthly_resource_limits_key
+        CHECK (limit_key IN ('render_bandwidth','r2_storage','ai_fund_available')
+               OR (left(limit_key, 9) = 'provider:' AND length(limit_key) > 9)),
+    CONSTRAINT monthly_resource_limits_nonnegative CHECK (
+        COALESCE(warning_value, 0) >= 0 AND COALESCE(stop_value, 0) >= 0
+        AND COALESCE(hard_value, 0) >= 0 AND COALESCE(allocated_hkd, 0) >= 0
+        AND COALESCE(fx_hkd_per_usd, 0) >= 0
+    ),
+    CONSTRAINT monthly_resource_limits_render_order CHECK (
+        limit_key <> 'render_bandwidth'
+        OR (warning_value IS NOT NULL AND stop_value IS NOT NULL
+            AND hard_value IS NOT NULL
+            AND warning_value <= stop_value AND stop_value <= hard_value)
+    ),
+    CONSTRAINT fk_monthly_resource_limits_external_confirmer
+        FOREIGN KEY (external_cap_confirmed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_monthly_resource_limits_notifier
+        FOREIGN KEY (notified_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_monthly_resource_limits_updater
+        FOREIGN KEY (updated_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+LOCK_MONTHLY_RESOURCE_LIMITS_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_MONTHLY_RESOURCE_LIMITS} FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE {TABLE_MONTHLY_RESOURCE_LIMITS} FROM '
+            || quote_ident(role_name);
+    END LOOP;
+END $$;
 """
 
 # Short-lived runtime state. These definitions intentionally match the
@@ -785,22 +839,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_LIVE_BRIEFS} (
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-"""
-
-CREATE_AI_COACH_PREPARE_USAGE = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_PREPARE_USAGE} (
-    id         BIGSERIAL PRIMARY KEY,
-    user_id    TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    CONSTRAINT fk_ai_coach_prepare_usage_user
-        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE CASCADE
-);
-"""
-
-CREATE_AI_COACH_PREPARE_USAGE_INDEX = f"""
-CREATE INDEX IF NOT EXISTS idx_ai_coach_prepare_usage_user_created
-    ON {TABLE_AI_COACH_PREPARE_USAGE}(user_id, created_at DESC);
 """
 
 # Table: TTS_SCRIPTS
@@ -1291,7 +1329,7 @@ CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_status_created
     ON {TABLE_TTS_VOICE_RECORDINGS}(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bandwidth_usage_created
     ON {TABLE_BANDWIDTH_USAGE_LOGS}(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_r2_upload_intents_quota
+CREATE INDEX IF NOT EXISTS idx_r2_upload_intents_lifecycle
     ON {TABLE_R2_UPLOAD_INTENTS}(media_kind, user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_projector_ai_sessions_display_updated
     ON {TABLE_PROJECTOR_AI_SESSIONS}(display_key, updated_at DESC);
@@ -1333,6 +1371,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_user_id
 CREATE INDEX IF NOT EXISTS idx_ai_fund_usage_logs_operation
     ON {TABLE_AI_FUND_USAGE_LOGS}(operation_id, operation_stage)
     WHERE operation_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bandwidth_official_bucket
+    ON {TABLE_BANDWIDTH_USAGE_LOGS}(official_bucket_id)
+    WHERE official_bucket_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_lateness_fund_records_member_user_date
     ON {TABLE_LATENESS_FUND_RECORDS}(member_user_id, late_date);
 CREATE INDEX IF NOT EXISTS idx_lateness_fund_expenses_date
@@ -1416,17 +1457,16 @@ ALL_SCHEMAS = [
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps
     CREATE_BUG_REPORTS,               # → accounts
-    CREATE_PRACTICE_DAILY_USAGE,       # → accounts
     CREATE_BANDWIDTH_USAGE_LOGS,        # → accounts
     CREATE_R2_UPLOAD_INTENTS,           # → accounts
+    CREATE_MONTHLY_RESOURCE_LIMITS,      # → accounts
+    LOCK_MONTHLY_RESOURCE_LIMITS_PRIVILEGES,
     CREATE_PROJECTOR_STATE,             # short-lived projector state
     CREATE_PROJECTOR_AI_SESSIONS,        # encrypted two-hour AI評判易 result
     CREATE_PROJECTOR_AI_CONTROLS,        # cross-device command + ACK state
     CREATE_PROJECTOR_AI_MARKERS,         # server-time projector segment events
     LOCK_PROJECTOR_AI_PRIVILEGES,
     CREATE_AI_COACH_LIVE_BRIEFS,        # short-lived AI coach state
-    CREATE_AI_COACH_PREPARE_USAGE,      # AI coach quota ledger
-    CREATE_AI_COACH_PREPARE_USAGE_INDEX,
     CREATE_APP_CONFIG,                  # typed runtime configuration
     CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables

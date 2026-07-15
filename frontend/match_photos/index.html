@@ -394,7 +394,7 @@
           const maxMb = Number(limits.photo_max_bytes || 0) / 1024 / 1024;
           const thumbKb = Number(limits.thumbnail_max_bytes || 0) / 1024;
           $("photoLimitSummary").textContent =
-            `每次最多上載 ${limits.batch_max_items} 張；每名委員每日最多 ${limits.daily_user_limit} 張；全系統每月最多 ${limits.monthly_global_limit} 張。`;
+            `每次最多上載 ${limits.batch_max_items} 張；沒有每日／每月次數限額，仍受全站 R2 儲存保護。`;
           $("photoSizeSummary").textContent =
             `每張原圖最多 ${fmtLimit(maxMb)}MB、最長邊 ${limits.photo_max_dimension}px；縮圖最多 ${fmtLimit(thumbKb)}KB、最長邊 ${limits.thumbnail_max_dimension}px。圖片會由瀏覽器直接上載至 Cloudflare R2。`;
           $("photoUploadCaption").textContent =

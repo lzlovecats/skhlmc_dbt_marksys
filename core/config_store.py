@@ -50,7 +50,6 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     # Account access and delegated capabilities.
     "login_disabled_accounts": ConfigSpec("access", _ARRAY),
     "bypass_active_check_until": ConfigSpec("access", _OBJECT),
-    "solo_quota_exemptions": ConfigSpec("access", _OBJECT),
     "tts_recording_allowed_users": ConfigSpec("access", _ARRAY),
     "tts_recording_reviewers": ConfigSpec("access", _ARRAY),
     "ai_fund_treasurers": ConfigSpec("access", _ARRAY),
@@ -73,15 +72,12 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "vote_history_analysis_source_signature": ConfigSpec("analysis", _STRING),
     # Resource accounting snapshots/alerts.
     "r2_storage_usage_snapshot": ConfigSpec("resource", _OBJECT),
-    "bandwidth_developer_warning": ConfigSpec("resource", _OBJECT),
     # Idempotent historical migration marker.
     "ai_fund_transaction_type_v2": ConfigSpec("migration", _STRING),
 }
 
 
-_PREFIX_SPECS = (
-    ("bandwidth_3gb_push_", ConfigSpec("resource", _NUMBER)),
-)
+_PREFIX_SPECS = ()
 
 
 def config_spec(key: str, *, allow_legacy: bool = False) -> ConfigSpec:

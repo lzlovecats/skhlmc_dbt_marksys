@@ -48,7 +48,8 @@ def test_unknown_keys_are_rejected_unless_explicitly_legacy():
     with pytest.raises(KeyError):
         config_spec("made_up_key")
     assert config_spec("made_up_key", allow_legacy=True).namespace == "legacy"
-    assert config_spec("bandwidth_3gb_push_x").namespace == "resource"
+    with pytest.raises(KeyError):
+        config_spec("bandwidth_3gb_push_x")
 
 
 def test_get_config_returns_default_when_store_is_unreachable():

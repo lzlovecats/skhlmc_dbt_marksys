@@ -7,7 +7,7 @@ The percent rule exists because a literal % anywhere in a migration file
 
 import pytest
 
-from core.db_migrations import discover_migrations, stray_files
+from core.db_migrations import browser_privilege_revokes, discover_migrations, stray_files
 from tools.manage_db_migrations import lint_report, load_catalog
 
 
@@ -66,3 +66,21 @@ def test_stray_files_are_reported(tmp_path):
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
     (tmp_path / "baseline.json").write_text("{}", encoding="utf-8")
     assert stray_files(tmp_path, {"baseline.json"}) == ["notes.txt"]
+
+
+def test_guarded_dynamic_browser_role_revoke_is_lint_visible():
+    sql = """
+    CREATE TABLE public.example (id bigint);
+    REVOKE ALL PRIVILEGES ON TABLE public.example FROM PUBLIC;
+    DO $$
+    DECLARE role_name TEXT;
+    BEGIN
+      FOR role_name IN SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+      LOOP
+        EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.example FROM '
+          || quote_ident(role_name);
+      END LOOP;
+    END $$;
+    """
+    assert browser_privilege_revokes(sql) == {"example"}

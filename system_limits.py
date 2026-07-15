@@ -1,4 +1,4 @@
-"""Single source of truth for production resource and quota limits.
+"""Single source of truth for production resource and technical safety limits.
 
 Every operational limit that protects Render, Supabase, Cloudflare R2 or an AI
 provider belongs here.  Modules import the resolved constants; environment
@@ -108,44 +108,19 @@ BANDWIDTH_STOP_LIVE_BYTES = _limit("BANDWIDTH_STOP_LIVE_BYTES", 3_500_000_000, m
 BANDWIDTH_ESSENTIAL_ONLY_BYTES = _limit("BANDWIDTH_ESSENTIAL_ONLY_BYTES", 4 * GB, minimum=MIB, maximum=4 * GB, group="bandwidth", description="Monthly nonessential feature hard gate")
 BANDWIDTH_CHECKPOINT_SECONDS = _limit("BANDWIDTH_CHECKPOINT_SECONDS", 30, minimum=10, maximum=300, group="bandwidth", description="Live usage checkpoint interval")
 BANDWIDTH_LOG_RETENTION_DAYS = _limit("BANDWIDTH_LOG_RETENTION_DAYS", 62, minimum=31, maximum=400, group="bandwidth", description="Bandwidth log retention")
-GEMINI_WS_MAX_SIZE = _limit("GEMINI_WS_MAX_SIZE", 4 * MIB, minimum=64 * KIB, maximum=4 * MIB, group="bandwidth", description="Gemini upstream WebSocket frame bytes")
-GEMINI_WS_MAX_QUEUE = _limit("GEMINI_WS_MAX_QUEUE", 4, minimum=1, maximum=4, group="bandwidth", description="Queued Gemini upstream WebSocket frames per room")
-
-# Live practice rooms, quotas and in-memory history.
-SOLO_FREE_DAILY_LIMIT = _limit("SOLO_FREE_DAILY_LIMIT", 2, minimum=1, maximum=2, group="live", description="Solo Free De sessions per member/HK day")
-SOLO_FREE_MONTHLY_LIMIT = _limit("SOLO_FREE_MONTHLY_LIMIT", 60, minimum=1, maximum=60, group="live", description="System solo Free De sessions per HK month")
-SOLO_MOCK_WEEKLY_LIMIT = _limit("SOLO_MOCK_WEEKLY_LIMIT", 1, minimum=1, maximum=1, group="live", description="Solo Mock sessions per member/HK week")
-SOLO_MOCK_MONTHLY_LIMIT = _limit("SOLO_MOCK_MONTHLY_LIMIT", 20, minimum=1, maximum=20, group="live", description="System solo Mock sessions per HK month")
-MULTIPLAYER_FREE_MONTHLY_ROOMS = _limit("MULTIPLAYER_FREE_MONTHLY_ROOMS", 20, minimum=1, maximum=20, group="live", description="System multiplayer Free De rooms per month")
-MULTIPLAYER_MOCK_MONTHLY_ROOMS = _limit("MULTIPLAYER_MOCK_MONTHLY_ROOMS", 10, minimum=1, maximum=10, group="live", description="System multiplayer Mock rooms per month")
+# Live practice rooms and in-memory safety bounds.
 MAX_ROOMS = _limit("MAX_ROOMS", 2, minimum=1, maximum=2, group="live", description="Concurrent in-memory rooms")
-ROOM_MAX_CAPACITY = _limit("ROOM_MAX_CAPACITY", 4, minimum=4, maximum=8, group="live", description="Members per room")
+ROOM_MAX_CAPACITY = _limit("ROOM_MAX_CAPACITY", 2, minimum=2, maximum=2, group="live", description="Members per P2P room")
 ROOM_EMPTY_GRACE_SECONDS = _limit("ROOM_EMPTY_GRACE_SECONDS", 60, minimum=10, maximum=300, group="live", description="Empty-room reconnect grace")
 ROOM_MAX_AGE_SECONDS = _limit("ROOM_MAX_AGE_SECONDS", 90 * 60, minimum=60, maximum=90 * 60, group="live", description="Room hard TTL")
 ROOM_TRANSCRIPT_MAX_ITEMS = _limit("ROOM_TRANSCRIPT_MAX_ITEMS", 80, minimum=10, maximum=80, group="live", description="Transcript items retained in RAM")
 ROOM_TRANSCRIPT_ITEM_MAX_CHARS = _limit("ROOM_TRANSCRIPT_ITEM_MAX_CHARS", 2_000, minimum=100, maximum=2_000, group="live", description="Characters per transcript item")
-ROOM_NATIVE_AUDIO_BUFFER_MAX_BYTES = _limit("ROOM_NATIVE_AUDIO_BUFFER_MAX_BYTES", 8 * MIB, minimum=64 * KIB, maximum=8 * MIB, group="live", description="Native-audio fallback buffer per room")
-ROOM_AUDIO_FRAME_MAX_BYTES = _limit("ROOM_AUDIO_FRAME_MAX_BYTES", 64 * KIB, minimum=64 * KIB, maximum=64 * KIB, group="live", description="Decoded multiplayer PCM bytes per inbound audio frame")
-ROOM_AUDIO_RATE_BYTES_PER_SECOND = _limit("ROOM_AUDIO_RATE_BYTES_PER_SECOND", 64 * KIB, minimum=32 * KIB, maximum=128 * KIB, group="live", description="Sustained decoded multiplayer PCM bytes per member/second")
-ROOM_AUDIO_RATE_BURST_BYTES = _limit("ROOM_AUDIO_RATE_BURST_BYTES", 128 * KIB, minimum=64 * KIB, maximum=256 * KIB, group="live", description="Decoded multiplayer PCM token-bucket burst per member")
-ROOM_AUDIO_RATE_MESSAGES_PER_SECOND = _limit("ROOM_AUDIO_RATE_MESSAGES_PER_SECOND", 60, minimum=50, maximum=100, group="live", description="Sustained multiplayer audio-shaped messages per member/second")
-ROOM_AUDIO_RATE_BURST_MESSAGES = _limit("ROOM_AUDIO_RATE_BURST_MESSAGES", 120, minimum=60, maximum=200, group="live", description="Multiplayer audio-message token-bucket burst per member")
 ROOM_CONTROL_RATE_MESSAGES_PER_SECOND = _limit("ROOM_CONTROL_RATE_MESSAGES_PER_SECOND", 10, minimum=5, maximum=10, group="live", description="Sustained multiplayer control messages per member/second")
 ROOM_CONTROL_RATE_BURST_MESSAGES = _limit("ROOM_CONTROL_RATE_BURST_MESSAGES", 20, minimum=10, maximum=20, group="live", description="Multiplayer control-message token-bucket burst per member")
 ROOM_WS_TEXT_MAX_BYTES = _limit("ROOM_WS_TEXT_MAX_BYTES", 100 * KIB, minimum=90 * KIB, maximum=100 * KIB, group="live", description="Room client JSON text bytes accepted before parsing")
-ROOM_TEST_AUDIO_MAX_BYTES = _limit("ROOM_TEST_AUDIO_MAX_BYTES", 32 * KIB, minimum=16 * KIB, maximum=32 * KIB, group="live", description="Decoded lobby network-test PCM bytes per message")
-ROOM_TEST_AUDIO_COOLDOWN_MS = _limit("ROOM_TEST_AUDIO_COOLDOWN_MS", 5_000, minimum=5_000, maximum=10_000, group="live", description="Minimum interval between lobby network-test audio broadcasts")
-ROOM_TEST_AUDIO_ACK_TTL_MS = _limit("ROOM_TEST_AUDIO_ACK_TTL_MS", 10_000, minimum=1_000, maximum=30_000, group="live", description="Lifetime of a server-issued lobby audio acknowledgement nonce")
-ROOM_TEST_AUDIO_PENDING_MAX = _limit("ROOM_TEST_AUDIO_PENDING_MAX", 16, minimum=4, maximum=32, group="live", description="Pending lobby audio acknowledgement nonces per member")
-ROOM_TEST_RECEIVED_COOLDOWN_MS = _limit("ROOM_TEST_RECEIVED_COOLDOWN_MS", 100, minimum=50, maximum=1_000, group="live", description="Minimum interval between accepted lobby audio acknowledgements per member")
-ROOM_PENDING_TRANSCRIPT_MAX_CHARS = _limit("ROOM_PENDING_TRANSCRIPT_MAX_CHARS", 8_000, minimum=500, maximum=8_000, group="live", description="Pending AI transcript characters")
-ROOM_GEMINI_RESUME_MAX_ATTEMPTS = _limit("ROOM_GEMINI_RESUME_MAX_ATTEMPTS", 2, minimum=1, maximum=3, group="live", description="Bounded same-token Gemini room resume attempts")
-ROOM_GEMINI_RESUME_DELAY_SECONDS = _limit("ROOM_GEMINI_RESUME_DELAY_SECONDS", 1, minimum=0, maximum=5, group="live", description="Base delay between Gemini room resume attempts")
-ROOM_GEMINI_SETUP_TIMEOUT_SECONDS = _limit("ROOM_GEMINI_SETUP_TIMEOUT_SECONDS", 15, minimum=5, maximum=30, group="live", description="Bounded wait for Gemini Live setupComplete")
 ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS = _limit("ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS", 20, minimum=5, maximum=60, group="live", description="Bounded final room judgement wait before sockets close")
-PRACTICE_LIVE_MAX_PER_HOUR = _limit("PRACTICE_LIVE_MAX_PER_HOUR", 30, minimum=8, maximum=30, group="live", description="Token-mint requests per user/hour, including linked Mock JIT sections")
 PRACTICE_LIVE_MIN_GAP_SECONDS = _limit("PRACTICE_LIVE_MIN_GAP_SECONDS", 3, minimum=1, maximum=60, group="live", description="Minimum seconds between token mints")
-PRACTICE_LIVE_RATE_WINDOW_SECONDS = _limit("PRACTICE_LIVE_RATE_WINDOW_SECONDS", 60 * 60, minimum=60, maximum=24 * 60 * 60, group="live", description="Token-mint rolling quota window")
+PRACTICE_LIVE_RATE_WINDOW_SECONDS = _limit("PRACTICE_LIVE_RATE_WINDOW_SECONDS", 60 * 60, minimum=60, maximum=24 * 60 * 60, group="live", description="In-memory duplicate-mint timestamp retention")
 LIVE_FREE_MAX_MINUTES = _limit("LIVE_FREE_MAX_MINUTES", 10, minimum=1, maximum=10, group="live", description="Server-authoritative Free De duration per side")
 LIVE_FREE_SESSION_MAX_SECONDS = _limit("LIVE_FREE_SESSION_MAX_SECONDS", 30 * 60, minimum=20 * 60, maximum=30 * 60, group="live", description="Solo Free De overall hard deadline including grace")
 LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS = _limit("LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS", 25_000, minimum=2_000, maximum=32_000, group="live", description="Gemini Live context compression trigger")
@@ -182,30 +157,20 @@ MEDIA_PROBE_TIMEOUT_SECONDS = _limit("MEDIA_PROBE_TIMEOUT_SECONDS", 10, minimum=
 MEDIA_TRANSCODE_TIMEOUT_SECONDS = _limit("MEDIA_TRANSCODE_TIMEOUT_SECONDS", 120, minimum=10, maximum=300, group="ai", description="ffmpeg full-match audio normalization timeout")
 MAX_AUDIO_BYTES = _limit("MAX_AUDIO_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MIB, group="ai", description="TTS training recording bytes")
 TTS_MAX_DURATION_SECONDS = _limit("TTS_MAX_DURATION_SECONDS", 60, minimum=1, maximum=60, group="ai", description="TTS/AI recording duration")
-TTS_UPLOAD_INTENTS_PER_USER_DAY = _limit("TTS_UPLOAD_INTENTS_PER_USER_DAY", 30, minimum=1, maximum=30, group="ai", description="TTS upload intents per user/day")
-TTS_UPLOAD_INTENTS_GLOBAL_MONTH = _limit("TTS_UPLOAD_INTENTS_GLOBAL_MONTH", 1_000, minimum=1, maximum=1_000, group="ai", description="TTS upload intents system/month")
 TTS_REVIEW_CONCURRENCY = _limit("TTS_REVIEW_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent TTS quality reviews")
-AI_COACH_MAX_AUDIO_BYTES = _limit("AI_COACH_MAX_AUDIO_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MIB, group="ai", description="AI Coach decoded audio bytes")
-AI_COACH_MAX_AUDIO_SECONDS = _limit("AI_COACH_MAX_AUDIO_SECONDS", 6 * 60, minimum=1, maximum=6 * 60, group="ai", description="AI Coach browser recording duration")
 AI_COACH_CONCURRENCY = _limit("AI_COACH_CONCURRENCY", 3, minimum=1, maximum=3, group="ai", description="Concurrent AI Coach requests")
 KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES = _limit("KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES", 12 * MIB, minimum=MIB, maximum=12 * MIB, group="ai", description="Temporary full-match kiosk recording bytes")
 KIOSK_MATCH_REVIEW_MAX_SECONDS = _limit("KIOSK_MATCH_REVIEW_MAX_SECONDS", 90 * 60, minimum=10 * 60, maximum=90 * 60, group="ai", description="Full-match kiosk recording duration")
 KIOSK_MATCH_REVIEW_CONCURRENCY = _limit("KIOSK_MATCH_REVIEW_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent full-match audio reviews")
-KIOSK_MATCH_REVIEW_DAILY_LIMIT = _limit("KIOSK_MATCH_REVIEW_DAILY_LIMIT", 5, minimum=1, maximum=10, group="ai", description="Kiosk full-match recording upload intents per HK day")
-KIOSK_MATCH_REVIEW_MONTHLY_LIMIT = _limit("KIOSK_MATCH_REVIEW_MONTHLY_LIMIT", 100, minimum=1, maximum=100, group="ai", description="System full-match recording upload intents per HK month")
 KIOSK_MATCH_REVIEW_MARKER_LIMIT = _limit("KIOSK_MATCH_REVIEW_MARKER_LIMIT", 600, minimum=20, maximum=600, group="ai", description="Timestamped side markers accepted per full match")
 KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS = _limit("KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS", 120_000, minimum=20_000, maximum=120_000, group="ai", description="Detailed full-match transcript characters passed to judgement")
 KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_OUTPUT_TOKENS = _limit("KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_OUTPUT_TOKENS", 65_536, minimum=4_096, maximum=65_536, group="ai", description="Gemini transcript output token ceiling")
 KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS = _limit("KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS", 300, minimum=60, maximum=300, group="ai", description="Per-pass full-match Gemini timeout")
-PREPARE_LIVE_USER_HOURLY_LIMIT = _limit("PREPARE_LIVE_USER_HOURLY_LIMIT", 1, minimum=1, maximum=1, group="ai", description="Prepare-live calls per user/hour")
-PREPARE_LIVE_USER_DAILY_LIMIT = _limit("PREPARE_LIVE_USER_DAILY_LIMIT", 3, minimum=1, maximum=3, group="ai", description="Prepare-live calls per user/day")
-PREPARE_LIVE_USAGE_RETENTION_DAYS = _limit("PREPARE_LIVE_USAGE_RETENTION_DAYS", 2, minimum=1, maximum=2, group="ai", description="Prepare-live quota-row retention")
 LIVE_BRIEF_TTL_MINUTES = _limit("LIVE_BRIEF_TTL_MINUTES", 15, minimum=1, maximum=60, group="ai", description="Prepared Live research brief TTL")
 LIVE_BRIEF_MAX_CHARS = _limit("LIVE_BRIEF_MAX_CHARS", 4_500, minimum=500, maximum=4_500, group="ai", description="Prepared Live research brief characters")
 AI_COACH_TOPIC_LIMIT = _limit("AI_COACH_TOPIC_LIMIT", 2_000, minimum=100, maximum=2_000, group="ai", description="Topics loaded by AI Coach")
 AI_COACH_MATCH_LIMIT = _limit("AI_COACH_MATCH_LIMIT", 500, minimum=50, maximum=500, group="ai", description="Matches loaded by AI Coach")
 LLM_CONTENT_MAX_CHARS = _limit("LLM_CONTENT_MAX_CHARS", 20_000, minimum=1_000, maximum=20_000, group="ai", description="Characters per LLM training submission")
-LLM_SUBMISSIONS_PER_USER_DAY = _limit("LLM_SUBMISSIONS_PER_USER_DAY", 10, minimum=1, maximum=10, group="ai", description="LLM submissions per user/day")
 LLM_SUBMISSION_MAX_TOTAL = _limit("LLM_SUBMISSION_MAX_TOTAL", 5_000, minimum=100, maximum=5_000, group="ai", description="LLM submissions retained")
 LLM_REVIEW_CONCURRENCY = _limit("LLM_REVIEW_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent LLM reviews")
 DATASET_SNAPSHOT_MAX_ITEMS = _limit("DATASET_SNAPSHOT_MAX_ITEMS", 500, minimum=1, maximum=500, group="ai", description="Items per dataset snapshot")
@@ -260,8 +225,6 @@ R2_UPLOAD_URL_MAX_TTL_SECONDS = _limit("R2_UPLOAD_URL_MAX_TTL_SECONDS", 900, min
 R2_DOWNLOAD_URL_MAX_TTL_SECONDS = _limit("R2_DOWNLOAD_URL_MAX_TTL_SECONDS", 3_600, minimum=60, maximum=86_400, group="storage", description="Maximum presigned download URL lifetime")
 R2_CLAIM_MAX_TTL_SECONDS = _limit("R2_CLAIM_MAX_TTL_SECONDS", 1_800, minimum=60, maximum=3_600, group="storage", description="Maximum signed R2 claim lifetime")
 R2_CLIENT_MAX_ATTEMPTS = _limit("R2_CLIENT_MAX_ATTEMPTS", 3, minimum=1, maximum=10, group="storage", description="R2 SDK request attempts")
-PHOTO_DAILY_USER_LIMIT = _limit("PHOTO_DAILY_USER_LIMIT", 20, minimum=1, maximum=20, group="storage", description="Photos per user/day")
-PHOTO_MONTHLY_GLOBAL_LIMIT = _limit("PHOTO_MONTHLY_GLOBAL_LIMIT", 500, minimum=1, maximum=500, group="storage", description="Photos system/month")
 PHOTO_BATCH_MAX_ITEMS = _limit("PHOTO_BATCH_MAX_ITEMS", 5, minimum=1, maximum=20, group="storage", description="Photos per completion request")
 PHOTO_MAX_BYTES = _limit("PHOTO_MAX_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MIB, group="storage", description="Compressed original photo bytes")
 PHOTO_THUMBNAIL_MAX_BYTES = _limit("PHOTO_THUMBNAIL_MAX_BYTES", 300 * KIB, minimum=500, maximum=300 * KIB, group="storage", description="Photo thumbnail bytes")
@@ -313,7 +276,6 @@ LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT = _limit("LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT", 
 LOGIN_RATE_MAX_PER_CLIENT = _limit("LOGIN_RATE_MAX_PER_CLIENT", 30, minimum=1, maximum=100, group="runtime", description="Login attempts per client across accounts per window")
 LOGIN_RATE_MAX_GLOBAL = _limit("LOGIN_RATE_MAX_GLOBAL", 120, minimum=10, maximum=500, group="runtime", description="Login attempts across this worker per window")
 HOME_ACTIVE_MEMBER_WINDOW_HOURS = _limit("HOME_ACTIVE_MEMBER_WINDOW_HOURS", 24, minimum=1, maximum=7 * 24, group="database", description="Home active-member window")
-LLM_SUBMISSION_RATE_WINDOW_HOURS = _limit("LLM_SUBMISSION_RATE_WINDOW_HOURS", 24, minimum=1, maximum=7 * 24, group="database", description="LLM per-user quota window")
 OPENROUTER_CREDIT_TIMEOUT_SECONDS = _limit("OPENROUTER_CREDIT_TIMEOUT_SECONDS", 12, minimum=1, maximum=60, group="ai", description="OpenRouter credit lookup timeout")
 
 # Bounded utility workflows.
@@ -351,30 +313,9 @@ def _validate_relationships() -> None:
         raise RuntimeError("PHOTO_THUMBNAIL_MAX_DIMENSION cannot exceed PHOTO_MAX_DIMENSION")
     if VIDEO_IMPORT_MAX_ROWS > VIDEO_TOTAL_LIMIT:
         raise RuntimeError("VIDEO_IMPORT_MAX_ROWS cannot exceed VIDEO_TOTAL_LIMIT")
-    if PREPARE_LIVE_USER_HOURLY_LIMIT > PREPARE_LIVE_USER_DAILY_LIMIT:
-        raise RuntimeError(
-            "PREPARE_LIVE_USER_HOURLY_LIMIT cannot exceed "
-            "PREPARE_LIVE_USER_DAILY_LIMIT"
-        )
     if LIVE_FREE_SESSION_MAX_SECONDS < LIVE_FREE_MAX_MINUTES * 2 * 60:
         raise RuntimeError(
             "LIVE_FREE_SESSION_MAX_SECONDS must cover both Free De side budgets"
-        )
-    if PRACTICE_LIVE_MAX_PER_HOUR < 8:
-        raise RuntimeError(
-            "PRACTICE_LIVE_MAX_PER_HOUR must allow at least 8 linked Mock JIT mints"
-        )
-    if ROOM_TEST_AUDIO_MAX_BYTES > ROOM_AUDIO_FRAME_MAX_BYTES:
-        raise RuntimeError(
-            "ROOM_TEST_AUDIO_MAX_BYTES cannot exceed ROOM_AUDIO_FRAME_MAX_BYTES"
-        )
-    if ROOM_AUDIO_RATE_BURST_BYTES < ROOM_AUDIO_FRAME_MAX_BYTES:
-        raise RuntimeError(
-            "ROOM_AUDIO_RATE_BURST_BYTES must cover one maximum audio frame"
-        )
-    if ROOM_AUDIO_RATE_BURST_MESSAGES < ROOM_AUDIO_RATE_MESSAGES_PER_SECOND:
-        raise RuntimeError(
-            "ROOM_AUDIO_RATE_BURST_MESSAGES must cover one second of audio frames"
         )
     if ROOM_CONTROL_RATE_BURST_MESSAGES < ROOM_CONTROL_RATE_MESSAGES_PER_SECOND:
         raise RuntimeError(

@@ -190,6 +190,7 @@ async def generate_text(
     api_key,
     audio_base64="",
     audio_mime="audio/webm",
+    audio_file_uri="",
     web_search=False,
     max_output_tokens=None,
     max_prompt_chars=None,
@@ -205,6 +206,8 @@ async def generate_text(
     )
     selected_temperature = _bounded_temperature(temperature, web_search)
     if config["provider"] in ("openrouter", "custom"):
+        if audio_file_uri:
+            raise ValueError("所選 provider 不支援 Google Files URI")
         payload = {"model": config["model"], "messages": [
             {"role": "system", "content": system}, {"role": "user", "content": user},
         ], "max_tokens": output_limit}
@@ -231,6 +234,10 @@ async def generate_text(
     parts = [{"text": user}]
     if audio_base64:
         parts.append({"inline_data": {"mime_type": audio_mime or "audio/webm", "data": audio_base64}})
+    if audio_file_uri:
+        parts.append({"file_data": {
+            "mime_type": audio_mime or "audio/webm", "file_uri": audio_file_uri,
+        }})
     payload = {"system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"maxOutputTokens": output_limit}}

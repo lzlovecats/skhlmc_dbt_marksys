@@ -11,7 +11,8 @@ import json
 import re
 import threading
 
-from schema import TABLE_PUSH_SUBSCRIPTIONS
+from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
+from schema import TABLE_ACCOUNTS, TABLE_PUSH_SUBSCRIPTIONS
 from system_limits import PUSH_RECIPIENT_LIMIT, PUSH_SEND_CONCURRENCY
 
 
@@ -93,7 +94,8 @@ def send_web_push(subscription, title, body, vapid, url="/vote", tag=None):
 
 
 def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None,
-                     tag=None, url="/vote", send_fn=None):
+                     tag=None, url="/vote", send_fn=None,
+                     committee_only=False):
     """Send ``title``/``body`` to matching active push subscriptions.
 
     Prunes subscriptions that return 404/410 (gone). Returns the number sent.
@@ -104,18 +106,28 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
     send = send_fn or send_web_push
 
     params = {}
-    where = "WHERE is_active = TRUE"
+    subscription_table = f"{TABLE_PUSH_SUBSCRIPTIONS} p"
+    select_columns = "p.endpoint,p.user_id,p.subscription_json"
+    where = "WHERE p.is_active = TRUE"
+    if committee_only:
+        excluded = sql_account_id_literals((*NON_MEMBER_ACCOUNT_DB_KEYS, ""))
+        subscription_table += f" JOIN {TABLE_ACCOUNTS} a ON a.user_id=p.user_id"
+        where += (
+            " AND COALESCE(a.account_disabled,FALSE)=FALSE"
+            " AND a.account_status IN ('active','admin')"
+            f" AND LOWER(a.user_id) NOT IN ({excluded})"
+        )
     if exclude_user:
-        where += " AND user_id != :exclude_user"
+        where += " AND p.user_id != :exclude_user"
         params["exclude_user"] = exclude_user
     if target_user:
-        where += " AND user_id = :target_user"
+        where += " AND p.user_id = :target_user"
         params["target_user"] = target_user
 
     try:
         rows = db.query(
-            f"SELECT endpoint,user_id,subscription_json FROM {TABLE_PUSH_SUBSCRIPTIONS} {where} "
-            "ORDER BY updated_at DESC LIMIT :recipient_limit",
+            f"SELECT {select_columns} FROM {subscription_table} {where} "
+            "ORDER BY p.updated_at DESC LIMIT :recipient_limit",
             {**params, "recipient_limit": PUSH_RECIPIENT_LIMIT},
         )
     except Exception:
