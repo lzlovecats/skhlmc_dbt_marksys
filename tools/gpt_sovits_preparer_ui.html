@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>GPT-SoVITS 本機資料準備工具</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #19232f;
+        --muted: #647184;
+        --paper: #fffdf8;
+        --panel: rgba(255, 255, 255, 0.9);
+        --line: #dce2e8;
+        --blue: #235b82;
+        --blue-dark: #143f5e;
+        --teal: #16847a;
+        --amber: #ad6700;
+        --red: #b33434;
+        --green: #197246;
+        --shadow: 0 18px 50px rgba(24, 40, 56, 0.11);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 12% 8%, rgba(22, 132, 122, 0.12), transparent 34rem),
+          radial-gradient(circle at 91% 3%, rgba(35, 91, 130, 0.13), transparent 36rem),
+          #eef2f3;
+        color: var(--ink);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans HK",
+          "PingFang HK", sans-serif;
+        line-height: 1.55;
+      }
+
+      main {
+        width: min(1080px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 44px 0 64px;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 24px;
+        align-items: end;
+        margin-bottom: 26px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin-bottom: 8px;
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        line-height: 1.08;
+        letter-spacing: -0.04em;
+      }
+
+      h2 {
+        margin-bottom: 14px;
+        font-size: 1.22rem;
+      }
+
+      .eyebrow {
+        margin-bottom: 9px;
+        color: var(--teal);
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .lead,
+      .muted {
+        color: var(--muted);
+      }
+
+      .lead {
+        max-width: 760px;
+        margin-bottom: 0;
+        font-size: 1.03rem;
+      }
+
+      .local-badge {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        padding: 9px 13px;
+        border: 1px solid rgba(25, 114, 70, 0.22);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.75);
+        color: var(--green);
+        font-size: 0.86rem;
+        font-weight: 750;
+        white-space: nowrap;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 0 5px rgba(25, 114, 70, 0.1);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+        gap: 18px;
+      }
+
+      .card {
+        padding: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.85);
+        border-radius: 22px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
+      }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
+      .drop-zone {
+        display: grid;
+        min-height: 310px;
+        place-items: center;
+        padding: 32px;
+        border: 2px dashed #9eabb7;
+        border-radius: 18px;
+        background:
+          linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(234, 244, 243, 0.72));
+        text-align: center;
+        transition:
+          border-color 150ms ease,
+          background 150ms ease,
+          transform 150ms ease;
+      }
+
+      .drop-zone.dragging {
+        border-color: var(--teal);
+        background: rgba(218, 244, 239, 0.84);
+        transform: translateY(-2px);
+      }
+
+      .drop-zone.disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .drop-icon {
+        display: grid;
+        width: 66px;
+        height: 66px;
+        margin: 0 auto 18px;
+        place-items: center;
+        border-radius: 20px;
+        background: var(--blue);
+        color: white;
+        font-size: 1.8rem;
+        box-shadow: 0 12px 24px rgba(35, 91, 130, 0.24);
+      }
+
+      .drop-zone h2 {
+        margin-bottom: 7px;
+        font-size: 1.35rem;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 11px;
+        background: var(--blue);
+        color: white;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 750;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--blue-dark);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+
+      .pick-button {
+        margin-top: 15px;
+        padding: 10px 16px;
+      }
+
+      .copy-button {
+        padding: 7px 11px;
+        background: #e6edf2;
+        color: var(--blue-dark);
+        font-size: 0.84rem;
+      }
+
+      input[type="file"] {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+
+      .fact {
+        min-height: 82px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: rgba(248, 250, 251, 0.76);
+      }
+
+      .fact small {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+      }
+
+      .fact strong {
+        display: block;
+        overflow-wrap: anywhere;
+        font-size: 0.95rem;
+      }
+
+      .checks,
+      .checks li {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .checks {
+        display: grid;
+        gap: 8px;
+      }
+
+      .check {
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: 9px;
+        padding: 10px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .check:first-child {
+        border-top: 0;
+      }
+
+      .check-mark {
+        font-weight: 900;
+      }
+
+      .check.ok .check-mark {
+        color: var(--green);
+      }
+
+      .check.warning .check-mark {
+        color: var(--amber);
+      }
+
+      .check.error .check-mark {
+        color: var(--red);
+      }
+
+      .check strong,
+      .check span {
+        display: block;
+      }
+
+      .check span {
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .status-line {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: #e9eef2;
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 800;
+      }
+
+      .status-pill.running,
+      .status-pill.queued {
+        background: #e5eff8;
+        color: var(--blue);
+      }
+
+      .status-pill.completed {
+        background: #e4f4eb;
+        color: var(--green);
+      }
+
+      .status-pill.error {
+        background: #fae7e7;
+        color: var(--red);
+      }
+
+      .progress-track {
+        height: 12px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e4e9ed;
+      }
+
+      .progress-bar {
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--teal), #48a89d);
+        transition: width 250ms ease;
+      }
+
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 0.84rem;
+      }
+
+      .notice {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border: 1px solid #d7e0e6;
+        border-radius: 12px;
+        background: #f7f9fa;
+        overflow-wrap: anywhere;
+      }
+
+      .notice.error {
+        border-color: #efc4c4;
+        background: #fff2f2;
+        color: #7f2020;
+      }
+
+      .workspace-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      code {
+        color: #284256;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.86rem;
+        overflow-wrap: anywhere;
+      }
+
+      .result-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 18px 0;
+      }
+
+      .result-stat {
+        padding: 15px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #f9faf9;
+      }
+
+      .result-stat small,
+      .result-stat strong {
+        display: block;
+      }
+
+      .result-stat small {
+        color: var(--muted);
+      }
+
+      .result-stat strong {
+        margin-top: 3px;
+        font-size: 1.12rem;
+        overflow-wrap: anywhere;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 10px 8px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+
+      th {
+        width: 47%;
+        color: var(--muted);
+        font-size: 0.83rem;
+        font-weight: 700;
+      }
+
+      td {
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      details {
+        margin-top: 15px;
+      }
+
+      summary {
+        cursor: pointer;
+        color: var(--blue);
+        font-weight: 750;
+      }
+
+      pre {
+        max-height: 270px;
+        overflow: auto;
+        padding: 14px;
+        border-radius: 12px;
+        background: #17232c;
+        color: #dbe8ed;
+        font-size: 0.75rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      footer {
+        padding-top: 24px;
+        color: var(--muted);
+        font-size: 0.83rem;
+        text-align: center;
+      }
+
+      @media (max-width: 780px) {
+        main {
+          width: min(100% - 20px, 680px);
+          padding-top: 25px;
+        }
+
+        header,
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        header {
+          align-items: start;
+        }
+
+        .local-badge {
+          justify-self: start;
+        }
+
+        .card {
+          padding: 18px;
+          border-radius: 17px;
+        }
+
+        .drop-zone {
+          min-height: 260px;
+          padding: 20px;
+        }
+
+        .result-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">AI Training · Local workstation</p>
+          <h1>拖入下載清單，資料集自動準備好。</h1>
+          <p class="lead">
+            工具會在本機下載 accepted 錄音、逐檔核對、轉成 GPT-SoVITS 格式、分割資料，並按呢部機嘅硬件提供起步參數。
+          </p>
+        </div>
+        <div class="local-badge"><span class="dot"></span>只在 127.0.0.1 運作</div>
+      </header>
+
+      <section class="grid">
+        <article class="card">
+          <div id="dropZone" class="drop-zone">
+            <div>
+              <div class="drop-icon" aria-hidden="true">⇩</div>
+              <h2>拖 recordings.json 入嚟</h2>
+              <p class="muted">
+                亦支援舊版 dataset ZIP。請喺下載後一小時內開始，避免 R2 連結過期。
+              </p>
+              <button id="pickButton" class="pick-button" type="button" disabled>揀檔案</button>
+              <input id="fileInput" type="file" accept=".json,.zip,application/json,application/zip" disabled />
+            </div>
+          </div>
+        </article>
+
+        <aside class="card">
+          <h2>本機預檢</h2>
+          <div id="facts" class="facts" aria-live="polite">
+            <div class="fact"><small>系統</small><strong>偵測中…</strong></div>
+            <div class="fact"><small>CPU</small><strong>偵測中…</strong></div>
+            <div class="fact"><small>記憶體</small><strong>偵測中…</strong></div>
+            <div class="fact"><small>GPU / VRAM</small><strong>偵測中…</strong></div>
+          </div>
+          <ul id="checks" class="checks"></ul>
+        </aside>
+
+        <article class="card full">
+          <div class="status-line">
+            <div>
+              <p class="eyebrow">Preparation status</p>
+              <h2 id="statusTitle">等待檔案</h2>
+            </div>
+            <span id="statusPill" class="status-pill">idle</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-label="資料準備進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="progressMessage">拖入檔案後會即時開始。</span>
+            <span id="progressPercent">0%</span>
+          </div>
+          <div id="errorNotice" class="notice error hidden" role="alert"></div>
+          <div id="workspaceNotice" class="notice hidden">
+            <div class="workspace-row">
+              <div>
+                <strong>私人輸出目錄</strong><br />
+                <code id="workspacePath"></code>
+              </div>
+              <button id="copyPath" class="copy-button" type="button">複製路徑</button>
+            </div>
+          </div>
+        </article>
+
+        <article id="resultCard" class="card full hidden">
+          <p class="eyebrow">Ready for review</p>
+          <h2>資料準備結果</h2>
+          <p class="muted">
+            以下係安全起步設定；正式訓練前仍要抽聽、核對 validation/test，同確認 GPT-SoVITS model family 及版本一致。
+          </p>
+          <div id="resultStats" class="result-grid"></div>
+          <div class="grid">
+            <section>
+              <h3>建議 GPT / SoVITS 參數</h3>
+              <table><tbody id="paramsTable"></tbody></table>
+            </section>
+            <section>
+              <h3>下一步</h3>
+              <ol>
+                <li>先抽聽原檔與已轉 WAV，確認內容及音質。</li>
+                <li>GPT-SoVITS 只使用 train list；validation/test 留作比較。</li>
+                <li>如果 OOM，先減 batch size，再檢查 segment 設定。</li>
+                <li>完成後把 Downloads 內原本含短期 URL 嘅 recordings.json 移到 Trash。</li>
+                <li>未通過固定句及盲聽評估前，不接 production。</li>
+              </ol>
+            </section>
+          </div>
+          <details>
+            <summary>查看完整結果摘要（已移除 URL）</summary>
+            <pre id="rawResult"></pre>
+          </details>
+        </article>
+      </section>
+
+      <footer>
+        錄音及模型屬私人資料；工具不會經 HTTP 提供音訊，亦不會把 signed URL 顯示或寫入 request log。
+      </footer>
+    </main>
+
+    <script>
+      (() => {
+        "use strict";
+
+        const $ = (id) => document.getElementById(id);
+        const query = new URLSearchParams(location.search);
+        const queryToken = query.get("token") || "";
+        if (queryToken) sessionStorage.setItem("gptSovitsPreparerToken", queryToken);
+        const token = queryToken || sessionStorage.getItem("gptSovitsPreparerToken") || "";
+        if (queryToken) history.replaceState(null, "", location.pathname);
+
+        let system = null;
+        let pollTimer = null;
+        let active = false;
+        let preflightReady = false;
+
+        const statusLabels = {
+          idle: "等待檔案",
+          queued: "已排入處理",
+          running: "正在準備資料集",
+          completed: "資料集準備完成",
+          error: "未能完成",
+        };
+
+        const parameterLabels = {
+          training_recommended: "建議喺呢部機訓練",
+          hardware_suitable: "硬件達 baseline",
+          dataset_readiness: "資料量狀態",
+          device_note: "裝置建議",
+          gpu_info: "GPU 編號",
+          selected_gpu: "已選 GPU",
+          sovits_batch: "SoVITS batch size",
+          sovits_epochs: "SoVITS epochs",
+          sovits_save_every: "SoVITS save frequency",
+          sovits_lr_weight: "SoVITS learning-rate weight",
+          gpt_batch: "GPT batch size",
+          gpt_epochs: "GPT epochs",
+          gpt_save_every: "GPT save frequency",
+          enable_dpo: "GPT DPO",
+          precision: "精度",
+          model_family: "Model family",
+          oom_fallback_batches: "OOM fallback batch",
+          warnings: "注意事項",
+        };
+
+        const stageLabels = {
+          preflight: "正在核對輸入檔及本機工具",
+          download: "正在下載並核對 accepted 錄音",
+          extract: "正在安全解壓舊版資料集",
+          convert: "正在核對音訊並轉成 32 kHz mono WAV",
+          hardware: "正在偵測硬件及計算起步參數",
+          complete: "資料集準備完成",
+        };
+
+        async function request(path, options = {}) {
+          if (!token) throw new Error("本機工作階段已失效，請關閉頁面並重新啟動工具。");
+          const response = await fetch(path, {
+            cache: "no-store",
+            ...options,
+            headers: {
+              "X-Preparer-Token": token,
+              ...(options.headers || {}),
+            },
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || "本機工具未能完成操作。");
+          return payload;
+        }
+
+        function text(value, fallback = "—") {
+          if (value === null || value === undefined || value === "") return fallback;
+          return String(value);
+        }
+
+        function gpuSummary(hardware) {
+          const gpus = hardware.gpus || hardware.nvidia_smi_gpus || hardware.nvidia_gpus;
+          if (Array.isArray(gpus) && gpus.length) {
+            return gpus
+              .map((gpu) => {
+                if (typeof gpu === "string") return gpu;
+                const name = gpu.name || "NVIDIA GPU";
+                const vram = gpu.memory_total_gb ?? gpu.vram_gb ?? gpu.memory_gb;
+                const index = gpu.index === undefined ? "" : `GPU ${gpu.index} · `;
+                return vram ? `${index}${name} · ${vram} GB` : `${index}${name}`;
+              })
+              .join("；");
+          }
+          const vram = hardware.nvidia_vram_gb;
+          return Array.isArray(vram) && vram.length
+            ? `NVIDIA · ${vram.map((value) => `${Number(value).toFixed(1)} GB`).join(" / ")}`
+            : "未偵測 NVIDIA GPU";
+        }
+
+        function renderSystem(payload) {
+          system = payload.system;
+          preflightReady = Boolean(system.ready);
+          const hardware = system.hardware || {};
+          const memory = Number(hardware.memory_gb);
+          const facts = [
+            ["系統", `${text(hardware.system)} · ${text(hardware.machine)}`],
+            ["CPU", `${text(hardware.cpu_count)} cores`],
+            ["記憶體", Number.isFinite(memory) ? `${memory.toFixed(1)} GB` : "未知"],
+            ["GPU / VRAM", gpuSummary(hardware)],
+            ["可用磁碟", `${text(system.disk?.free_gb)} GB`],
+            ["輸出根目錄", text(system.output_root)],
+          ];
+          const factsRoot = $("facts");
+          factsRoot.replaceChildren();
+          facts.forEach(([label, value]) => {
+            const item = document.createElement("div");
+            item.className = "fact";
+            const small = document.createElement("small");
+            const strong = document.createElement("strong");
+            small.textContent = label;
+            strong.textContent = value;
+            item.append(small, strong);
+            factsRoot.append(item);
+          });
+
+          const checks = $("checks");
+          checks.replaceChildren();
+          (system.preflight || []).forEach((entry) => {
+            const item = document.createElement("li");
+            item.className = `check ${entry.status || "warning"}`;
+            const mark = document.createElement("span");
+            mark.className = "check-mark";
+            mark.textContent = entry.status === "ok" ? "✓" : entry.status === "error" ? "×" : "!";
+            const detail = document.createElement("div");
+            const strong = document.createElement("strong");
+            const span = document.createElement("span");
+            strong.textContent = text(entry.label);
+            span.textContent = text(entry.detail);
+            detail.append(strong, span);
+            item.append(mark, detail);
+            checks.append(item);
+          });
+          renderJob(payload.job || {});
+          if (!preflightReady) {
+            showError("本機預檢未通過；請先處理紅色項目，再重新啟動工具。");
+          }
+        }
+
+        function progressValue(job) {
+          const progress = job.progress || {};
+          let value = Number(progress.percent ?? progress.progress_percent);
+          if (!Number.isFinite(value)) {
+            const done = Number(progress.completed ?? progress.current);
+            const total = Number(progress.total);
+            value = Number.isFinite(done) && Number.isFinite(total) && total > 0
+              ? (done / total) * 100
+              : job.status === "completed"
+                ? 100
+                : 0;
+          }
+          if (value > 0 && value <= 1) value *= 100;
+          return Math.max(0, Math.min(100, value));
+        }
+
+        function progressMessage(job) {
+          const progress = job.progress || {};
+          const translated = stageLabels[progress.stage];
+          const current = Number(progress.current);
+          const total = Number(progress.total);
+          if (translated && Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+            return `${translated}（${current} / ${total}）`;
+          }
+          if (translated) return translated;
+          return text(
+            progress.message || progress.detail || progress.stage_label || job.message,
+            "等待檔案。",
+          );
+        }
+
+        function renderJob(job) {
+          const status = job.status || "idle";
+          active = status === "queued" || status === "running";
+          $("statusTitle").textContent = statusLabels[status] || status;
+          $("statusPill").textContent = status;
+          $("statusPill").className = `status-pill ${status}`;
+          const percent = progressValue(job);
+          $("progressBar").style.width = `${percent}%`;
+          $("progressPercent").textContent = `${Math.round(percent)}%`;
+          $("progressMessage").textContent = progressMessage(job);
+          const progressTrack = $("progressBar").parentElement;
+          progressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+
+          const inputBlocked = active || !preflightReady;
+          $("dropZone").classList.toggle("disabled", inputBlocked);
+          $("pickButton").disabled = inputBlocked;
+          $("fileInput").disabled = inputBlocked;
+
+          const error = text(job.error, "");
+          $("errorNotice").textContent = error;
+          $("errorNotice").classList.toggle("hidden", !error);
+
+          const workspace = text(job.workspace, "");
+          $("workspacePath").textContent = workspace;
+          $("workspaceNotice").classList.toggle("hidden", !workspace);
+
+          if (status === "completed" && job.result) renderResult(job.result);
+          else $("resultCard").classList.add("hidden");
+
+          if (active) schedulePoll();
+          else if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+          }
+        }
+
+        function firstValue(source, keys) {
+          for (const key of keys) {
+            const value = source?.[key];
+            if (value !== undefined && value !== null && value !== "") return value;
+          }
+          return "—";
+        }
+
+        function renderResult(result) {
+          $("resultCard").classList.remove("hidden");
+          const report = result.quality_report || result.quality || result;
+          const split = report.splits || result.splits || {};
+          const stats = [
+            ["可用錄音", firstValue(report, ["rows", "items", "clips", "rows_written"])],
+            ["總時長", `${firstValue(report, ["total_minutes", "minutes"])} 分鐘`],
+            ["Train / Validation / Test", `${text(split.train, "0")} / ${text(split.validation, "0")} / ${text(split.test, "0")}`],
+            ["Readiness", firstValue(result.readiness || report.readiness, ["status"])],
+            ["GPT-SoVITS train list", text(result.training_list)],
+          ];
+          const statsRoot = $("resultStats");
+          statsRoot.replaceChildren();
+          stats.forEach(([label, value]) => {
+            const item = document.createElement("div");
+            item.className = "result-stat";
+            const small = document.createElement("small");
+            const strong = document.createElement("strong");
+            small.textContent = label;
+            strong.textContent = text(value);
+            item.append(small, strong);
+            statsRoot.append(item);
+          });
+
+          const params =
+            result.recommended_params ||
+            result.recommendation ||
+            result.params ||
+            system?.initial_recommendation ||
+            {};
+          const tbody = $("paramsTable");
+          tbody.replaceChildren();
+          const ordered = Object.keys(parameterLabels).filter((key) => key in params);
+          const remaining = Object.keys(params).filter((key) => !ordered.includes(key));
+          [...ordered, ...remaining].forEach((key) => {
+            const row = document.createElement("tr");
+            const heading = document.createElement("th");
+            const value = document.createElement("td");
+            heading.textContent = parameterLabels[key] || key.replaceAll("_", " ");
+            const raw = params[key];
+            value.textContent = Array.isArray(raw)
+              ? raw.map((item) => typeof item === "object" ? JSON.stringify(item) : text(item)).join("；")
+              : raw && typeof raw === "object"
+                ? JSON.stringify(raw)
+                : typeof raw === "boolean"
+                  ? raw ? "是" : "否"
+                  : text(raw);
+            row.append(heading, value);
+            tbody.append(row);
+          });
+          if (!tbody.children.length) {
+            const row = document.createElement("tr");
+            const value = document.createElement("td");
+            value.colSpan = 2;
+            value.textContent = "結果摘要未包含參數；請查看 workspace 內 WebUI fields 檔案。";
+            row.append(value);
+            tbody.append(row);
+          }
+          $("rawResult").textContent = JSON.stringify(result, null, 2);
+        }
+
+        async function poll() {
+          pollTimer = null;
+          try {
+            const payload = await request("/api/job");
+            renderJob(payload.job || {});
+          } catch (error) {
+            showError(error.message);
+            schedulePoll(2500);
+          }
+        }
+
+        function schedulePoll(delay = 850) {
+          if (pollTimer) return;
+          pollTimer = setTimeout(poll, delay);
+        }
+
+        function showError(message) {
+          $("errorNotice").textContent = message;
+          $("errorNotice").classList.remove("hidden");
+        }
+
+        async function prepare(file) {
+          if (!file || active) return;
+          if (!preflightReady) {
+            showError("本機預檢未通過，未有開始下載任何錄音。");
+            return;
+          }
+          const lower = file.name.toLowerCase();
+          if (!lower.endsWith(".json") && !lower.endsWith(".zip")) {
+            showError("只接受 recordings.json 或舊版 dataset ZIP。");
+            return;
+          }
+          const limit = lower.endsWith(".json")
+            ? Number(system?.limits?.json_bytes)
+            : Number(system?.limits?.zip_bytes);
+          if (Number.isFinite(limit) && file.size > limit) {
+            showError("檔案超過本機安全上限。");
+            return;
+          }
+          $("errorNotice").classList.add("hidden");
+          active = true;
+          $("dropZone").classList.add("disabled");
+          $("pickButton").disabled = true;
+          $("statusTitle").textContent = "正在安全接收檔案";
+          $("progressMessage").textContent = file.name;
+          try {
+            const payload = await request("/api/prepare", {
+              method: "POST",
+              headers: {
+                "Content-Type": lower.endsWith(".zip") ? "application/zip" : "application/json",
+                "X-File-Name": encodeURIComponent(file.name),
+              },
+              body: file,
+            });
+            renderJob(payload.job || {});
+          } catch (error) {
+            active = false;
+            $("dropZone").classList.toggle("disabled", !preflightReady);
+            $("pickButton").disabled = !preflightReady;
+            $("fileInput").disabled = !preflightReady;
+            showError(error.message);
+          }
+        }
+
+        const dropZone = $("dropZone");
+        ["dragenter", "dragover"].forEach((eventName) => {
+          dropZone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            if (!active && preflightReady) dropZone.classList.add("dragging");
+          });
+        });
+        ["dragleave", "drop"].forEach((eventName) => {
+          dropZone.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            dropZone.classList.remove("dragging");
+          });
+        });
+        dropZone.addEventListener("drop", (event) => {
+          if (!active && preflightReady) prepare(event.dataTransfer?.files?.[0]);
+        });
+        $("pickButton").addEventListener("click", () => $("fileInput").click());
+        $("fileInput").addEventListener("change", (event) => prepare(event.target.files?.[0]));
+        $("copyPath").addEventListener("click", async () => {
+          const path = $("workspacePath").textContent;
+          if (!path) return;
+          try {
+            await navigator.clipboard.writeText(path);
+            $("copyPath").textContent = "已複製";
+            setTimeout(() => ($("copyPath").textContent = "複製路徑"), 1400);
+          } catch (_) {
+            showError("未能自動複製；請手動選取路徑。 ");
+          }
+        });
+
+        if (!token) {
+          showError("本機工作階段已失效，請關閉頁面並重新啟動工具。");
+          $("dropZone").classList.add("disabled");
+          $("pickButton").disabled = true;
+          return;
+        }
+        request("/api/system")
+          .then(renderSystem)
+          .catch((error) => showError(error.message));
+      })();
+    </script>
+  </body>
+</html>

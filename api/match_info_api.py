@@ -1,7 +1,9 @@
 """Organiser-authenticated match, password, topic, and roster-link API."""
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from debate_timing import DEBATE_FORMATS
 
 router = APIRouter(prefix="/api/match-info", tags=["match-info"])
 
@@ -17,6 +19,8 @@ class SaveBody(BaseModel):
     topic_text: str = Field(default="", max_length=500)
     pro_team: str = Field(default="", max_length=100)
     con_team: str = Field(default="", max_length=100)
+    debate_format: str = Field(default=DEBATE_FORMATS[0], max_length=20)
+    free_debate_minutes: float | None = Field(default=None, ge=2, le=10)
     pro_1: str = Field(default="", max_length=80)
     pro_2: str = Field(default="", max_length=80)
     pro_3: str = Field(default="", max_length=80)
@@ -29,6 +33,20 @@ class SaveBody(BaseModel):
     review_password: str = Field(default="", max_length=512)
     clear_access_code: bool = False
     clear_review_password: bool = False
+
+    @field_validator("debate_format")
+    @classmethod
+    def validate_debate_format(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if normalized not in DEBATE_FORMATS:
+            raise ValueError("請選擇有效的賽制")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_free_debate_minutes(self):
+        if self.debate_format != "聯中" and self.free_debate_minutes is not None:
+            raise ValueError("只有聯中賽制可設定自由辯論時間")
+        return self
 
 
 class DrawTopicBody(BaseModel):

@@ -210,6 +210,11 @@
         align-items: center;
         margin: 0.5rem 0;
       }
+      .roster-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.3rem 1rem;
+      }
       .login {
         max-width: 36rem;
       }
@@ -225,7 +230,8 @@
           font-size: 1.65rem;
         }
         .grid2,
-        .metrics {
+        .metrics,
+        .roster-grid {
           grid-template-columns: 1fr;
           gap: 0;
         }
@@ -253,6 +259,9 @@
           </li>
           <li>
             只有標記為顯示的片段會出現在會員重溫頁，排序數字較小的片段會較先顯示。
+          </li>
+          <li>
+            可為每條片段獨立設定出賽陣容，將 10 個個人發言辯位連結至委員帳戶。
           </li>
         </ul>
       </details>
@@ -433,6 +442,18 @@
               <button class="primary" type="submit">儲存章節時間表</button>
             </form>
           </section>
+          <section class="card">
+            <h2>出賽陣容</h2>
+            <div class="caption">
+              每條片段的陣容各自設定；只包括正主、反主、正一至反三及正反結的個人發言。選擇委員帳戶後，成員可在重溫頁搜尋及篩選自己有份出賽的片段。
+            </div>
+            <div id="rosterBestDebater" class="notice hidden"></div>
+            <form id="rosterForm">
+              <div id="rosterInputs" class="roster-grid"></div>
+              <div id="rosterMessage"></div>
+              <button class="primary" type="submit">儲存出賽陣容</button>
+            </form>
+          </section>
           <details class="danger">
             <summary>危險操作</summary>
             <div class="notice err">刪除片段後無法復原。</div>
@@ -535,6 +556,45 @@
               return `<div class="chapter"><label><input type="checkbox" data-label="${label}" ${c ? "checked" : ""}> ${label}</label><input data-time="${label}" value="${c ? c.label : ""}" placeholder="例：12:34"></div>`;
             })
             .join("");
+          const roster = Object.fromEntries(
+              (state.roster || []).map((entry) => [
+                entry.role_label,
+                entry.user_id,
+              ]),
+            ),
+            accounts = [...(state.member_accounts || [])]
+              .map(String)
+              .sort((a, b) => a.localeCompare(b));
+          $("rosterInputs").innerHTML = (
+            state.individual_speech_labels || []
+          )
+            .map((label, index) => {
+              const assigned = roster[label] ? String(roster[label]) : "",
+                selectId = `rosterRole${index}`,
+                options = [
+                  '<option value="">未設定</option>',
+                  ...(!assigned || accounts.includes(assigned)
+                    ? []
+                    : [
+                        `<option value="${esc(assigned)}" selected>${esc(assigned)}（現有帳戶）</option>`,
+                      ]),
+                  ...accounts.map(
+                    (userId) =>
+                      `<option value="${esc(userId)}" ${userId === assigned ? "selected" : ""}>${esc(userId)}</option>`,
+                  ),
+                ];
+              return `<div><label for="${selectId}">${esc(label)}</label><select id="${selectId}" data-roster-role="${esc(label)}">${options.join("")}</select></div>`;
+            })
+            .join("");
+          if (state.best_debater_role) {
+            const bestUser = roster[state.best_debater_role];
+            $("rosterBestDebater").textContent =
+              `🏆 本片段目前標示的最佳辯論員：${state.best_debater_role}${bestUser ? `（${bestUser}）` : "（尚未連結帳戶）"}`;
+            $("rosterBestDebater").classList.remove("hidden");
+          } else {
+            $("rosterBestDebater").classList.add("hidden");
+            $("rosterBestDebater").textContent = "";
+          }
         }
         function render() {
           $("loading").classList.add("hidden");
@@ -777,6 +837,31 @@
           }
           notice("chapterMessage", "ok", d.message);
           await load(selected().id);
+        });
+        $("rosterForm").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const videoId = selected().id,
+            assignments = [
+              ...$("rosterInputs").querySelectorAll(
+                "select[data-roster-role]",
+              ),
+            ].map((select) => ({
+              role_label: select.dataset.rosterRole,
+              user_id: select.value || null,
+            })),
+            r = await fetch(`/api/video-admin/videos/${videoId}/roster`, {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ assignments }),
+            }),
+            d = await r.json();
+          if (!r.ok || !d.ok) {
+            notice("rosterMessage", "err", d.detail || d.message);
+            return;
+          }
+          notice("rosterMessage", "ok", d.message);
+          await load(videoId);
         });
         $("delete").addEventListener("click", () =>
           $("confirmDelete").classList.remove("hidden"),

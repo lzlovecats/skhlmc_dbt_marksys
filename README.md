@@ -1,4 +1,4 @@
-# SKH LMC Debate Marking System
+# 聖呂中辯電子賽務系統
 
 聖呂中辯電子分紙及賽務平台。現行production是原生HTML/CSS/JavaScript + FastAPI + PostgreSQL；Render只啟動一個Uvicorn process，沒有Streamlit runtime。版本唯一來源是[`version.py`](version.py)。
 
@@ -16,6 +16,8 @@
 | 公開辯題庫 | `/open_db` | 公開 |
 | 報名／場次／賽程／賽果管理 | `/admin-hub` | 賽會人員password |
 | 主席主持易 | `/chairperson` | 賽會人員password |
+| 比賽日投影及 AI評判易控制 | `/projector/control` | 同一賽會人員登入 |
+| 比賽日 Kiosk 大屏及錄音引擎 | `/projector?kiosk=1` | 固定 `kiosk` account |
 | 辯題徵集、投票及罷免 | `/vote` | committee account |
 | 影片重溫、相片、AI辯論、AI訓練、基金 | 主頁committee區 | committee account；部分操作另需delegated role |
 | Database console | `/db-mgmt` | 賽會人員 + SQL password；設定／secret tables完全封鎖 |
@@ -47,7 +49,7 @@ Solo Gemini Live：Browser ──WebSocket（一次性ephemeral token）──> 
 - 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
-Production目前為46張public tables，migration head `20260714_0002`；
+Production schema 以 migration ledger 為準，現行 migration head 為 `20260714_0008`；
 media binary只存private R2，database只保存metadata。未完成的RLS、自家TTS、自家LLM、
 migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
@@ -89,6 +91,7 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
 | 功能 | Secrets |
 |---|---|
 | Gemini及Gemini Live | `GEMINI_API_KEY` |
+| AI評判易學生全場錄音 | 上述 `GEMINI_API_KEY` 必須屬已啟用 billing 的 paid project，並設定 `GEMINI_PAID_TIER_CONFIRMED=true`；未確認會 fail closed。語音只在有可用 TTS provider 時生成，否則只投影文字 |
 | OpenRouter models | `OPENROUTER_API_KEY` |
 | Azure TTS | `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, optional voice/rate/output format |
 | Custom TTS | `TTS_PROVIDER=custom`, `CUSTOM_TTS_URL`, `CUSTOM_TTS_API_KEY`, `CUSTOM_TTS_MODEL_VERSION` |

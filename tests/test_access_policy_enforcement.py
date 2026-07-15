@@ -30,12 +30,15 @@ def test_kiosk_cannot_open_member_profile_or_funds(monkeypatch):
     assert fund_error.value.status_code == 403
 
 
-@pytest.mark.parametrize("handler", (proxy.video_view, proxy.projector_list_matches))
-def test_kiosk_cannot_use_video_or_projector_control(monkeypatch, handler):
+@pytest.mark.parametrize(
+    ("handler", "status"),
+    ((proxy.video_view, 403), (proxy.projector_list_matches, 401)),
+)
+def test_kiosk_cannot_use_video_or_projector_control(monkeypatch, handler, status):
     _authenticate_as(monkeypatch, KIOSK_ACCOUNT_ID)
     with pytest.raises(HTTPException) as denied:
         asyncio.run(handler(object()))
-    assert denied.value.status_code == 403
+    assert denied.value.status_code == status
 
 
 @pytest.mark.parametrize(

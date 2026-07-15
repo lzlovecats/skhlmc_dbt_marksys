@@ -292,7 +292,9 @@
             <div class="section-head">
               <div>
                 <h2>AI 用量估算</h2>
-                <p class="caption">只作參考，實際成本以 provider 帳單為準。</p>
+                <p class="caption">
+                  每列代表一次 provider call；任務編號會將同一場 AI評判易的逐字稿、評審及粵語讀出配對。估算只作參考，實際成本以 provider 帳單為準。
+                </p>
               </div>
               <a class="button download" href="/api/ai-fund/export/usage.csv"
                 >下載最近用量 CSV</a
@@ -302,7 +304,12 @@
           </div>
           <div id="summaryCard" class="card hidden">
             <div class="section-head">
-              <h2>按月 / 用戶 / 功能統計</h2>
+              <div>
+                <h2>按月 / 用戶 / 功能統計</h2>
+                <p class="caption">
+                  「任務／場次」會將同一 AI評判易 operation 合併；Provider calls保留成功及失敗的實際外部呼叫數，其他功能的任務數沿用成功呼叫計法。
+                </p>
+              </div>
               <a
                 class="button download"
                 href="/api/ai-fund/export/usage-summary.csv"
@@ -494,6 +501,8 @@
             gemini: "Gemini",
             openrouter: "OpenRouter",
             openai: "GPT",
+            azure: "Azure Speech",
+            custom: "自家模型",
             other: "其他",
           },
           featureLabels = {
@@ -509,7 +518,19 @@
             tts_review: "AI訓練·錄音檢查",
             tts_script_analysis: "AI訓練·句庫分析",
             llm_review: "AI訓練·文字審查",
-            kiosk_match_review: "Kiosk AI全場評判",
+            tts: "粵語語音合成",
+            kiosk_match_review: "AI評判易（Kiosk）",
+            kiosk_match_review_tts: "AI評判易·粵語讀出",
+          },
+          operationStageLabels = {
+            transcription: "逐字稿",
+            judgement: "評審",
+            synthesis: "語音合成",
+            primary: "主要模型",
+            fallback: "後備模型",
+            http_synthesis: "HTTP 語音合成／硬件測試",
+            room_synthesis: "AI 房間語音合成",
+            result_tts: "評語讀出",
           };
         let data = null,
           pendingRows = {},
@@ -607,6 +628,18 @@
                 ["功能", (r) => featureLabels[r.feature] || r.feature],
                 ["模型", (r) => r.model_label],
                 ["Provider", (r) => providerLabels[r.provider] || r.provider],
+                ["任務編號", (r) => r.operation_id || "—", "wrap"],
+                [
+                  "階段",
+                  (r) =>
+                    operationStageLabels[r.operation_stage] ||
+                    r.operation_stage ||
+                    "—",
+                ],
+                [
+                  "計費字元",
+                  (r) => Number(r.billable_characters || 0).toLocaleString("zh-HK"),
+                ],
                 ["估算成本", (r) => money(r.estimated_cost_hkd, 4)],
                 ["狀態", (r) => statusLabels[r.status] || r.status],
                 ["錯誤訊息", (r) => r.error_message || "—", "wrap"],
@@ -623,7 +656,16 @@
                   ["Provider", (r) => providerLabels[r.provider] || r.provider],
                   ["功能", (r) => featureLabels[r.feature] || r.feature],
                   ["模型", (r) => r.model_label],
-                  ["使用次數", (r) => r.uses],
+                  ["任務／場次", (r) => r.tasks ?? r.uses],
+                  [
+                    "Provider calls",
+                    (r) => r.provider_calls ?? r.uses,
+                  ],
+                  [
+                    "計費字元",
+                    (r) =>
+                      Number(r.billable_characters || 0).toLocaleString("zh-HK"),
+                  ],
                   ["估算成本", (r) => money(r.estimated_cost_hkd, 4)],
                 ]);
               },

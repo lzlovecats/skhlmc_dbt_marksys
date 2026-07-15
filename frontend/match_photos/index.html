@@ -198,6 +198,26 @@
       .photo details summary {
         font-size: 0.9rem;
       }
+      .photo-edit-form {
+        border-top: 1px solid var(--border);
+        margin-top: 0.45rem;
+        padding-top: 0.1rem;
+      }
+      .photo-edit-form label {
+        font-size: 0.82rem;
+        margin-top: 0.55rem;
+      }
+      .photo-edit-form button {
+        margin-top: 0.75rem;
+        width: 100%;
+      }
+      .photo-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+        margin-top: 0.35rem;
+      }
       .login {
         max-width: 36rem;
       }
@@ -239,6 +259,7 @@
           <li>
             上載時可選擇「比賽片段」已有的場次；未能歸類的圖片可放入「其他相片」。
           </li>
+          <li>每位委員可在圖片下方修改自己上載的場次、日期、標題及說明。</li>
         </ul>
       </details>
       <details>
@@ -336,7 +357,7 @@
         </section>
       </section>
     </main>
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <script>
       (() => {
         "use strict";
@@ -615,6 +636,6 @@
       })();
     </script>
     <script src="/shared/vote-ui.js"></script>
-    <script src="/shared/server-tables.js"></script>
+    <script src="/shared/server-tables.js?v=__APP_VERSION__"></script>
   </body>
 </html>

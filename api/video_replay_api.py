@@ -27,6 +27,7 @@ class ChapterItem(BaseModel):
 class ChaptersBody(BaseModel):
     video_id: int
     chapters: list[ChapterItem] = Field(max_length=30)
+    best_debater_role: str | None = Field(default=None, max_length=40)
 
 
 def _context(request: Request):
@@ -35,10 +36,10 @@ def _context(request: Request):
 
 
 @router.get("/data")
-def data(request: Request, video_id: int | None = None):
+def data(request: Request, video_id: int | None = None, mine_only: bool = False):
     from core import media_logic as logic
     user_id, db = _context(request)
-    return logic.replay_data(user_id, video_id, db=db)
+    return logic.replay_data(user_id, video_id, mine_only=mine_only, db=db)
 
 @router.get("/comments")
 def comments(request: Request, video_id: int, page: int = 1):
@@ -70,4 +71,14 @@ def comment(body: CommentBody, request: Request):
 def chapters(body: ChaptersBody, request: Request):
     from core import media_logic as logic
     _user_id, db = _context(request)
-    return logic.save_chapters(body.video_id, [item.model_dump() for item in body.chapters], db=db)
+    best_role = (
+        body.best_debater_role
+        if "best_debater_role" in body.model_fields_set
+        else logic.PRESERVE_BEST_DEBATER
+    )
+    return logic.save_chapters(
+        body.video_id,
+        [item.model_dump() for item in body.chapters],
+        best_debater_role=best_role,
+        db=db,
+    )

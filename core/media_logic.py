@@ -11,8 +11,14 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from account_access import (
+    NON_MEMBER_ACCOUNT_DB_KEYS,
+    is_non_member_account,
+    sql_account_id_literals,
+)
 from core.vote_logic import _resolve_db
 from schema import (
+    TABLE_ACCOUNTS,
     TABLE_MATCHES,
     TABLE_MATCH_PHOTOS,
     TABLE_MATCH_VIDEOS,
@@ -20,10 +26,12 @@ from schema import (
     TABLE_VIDEO_CHAPTERS,
     TABLE_VIDEO_COMMENTS,
     TABLE_VIDEO_PROGRESS,
+    TABLE_VIDEO_ROSTER,
     TABLE_VIDEO_VIEWS,
     TABLE_VIDEO_VOTES,
 )
 from system_limits import (
+    ACCOUNT_LIST_LIMIT,
     API_PAGE_SIZE,
     PHOTO_BATCH_MAX_ITEMS,
     VIDEO_COMMENT_MAX_PER_USER_DAY, VIDEO_COMMENT_MAX_PER_VIDEO,
@@ -38,9 +46,13 @@ SOURCE_EXISTING = "連結現有場次"
 SOURCE_STANDALONE = "手動輸入舊比賽"
 OTHER_ALBUM = "其他相片"
 CHAPTER_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "攻辯", "台下", "交互", "自由辯論", "反結", "正結"]
+INDIVIDUAL_SPEECH_LABELS = ["正主", "反主", "正一", "反一", "正二", "反二", "正三", "反三", "反結", "正結"]
 CHAPTER_ORDER = {label: index for index, label in enumerate(CHAPTER_LABELS)}
+INDIVIDUAL_SPEECH_ORDER = {label: index for index, label in enumerate(INDIVIDUAL_SPEECH_LABELS)}
 VOTE_LABELS = {"pro": "正方勝出", "con": "反方勝出", "undecided": "難以判斷"}
 BRACKET_RE = re.compile(r"[（(﹙]\s*([^（(﹙）)﹚]*?)\s*[）)﹚]")
+PRESERVE_BEST_DEBATER = object()
+_NON_MEMBER_ACCOUNT_SQL = sql_account_id_literals(NON_MEMBER_ACCOUNT_DB_KEYS)
 
 
 def now_hkt():
@@ -65,6 +77,18 @@ def safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def safe_bool(value):
+    if isinstance(value, bool):
+        return value
+    return clean_text(value).lower() in {"true", "t", "1", "yes"}
+
+
+def safe_text_list(value):
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in (clean_text(entry) for entry in value) if item]
+    return []
 
 
 def format_time(value):
@@ -133,7 +157,7 @@ def is_youtube_url(url):
     )
 
 
-def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT):
+def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT, mine_only=False):
     return db.query(
         f"""
         SELECT v.id, v.match_id, COALESCE(NULLIF(v.match_label, ''), v.match_id) AS match_display,
@@ -145,6 +169,10 @@ def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT):
                COALESCE(vote_stats.pro_votes, 0) AS pro_votes,
                COALESCE(vote_stats.con_votes, 0) AS con_votes,
                COALESCE(vote_stats.undecided_votes, 0) AS undecided_votes,
+               COALESCE(roster_stats.participated_by_me, FALSE) AS participated_by_me,
+               COALESCE(roster_stats.my_roles_text, '') AS my_roles_text,
+               roster_stats.roster_user_ids,
+               COALESCE(roster_stats.roster_search_text, '') AS roster_search_text,
                progress.watched_seconds, progress.duration_seconds, progress.updated_at AS progress_updated_at
         FROM {TABLE_MATCH_VIDEOS} v
         LEFT JOIN {TABLE_MATCHES} m ON v.match_id = m.match_id
@@ -156,12 +184,34 @@ def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT):
                    SUM(CASE WHEN vote_choice = 'undecided' THEN 1 ELSE 0 END) AS undecided_votes
             FROM {TABLE_VIDEO_VOTES} GROUP BY video_id
         ) vote_stats ON vote_stats.video_id = v.id
+        LEFT JOIN (
+            SELECT r.video_id,
+                   BOOL_OR(r.member_user_id = :user_id) AS participated_by_me,
+                   STRING_AGG(r.role_label, ',' ORDER BY
+                       CASE r.role_label
+                           WHEN '正主' THEN 0 WHEN '反主' THEN 1
+                           WHEN '正一' THEN 2 WHEN '反一' THEN 3
+                           WHEN '正二' THEN 4 WHEN '反二' THEN 5
+                           WHEN '正三' THEN 6 WHEN '反三' THEN 7
+                           WHEN '反結' THEN 8 WHEN '正結' THEN 9
+                           ELSE 99
+                       END
+                   ) FILTER (WHERE r.member_user_id = :user_id) AS my_roles_text,
+                   ARRAY_AGG(DISTINCT r.member_user_id ORDER BY r.member_user_id) AS roster_user_ids,
+                   STRING_AGG(DISTINCT r.member_user_id, ' ' ORDER BY r.member_user_id) AS roster_search_text
+            FROM {TABLE_VIDEO_ROSTER} r
+            GROUP BY r.video_id
+        ) roster_stats ON roster_stats.video_id = v.id
         LEFT JOIN {TABLE_VIDEO_PROGRESS} progress ON progress.video_id = v.id AND progress.user_id = :user_id
         WHERE COALESCE(v.is_visible, TRUE) = TRUE
+          AND (:mine_only = FALSE OR EXISTS (
+              SELECT 1 FROM {TABLE_VIDEO_ROSTER} mine
+              WHERE mine.video_id=v.id AND mine.member_user_id=:user_id
+          ))
         ORDER BY progress.updated_at DESC NULLS LAST, m.match_date DESC NULLS LAST, m.match_time DESC NULLS LAST,
                  v.display_order ASC, v.created_at DESC
         LIMIT :limit
-        """, {"user_id": user_id, "limit": max(1, int(limit))}
+        """, {"user_id": user_id, "mine_only": bool(mine_only), "limit": max(1, int(limit))}
     )
 
 
@@ -174,31 +224,71 @@ def _replay_record(row):
         "pro_team": format_value(row.get("pro_team")), "con_team": format_value(row.get("con_team")),
         "view_count": safe_int(row.get("view_count")), "pro_votes": safe_int(row.get("pro_votes")),
         "con_votes": safe_int(row.get("con_votes")), "undecided_votes": safe_int(row.get("undecided_votes")),
+        "participated_by_me": safe_bool(row.get("participated_by_me")),
+        "my_roles": [role for role in clean_text(row.get("my_roles_text")).split(",") if role],
+        "roster_user_ids": safe_text_list(row.get("roster_user_ids")),
+        "roster_search_text": clean_text(row.get("roster_search_text")),
         "watched_seconds": safe_int(row.get("watched_seconds")), "duration_seconds": safe_int(row.get("duration_seconds")),
         "progress_updated_at": json_time(row.get("progress_updated_at")),
     }
 
 
-def replay_data(user_id, selected_video_id=None, db=None):
+def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
     db = _resolve_db(db)
-    videos = [_replay_record(row) for _, row in _replay_rows(user_id, db).iterrows()]
+    videos = [
+        _replay_record(row)
+        for _, row in _replay_rows(user_id, db, mine_only=mine_only).iterrows()
+    ]
     if not videos:
-        return {"videos": [], "selected": None, "chapters": [], "comments": [], "my_vote": None, "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS}
+        return {
+            "videos": [], "selected": None, "chapters": [], "comments": [],
+            "my_vote": None, "vote_labels": VOTE_LABELS,
+            "chapter_labels": CHAPTER_LABELS,
+            "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
+            "best_debater_role": None,
+        }
     ids = {video["id"] for video in videos}
     selected_id = safe_int(selected_video_id, videos[0]["id"])
     if selected_id not in ids:
         selected_id = videos[0]["id"]
     selected = next(video for video in videos if video["id"] == selected_id)
     chapters = db.query(
-        f"SELECT chapter_label, start_seconds, display_order FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id = :video_id ORDER BY display_order ASC, start_seconds ASC",
+        f"""SELECT c.chapter_label, c.start_seconds, c.display_order,
+                   COALESCE(c.is_best_debater, FALSE) AS is_best_debater,
+                   r.member_user_id AS speaker_user_id
+            FROM {TABLE_VIDEO_CHAPTERS} c
+            LEFT JOIN {TABLE_VIDEO_ROSTER} r
+              ON r.video_id=c.video_id AND r.role_label=c.chapter_label
+            WHERE c.video_id=:video_id
+            ORDER BY c.display_order ASC, c.start_seconds ASC""",
         {"video_id": selected_id},
     )
-    chapter_items = [{"chapter_label": clean_text(row["chapter_label"]), "start_seconds": safe_int(row["start_seconds"]), "label": seconds_to_label(row["start_seconds"]), "display_order": safe_int(row.get("display_order"))} for _, row in chapters.iterrows()]
+    chapter_items = [
+        {
+            "chapter_label": clean_text(row["chapter_label"]),
+            "start_seconds": safe_int(row["start_seconds"]),
+            "label": seconds_to_label(row["start_seconds"]),
+            "display_order": safe_int(row.get("display_order")),
+            "is_best_debater": safe_bool(row.get("is_best_debater")),
+            "speaker_user_id": clean_text(row.get("speaker_user_id")) or None,
+        }
+        for _, row in chapters.iterrows()
+    ]
     chapter_items.sort(key=lambda row: (CHAPTER_ORDER.get(row["chapter_label"], row["display_order"] + len(CHAPTER_LABELS)), row["start_seconds"]))
+    best_debater_role = next(
+        (row["chapter_label"] for row in chapter_items if row["is_best_debater"]),
+        None,
+    )
     comment_items = []
     vote = db.query(f"SELECT vote_choice FROM {TABLE_VIDEO_VOTES} WHERE video_id = :video_id AND user_id = :user_id", {"video_id": selected_id, "user_id": user_id})
     my_vote = clean_text(vote.iloc[0]["vote_choice"]) if not vote.empty else None
-    return {"videos": videos, "selected": selected, "chapters": chapter_items, "comments": comment_items, "my_vote": my_vote, "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS}
+    return {
+        "videos": videos, "selected": selected, "chapters": chapter_items,
+        "comments": comment_items, "my_vote": my_vote,
+        "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS,
+        "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
+        "best_debater_role": best_debater_role,
+    }
 
 
 def save_vote(video_id, user_id, vote_choice, db=None):
@@ -248,7 +338,7 @@ def add_comment(video_id, user_id, comment_text, db=None):
     return {"ok": True, "message": "已成功留言"}
 
 
-def save_chapters(video_id, chapters, db=None):
+def save_chapters(video_id, chapters, best_debater_role=PRESERVE_BEST_DEBATER, db=None):
     invalid = []
     values = []
     for index, label in enumerate(CHAPTER_LABELS):
@@ -263,9 +353,28 @@ def save_chapters(video_id, chapters, db=None):
     if invalid:
         return {"ok": False, "message": "以下章節時間格式無效：" + "、".join(invalid)}
     db = _resolve_db(db)
+    preserving_best = best_debater_role is PRESERVE_BEST_DEBATER
+    if preserving_best:
+        existing = db.query(
+            f"""SELECT chapter_label FROM {TABLE_VIDEO_CHAPTERS}
+                WHERE video_id=:video_id AND is_best_debater=TRUE LIMIT 1""",
+            {"video_id": int(video_id)},
+        )
+        best_role = clean_text(existing.iloc[0]["chapter_label"]) if not existing.empty else ""
+    else:
+        best_role = clean_text(best_debater_role)
+    if best_role and best_role not in INDIVIDUAL_SPEECH_LABELS:
+        return {"ok": False, "message": "最佳辯論員必須選擇個人發言辯位。"}
+    enabled_labels = {label for label, _index, _seconds in values}
+    if best_role and best_role not in enabled_labels:
+        if preserving_best:
+            best_role = ""
+        else:
+            return {"ok": False, "message": "最佳辯論員必須同時啟用該辯位的章節時間。"}
     params = [
         {"video_id": int(video_id), "chapter_label": label,
-         "start_seconds": seconds, "display_order": index, "updated_at": now_hkt()}
+         "start_seconds": seconds, "display_order": index,
+         "is_best_debater": label == best_role, "updated_at": now_hkt()}
         for label, index, seconds in values
     ]
     with db.transaction() as conn:
@@ -273,10 +382,10 @@ def save_chapters(video_id, chapters, db=None):
                      {"video_id": int(video_id)})
         if params:
             conn.execute(text(f"""INSERT INTO {TABLE_VIDEO_CHAPTERS}
-                (video_id,chapter_label,start_seconds,display_order,updated_at)
-                VALUES(:video_id,:chapter_label,:start_seconds,:display_order,:updated_at)"""),
+                (video_id,chapter_label,start_seconds,display_order,is_best_debater,updated_at)
+                VALUES(:video_id,:chapter_label,:start_seconds,:display_order,:is_best_debater,:updated_at)"""),
                 params)
-    return {"ok": True, "message": "章節時間表已更新。"}
+    return {"ok": True, "message": "章節時間表已更新。", "best_debater_role": best_role or None}
 
 
 def _match_rows(db):
@@ -294,6 +403,22 @@ def match_options(db=None):
         details = "｜".join(item for item in (teams, clean_text(row.get("topic_text"))) if item)
         options.append({"match_id": match_id, "label": f"{match_id} - {details}" if details else match_id})
     return options
+
+
+def member_account_options(db=None):
+    db = _resolve_db(db)
+    rows = db.query(
+        f"""SELECT user_id FROM {TABLE_ACCOUNTS}
+            WHERE LOWER(user_id) NOT IN ({_NON_MEMBER_ACCOUNT_SQL})
+              AND COALESCE(account_disabled, FALSE)=FALSE
+            ORDER BY user_id LIMIT :limit""",
+        {"limit": ACCOUNT_LIST_LIMIT},
+    )
+    return [
+        value
+        for value in (clean_text(item) for item in rows.get("user_id", []))
+        if value
+    ]
 
 
 def validate_video_input(video_title, youtube_url, video_source, match_label=""):
@@ -366,10 +491,132 @@ def video_admin_data(selected_video_id=None, page=1, page_size=API_PAGE_SIZE, db
     if videos and selected_id not in {video["id"] for video in videos}:
         selected_id = videos[0]["id"]
     chapters = []
+    roster = []
+    best_debater_role = None
     if selected_id:
-        rows = db.query(f"SELECT chapter_label, start_seconds FROM {TABLE_VIDEO_CHAPTERS} WHERE video_id = :video_id", {"video_id": selected_id})
-        chapters = [{"chapter_label": clean_text(row["chapter_label"]), "start_seconds": safe_int(row["start_seconds"]), "label": seconds_to_label(row["start_seconds"])} for _, row in rows.iterrows()]
-    return {"matches": match_options(db), "videos": videos, "selected_video_id": selected_id or None, "chapters": chapters, "chapter_labels": CHAPTER_LABELS, "source_existing": SOURCE_EXISTING, "source_standalone": SOURCE_STANDALONE, "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages}}
+        rows = db.query(
+            f"""SELECT c.chapter_label, c.start_seconds,
+                       COALESCE(c.is_best_debater, FALSE) AS is_best_debater,
+                       r.member_user_id AS speaker_user_id
+                FROM {TABLE_VIDEO_CHAPTERS} c
+                LEFT JOIN {TABLE_VIDEO_ROSTER} r
+                  ON r.video_id=c.video_id AND r.role_label=c.chapter_label
+                WHERE c.video_id=:video_id""",
+            {"video_id": selected_id},
+        )
+        chapters = [
+            {
+                "chapter_label": clean_text(row["chapter_label"]),
+                "start_seconds": safe_int(row["start_seconds"]),
+                "label": seconds_to_label(row["start_seconds"]),
+                "is_best_debater": safe_bool(row.get("is_best_debater")),
+                "speaker_user_id": clean_text(row.get("speaker_user_id")) or None,
+            }
+            for _, row in rows.iterrows()
+        ]
+        chapters.sort(key=lambda row: CHAPTER_ORDER.get(row["chapter_label"], len(CHAPTER_LABELS)))
+        best_debater_role = next(
+            (row["chapter_label"] for row in chapters if row["is_best_debater"]),
+            None,
+        )
+        roster_rows = db.query(
+            f"""SELECT role_label, member_user_id FROM {TABLE_VIDEO_ROSTER}
+                WHERE video_id=:video_id""",
+            {"video_id": selected_id},
+        )
+        roster = [
+            {
+                "role_label": clean_text(row["role_label"]),
+                "user_id": clean_text(row["member_user_id"]),
+            }
+            for _, row in roster_rows.iterrows()
+        ]
+        roster.sort(key=lambda row: INDIVIDUAL_SPEECH_ORDER.get(row["role_label"], len(INDIVIDUAL_SPEECH_LABELS)))
+    return {
+        "matches": match_options(db), "videos": videos,
+        "selected_video_id": selected_id or None, "chapters": chapters,
+        "chapter_labels": CHAPTER_LABELS,
+        "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
+        "best_debater_role": best_debater_role,
+        "member_accounts": member_account_options(db), "roster": roster,
+        "source_existing": SOURCE_EXISTING,
+        "source_standalone": SOURCE_STANDALONE,
+        "pagination": {
+            "page": page, "page_size": page_size, "total": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
+def save_video_roster(video_id, roster, db=None):
+    db = _resolve_db(db)
+    parsed = []
+    seen_roles = set()
+    for item in roster:
+        role = clean_text(item.get("role_label"))
+        member = clean_text(item.get("user_id"))
+        if role not in INDIVIDUAL_SPEECH_LABELS:
+            return {"ok": False, "message": "出賽陣容包含無效辯位。"}
+        if role in seen_roles:
+            return {"ok": False, "message": f"出賽陣容重複設定辯位：{role}"}
+        seen_roles.add(role)
+        if member:
+            parsed.append({"role_label": role, "user_id": member})
+
+    video = db.query(
+        f"SELECT 1 AS found FROM {TABLE_MATCH_VIDEOS} WHERE id=:video_id LIMIT 1",
+        {"video_id": int(video_id)},
+    )
+    if video.empty:
+        return {"ok": False, "message": "找不到指定的比賽片段。"}
+
+    existing_rows = db.query(
+        f"""SELECT role_label, member_user_id FROM {TABLE_VIDEO_ROSTER}
+            WHERE video_id=:video_id""",
+        {"video_id": int(video_id)},
+    )
+    existing_by_role = {
+        clean_text(row["role_label"]): clean_text(row["member_user_id"])
+        for _, row in existing_rows.iterrows()
+    }
+    valid_members = set(member_account_options(db))
+    invalid_members = sorted({
+        row["user_id"]
+        for row in parsed
+        if (
+            is_non_member_account(row["user_id"])
+            or (
+                row["user_id"] not in valid_members
+                and existing_by_role.get(row["role_label"]) != row["user_id"]
+            )
+        )
+    })
+    if invalid_members:
+        return {
+            "ok": False,
+            "message": "以下委員帳戶不存在、已停用或不是一般委員：" + "、".join(invalid_members),
+        }
+
+    params = [
+        {
+            "video_id": int(video_id), "role_label": row["role_label"],
+            "member_user_id": row["user_id"], "updated_at": now_hkt(),
+        }
+        for row in parsed
+    ]
+    with db.transaction() as conn:
+        conn.execute(
+            text(f"DELETE FROM {TABLE_VIDEO_ROSTER} WHERE video_id=:video_id"),
+            {"video_id": int(video_id)},
+        )
+        if params:
+            conn.execute(
+                text(f"""INSERT INTO {TABLE_VIDEO_ROSTER}
+                    (video_id,role_label,member_user_id,updated_at)
+                    VALUES(:video_id,:role_label,:member_user_id,:updated_at)"""),
+                params,
+            )
+    return {"ok": True, "message": "出賽陣容已更新。", "roster": parsed}
 
 
 def update_video(video_id, data, db=None):
@@ -513,6 +760,81 @@ def photo_data(db=None):
     db = _resolve_db(db)
     options = album_options(db)
     return {"albums": options, "photos": [], "other_album": OTHER_ALBUM}
+
+
+def update_photo_metadata(user_id, photo_id, album_label, match_video_id,
+                          photo_date, photo_title, caption, db=None):
+    """Update one uploader-owned photo without touching its stored media."""
+    db = _resolve_db(db)
+    clean_album = clean_text(album_label)
+    clean_title = clean_text(photo_title)
+    clean_caption = clean_text(caption)
+    if not clean_album or len(clean_album) > 200:
+        raise ValueError("所屬場次無效。")
+    if len(clean_title) > 300:
+        raise ValueError("圖片標題不可超過300字。")
+    if len(clean_caption) > 2000:
+        raise ValueError("圖片說明不可超過2000字。")
+
+    if match_video_id in (None, ""):
+        clean_video_id = None
+    else:
+        try:
+            clean_video_id = int(match_video_id)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("所屬場次無效。") from exc
+        if clean_video_id <= 0:
+            raise ValueError("所屬場次無效。")
+
+    current = db.query(
+        f"""SELECT album_label,match_video_id FROM {TABLE_MATCH_PHOTOS}
+        WHERE id=:id AND uploaded_by=:uploaded_by LIMIT 1""",
+        {"id": int(photo_id), "uploaded_by": str(user_id)},
+    )
+    if current.empty:
+        return False
+    old_album = clean_text(current.iloc[0].get("album_label"))
+    old_video_id = safe_int(current.iloc[0].get("match_video_id")) or None
+    requested_pair = (clean_album, clean_video_id)
+    old_pair = (old_album, old_video_id)
+    if requested_pair != old_pair:
+        allowed_pairs = {
+            (option["label"], option["video_id"])
+            for option in album_options(db)
+        }
+        if requested_pair not in allowed_pairs:
+            raise ValueError("所屬場次與比賽片段不相符，請重新選擇。")
+
+    clean_date = clean_text(photo_date)
+    parsed_date = None
+    if clean_date:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", clean_date):
+            raise ValueError("相片日期格式無效。")
+        try:
+            parsed_date = dt.date.fromisoformat(clean_date)
+        except ValueError as exc:
+            raise ValueError("相片日期格式無效。") from exc
+
+    changed = db.execute_count(
+        f"""UPDATE {TABLE_MATCH_PHOTOS}
+        SET match_video_id=:match_video_id,album_label=:album_label,
+            photo_date=:photo_date,photo_title=:photo_title,caption=:caption
+        WHERE id=:id AND uploaded_by=:uploaded_by
+          AND album_label=:old_album_label
+          AND match_video_id IS NOT DISTINCT FROM :old_match_video_id""",
+        {
+            "id": int(photo_id),
+            "uploaded_by": str(user_id),
+            "old_album_label": old_album,
+            "old_match_video_id": old_video_id,
+            "match_video_id": clean_video_id,
+            "album_label": clean_album,
+            "photo_date": parsed_date,
+            "photo_title": clean_title or None,
+            "caption": clean_caption or None,
+        },
+    )
+    return bool(changed)
 
 
 def register_r2_photos(user_id, album_label, match_video_id, photo_date,

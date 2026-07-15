@@ -160,9 +160,27 @@
       }
       .filters {
         display: grid;
-        grid-template-columns: 1fr 2fr;
+        grid-template-columns: minmax(11rem, 1fr) minmax(18rem, 2fr) auto;
         gap: 1rem;
+        align-items: end;
         margin: 1rem 0;
+      }
+      .check-filter {
+        min-height: 2.45rem;
+        display: flex;
+        align-items: center;
+      }
+      .check-filter label {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        margin: 0;
+        white-space: nowrap;
+      }
+      .check-filter input {
+        width: auto;
+        min-height: auto;
+        margin: 0;
       }
       .layout {
         display: grid;
@@ -203,6 +221,29 @@
       }
       .chapter-grid button {
         min-height: 2.45rem;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.18rem;
+        text-align: left;
+      }
+      .best-badge,
+      .appearance-badge {
+        display: inline-block;
+        border: 1px solid #927126;
+        border-radius: 999px;
+        padding: 0.08rem 0.42rem;
+        color: var(--warn);
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+      .appearance-badge {
+        border-color: #357a52;
+        color: var(--ok);
+      }
+      .chapter-speaker {
+        color: var(--muted);
+        font-size: 0.8rem;
       }
       .chapter-edit {
         display: grid;
@@ -291,7 +332,8 @@
         <ul>
           <li>此頁只供內部委員會成員登入後使用。</li>
           <li>可在系統內直接播放片段，並使用章節按鈕跳轉至不同辯位或環節。</li>
-          <li>所有內部委員會成員都可以更新片段章節時間點。</li>
+          <li>所有內部委員會成員都可以更新片段章節時間點，並為每條片段標示一位最佳辯論員。</li>
+          <li>可只顯示自己有份出賽的片段，或搜尋出賽委員帳戶名稱。</li>
           <li>系統會記錄最近觀看的片段及觀看位置，方便下次繼續。</li>
         </ul>
       </details>
@@ -324,7 +366,16 @@
           </div>
           <div>
             <label for="search">搜尋</label
-            ><input id="search" placeholder="輸入場次、隊伍、辯題或片段標題" />
+            ><input
+              id="search"
+              placeholder="輸入場次、隊伍、辯題、片段標題或出賽帳戶"
+            />
+          </div>
+          <div class="check-filter">
+            <label
+              ><input id="myAppearances" type="checkbox" />
+              只顯示我的出賽</label
+            >
           </div>
         </div>
         <div id="noResults" class="notice hidden">
@@ -334,6 +385,7 @@
           <div>
             <h2 id="title"></h2>
             <div id="meta" class="caption"></div>
+            <div id="appearanceMeta" class="caption"></div>
             <p id="topic"></p>
             <div id="topStats" class="stats"></div>
             <div id="player" class="player"></div>
@@ -343,9 +395,14 @@
               <summary>更新章節時間點</summary>
               <div class="caption">
                 所有內部委員會成員均可更新；時間可輸入秒數、mm:ss 或
-                hh:mm:ss。未啟用的章節不會顯示。
+                hh:mm:ss。未啟用的章節不會顯示；每條片段只可選一位最佳辯論員。
               </div>
               <form id="chaptersForm">
+                <label for="bestDebaterRole">最佳辯論員（個人發言）</label>
+                <select id="bestDebaterRole"></select>
+                <div class="caption">
+                  所選辯位須同時啟用並填寫章節時間；選「未設定」可清除標示。
+                </div>
                 <div id="chapterInputs"></div>
                 <div id="chapterMessage"></div>
                 <button class="primary" type="submit">儲存章節時間表</button>
@@ -363,13 +420,14 @@
           </aside>
         </section>
         <hr
+          id="interactionDivider"
           style="
             border: 0;
             border-top: 1px solid var(--border);
             margin: 2rem 0 1.3rem;
           "
         />
-        <section class="split">
+        <section id="videoInteractions" class="split">
           <div>
             <h2>勝負投票</h2>
             <label for="voteChoice">你認為哪方值得勝利？</label
@@ -438,6 +496,7 @@
           return data.videos.filter(
             (v) =>
               (match === "全部" || v.match_display === match) &&
+              (!$("myAppearances").checked || v.participated_by_me) &&
               (!term ||
                 [
                   v.match_display,
@@ -445,6 +504,9 @@
                   v.topic_text,
                   v.pro_team,
                   v.con_team,
+                  ...(Array.isArray(v.roster_user_ids)
+                    ? v.roster_user_ids
+                    : []),
                 ]
                   .join(" ")
                   .toLocaleLowerCase()
@@ -533,6 +595,18 @@
         function render() {
           const selected = data.selected;
           if (!selected) {
+            if ($("myAppearances").checked) {
+              $("empty").classList.add("hidden");
+              $("app").classList.remove("hidden");
+              $("matchFilter").innerHTML = '<option value="全部">全部</option>';
+              $("noResults").textContent =
+                "目前未有已登記到你帳戶的出賽片段。";
+              $("noResults").classList.remove("hidden");
+              $("videoLayout").classList.add("hidden");
+              $("interactionDivider").classList.add("hidden");
+              $("videoInteractions").classList.add("hidden");
+              return;
+            }
             $("app").classList.add("hidden");
             $("empty").classList.remove("hidden");
             return;
@@ -550,8 +624,19 @@
             )
             .join("");
           const filtered = currentVideos();
+          $("noResults").textContent =
+            "沒有符合條件的比賽片段。請調整搜尋關鍵字或篩選條件後再試。";
           $("noResults").classList.toggle("hidden", !!filtered.length);
           $("videoLayout").classList.toggle("hidden", !filtered.length);
+          $("interactionDivider").classList.toggle(
+            "hidden",
+            !filtered.length,
+          );
+          $("videoInteractions").classList.toggle(
+            "hidden",
+            !filtered.length,
+          );
+          if (!filtered.length) return;
           if (!filtered.some((v) => v.id === selected.id)) {
             select(filtered[0].id);
             return;
@@ -559,6 +644,12 @@
           $("title").textContent = selected.video_title;
           $("meta").textContent =
             `場次：${selected.match_display}　｜　${[selected.match_date, selected.match_time && selected.match_time.slice(0, 5)].filter(Boolean).join(" ") || "未設定日期時間"}`;
+          const myRoles = Array.isArray(selected.my_roles)
+            ? selected.my_roles
+            : [];
+          $("appearanceMeta").innerHTML = selected.participated_by_me
+            ? `<span class="appearance-badge">🎤 我的出賽</span>　辯位：${esc(myRoles.join("、") || "已列入陣容")}`
+            : "";
           $("topic").innerHTML =
             `<strong>辯題：</strong> ${esc(selected.topic_text)}`;
           $("topStats").innerHTML = [
@@ -584,7 +675,7 @@
           if (restart)
             restart.addEventListener("click", () => select(selected.id, 0));
           $("chapters").innerHTML = data.chapters.length
-            ? `<div class="caption">章節跳轉</div><div class="chapter-grid">${data.chapters.map((c) => `<button type="button" data-start="${c.start_seconds}">${esc(c.chapter_label)} ${esc(c.label)}</button>`).join("")}</div>`
+            ? `<div class="caption">章節跳轉</div><div class="chapter-grid">${data.chapters.map((c) => `<button type="button" data-start="${c.start_seconds}"><span>${esc(c.chapter_label)}　${esc(c.label)}</span>${c.is_best_debater ? '<span class="best-badge">🏆 最佳辯論員</span>' : ""}${c.speaker_user_id ? `<span class="chapter-speaker">👤 ${esc(c.speaker_user_id)}</span>` : ""}</button>`).join("")}</div>`
             : '<div class="caption">此片段暫未設定章節。</div>';
           $("chapters")
             .querySelectorAll("button[data-start]")
@@ -610,12 +701,19 @@
               return `<div class="chapter-edit"><label><input type="checkbox" data-label="${label}" ${c ? "checked" : ""}> ${label}</label><input data-time="${label}" placeholder="例：12:34" value="${c ? c.label : ""}"></div>`;
             })
             .join("");
+          $("bestDebaterRole").innerHTML = [
+            '<option value="">未設定</option>',
+            ...(data.individual_speech_labels || []).map(
+              (label) =>
+                `<option value="${esc(label)}" ${label === data.best_debater_role ? "selected" : ""}>${esc(label)}</option>`,
+            ),
+          ].join("");
           $("shareLink").value = location.href;
           $("playlistTitle").textContent = `片單（共 ${filtered.length} 條）`;
           $("playlist").innerHTML = filtered
             .map(
               (v) =>
-                `<div class="playlist-item ${v.id === selected.id ? "current" : ""}"><strong>${v.id === selected.id ? "▶ 播放中　" : ""}${esc(v.video_title.length > 42 ? v.video_title.slice(0, 41) + "…" : v.video_title)}</strong><div class="caption">${esc(v.match_display)}　👁 ${v.view_count}${v.watched_seconds ? `　⏱ ${time(v.watched_seconds)}` : ""}</div>${v.id !== selected.id ? `<button data-video="${v.id}" type="button">播放</button>` : ""}</div>`,
+                `<div class="playlist-item ${v.id === selected.id ? "current" : ""}"><strong>${v.id === selected.id ? "▶ 播放中　" : ""}${esc(v.video_title.length > 42 ? v.video_title.slice(0, 41) + "…" : v.video_title)}</strong><div class="caption">${esc(v.match_display)}　👁 ${v.view_count}${v.watched_seconds ? `　⏱ ${time(v.watched_seconds)}` : ""}</div>${v.participated_by_me ? `<div><span class="appearance-badge">我的出賽：${esc((v.my_roles || []).join("、") || "已列入陣容")}</span></div>` : ""}${v.id !== selected.id ? `<button data-video="${v.id}" type="button">播放</button>` : ""}</div>`,
             )
             .join("");
           $("playlist")
@@ -657,8 +755,13 @@
         }
         async function load(id) {
           try {
+            const params = new URLSearchParams();
+            if (id) params.set("video_id", id);
+            if ($("myAppearances").checked)
+              params.set("mine_only", "true");
+            const query = params.toString();
             const response = await fetch(
-              `/api/video-replay/data${id ? `?video_id=${id}` : ""}`,
+              `/api/video-replay/data${query ? `?${query}` : ""}`,
               { credentials: "same-origin" },
             );
             if (response.status === 401) {
@@ -679,6 +782,15 @@
         }
         $("matchFilter").addEventListener("change", render);
         $("search").addEventListener("input", render);
+        $("myAppearances").addEventListener("change", () => {
+          const current = data && data.selected;
+          load(
+            current &&
+              (!$("myAppearances").checked || current.participated_by_me)
+              ? current.id
+              : undefined,
+          );
+        });
         $("refresh").addEventListener("click", () =>
           load(data && data.selected && data.selected.id),
         );
@@ -713,7 +825,11 @@
               method: "POST",
               credentials: "same-origin",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ video_id: data.selected.id, chapters }),
+              body: JSON.stringify({
+                video_id: data.selected.id,
+                chapters,
+                best_debater_role: $("bestDebaterRole").value || null,
+              }),
             }),
             d = await r.json();
           if (!r.ok || !d.ok) {

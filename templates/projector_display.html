@@ -1,18 +1,22 @@
 <!doctype html>
+<!-- Kiosk appliance engine: open the same display route with ?kiosk=1. -->
 <html lang="zh-HK">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1220" />
     <title>賽務投影</title>
     <style>
       :root {
         --bg: #0b1220;
         --panel: #131c31;
-        --muted: #7d8aa6;
+        --muted: #8d9ab7;
         --text: #f4f7ff;
         --pro: #2e7d32;
         --con: #b3261e;
         --accent: #f9a825;
+        --ok: #70df91;
+        --error: #ff8a80;
       }
       * {
         box-sizing: border-box;
@@ -21,6 +25,7 @@
       }
       html,
       body {
+        width: 100%;
         height: 100%;
       }
       body {
@@ -29,55 +34,54 @@
         font-family:
           "Noto Sans CJK HK", "PingFang HK", "Microsoft JhengHei", sans-serif;
         overflow: hidden;
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
       }
       .hidden {
         display: none !important;
       }
+      .screen {
+        position: fixed;
+        inset: 0;
+      }
 
-      /* holding screen (nothing configured or hidden) */
+      /* Holding screen. */
       #holding {
-        flex: 1;
         display: flex;
         align-items: center;
         justify-content: center;
         flex-direction: column;
         gap: 2vh;
         text-align: center;
+        padding: 5vh 5vw;
       }
       #holding .school {
-        font-size: 4vw;
+        font-size: clamp(2.4rem, 4vw, 5rem);
         font-weight: 800;
         letter-spacing: 0.1em;
       }
       #holding .sub {
-        font-size: 1.8vw;
+        font-size: clamp(1.2rem, 1.8vw, 2.4rem);
         color: var(--muted);
       }
 
-      /* live board */
+      /* Normal competition board. */
       #board {
-        flex: 1;
         display: none;
         flex-direction: column;
         padding: 4vh 4vw;
       }
       .motion-label {
-        font-size: 1.6vw;
+        font-size: clamp(1rem, 1.6vw, 2rem);
         color: var(--muted);
         letter-spacing: 0.2em;
       }
       .motion {
-        font-size: 4.2vw;
+        font-size: clamp(2.2rem, 4.2vw, 5.2rem);
         font-weight: 800;
         line-height: 1.2;
         margin-top: 1vh;
         max-height: 26vh;
         overflow: hidden;
       }
-
       .teams {
         display: flex;
         gap: 2vw;
@@ -97,9 +101,9 @@
         transition: all 0.25s ease;
       }
       .team .side {
-        font-size: 2vw;
+        font-size: clamp(1.1rem, 2vw, 2.5rem);
         font-weight: 700;
-        opacity: 0.85;
+        opacity: 0.9;
       }
       .team.pro .side {
         color: #7ee787;
@@ -108,7 +112,7 @@
         color: #ff8a80;
       }
       .team .name {
-        font-size: 3.4vw;
+        font-size: clamp(1.8rem, 3.4vw, 4.2rem);
         font-weight: 800;
         margin-top: 1.5vh;
         text-align: center;
@@ -131,7 +135,6 @@
           var(--panel)
         );
       }
-
       .now {
         margin-top: 4vh;
         text-align: center;
@@ -140,17 +143,17 @@
         padding: 3vh 2vw;
       }
       .now .label {
-        font-size: 1.6vw;
+        font-size: clamp(1rem, 1.6vw, 2rem);
         color: var(--muted);
         letter-spacing: 0.2em;
       }
       .now .role {
-        font-size: 3.6vw;
+        font-size: clamp(2rem, 3.6vw, 4.5rem);
         font-weight: 800;
         margin-top: 1vh;
       }
       .now .speaker {
-        font-size: 2.4vw;
+        font-size: clamp(1.3rem, 2.4vw, 3rem);
         color: var(--accent);
         margin-top: 0.6vh;
       }
@@ -161,23 +164,204 @@
         color: #ff8a80;
       }
 
+      /* Published AI result. Only the public, bounded projector summary enters here. */
+      #aiBoard {
+        display: none;
+        flex-direction: column;
+        padding: 4vh 5vw 3vh;
+        background:
+          radial-gradient(circle at top right, rgba(95, 130, 255, 0.2), transparent 38%),
+          var(--bg);
+      }
+      .ai-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 2vw;
+        border-bottom: 0.3vh solid rgba(249, 168, 37, 0.55);
+        padding-bottom: 1.8vh;
+      }
+      .ai-title {
+        font-size: clamp(2.2rem, 4vw, 5rem);
+        font-weight: 900;
+      }
+      .ai-match {
+        color: var(--muted);
+        text-align: right;
+        font-size: clamp(1rem, 1.45vw, 1.8rem);
+      }
+      #aiSummary {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: clamp(1.35rem, 2.15vw, 2.75rem);
+        line-height: 1.55;
+        padding: 2.4vh 1vw 1.5vh;
+      }
+      #aiAdvisory {
+        flex: none;
+        border: 0.25vh solid var(--accent);
+        border-radius: 1vw;
+        color: #ffdc87;
+        background: rgba(249, 168, 37, 0.12);
+        text-align: center;
+        font-size: clamp(1rem, 1.45vw, 1.8rem);
+        font-weight: 800;
+        padding: 1.4vh 1.5vw;
+      }
+
+      /* Private kiosk engine status; never shown on ordinary public displays. */
+      #kioskBadge {
+        position: fixed;
+        z-index: 30;
+        left: 1.2vw;
+        bottom: 1.2vh;
+        max-width: 72vw;
+        border: 1px solid #344463;
+        border-radius: 999px;
+        background: rgba(8, 15, 29, 0.9);
+        color: #cad4e9;
+        font-size: clamp(0.75rem, 1vw, 1.15rem);
+        padding: 0.65vh 1vw;
+      }
+      #kioskBadge.ok {
+        border-color: rgba(112, 223, 145, 0.7);
+        color: var(--ok);
+      }
+      #kioskBadge.error {
+        border-color: rgba(255, 138, 128, 0.8);
+        color: var(--error);
+      }
+      #kioskPrimeButton {
+        position: fixed;
+        z-index: 80;
+        left: 50%;
+        bottom: 4.5vh;
+        transform: translateX(-50%);
+        border: 2px solid var(--accent);
+        border-radius: 12px;
+        background: #17233d;
+        color: var(--text);
+        font-size: 1.1rem;
+        font-weight: 800;
+        padding: 0.8rem 1.2rem;
+        cursor: pointer;
+      }
       #conn {
         position: fixed;
+        z-index: 31;
         bottom: 1.2vh;
         right: 1.4vw;
-        font-size: 1vw;
+        font-size: clamp(0.7rem, 1vw, 1.1rem);
         color: var(--muted);
+        opacity: 0.85;
+      }
+
+      /* Kiosk-only login. Public /projector never creates or exposes it. */
+      #loginOverlay {
+        z-index: 100;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(5, 10, 20, 0.97);
+        padding: 5vh 5vw;
+      }
+      .login-card {
+        width: min(42rem, 92vw);
+        border: 1px solid #354362;
+        border-radius: 18px;
+        background: var(--panel);
+        padding: 2rem;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      }
+      .login-card h1 {
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        margin-bottom: 0.7rem;
+      }
+      .login-card p {
+        color: var(--muted);
+        font-size: 1.05rem;
+        line-height: 1.55;
+        margin-bottom: 1rem;
+      }
+      .login-card label {
+        display: block;
+        color: #d8e0f1;
+        margin-bottom: 0.5rem;
+      }
+      .login-card input,
+      .login-card button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #40506f;
+        background: #0e172a;
+        color: var(--text);
+        font-size: 1.2rem;
+        padding: 0.9rem 1rem;
+      }
+      .login-card button {
+        margin-top: 0.9rem;
+        cursor: pointer;
+        background: #3276dc;
+        border-color: #4288ee;
+        font-weight: 800;
+      }
+      .login-card button:disabled {
+        cursor: wait;
         opacity: 0.6;
+      }
+      #loginError {
+        min-height: 1.5rem;
+        color: var(--error);
+        margin-top: 0.8rem;
+      }
+
+      /* Kiosk-only full-screen hardware flash. */
+      #hardwareFlash {
+        z-index: 90;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 2vh;
+        text-align: center;
+        background: #f4f7ff;
+        color: #091222;
+        transition: background 0.16s ease, color 0.16s ease;
+      }
+      #hardwareFlash.dark {
+        background: #091222;
+        color: #f4f7ff;
+      }
+      #hardwareFlash h2 {
+        font-size: clamp(3rem, 7vw, 8rem);
+      }
+      #hardwareFlash p {
+        font-size: clamp(1.3rem, 2.2vw, 2.7rem);
+      }
+
+      @media (max-aspect-ratio: 4 / 3) {
+        .teams {
+          margin-top: 2vh;
+        }
+        .now {
+          margin-top: 2vh;
+        }
+        #aiSummary {
+          font-size: clamp(1.2rem, 2vw, 2.2rem);
+        }
       }
     </style>
   </head>
   <body>
-    <div id="holding">
+    <div id="holding" class="screen">
       <div class="school">校園隨想辯論比賽</div>
       <div class="sub">準備中…</div>
     </div>
 
-    <div id="board">
+    <div id="board" class="screen">
       <div>
         <div class="motion-label">辯題</div>
         <div class="motion" id="motion">—</div>
@@ -199,67 +383,1536 @@
       </div>
     </div>
 
+    <section id="aiBoard" class="screen" aria-live="polite">
+      <div class="ai-title-row">
+        <div class="ai-title">🎙️ AI評判易</div>
+        <div class="ai-match" id="aiMatch"></div>
+      </div>
+      <div id="aiSummary"></div>
+      <div id="aiAdvisory">
+        以下「AI評判易」結果只屬 AI 輔助評語，正式賽果以評判團為準。
+      </div>
+    </section>
+
+    <div id="hardwareFlash" class="screen" aria-live="assertive">
+      <h2>硬件測試</h2>
+      <p>正在測試大屏、收音咪及喇叭…</p>
+    </div>
+
+    <div id="loginOverlay" class="screen">
+      <form class="login-card" id="kioskLoginForm">
+        <h1>比賽日 Kiosk 登入</h1>
+        <p>
+          此介面只接受固定 kiosk account。登入後先可以接收 Projector Control
+          指令、錄製正式比賽及播放 AI評判易粵語評語。
+        </p>
+        <label for="kioskPassword">kiosk 密碼</label>
+        <input
+          id="kioskPassword"
+          type="password"
+          autocomplete="current-password"
+          maxlength="512"
+          required
+        />
+        <button id="kioskLoginButton" type="submit">登入 kiosk</button>
+        <div id="loginError" role="alert"></div>
+      </form>
+    </div>
+
+    <div id="kioskBadge" class="hidden"></div>
+    <button id="kioskPrimeButton" type="button" style="display: none">
+      啟用收音咪及聲音
+    </button>
     <div id="conn"></div>
 
     <script>
-      (function () {
-        var DISPLAY =
-          new URLSearchParams(location.search).get("display") || "main";
-        var POLL_MS = 2000;
-        var holding = document.getElementById("holding");
-        var board = document.getElementById("board");
-        var conn = document.getElementById("conn");
-        var fails = 0;
+      (() => {
+        "use strict";
 
-        function show(el, on) {
-          el.style.display = on ? (el === board ? "flex" : "flex") : "none";
+        const params = new URLSearchParams(location.search);
+        const DISPLAY = params.get("display") || "main";
+        const KIOSK_MODE = params.get("kiosk") === "1";
+        const PUBLIC_POLL_MS = 2000;
+        const COMMAND_POLL_MS = 850;
+        const HEARTBEAT_MS = 5000;
+        const HARDWARE_TTL_MS = 30 * 60 * 1000;
+        const DEFAULT_ADVISORY =
+          "以下「AI評判易」結果只屬 AI 輔助評語，正式賽果以評判團為準。";
+        const $ = (id) => document.getElementById(id);
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const finite = (value, fallback = 0) => {
+          const number = Number(value);
+          return Number.isFinite(number) ? number : fallback;
+        };
+
+        let projectorState = null;
+        let publicAiState = null;
+        let publicFailures = 0;
+        let kioskAuthenticated = false;
+        let kioskLimits = {
+          max_bytes: 12 * 1024 * 1024,
+          max_seconds: 90 * 60,
+          min_seconds: 10,
+          tts_max_chars: 1200,
+        };
+        let clientId = "";
+        let commandTimer = 0;
+        let heartbeatTimer = 0;
+        let commandPollBusy = false;
+        let heartbeatFailures = 0;
+        let lastRevision = -1;
+        let privateStateInitialized = false;
+        let lastEnvelope = null;
+        let commandChain = Promise.resolve();
+        let ackCache = new Map();
+        let lastAckReplayAt = 0;
+        let enginePhase = "idle";
+        let engineDetail = "等待 Projector Control 指令";
+        let lastError = "";
+        let hardware = {
+          passed: false,
+          tested_at: 0,
+          session_id: "",
+          microphone_id: "",
+          details: {},
+        };
+        let recording = null;
+        let processing = null;
+        let latestResult = null;
+        let speech = null;
+        let bellContext = null;
+        let bellBuffer = null;
+        let bellLoading = null;
+        let wakeLock = null;
+        let mediaPrimed = false;
+
+        function newClientId() {
+          try {
+            return crypto.randomUUID();
+          } catch (_) {
+            return (
+              "display-" +
+              Date.now().toString(36) +
+              "-" +
+              Math.random().toString(36).slice(2, 12)
+            );
+          }
         }
 
-        function render(s) {
-          if (!s || !s.configured || !s.visible) {
-            show(board, false);
-            show(holding, true);
+        function setKioskBadge(message, kind = "") {
+          if (!KIOSK_MODE) return;
+          const badge = $("kioskBadge");
+          badge.textContent = message || "";
+          badge.className = message ? kind || "" : "hidden";
+        }
+
+        function setEngine(phase, detail, error = "") {
+          enginePhase = phase;
+          engineDetail = String(detail || "");
+          lastError = String(error || "");
+          const elapsed = recording ? formatDuration(recordingElapsed()) : "";
+          const bytes = recording ? " · " + humanBytes(recording.bytes) : "";
+          const prefix = phase === "recording" ? "錄音中 " + elapsed + bytes : detail;
+          setKioskBadge(
+            "AI評判易 · " + (prefix || phase),
+            error ? "error" : phase === "ready" || phase === "idle" ? "ok" : "",
+          );
+        }
+
+        function show(element, on, display = "flex") {
+          element.style.display = on ? display : "none";
+        }
+
+        function expiryIsPast(value) {
+          if (!value) return false;
+          let timestamp;
+          if (typeof value === "number") {
+            timestamp = value > 10_000_000_000 ? value : value * 1000;
+          } else {
+            timestamp = Date.parse(String(value));
+          }
+          return Number.isFinite(timestamp) && timestamp <= Date.now();
+        }
+
+        function publicAiPayload(payload) {
+          if (!payload || typeof payload !== "object") return null;
+          const value = payload.ai || payload.result || payload;
+          const summary = value.projector_summary ?? value.summary ?? "";
+          const explicit = value.published ?? value.visible ?? value.active;
+          const published = explicit == null ? Boolean(summary) : Boolean(explicit);
+          if (!published || !summary) return null;
+          const expiry =
+            value.expires_at ?? value.expiry ?? value.result_expires_at ?? null;
+          if (expiryIsPast(expiry)) return null;
+          return {
+            summary,
+            advisory: String(value.advisory || DEFAULT_ADVISORY),
+            match: value.match || {},
+            match_id: String(value.match_id || value.match?.match_id || ""),
+            revision: finite(value.revision ?? value.publish_revision, 0),
+            expiry,
+          };
+        }
+
+        function summaryText(value) {
+          if (typeof value === "string") return value.trim();
+          if (!value || typeof value !== "object") return "";
+          const labels = {
+            winner: "建議勝方",
+            confidence: "信心",
+            summary: "評語摘要",
+            reasons: "主要理由",
+            pro: "正方評語",
+            con: "反方評語",
+            limitations: "錄音及證據限制",
+          };
+          const lines = [];
+          for (const [key, item] of Object.entries(value)) {
+            if (item == null || item === "") continue;
+            const label = labels[key] || key;
+            if (Array.isArray(item)) {
+              lines.push(label + "：\n" + item.map((x) => "• " + String(x)).join("\n"));
+            } else if (typeof item === "object") {
+              lines.push(label + "：" + JSON.stringify(item));
+            } else {
+              lines.push(label + "：" + String(item));
+            }
+          }
+          return lines.join("\n\n");
+        }
+
+        function renderScreens() {
+          const ai = publicAiPayload(publicAiState);
+          if (ai) {
+            show($("holding"), false);
+            show($("board"), false);
+            show($("aiBoard"), true);
+            $("aiSummary").textContent = summaryText(ai.summary);
+            $("aiAdvisory").textContent = ai.advisory || DEFAULT_ADVISORY;
+            const match = ai.match || {};
+            const teams = [match.pro_team, match.con_team].filter(Boolean).join(" vs ");
+            $("aiMatch").textContent = [ai.match_id, teams].filter(Boolean).join(" · ");
             return;
           }
-          show(holding, false);
-          show(board, true);
 
-          document.getElementById("motion").textContent = s.motion || "—";
-          document.getElementById("proTeam").textContent = s.pro_team || "—";
-          document.getElementById("conTeam").textContent = s.con_team || "—";
-          document.getElementById("role").textContent = s.segment_label || "—";
-          document.getElementById("speaker").textContent = s.speaker_name || "";
-
-          var teamPro = document.getElementById("teamPro");
-          var teamCon = document.getElementById("teamCon");
-          var now = document.getElementById("now");
-          teamPro.classList.toggle("active", s.active_side === "pro");
-          teamCon.classList.toggle("active", s.active_side === "con");
-          now.classList.toggle("pro", s.active_side === "pro");
-          now.classList.toggle("con", s.active_side === "con");
+          show($("aiBoard"), false);
+          const state = projectorState;
+          if (!state || !state.configured || !state.visible) {
+            show($("board"), false);
+            show($("holding"), true);
+            return;
+          }
+          show($("holding"), false);
+          show($("board"), true);
+          $("motion").textContent = state.motion || "—";
+          $("proTeam").textContent = state.pro_team || "—";
+          $("conTeam").textContent = state.con_team || "—";
+          $("role").textContent = state.segment_label || "—";
+          $("speaker").textContent = state.speaker_name || "";
+          $("teamPro").classList.toggle("active", state.active_side === "pro");
+          $("teamCon").classList.toggle("active", state.active_side === "con");
+          $("now").classList.toggle("pro", state.active_side === "pro");
+          $("now").classList.toggle("con", state.active_side === "con");
         }
 
-        function poll() {
-          fetch("/api/projector/state?display=" + encodeURIComponent(DISPLAY), {
+        async function fetchJson(url, options = {}) {
+          const request = {
+            credentials: "same-origin",
             cache: "no-store",
-          })
-            .then(function (r) {
-              if (!r.ok) throw new Error(r.status);
-              return r.json();
-            })
-            .then(function (s) {
-              fails = 0;
-              conn.textContent = "";
-              render(s);
-            })
-            .catch(function () {
-              fails++;
-              if (fails > 2) conn.textContent = "連線中斷，重試中…";
-            });
+            ...options,
+          };
+          if (request.body && typeof request.body !== "string") {
+            request.headers = {
+              "Content-Type": "application/json",
+              ...(request.headers || {}),
+            };
+            request.body = JSON.stringify(request.body);
+          }
+          const response = await fetch(url, request);
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const error = new Error(data.detail || data.error || "HTTP " + response.status);
+            error.status = response.status;
+            error.payload = data;
+            throw error;
+          }
+          return data;
         }
 
-        poll();
-        setInterval(poll, POLL_MS);
+        async function pollPublic() {
+          const results = await Promise.allSettled([
+            fetchJson("/api/projector/state?display=" + encodeURIComponent(DISPLAY)),
+            fetchJson("/api/projector/ai/public?display=" + encodeURIComponent(DISPLAY)),
+          ]);
+          if (results[0].status === "fulfilled") projectorState = results[0].value;
+          if (results[1].status === "fulfilled") publicAiState = results[1].value;
+          if (results.some((item) => item.status === "fulfilled")) {
+            publicFailures = 0;
+            $("conn").textContent = "";
+          } else {
+            publicFailures += 1;
+            if (publicFailures > 2) $("conn").textContent = "連線中斷，重試中…";
+          }
+          renderScreens();
+        }
+
+        function showLogin(message = "") {
+          if (!KIOSK_MODE) return;
+          kioskAuthenticated = false;
+          $("loginError").textContent = message;
+          show($("loginOverlay"), true);
+          setTimeout(() => $("kioskPassword").focus(), 0);
+        }
+
+        function hideLogin() {
+          show($("loginOverlay"), false);
+          $("loginError").textContent = "";
+          $("kioskPassword").value = "";
+        }
+
+        function mergeLimits(value) {
+          if (!value || typeof value !== "object") return;
+          const source = value.match_review_limits || value.limits || value;
+          const maxBytes = finite(source.max_bytes, kioskLimits.max_bytes);
+          const maxSeconds = finite(source.max_seconds, kioskLimits.max_seconds);
+          const minSeconds = finite(source.min_seconds, kioskLimits.min_seconds);
+          const ttsMaxChars = finite(source.tts_max_chars, kioskLimits.tts_max_chars);
+          if (maxBytes > 0) kioskLimits.max_bytes = maxBytes;
+          if (maxSeconds > 0) kioskLimits.max_seconds = maxSeconds;
+          if (minSeconds >= 0) kioskLimits.min_seconds = minSeconds;
+          if (ttsMaxChars > 0) kioskLimits.tts_max_chars = ttsMaxChars;
+        }
+
+        async function bootstrapKiosk() {
+          if (!KIOSK_MODE) return;
+          clientId = newClientId();
+          try {
+            const session = await fetchJson("/api/kiosk/session");
+            mergeLimits(session);
+            kioskAuthenticated = true;
+            hideLogin();
+            show($("kioskPrimeButton"), !mediaPrimed, "block");
+            startPrivateLoops();
+            setEngine("idle", "已連接，等待 Projector Control 指令");
+            await sendHeartbeat();
+          } catch (error) {
+            showLogin(error.status === 403 ? "此頁面只限 kiosk account。" : "請登入 kiosk。 ");
+          }
+        }
+
+        $("kioskLoginForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!KIOSK_MODE) return;
+          const button = $("kioskLoginButton");
+          button.disabled = true;
+          $("loginError").textContent = "正在登入…";
+          const mediaActivation = primeKioskMedia().catch(() => false);
+          try {
+            await fetchJson("/api/kiosk/login", {
+              method: "POST",
+              body: { password: $("kioskPassword").value },
+            });
+            const session = await fetchJson("/api/kiosk/session");
+            mergeLimits(session);
+            kioskAuthenticated = true;
+            hideLogin();
+            show($("kioskPrimeButton"), !mediaPrimed, "block");
+            startPrivateLoops();
+            setEngine("idle", "登入成功，等待 Projector Control 指令");
+            await mediaActivation;
+            show($("kioskPrimeButton"), !mediaPrimed, "block");
+            await sendHeartbeat();
+          } catch (error) {
+            $("loginError").textContent = error.message || "kiosk 登入失敗";
+          } finally {
+            button.disabled = false;
+          }
+        });
+
+        async function primeKioskMedia() {
+          if (!KIOSK_MODE) return false;
+          const audioReady = getBellContext();
+          const microphoneReady = navigator.mediaDevices?.getUserMedia
+            ? navigator.mediaDevices.getUserMedia(audioConstraints())
+            : Promise.reject(new Error("瀏覽器不支援收音咪"));
+          const [context, stream] = await Promise.all([audioReady, microphoneReady]);
+          stream.getTracks().forEach((track) => track.stop());
+          mediaPrimed = Boolean(context);
+          show($("kioskPrimeButton"), !mediaPrimed, "block");
+          if (kioskAuthenticated) sendHeartbeat();
+          return mediaPrimed;
+        }
+
+        $("kioskPrimeButton").addEventListener("click", async () => {
+          try {
+            await primeKioskMedia();
+            setEngine("idle", "收音咪及聲音已啟用，可由 Projector Control 測試硬件");
+          } catch (error) {
+            show($("kioskPrimeButton"), true, "block");
+            setEngine("error", "未能啟用收音咪及聲音", error.message);
+          }
+        });
+
+        function startPrivateLoops() {
+          clearInterval(commandTimer);
+          clearInterval(heartbeatTimer);
+          commandTimer = setInterval(pollCommand, COMMAND_POLL_MS);
+          heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+          pollCommand();
+        }
+
+        function currentSessionId() {
+          return (
+            recording?.session_id ||
+            processing?.session_id ||
+            latestResult?.session_id ||
+            commandSession(lastEnvelope).session_id ||
+            ""
+          );
+        }
+
+        function recordingElapsed() {
+          if (!recording) return 0;
+          if (recording.started_at_performance == null) return recording.duration_seconds || 0;
+          return Math.max(0, (performance.now() - recording.started_at_performance) / 1000);
+        }
+
+        function formatDuration(seconds) {
+          const milliseconds = Math.max(0, Math.floor(finite(seconds) * 1000));
+          const minutes = Math.floor(milliseconds / 60000);
+          const secs = Math.floor((milliseconds % 60000) / 1000);
+          const millis = milliseconds % 1000;
+          return (
+            minutes +
+            ":" +
+            String(secs).padStart(2, "0") +
+            "." +
+            String(millis).padStart(3, "0")
+          );
+        }
+
+        function humanBytes(value) {
+          const bytes = Math.max(0, finite(value));
+          if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+          return (bytes / (1024 * 1024)).toFixed(2) + " MB";
+        }
+
+        function hardwareFresh() {
+          return Boolean(
+            hardware.passed &&
+              hardware.tested_at &&
+              Date.now() - hardware.tested_at <= HARDWARE_TTL_MS,
+          );
+        }
+
+        function hydrateHardware(envelope) {
+          const saved = envelope?.control?.hardware;
+          if (!saved || typeof saved !== "object" || !saved.passed) return;
+          const testedAt = Date.parse(String(saved.tested_at || ""));
+          if (!Number.isFinite(testedAt) || Date.now() - testedAt > HARDWARE_TTL_MS) return;
+          hardware = {
+            passed: true,
+            tested_at: testedAt,
+            session_id: "",
+            microphone_id: String(saved.microphone_id || ""),
+            details: saved,
+          };
+        }
+
+        function heartbeatPayload() {
+          const command = commandSession(lastEnvelope);
+          return {
+            display: DISPLAY,
+            capabilities: {
+              client_id: clientId,
+              kiosk_mode: true,
+              status: enginePhase,
+              detail: engineDetail.slice(0, 1000),
+              error: lastError.slice(0, 1000),
+              session_id: currentSessionId(),
+              last_revision: Math.max(0, lastRevision),
+              secure_context: Boolean(window.isSecureContext),
+              media_recorder: Boolean(window.MediaRecorder && recorderMime()),
+              crypto: Boolean(window.crypto?.subtle),
+              max_seconds: kioskLimits.max_seconds,
+              max_bytes: kioskLimits.max_bytes,
+              hardware_passed: hardwareFresh(),
+              media_primed: mediaPrimed,
+              recording: Boolean(recording),
+              duration_seconds: recording
+                ? Math.round(recordingElapsed() * 1000) / 1000
+                : 0,
+              recording_bytes: recording?.bytes || 0,
+              processing: Boolean(processing),
+              speech_playing: Boolean(speech && !speech.audio.paused),
+              tts_available: Boolean(command.tts_available),
+            },
+          };
+        }
+
+        async function sendHeartbeat() {
+          if (!KIOSK_MODE || !kioskAuthenticated) return;
+          try {
+            const response = await fetchJson("/api/kiosk/projector-ai/heartbeat", {
+              method: "POST",
+              body: heartbeatPayload(),
+            });
+            mergeLimits(response);
+            heartbeatFailures = 0;
+          } catch (error) {
+            heartbeatFailures += 1;
+            if (error.status === 401 || error.status === 403) {
+              showLogin("kiosk 登入已失效；本機錄音不會自動清除，請重新登入。 ");
+            } else if (heartbeatFailures > 2) {
+              $("conn").textContent = "Kiosk 控制連線中斷，重試中…";
+            }
+          }
+        }
+
+        function commandSession(envelope) {
+          if (!envelope || typeof envelope !== "object") return {};
+          const control = envelope.control || {};
+          const session = envelope.session || {};
+          const match = session.match || {};
+          return {
+            session_id: String(session.session_id || control.current_session_id || ""),
+            match_id: String(match.match_id || session.match_id || ""),
+            match,
+            markers: Array.isArray(session.markers) ? session.markers : [],
+            microphone_id: String(envelope.microphone_id || ""),
+            tts_available: Boolean(envelope.tts_available),
+            tts_audio_ready: Boolean(session.tts_audio_ready),
+            publish_revision: Math.max(0, finite(session.publish_revision, 0)),
+            session_status: String(session.status || ""),
+            tts_status: String(session.tts_status || ""),
+            ack_revision: Math.max(0, finite(control.ack_revision, 0)),
+          };
+        }
+
+        function normalizeCommand(envelope) {
+          if (!envelope || typeof envelope !== "object") return null;
+          const control = envelope.control || {};
+          let action = control.command || "";
+          action = String(action).trim().toLowerCase().replaceAll("-", "_");
+          const revision = finite(control.command_revision, -1);
+          if (!action || action === "none" || revision < 0) return null;
+          return { ...commandSession(envelope), action, revision, envelope };
+        }
+
+        function normalizeMarkers(values, duration = kioskLimits.max_seconds) {
+          if (!Array.isArray(values)) return [];
+          const allowed = new Set(["pro", "con", "both", "unknown"]);
+          const bounded = [];
+          for (const item of values.slice(0, 600)) {
+            if (!item || typeof item !== "object") continue;
+            const offset = Number(item.offset_seconds);
+            const side = String(item.side || "unknown").toLowerCase();
+            if (!Number.isFinite(offset) || offset < 0 || offset > duration + 1) continue;
+            bounded.push({
+              offset_seconds: Math.round(offset * 1000) / 1000,
+              side: allowed.has(side) ? side : "unknown",
+              segment: String(item.segment || item.segment_label || "").slice(0, 80),
+            });
+          }
+          return bounded.sort((a, b) => a.offset_seconds - b.offset_seconds);
+        }
+
+        async function pollCommand() {
+          if (!KIOSK_MODE || !kioskAuthenticated || commandPollBusy) return;
+          commandPollBusy = true;
+          try {
+            const envelope = await fetchJson(
+              "/api/kiosk/projector-ai/command?display=" + encodeURIComponent(DISPLAY),
+            );
+            mergeLimits(envelope);
+            lastEnvelope = envelope;
+            hydrateHardware(envelope);
+            const session = commandSession(envelope);
+            if (recording && session.session_id === recording.session_id) {
+              recording.markers = normalizeMarkers(
+                session.markers,
+                Math.max(recordingElapsed(), kioskLimits.max_seconds),
+              );
+              recording.tts_available = session.tts_available;
+            }
+            const command = normalizeCommand(envelope);
+            if (!command) return;
+            if (!privateStateInitialized) {
+              privateStateInitialized = true;
+              if (command.revision <= command.ack_revision) {
+                lastRevision = command.revision;
+                const lostActiveState = new Set([
+                  "start_requested",
+                  "recording",
+                  "stop_requested",
+                  "processing",
+                ]).has(command.session_status);
+                const interruptedSpeech =
+                  command.action === "play" && command.tts_status === "playing";
+                if (lostActiveState || interruptedSpeech) {
+                  const detail = lostActiveState
+                    ? "Kiosk 頁面曾重新載入，本機原有錄音／分析狀態已遺失"
+                    : "Kiosk 頁面重新載入，粵語播放已中斷";
+                  setEngine("error", detail, detail);
+                  commandChain = commandChain.then(() =>
+                    acknowledge(command, "error", detail, {
+                      reload_recovery: true,
+                      session_status: command.session_status,
+                    }),
+                  );
+                }
+                return;
+              }
+            }
+            if (command.revision <= lastRevision) {
+              const cached = ackCache.get(command.revision);
+              if (
+                cached &&
+                command.revision === lastRevision &&
+                command.ack_revision < command.revision &&
+                Date.now() - lastAckReplayAt > HEARTBEAT_MS
+              ) {
+                lastAckReplayAt = Date.now();
+                postAckPayload(cached).catch(() => {});
+              }
+              return;
+            }
+            lastRevision = command.revision;
+            commandChain = commandChain
+              .then(() => executeCommand(command))
+              .catch((error) =>
+                acknowledge(command, "error", error.message || "指令執行失敗", {
+                  error: error.message || String(error),
+                }),
+              );
+          } catch (error) {
+            if (error.status === 401 || error.status === 403) {
+              showLogin("kiosk 登入已失效，請重新登入。 ");
+            }
+          } finally {
+            commandPollBusy = false;
+          }
+        }
+
+        function ackPayload(command, state, detail, payload = {}) {
+          return {
+            display: DISPLAY,
+            revision: command.revision,
+            session_id: command.session_id || currentSessionId(),
+            state,
+            detail: String(detail || "").slice(0, 1000),
+            payload,
+          };
+        }
+
+        async function postAckPayload(payload) {
+          return fetchJson("/api/kiosk/projector-ai/ack", {
+            method: "POST",
+            body: payload,
+          });
+        }
+
+        async function acknowledge(command, state, detail, details = {}) {
+          const payload = ackPayload(command, state, detail, details);
+          ackCache.set(command.revision, payload);
+          if (ackCache.size > 12) ackCache.delete(ackCache.keys().next().value);
+          try {
+            await postAckPayload(payload);
+          } catch (error) {
+            if (error.status === 401 || error.status === 403) showLogin("kiosk 登入已失效。 ");
+          }
+          return payload;
+        }
+
+        async function executeCommand(command) {
+          switch (command.action) {
+            case "hardware_test":
+              return runHardwareTest(command);
+            case "start":
+              return startRecording(command);
+            case "stop":
+              return stopAndAnalyze(command, "control");
+            case "publish":
+              await pollPublic();
+              setEngine("ready", "AI評語已按 Projector Control 發布");
+              return acknowledge(command, "published", "已更新投影評語", {
+                publish_revision: command.publish_revision,
+                tts_available: command.tts_audio_ready,
+              });
+            case "play":
+              return playSpeech(command);
+            case "stop_speech":
+              stopSpeech();
+              setEngine("ready", "已停止粵語評語");
+              return acknowledge(command, "stopped", "已停止粵語評語");
+            case "clear":
+              if (recording || processing) {
+                throw new Error("錄音或分析進行中，不能清除場次");
+              }
+              stopSpeech();
+              latestResult = null;
+              await pollPublic();
+              setEngine("idle", "場次資料已清除");
+              return acknowledge(command, "cleared", "已清除 AI評判易畫面");
+            default:
+              throw new Error("不支援的 Kiosk 指令：" + command.action);
+          }
+        }
+
+        function recorderMime() {
+          if (!window.MediaRecorder) return "";
+          const choices = [
+            "audio/webm;codecs=opus",
+            "audio/ogg;codecs=opus",
+            "audio/mp4",
+          ];
+          return (
+            choices.find(
+              (value) =>
+                !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(value),
+            ) || ""
+          );
+        }
+
+        function audioConstraints(microphoneId = "") {
+          const audio = {
+            channelCount: 1,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: true,
+          };
+          if (microphoneId) audio.deviceId = { exact: microphoneId };
+          return { audio };
+        }
+
+        function createRecorder(stream, mime) {
+          try {
+            return new MediaRecorder(stream, {
+              mimeType: mime,
+              audioBitsPerSecond: 16000,
+            });
+          } catch (_) {
+            return new MediaRecorder(stream, { mimeType: mime });
+          }
+        }
+
+        async function flashHardwareScreen() {
+          const flash = $("hardwareFlash");
+          show(flash, true);
+          for (let index = 0; index < 4; index += 1) {
+            flash.classList.toggle("dark", index % 2 === 1);
+            await sleep(220);
+          }
+          flash.classList.remove("dark");
+          await sleep(250);
+          show(flash, false);
+        }
+
+        function checkResult(ok, message, extra = {}) {
+          return { ok: Boolean(ok), message: String(message || ""), ...extra };
+        }
+
+        function hardwareAckPayload(results, passed) {
+          const checks = Object.entries(results).map(([name, value]) => {
+            const status = value?.ok ? "pass" : "fail";
+            return (name + ":" + status + " " + String(value?.message || "")).slice(
+              0,
+              500,
+            );
+          });
+          return {
+            passed: Boolean(passed),
+            checks: checks.slice(0, 30),
+            secure_context: Boolean(results.secure_context?.ok),
+            media_recorder: Boolean(results.media_recorder?.ok),
+            crypto: Boolean(results.crypto?.ok),
+            fullscreen: Boolean(results.fullscreen?.ok),
+            microphone: Boolean(results.microphone?.ok),
+            microphone_label: String(results.microphone?.label || "").slice(0, 200),
+            microphone_id: String(results.microphone?.device_id || "").slice(0, 200),
+            sample_bytes: Math.max(0, Math.round(finite(results.sample_recording?.bytes))),
+            peak_rms: Math.max(0, finite(results.microphone_level?.peak_rms)),
+            clipping: Boolean(results.microphone_level?.clipping),
+            projected_bytes: Math.max(
+              0,
+              Math.round(finite(results.projected_size?.projected_bytes)),
+            ),
+            projected_bitrate_bps: Math.max(
+              0,
+              Math.round(finite(results.projected_size?.bitrate_bps)),
+            ),
+            speaker_bell: Boolean(results.speaker_bell?.ok),
+            tts_ok: Boolean(results.tts?.ok),
+            tts_skipped: Boolean(results.tts?.skipped),
+            wake_lock: Boolean(results.wake_lock?.ok),
+            max_seconds: kioskLimits.max_seconds,
+            max_bytes: kioskLimits.max_bytes,
+          };
+        }
+
+        async function getBellContext() {
+          if (!bellContext) {
+            bellContext = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          if (bellContext.state === "suspended") await bellContext.resume();
+          return bellContext;
+        }
+
+        async function loadBell() {
+          if (!bellLoading) {
+            bellLoading = fetch("/api/practice/bell", { cache: "force-cache" })
+              .then((response) => {
+                if (!response.ok) throw new Error("鈴聲檔案未能載入");
+                return response.arrayBuffer();
+              })
+              .then(async (data) => (await getBellContext()).decodeAudioData(data))
+              .then((buffer) => {
+                bellBuffer = buffer;
+                return buffer;
+              });
+          }
+          return bellLoading;
+        }
+
+        async function playBell() {
+          const context = await getBellContext();
+          const buffer = bellBuffer || (await loadBell());
+          const source = context.createBufferSource();
+          const gain = context.createGain();
+          const limiter = context.createDynamicsCompressor();
+          source.buffer = buffer;
+          gain.gain.value = 4;
+          limiter.threshold.value = -8;
+          limiter.ratio.value = 20;
+          source.connect(gain);
+          gain.connect(limiter);
+          limiter.connect(context.destination);
+          const ended = new Promise((resolve) => {
+            source.onended = resolve;
+            setTimeout(resolve, Math.ceil((buffer.duration + 1) * 1000));
+          });
+          source.start();
+          await ended;
+        }
+
+        async function playAudioResponse(response, timeoutMs = 30000) {
+          if (!response.ok) {
+            const errorPayload = await response.json().catch(() => ({}));
+            throw new Error(errorPayload.detail || "語音服務回應失敗");
+          }
+          const blob = await response.blob();
+          if (!blob.size || !String(blob.type || "").startsWith("audio/")) {
+            throw new Error("語音服務未有回傳有效音訊");
+          }
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          try {
+            await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error("語音播放逾時")), timeoutMs);
+              audio.onended = () => {
+                clearTimeout(timeout);
+                resolve();
+              };
+              audio.onerror = () => {
+                clearTimeout(timeout);
+                reject(new Error("語音無法播放"));
+              };
+              audio.play().catch((error) => {
+                clearTimeout(timeout);
+                reject(error);
+              });
+            });
+          } finally {
+            audio.pause();
+            audio.src = "";
+            URL.revokeObjectURL(url);
+          }
+          return { bytes: blob.size, mime_type: blob.type };
+        }
+
+        async function testTtsSample() {
+          const response = await fetch("/api/tts/synthesize", {
+            method: "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: "AI評判易粵語語音測試，聲音播放正常。" }),
+          });
+          return playAudioResponse(response, 45000);
+        }
+
+        async function requestWakeLock() {
+          if (!navigator.wakeLock) return false;
+          try {
+            wakeLock = await navigator.wakeLock.request("screen");
+            return true;
+          } catch (_) {
+            wakeLock = null;
+            return false;
+          }
+        }
+
+        async function releaseWakeLock() {
+          if (!wakeLock) return;
+          try {
+            await wakeLock.release();
+          } catch (_) {}
+          wakeLock = null;
+        }
+
+        async function runHardwareTest(command) {
+          if (recording || processing) throw new Error("錄音或分析期間不能測試硬件");
+          setEngine("testing", "正在測試大屏、收音咪、喇叭及 Kiosk 功能");
+          const results = {};
+          let stream = null;
+          let context = null;
+          let recorder = null;
+          let chunks = [];
+          let peakRms = 0;
+          let clipping = false;
+          const essential = [];
+          // Hardware validation is display-wide. The formal session id is created only
+          // after the operator confirms this test and presses Start.
+          const sessionId = "";
+          const microphoneId = command.microphone_id || "";
+
+          try {
+            results.local_activation = checkResult(
+              mediaPrimed,
+              mediaPrimed
+                ? "Kiosk 已由本機操作啟用收音咪及聲音"
+                : "請先在 Kiosk 本機按「啟用收音咪及聲音」，再重試硬件測試",
+            );
+            essential.push(results.local_activation.ok);
+            if (!mediaPrimed) throw new Error(results.local_activation.message);
+
+            try {
+              const preflight = await fetchJson("/api/kiosk/match-review/preflight");
+              const requiredServices = [
+                "r2",
+                "ai",
+                "privacy",
+                "media",
+                "bandwidth",
+                "matches",
+                "quota",
+              ];
+              for (const name of requiredServices) {
+                const check = preflight.checks?.[name] || {};
+                results["service_" + name] = checkResult(
+                  Boolean(check.ok),
+                  String(check.detail || name + " 未有回傳檢查結果"),
+                );
+                essential.push(results["service_" + name].ok);
+              }
+              results.preflight_read_only = checkResult(
+                preflight.does_not_call_ai === true,
+                preflight.does_not_call_ai === true
+                  ? "服務預檢沒有呼叫 AI 或扣除場次"
+                  : "服務預檢安全標記不完整",
+              );
+              essential.push(results.preflight_read_only.ok);
+            } catch (error) {
+              results.service_preflight = checkResult(
+                false,
+                "AI評判易服務預檢失敗：" + error.message,
+              );
+              essential.push(false);
+            }
+
+            results.secure_context = checkResult(
+              window.isSecureContext,
+              window.isSecureContext ? "安全 HTTPS 環境" : "必須使用 HTTPS",
+            );
+            essential.push(results.secure_context.ok);
+            results.media_recorder = checkResult(
+              Boolean(window.MediaRecorder && recorderMime()),
+              window.MediaRecorder && recorderMime()
+                ? "瀏覽器錄音器可用"
+                : "瀏覽器不支援所需錄音格式",
+            );
+            essential.push(results.media_recorder.ok);
+            results.crypto = checkResult(
+              Boolean(window.crypto?.subtle),
+              window.crypto?.subtle ? "SHA-256 功能可用" : "SHA-256 功能不可用",
+            );
+            essential.push(results.crypto.ok);
+            results.fullscreen = checkResult(true, "大屏閃爍測試已執行");
+            await flashHardwareScreen();
+
+            if (!navigator.mediaDevices?.getUserMedia) {
+              throw new Error("瀏覽器不支援收音咪");
+            }
+            stream = await navigator.mediaDevices.getUserMedia(
+              audioConstraints(microphoneId),
+            );
+            const track = stream.getAudioTracks()[0];
+            results.microphone = checkResult(Boolean(track), "已開啟收音咪", {
+              label: track?.label || "系統預設收音咪",
+              device_id: track?.getSettings?.().deviceId || microphoneId,
+            });
+            essential.push(results.microphone.ok);
+
+            context = new (window.AudioContext || window.webkitAudioContext)();
+            if (context.state === "suspended") await context.resume();
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 2048;
+            context.createMediaStreamSource(stream).connect(analyser);
+            const samples = new Float32Array(analyser.fftSize);
+            let sampling = true;
+            const sampleLevels = () => {
+              if (!sampling) return;
+              analyser.getFloatTimeDomainData(samples);
+              let energy = 0;
+              for (const sample of samples) {
+                energy += sample * sample;
+                if (Math.abs(sample) >= 0.985) clipping = true;
+              }
+              peakRms = Math.max(peakRms, Math.sqrt(energy / samples.length));
+              requestAnimationFrame(sampleLevels);
+            };
+            sampleLevels();
+
+            const mime = recorderMime();
+            recorder = createRecorder(stream, mime);
+            recorder.ondataavailable = (event) => {
+              if (event.data?.size) chunks.push(event.data);
+            };
+            const stopped = new Promise((resolve, reject) => {
+              recorder.onstop = resolve;
+              recorder.onerror = (event) =>
+                reject(event.error || new Error("短錄音測試失敗"));
+            });
+            const startedAt = performance.now();
+            recorder.start(250);
+            await sleep(2600);
+            recorder.stop();
+            await stopped;
+            sampling = false;
+            const sampleSeconds = Math.max(0.1, (performance.now() - startedAt) / 1000);
+            const sampleBlob = new Blob(chunks, { type: recorder.mimeType || mime });
+            const bitrate = Math.ceil((sampleBlob.size * 8) / sampleSeconds);
+            const projectedBitrate = finite(recorder.audioBitsPerSecond, bitrate) || bitrate;
+            const projectedBytes =
+              (projectedBitrate / 8) * kioskLimits.max_seconds * 1.05;
+            results.sample_recording = checkResult(
+              sampleBlob.size >= 500,
+              "短錄音 " + humanBytes(sampleBlob.size) + "（不會上載）",
+              { bytes: sampleBlob.size, seconds: sampleSeconds, mime_type: sampleBlob.type },
+            );
+            essential.push(results.sample_recording.ok);
+            results.microphone_level = checkResult(
+              peakRms >= 0.002,
+              peakRms >= 0.002
+                ? "收音咪訊號正常"
+                : "收音咪訊號太低，請檢查靜音、增益及距離",
+              { peak_rms: peakRms, clipping },
+            );
+            essential.push(results.microphone_level.ok);
+            results.clipping = checkResult(
+              !clipping,
+              clipping ? "收音接近爆音，請降低咪增益" : "未偵測到明顯爆音",
+            );
+            results.projected_size = checkResult(
+              projectedBytes <= kioskLimits.max_bytes,
+              "90 分鐘預計 " +
+                humanBytes(projectedBytes) +
+                "／上限 " +
+                humanBytes(kioskLimits.max_bytes),
+              { bitrate_bps: projectedBitrate, projected_bytes: Math.ceil(projectedBytes) },
+            );
+            essential.push(results.projected_size.ok);
+
+            await playBell();
+            results.speaker_bell = checkResult(true, "正式鈴聲已由 Kiosk 喇叭播放");
+            essential.push(true);
+
+            if (command.tts_available) {
+              try {
+                const tts = await testTtsSample();
+                results.tts = checkResult(true, "粵語 TTS 測試句已播放", tts);
+              } catch (error) {
+                results.tts = checkResult(false, "粵語 TTS 測試失敗：" + error.message);
+              }
+            } else {
+              results.tts = checkResult(true, "未設定 TTS；正式場只顯示文字", {
+                skipped: true,
+              });
+            }
+
+            const wake = await requestWakeLock();
+            results.wake_lock = checkResult(
+              wake || !navigator.wakeLock,
+              wake
+                ? "螢幕常亮已鎖定"
+                : navigator.wakeLock
+                  ? "未能鎖定螢幕常亮"
+                  : "瀏覽器不支援 Wake Lock；appliance 防休眠設定仍生效",
+              { supported: Boolean(navigator.wakeLock), acquired: wake },
+            );
+
+            const passed = essential.every(Boolean);
+            hardware = {
+              passed,
+              tested_at: Date.now(),
+              session_id: sessionId,
+              microphone_id:
+                results.microphone?.device_id || microphoneId || "",
+              details: results,
+            };
+            if (!passed) throw new Error("未通過全部必要硬件測試");
+            setEngine("ready", "硬件測試通過，30 分鐘內可開始錄音");
+            return acknowledge(
+              command,
+              "hardware_ready",
+              "硬件測試通過",
+              hardwareAckPayload(results, true),
+            );
+          } catch (error) {
+            hardware = {
+              passed: false,
+              tested_at: Date.now(),
+              session_id: sessionId,
+              microphone_id: microphoneId,
+              details: { ...results, failure: checkResult(false, error.message) },
+            };
+            setEngine("error", "硬件測試失敗", error.message);
+            return acknowledge(
+              command,
+              "hardware_ready",
+              "硬件測試未通過：" + error.message,
+              hardwareAckPayload(hardware.details, false),
+            );
+          } finally {
+            if (recorder && recorder.state !== "inactive") {
+              try {
+                recorder.stop();
+              } catch (_) {}
+            }
+            if (stream) stream.getTracks().forEach((track) => track.stop());
+            if (context) {
+              try {
+                await context.close();
+              } catch (_) {}
+            }
+            await releaseWakeLock();
+            sendHeartbeat();
+          }
+        }
+
+        async function startRecording(command) {
+          if (processing) throw new Error("上一場仍在分析中");
+          if (recording) {
+            if (recording.session_id === command.session_id) {
+              return acknowledge(command, "recording", "同一場次已在錄音");
+            }
+            throw new Error("另一場錄音進行中");
+          }
+          if (!command.session_id || !command.match_id) {
+            throw new Error("錄音指令缺少正式場次或 session id");
+          }
+          if (!hardwareFresh()) {
+            throw new Error("請先完成硬件測試；測試有效30分鐘");
+          }
+          if (!mediaPrimed) {
+            throw new Error("請先在 Kiosk 本機按「啟用收音咪及聲音」");
+          }
+          if (!window.crypto?.subtle) throw new Error("瀏覽器 SHA-256 功能不可用");
+          const mime = recorderMime();
+          if (!mime) throw new Error("瀏覽器不支援低流量錄音格式");
+
+          setEngine("starting", "正在開啟正式場次收音咪");
+          let stream;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(
+              audioConstraints(hardware.microphone_id || command.microphone_id),
+            );
+            const mediaRecorder = createRecorder(stream, mime);
+            const state = {
+              session_id: command.session_id,
+              match_id: command.match_id,
+              match: command.match || {},
+              tts_available: command.tts_available,
+              stream,
+              recorder: mediaRecorder,
+              chunks: [],
+              bytes: 0,
+              mime_type: mediaRecorder.mimeType || mime,
+              started_at_performance: null,
+              started_at_iso: "",
+              duration_seconds: 0,
+              markers: normalizeMarkers(command.markers),
+              start_command: command,
+              finish_command: null,
+              finish_promise: null,
+              hard_stop: 0,
+              size_stop_started: false,
+              recorder_error: "",
+            };
+            recording = state;
+            mediaRecorder.ondataavailable = (event) => {
+              if (!event.data?.size) return;
+              state.chunks.push(event.data);
+              state.bytes += event.data.size;
+              // Leave margin for the recorder's final pending chunk.
+              if (
+                state.bytes >= kioskLimits.max_bytes * 0.97 &&
+                !state.size_stop_started &&
+                mediaRecorder.state !== "inactive"
+              ) {
+                state.size_stop_started = true;
+                stopAndAnalyze(state.start_command, "size_guard");
+              }
+            };
+            mediaRecorder.onerror = (event) => {
+              state.recorder_error = event.error?.message || "錄音器發生錯誤";
+              if (mediaRecorder.state !== "inactive") {
+                try {
+                  mediaRecorder.stop();
+                } catch (_) {}
+              }
+            };
+            const started = new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                if (mediaRecorder.state === "recording") resolve();
+                else reject(new Error("錄音器啟動逾時"));
+              }, 3000);
+              mediaRecorder.onstart = () => {
+                clearTimeout(timeout);
+                resolve();
+              };
+            });
+            mediaRecorder.start(5000);
+            await started;
+            state.started_at_performance = performance.now();
+            state.started_at_iso = new Date().toISOString();
+            state.hard_stop = setTimeout(
+              () => stopAndAnalyze(state.start_command, "duration_limit"),
+              kioskLimits.max_seconds * 1000,
+            );
+            await requestWakeLock();
+            setEngine("recording", "正式場次錄音中");
+            sendHeartbeat();
+            return acknowledge(command, "recording", "正式場次錄音已開始", {
+              mime_type: state.mime_type,
+              max_seconds: kioskLimits.max_seconds,
+              max_bytes: kioskLimits.max_bytes,
+              started_at: state.started_at_iso,
+            });
+          } catch (error) {
+            if (stream) stream.getTracks().forEach((track) => track.stop());
+            recording = null;
+            setEngine("error", "未能開始錄音", error.message);
+            throw error;
+          }
+        }
+
+        async function stopRecorder(state) {
+          if (!state || !state.recorder) throw new Error("沒有可停止的錄音");
+          if (state.recorder.state === "inactive") {
+            return new Blob(state.chunks, { type: state.mime_type });
+          }
+          const stopped = new Promise((resolve) => {
+            const previous = state.recorder.onstop;
+            state.recorder.onstop = (event) => {
+              if (typeof previous === "function") previous.call(state.recorder, event);
+              resolve();
+            };
+            setTimeout(resolve, 10000);
+          });
+          try {
+            state.recorder.requestData();
+          } catch (_) {}
+          state.recorder.stop();
+          await stopped;
+          await sleep(60);
+          return new Blob(state.chunks, { type: state.mime_type });
+        }
+
+        async function sha256Hex(blob) {
+          const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+          return Array.from(new Uint8Array(digest), (value) =>
+            value.toString(16).padStart(2, "0"),
+          ).join("");
+        }
+
+        function cleanProjectorSummary(markdown) {
+          return String(markdown || "")
+            .replace(/```[\s\S]*?```/g, "")
+            .replace(/^#{1,6}\s*/gm, "")
+            .replace(/^\s*[-*+]\s+/gm, "• ")
+            .replace(/\*\*([^*]+)\*\*/g, "$1")
+            .replace(/`([^`]+)`/g, "$1")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim()
+            .slice(0, kioskLimits.tts_max_chars);
+        }
+
+        async function bestEffortDiscard(uploadToken) {
+          if (!uploadToken) return;
+          try {
+            await fetchJson("/api/kiosk/match-review/discard", {
+              method: "POST",
+              body: { upload_token: uploadToken },
+            });
+          } catch (_) {}
+        }
+
+        async function postResult(command, state, analysis) {
+          const markdown = String(analysis.markdown || "").trim();
+          const transcript = String(analysis.transcript || "").trim();
+          if (!markdown) throw new Error("AI 分析未有回傳完整評語");
+          if (!transcript) throw new Error("AI 分析未有回傳逐字稿");
+          const projectorSummary = String(
+            analysis.projector_summary || cleanProjectorSummary(markdown),
+          )
+            .trim()
+            .slice(0, kioskLimits.tts_max_chars);
+          if (!projectorSummary) throw new Error("AI 分析未有回傳投影摘要");
+          const payload = {
+            display: DISPLAY,
+            revision:
+              finite(analysis.projector_revision, 0) > 0
+                ? finite(analysis.projector_revision, command.revision)
+                : command.revision,
+            session_id: state.session_id,
+            markdown,
+            transcript,
+            projector_summary: projectorSummary,
+            model_label: String(analysis.model_label || "").slice(0, 200),
+            audio:
+              analysis.audio && typeof analysis.audio === "object" ? analysis.audio : {},
+            recording_deleted: Boolean(analysis.recording_deleted),
+          };
+          let response;
+          let lastFailure;
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            try {
+              response = await fetchJson("/api/kiosk/projector-ai/result", {
+                method: "POST",
+                body: payload,
+              });
+              break;
+            } catch (error) {
+              lastFailure = error;
+              if (error.status && error.status < 500) throw error;
+              setEngine("processing", "結果回傳中斷，正在安全重試（" + (attempt + 1) + "／4）");
+              await sleep(1000 * Math.min(8, 2 ** attempt));
+            }
+          }
+          if (!response) throw lastFailure || new Error("未能保存 AI評判易結果");
+          latestResult = { ...payload, response };
+          return latestResult;
+        }
+
+        async function stopAndAnalyze(command, reason = "control") {
+          const state = recording;
+          if (!state) {
+            if (latestResult && latestResult.session_id === command.session_id) {
+              return latestResult;
+            }
+            throw new Error("Kiosk 目前沒有進行中的錄音");
+          }
+          if (command.session_id && command.session_id !== state.session_id) {
+            throw new Error("停止指令與錄音 session 不一致");
+          }
+          if (state.finish_promise) {
+            if (command.revision > finite(state.finish_command?.revision, -1)) {
+              state.finish_command = command;
+            }
+            return state.finish_promise;
+          }
+
+          state.finish_command = command;
+          const activeCommand = () => state.finish_command || command;
+          state.finish_promise = (async () => {
+            clearTimeout(state.hard_stop);
+            processing = { session_id: state.session_id, stage: "封裝錄音" };
+            setEngine("processing", "正在封裝完整比賽錄音");
+            let blob = null;
+            let uploadToken = "";
+            try {
+              blob = await stopRecorder(state);
+              state.duration_seconds = Math.min(
+                kioskLimits.max_seconds,
+                recordingElapsed(),
+              );
+              state.stream.getTracks().forEach((track) => track.stop());
+              await releaseWakeLock();
+              if (state.recorder_error) throw new Error(state.recorder_error);
+              if (blob.size < 1000) throw new Error("錄音檔案過小，未能分析");
+              if (blob.size > kioskLimits.max_bytes) {
+                throw new Error("錄音超出 " + humanBytes(kioskLimits.max_bytes) + " 上限");
+              }
+              if (state.duration_seconds < kioskLimits.min_seconds) {
+                throw new Error("錄音少於 " + kioskLimits.min_seconds + " 秒");
+              }
+              if (reason === "duration_limit") {
+                state.duration_seconds = Math.min(
+                  state.duration_seconds,
+                  kioskLimits.max_seconds,
+                );
+              }
+              await acknowledge(activeCommand(), "processing", "錄音已停止，正上載及分析", {
+                duration_seconds: Math.round(state.duration_seconds * 1000) / 1000,
+                recording_bytes: blob.size,
+              });
+              const newest = commandSession(lastEnvelope);
+              if (newest.session_id === state.session_id) {
+                state.markers = normalizeMarkers(
+                  newest.markers,
+                  state.duration_seconds,
+                );
+                state.tts_available = newest.tts_available;
+              }
+
+              processing.stage = "計算錄音雜湊";
+              setEngine("processing", "正在驗證完整錄音");
+              const digest = await sha256Hex(blob);
+              processing.stage = "建立私人上載";
+              const intent = await fetchJson("/api/kiosk/match-review/upload-intent", {
+                method: "POST",
+                body: {
+                  match_id: state.match_id,
+                  operation_id: state.session_id,
+                  mime_type: blob.type || state.mime_type,
+                  byte_size: blob.size,
+                  sha256: digest,
+                  duration_seconds: Math.round(state.duration_seconds * 1000) / 1000,
+                },
+              });
+              uploadToken = intent.upload_token;
+              processing.stage = "上載私人暫存";
+              setEngine("processing", "正在將錄音上載到私人暫存區");
+              const upload = await fetch(intent.url, {
+                method: "PUT",
+                headers: intent.headers,
+                body: blob,
+              });
+              if (!upload.ok) throw new Error("錄音上載失敗（HTTP " + upload.status + "）");
+              blob = null;
+              state.chunks = [];
+              processing.stage = "AI逐字及評審";
+              setEngine("processing", "AI 正在整理全場逐字稿及評語，請勿關閉 Kiosk");
+              const analysis = await fetchJson("/api/kiosk/match-review/analyze", {
+                method: "POST",
+                body: {
+                  upload_token: uploadToken,
+                  match_id: state.match_id,
+                  operation_id: state.session_id,
+                  speaker_markers: state.markers,
+                  recording_notice_confirmed: true,
+                },
+              });
+              uploadToken = "";
+              processing.stage = "傳送結果到 Projector Control";
+              const saved = await postResult(activeCommand(), state, analysis);
+              processing = null;
+              recording = null;
+              hardware.passed = false;
+              setEngine("ready", "AI評語已完成，等待 Projector Control 發布");
+              await pollPublic();
+              return saved;
+            } catch (error) {
+              const failedStage = processing?.stage || "failed";
+              await bestEffortDiscard(uploadToken);
+              try {
+                state.stream.getTracks().forEach((track) => track.stop());
+              } catch (_) {}
+              state.chunks = [];
+              blob = null;
+              processing = null;
+              recording = null;
+              hardware.passed = false;
+              await releaseWakeLock();
+              setEngine("error", "AI評判易未能完成", error.message);
+              await acknowledge(activeCommand(), "error", error.message, {
+                reason,
+                stage: failedStage,
+                error: error.message,
+              });
+              return null;
+            } finally {
+              sendHeartbeat();
+            }
+          })();
+          return state.finish_promise;
+        }
+
+        function stopSpeech() {
+          if (!speech) return;
+          try {
+            speech.audio.pause();
+            speech.audio.src = "";
+          } catch (_) {}
+          if (speech.url) URL.revokeObjectURL(speech.url);
+          speech = null;
+        }
+
+        async function playSpeech(command) {
+          if (!command.session_id) throw new Error("語音指令缺少 session id");
+          if (!command.tts_audio_ready || !command.publish_revision) {
+            throw new Error("此場次沒有可播放的粵語 TTS 音訊");
+          }
+          stopSpeech();
+          setEngine("processing", "正在載入加密暫存的粵語評語");
+          const response = await fetch(
+            "/api/kiosk/projector-ai/audio/" +
+              encodeURIComponent(command.session_id) +
+              "?revision=" +
+              encodeURIComponent(command.publish_revision),
+            { credentials: "same-origin", cache: "no-store" },
+          );
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.detail || "粵語評語音訊未能載入");
+          }
+          const blob = await response.blob();
+          if (!blob.size || !String(blob.type || "").startsWith("audio/")) {
+            throw new Error("語音端點未有回傳有效音訊");
+          }
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          speech = { audio, url, session_id: command.session_id, revision: command.revision };
+          audio.onended = async () => {
+            if (!speech || speech.audio !== audio) return;
+            stopSpeech();
+            setEngine("ready", "粵語評語播放完成");
+            await acknowledge(command, "played", "粵語評語播放完成");
+            sendHeartbeat();
+          };
+          audio.onerror = async () => {
+            if (!speech || speech.audio !== audio) return;
+            stopSpeech();
+            setEngine("error", "粵語評語播放失敗", "音訊播放錯誤");
+            await acknowledge(command, "error", "粵語評語播放失敗");
+          };
+          await audio.play();
+          setEngine("speaking", "正在用粵語讀出 AI評語");
+          await acknowledge(command, "speaking", "正在播放粵語評語", {
+            audio_bytes: blob.size,
+            mime_type: blob.type,
+          });
+          sendHeartbeat();
+        }
+
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible" && recording) requestWakeLock();
+        });
+        window.addEventListener("beforeunload", (event) => {
+          if (!recording && !processing) return;
+          event.preventDefault();
+          event.returnValue = "";
+        });
+
+        pollPublic();
+        setInterval(pollPublic, PUBLIC_POLL_MS);
+        if (KIOSK_MODE) {
+          $("kioskBadge").classList.remove("hidden");
+          show($("kioskPrimeButton"), true, "block");
+          setEngine("connecting", "正在連接 Projector Control");
+          bootstrapKiosk();
+        }
       })();
     </script>
   </body>

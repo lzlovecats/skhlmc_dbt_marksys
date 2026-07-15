@@ -13,3 +13,4 @@ uvicorn[standard]
 httpx
 websockets
 pywebpush
+cryptography

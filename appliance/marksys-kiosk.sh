@@ -19,8 +19,10 @@ ENV_FILE="${MARKSYS_ENV_FILE:-/etc/marksys/appliance.env}"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 APP_URL="${APP_URL:-http://localhost:8000}"
-PRACTICE_URL="${PRACTICE_URL:-$APP_URL}"
-CONTEST_URL="${CONTEST_URL:-$APP_URL}"
+PRACTICE_URL="${PRACTICE_URL:-${APP_URL%/}/practice}"
+# kiosk=1 enables the private microphone/speaker command engine.  Plain
+# /projector remains a safe public, display-only view.
+CONTEST_URL="${CONTEST_URL:-${APP_URL%/}/projector?kiosk=1}"
 CHOOSER_TIMEOUT="${CHOOSER_TIMEOUT:-0}"   # seconds; 0 = wait forever
 
 CHROME="$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)"

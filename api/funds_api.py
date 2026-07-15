@@ -17,8 +17,9 @@ AI_TX_COLUMNS = """id,transaction_type,status,provider,amount_hkd,
     confirmed_by,confirmed_at,rejected_by,rejected_at,
     LEFT(COALESCE(status_note,''),2000) status_note"""
 AI_USAGE_COLUMNS = """id,user_id,feature,model_label,provider,estimated_cost_usd,
-    estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,search_calls,cost_source,
-    status,LEFT(COALESCE(error_message,''),1000) error_message,created_at"""
+    estimated_cost_hkd,input_tokens,output_tokens,audio_tokens,billable_characters,
+    search_calls,operation_id,operation_stage,cost_source,status,
+    LEFT(COALESCE(error_message,''),1000) error_message,created_at"""
 
 
 def _csv_response(filename, headers, rows):
@@ -365,8 +366,8 @@ def ai_usage_csv(request: Request):
     require_row_limit(rows, label="AI用量匯出")
     statuses = {"success":"成功","failed":"失敗"}
     return _csv_response("ai用量估算紀錄.csv",
-        ["編號","用戶","功能","模型","Provider","估算成本(USD)","估算成本(HKD)","Input tokens","Output tokens","Audio tokens","搜尋次數","成本來源","狀態","錯誤訊息","時間"],
-        [[r.get("id"),r.get("user_id"),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),r.get("estimated_cost_usd"),r.get("estimated_cost_hkd"),r.get("input_tokens"),r.get("output_tokens"),r.get("audio_tokens"),r.get("search_calls"),r.get("cost_source"),statuses.get(r.get("status"),r.get("status")),r.get("error_message"),r.get("created_at")] for r in logic._rows(rows)])
+        ["編號","用戶","功能","模型","Provider","估算成本(USD)","估算成本(HKD)","Input tokens","Output tokens","Audio tokens","TTS計費字元","搜尋次數","任務ID","任務階段","成本來源","狀態","錯誤訊息","時間"],
+        [[r.get("id"),r.get("user_id"),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),r.get("estimated_cost_usd"),r.get("estimated_cost_hkd"),r.get("input_tokens"),r.get("output_tokens"),r.get("audio_tokens"),r.get("billable_characters"),r.get("search_calls"),r.get("operation_id"),r.get("operation_stage"),r.get("cost_source"),statuses.get(r.get("status"),r.get("status")),r.get("error_message"),r.get("created_at")] for r in logic._rows(rows)])
 
 
 @router.get("/ai-fund/export/usage-summary.csv")
@@ -374,8 +375,8 @@ def ai_usage_summary_csv(request: Request):
     user, db, treasurer, logic = _ai_export_context(request)
     rows = logic._rows(logic.ai_usage_summary(user, treasurer, db=db, limit=EXPORT_MAX_ROWS+1))
     require_row_limit(rows, label="AI用量統計匯出")
-    return _csv_response("ai用量統計.csv", ["月份","用戶","Provider","功能","模型","使用次數","估算成本(HKD)"],
-        [[r.get("month"),r.get("user_id"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),r.get("uses"),r.get("estimated_cost_hkd")] for r in rows])
+    return _csv_response("ai用量統計.csv", ["月份","用戶","Provider","功能","模型","任務數","成功呼叫","Provider呼叫","TTS計費字元","估算成本(HKD)"],
+        [[r.get("month"),r.get("user_id"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),r.get("tasks"),r.get("uses"),r.get("provider_calls"),r.get("billable_characters"),r.get("estimated_cost_hkd")] for r in rows])
 
 
 @router.get("/ai-fund/openrouter-credit")

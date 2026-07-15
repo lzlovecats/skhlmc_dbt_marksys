@@ -1,3 +1,6 @@
+import math
+
+
 DEFAULT_AI_MODEL = "Gemini 2.5 Flash"
 
 AI_MODEL_OPTIONS = {
@@ -232,12 +235,38 @@ TTS_PROVIDER_OPTIONS = {
         "default_rate": "0%",
         "output_format_secret": "AZURE_TTS_OUTPUT_FORMAT",
         "default_output_format": "audio-24khz-48kbitrate-mono-mp3",
+        "accounting_model_label": "Azure Speech TTS",
+        "price_per_million_characters_secret": (
+            "AZURE_TTS_PRICE_PER_MILLION_CHARACTERS_USD"
+        ),
+        # Azure Speech pricing varies by region, contract and voice tier.  This
+        # is a documented estimate-only fallback, never an assertion about the
+        # provider invoice.  Deployments should set the secret above to their
+        # current effective rate and reconcile against the Azure bill.
+        "default_price_per_million_characters_usd": 16.0,
+        "pricing_default_note": (
+            "Estimate-only default of US$16 per million characters; override "
+            "AZURE_TTS_PRICE_PER_MILLION_CHARACTERS_USD with the deployment's "
+            "current Azure Speech rate."
+        ),
     },
     CUSTOM_TTS_PROVIDER: {
         "url_secret": "CUSTOM_TTS_URL",
         "api_key_secret": "CUSTOM_TTS_API_KEY",
         "model_secret": "CUSTOM_TTS_MODEL_VERSION",
         "registry_model_type": "tts",
+        "accounting_model_label": "Custom TTS",
+        "price_per_million_characters_secret": (
+            "CUSTOM_TTS_PRICE_PER_MILLION_CHARACTERS_USD"
+        ),
+        # No third-party character fee can be inferred for a self-hosted model.
+        # Configure the deployment-specific marginal rate when applicable.
+        "default_price_per_million_characters_usd": 0.0,
+        "pricing_default_note": (
+            "Default is zero for self-hosted TTS; override "
+            "CUSTOM_TTS_PRICE_PER_MILLION_CHARACTERS_USD when the deployment "
+            "has a measurable per-character cost."
+        ),
     },
 }
 
@@ -252,6 +281,82 @@ def get_tts_provider_config(provider=None):
     if selected not in TTS_PROVIDER_OPTIONS:
         selected = DEFAULT_TTS_PROVIDER
     return selected, TTS_PROVIDER_OPTIONS[selected]
+
+
+def resolve_tts_accounting_config(
+    provider=None, *, price_per_million_characters_usd=None
+):
+    """Return stable TTS provider metadata and one configurable estimate rate.
+
+    The caller reads the named deployment secret from the same secret source as
+    the provider credentials, then passes that value here.  Keeping the secret
+    name, documented fallback and validation beside the provider selector avoids
+    scattering volatile pricing assumptions through request handlers.
+    """
+    selected, provider_config = get_tts_provider_config(provider)
+    default_rate = float(
+        provider_config.get("default_price_per_million_characters_usd") or 0
+    )
+    raw_rate = price_per_million_characters_usd
+    configured = raw_rate not in (None, "")
+    try:
+        rate = float(raw_rate) if configured else default_rate
+    except (TypeError, ValueError, OverflowError):
+        rate = default_rate
+        configured = False
+    if not math.isfinite(rate) or rate < 0:
+        rate = default_rate
+        configured = False
+    return selected, {
+        "provider": selected,
+        "model_label": str(
+            provider_config.get("accounting_model_label") or f"{selected} TTS"
+        ),
+        "billing_unit": "characters",
+        "price_per_million_characters_usd": rate,
+        "price_secret": str(
+            provider_config.get("price_per_million_characters_secret") or ""
+        ),
+        "cost_source": (
+            "configured_character_rate"
+            if configured
+            else "documented_default_character_rate"
+        ),
+        "pricing_note": str(provider_config.get("pricing_default_note") or ""),
+    }
+
+
+def build_tts_usage_metadata(
+    provider,
+    text,
+    *,
+    price_per_million_characters_usd=None,
+    model_label="",
+    operation_id="",
+    operation_stage="synthesis",
+):
+    """Build non-content TTS ledger metadata for one attempted provider call.
+
+    ``text`` must be the post-lexicon text actually submitted to the provider.
+    The text itself is never returned or stored; only its Unicode character
+    count is retained.  Failed calls can use the same metadata so an attempt
+    which the provider may still bill does not silently disappear.
+    """
+    selected, accounting = resolve_tts_accounting_config(
+        provider,
+        price_per_million_characters_usd=price_per_million_characters_usd,
+    )
+    characters = len(str(text or ""))
+    rate = float(accounting["price_per_million_characters_usd"])
+    return {
+        "provider": selected,
+        "model_label": str(model_label or accounting["model_label"]),
+        "billable_characters": characters,
+        "estimated_cost_usd": characters * rate / 1_000_000,
+        "cost_source": accounting["cost_source"],
+        "operation_id": str(operation_id or ""),
+        "operation_stage": str(operation_stage or "synthesis"),
+    }
 
 
 def resolve_interactive_model_settings(enabled_providers=None, default_model=None):
@@ -343,3 +448,18 @@ def model_slugs_for_feature(feature):
         _validate_feature_model(feature_key, label, config)
         slugs.append(config["model"])
     return tuple(slugs)
+
+
+def get_model_by_slug(model_slug):
+    """Resolve one centrally registered model slug to its label and pricing.
+
+    Runtime fallback loops carry provider slugs on the wire.  Accounting callers
+    use this reverse lookup so model labels and rates do not get duplicated in
+    transport modules.
+    """
+    requested = str(model_slug or "").strip()
+    for options in (NON_MANUAL_MODEL_OPTIONS, AI_MODEL_OPTIONS):
+        for label, config in options.items():
+            if str(config.get("model") or "") == requested:
+                return label, config
+    raise KeyError(f"Unknown central AI model slug: {requested}")

@@ -227,7 +227,7 @@
           <summary>ℹ️ 首次使用指南</summary>
           <div class="sub">
             • 使用「練習發言」輸入文字稿或錄音，AI
-            會按照正式評分標準提供反饋。<br />• 使用「主線策劃」模式，AI
+            會按照正式評分標準提供反饋；台上發言完成分析後，可按評語重新錄音一次，檢查有冇改善。<br />• 使用「主線策劃」模式，AI
             可根據辯題及你的立場生成論點及應對策略。<br />•
             使用「搵料易」模式，AI 會即時搜尋網上資料並附上來源。<br />•
             使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。
@@ -379,7 +379,7 @@
               </div>
               <audio id="audioPreview" controls class="hidden"></audio>
               <p id="reviewEstimate" class="caption estimate"></p>
-              <button class="primary">分析發言</button>
+              <button id="reviewSubmit" class="primary">分析發言</button>
             </form>
             <section class="card">
               <h2>分析結果</h2>
@@ -391,6 +391,25 @@
                   下載分析結果
                 </button>
               </div>
+              <div id="retakeOffer" class="notice hidden">
+                <h3>按照建議再錄一次</h3>
+                <p>
+                  第一次錄音不會儲存，開始重錄時會即時由頁面記憶體清除，亦不會再次送去 AI。改進檢查只會提交上次 AI 文字評語、你可修改嘅文字稿，同一段全新錄音。
+                </p>
+                <p id="retakeEstimate" class="caption estimate"></p>
+                <button id="startRetake" type="button" class="primary">
+                  按建議再錄一次
+                </button>
+              </div>
+              <div id="retakeActive" class="notice hidden">
+                <h3>重錄改進檢查</h3>
+                <p>
+                  辯題、立場、辯位、賽制及練習類型已鎖定；你仍可修改文字稿。請錄製一段全新錄音，再按「檢查今次有冇改進」。
+                </p>
+                <button id="cancelRetake" type="button">取消重錄</button>
+              </div>
+              <h3 id="retakeResultTitle" class="hidden">改進檢查結果</h3>
+              <div id="retakeResult" class="result hidden"></div>
             </section>
           </div>
         </section>

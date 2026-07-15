@@ -38,6 +38,7 @@ from system_limits import (
 
 
 _usage_refresh_lock = threading.Lock()
+_HONG_KONG = ZoneInfo("Asia/Hong_Kong")
 
 
 def _nonnegative_int(value) -> int:
@@ -70,6 +71,22 @@ def configured() -> bool:
     return all(cfg[key] for key in (
         "account_id", "access_key_id", "secret_access_key", "bucket", "endpoint"
     ))
+
+
+def connection_ready() -> bool:
+    """Return whether the configured private bucket answers one minimal read.
+
+    This deliberately performs no write and never lets SDK, endpoint or
+    credential details escape to callers.  It is suitable for an authenticated
+    readiness screen, not as a substitute for normal operation error handling.
+    """
+    try:
+        if not configured():
+            return False
+        client().list_objects_v2(Bucket=settings()["bucket"], MaxKeys=1)
+    except Exception:
+        return False
+    return True
 
 
 @lru_cache(maxsize=1)
@@ -221,7 +238,8 @@ def bucket_usage_bytes() -> int:
 def _intent_declared_bytes(db) -> int:
     from schema import TABLE_R2_UPLOAD_INTENTS
     rows = db.query(f"""SELECT COALESCE(SUM(declared_bytes),0) AS total
-        FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")
+        FROM {TABLE_R2_UPLOAD_INTENTS}
+        WHERE status NOT IN ('orphan_deleted','provider_processing','consumed')""")
     return int(rows.iloc[0]["total"] or 0) if not rows.empty else 0
 
 
@@ -274,6 +292,96 @@ def storage_budget_status(db, *, refresh: bool = False) -> dict:
     }
 
 
+def _upload_intent_quota_window(
+    now: dt.datetime | None = None,
+) -> tuple[dt.datetime, dt.datetime, dt.datetime]:
+    """Return naive UTC ``(now, HK-day-start, HK-month-start)`` values."""
+    if now is None:
+        now_hk = dt.datetime.now(_HONG_KONG)
+    elif now.tzinfo is None:
+        now_hk = now.replace(tzinfo=_HONG_KONG)
+    else:
+        now_hk = now.astimezone(_HONG_KONG)
+    day_hk = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_hk = day_hk.replace(day=1)
+    return tuple(
+        value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        for value in (now_hk, day_hk, month_hk)
+    )
+
+
+def _upload_intent_counts(
+    session,
+    *,
+    user_id: str,
+    media_kind: str,
+    day_utc: dt.datetime,
+    month_utc: dt.datetime,
+) -> tuple[int, int]:
+    """Count the same intent rows used by the authoritative quota gate."""
+    from schema import TABLE_R2_UPLOAD_INTENTS
+
+    kiosk_status_filter = (
+        "AND status IN ('issued','processing','provider_processing','consumed')"
+        if str(media_kind) == "kiosk_match_review" else ""
+    )
+    row = session.execute(text(f"""SELECT
+            COUNT(*) FILTER (
+                WHERE user_id=:user AND created_at>=:day_start
+            ) AS user_daily_used,
+            COUNT(*) AS global_monthly_used
+        FROM {TABLE_R2_UPLOAD_INTENTS}
+        WHERE media_kind=:kind AND created_at>=:month_start
+        {kiosk_status_filter}"""), {
+        "user": str(user_id), "kind": str(media_kind),
+        "day_start": day_utc, "month_start": month_utc,
+    }).mappings().one()
+    return int(row["user_daily_used"] or 0), int(row["global_monthly_used"] or 0)
+
+
+def upload_intent_quota_status(
+    db,
+    *,
+    user_id: str,
+    media_kind: str,
+    user_daily_limit: int,
+    global_monthly_limit: int,
+) -> dict:
+    """Return advisory intent usage using the authoritative HK quota windows.
+
+    Reservation remains the final authority because another request can consume
+    a slot immediately after this read-only status check.
+    """
+    _now_utc, day_utc, month_utc = _upload_intent_quota_window()
+    with db.transaction() as session:
+        user_count, global_count = _upload_intent_counts(
+            session,
+            user_id=user_id,
+            media_kind=media_kind,
+            day_utc=day_utc,
+            month_utc=month_utc,
+        )
+    daily_limit = max(0, int(user_daily_limit))
+    monthly_limit = max(0, int(global_monthly_limit))
+    daily_remaining = max(0, daily_limit - user_count)
+    monthly_remaining = max(0, monthly_limit - global_count)
+    blocked_scope = (
+        "user_daily" if user_count >= daily_limit
+        else "global_monthly" if global_count >= monthly_limit
+        else ""
+    )
+    return {
+        "user_daily_used": user_count,
+        "user_daily_limit": daily_limit,
+        "user_daily_remaining": daily_remaining,
+        "global_monthly_used": global_count,
+        "global_monthly_limit": monthly_limit,
+        "global_monthly_remaining": monthly_remaining,
+        "allowed": not blocked_scope,
+        "blocked_scope": blocked_scope,
+    }
+
+
 def reserve_upload_intent(
     db, *, intent_id: str, user_id: str, media_kind: str, object_keys: list[str],
     declared_bytes: int, user_daily_limit: int, global_monthly_limit: int,
@@ -282,16 +390,13 @@ def reserve_upload_intent(
     """Persistently cap issued PUT URLs, including uploads never finalized."""
     from schema import TABLE_R2_UPLOAD_INTENTS
 
-    now_hk = dt.datetime.now(ZoneInfo("Asia/Hong_Kong"))
-    day_hk = now_hk.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_hk = day_hk.replace(day=1)
-    now_utc = now_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
-    day_utc = day_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
-    month_utc = month_hk.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    now_utc, day_utc, month_utc = _upload_intent_quota_window()
     with db.transaction() as session:
         session.execute(text("SELECT pg_advisory_xact_lock(hashtext('r2_upload_intent_quota'))"))
         session.execute(text(f"""DELETE FROM {TABLE_R2_UPLOAD_INTENTS}
-            WHERE status IN ('completed','orphan_deleted') AND completed_at<:cutoff"""),
+            WHERE (status IN ('completed','orphan_deleted','consumed')
+                   AND completed_at<:cutoff)
+               OR (status='provider_processing' AND created_at<:cutoff)"""),
             {"cutoff": now_utc - dt.timedelta(days=R2_INTENT_RETENTION_DAYS)})
         storage_snapshot = get_configs_from_connection(
             session, ("r2_storage_usage_snapshot",)
@@ -299,24 +404,22 @@ def reserve_upload_intent(
         if not isinstance(storage_snapshot, dict):
             storage_snapshot = {}
         current_declared = int(session.execute(text(f"""SELECT COALESCE(SUM(declared_bytes),0)
-            FROM {TABLE_R2_UPLOAD_INTENTS} WHERE status!='orphan_deleted'""")).scalar() or 0)
+            FROM {TABLE_R2_UPLOAD_INTENTS}
+            WHERE status NOT IN ('orphan_deleted','provider_processing','consumed')""")).scalar() or 0)
         base_bytes = _nonnegative_int(storage_snapshot.get("bytes"))
         intent_snapshot = _nonnegative_int(storage_snapshot.get("intent_bytes_snapshot"))
         projected = base_bytes + max(0, current_declared - intent_snapshot) + int(declared_bytes)
         if projected >= int(storage_stop_bytes):
             return False, "storage_global"
-        user_count = int(session.execute(text(f"""SELECT COUNT(*)
-            FROM {TABLE_R2_UPLOAD_INTENTS}
-            WHERE user_id=:user AND media_kind=:kind AND created_at>=:start"""), {
-            "user": user_id, "kind": media_kind, "start": day_utc,
-        }).scalar() or 0)
+        user_count, global_count = _upload_intent_counts(
+            session,
+            user_id=user_id,
+            media_kind=media_kind,
+            day_utc=day_utc,
+            month_utc=month_utc,
+        )
         if user_count >= int(user_daily_limit):
             return False, "user_daily"
-        global_count = int(session.execute(text(f"""SELECT COUNT(*)
-            FROM {TABLE_R2_UPLOAD_INTENTS}
-            WHERE media_kind=:kind AND created_at>=:start"""), {
-            "kind": media_kind, "start": month_utc,
-        }).scalar() or 0)
         if global_count >= int(global_monthly_limit):
             return False, "global_monthly"
         session.execute(text(f"""INSERT INTO {TABLE_R2_UPLOAD_INTENTS}
@@ -340,7 +443,9 @@ def complete_upload_intent(db, intent_id: str) -> None:
 def mark_upload_intent_deleted(db, intent_id: str) -> None:
     from schema import TABLE_R2_UPLOAD_INTENTS
     db.execute(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
-        SET status='orphan_deleted',completed_at=:now WHERE intent_id=:id""", {
+        SET status='orphan_deleted',completed_at=:now
+        WHERE intent_id=:id
+          AND status IN ('issued','processing','orphan_deleted')""", {
         "id": intent_id, "now": dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
     })
 

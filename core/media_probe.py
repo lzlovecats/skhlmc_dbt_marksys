@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 
-from system_limits import MEDIA_PROBE_TIMEOUT_SECONDS
+from system_limits import (
+    MEDIA_PROBE_TIMEOUT_SECONDS,
+    MEDIA_TRANSCODE_TIMEOUT_SECONDS,
+)
 
 
 SUPPORTED_AUDIO_MIMES = frozenset({
@@ -26,6 +30,9 @@ _EXTENSIONS = {
     "audio/webm": "webm", "audio/mp4": "m4a", "audio/mpeg": "mp3",
     "audio/wav": "wav", "audio/ogg": "ogg",
 }
+
+PROVIDER_AUDIO_MIME = "audio/mpeg"
+
 
 class MediaProbeError(ValueError):
     """A safe validation error suitable for returning to an authenticated user."""
@@ -47,25 +54,102 @@ def audio_extension(mime: str) -> str:
     return _EXTENSIONS[canonical_audio_mime(mime)]
 
 
+def transcode_audio_for_provider(
+    audio: bytes,
+    mime: str,
+    *,
+    max_output_bytes: int,
+) -> tuple[bytes, str]:
+    """Normalize bounded browser audio to Gemini's documented MP3 input.
+
+    Callers must validate the source duration first.  ``-fs`` bounds temporary
+    output even if a future caller omits that check, and the output is measured
+    again before Python reads it into memory.
+    """
+    canonical_mime = canonical_audio_mime(mime)
+    try:
+        output_limit = int(max_output_bytes)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise MediaProbeError("音訊轉換大小上限無效") from exc
+    if not audio or output_limit < 1:
+        raise MediaProbeError("音訊轉換資料無效")
+
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = os.path.join(
+                directory, "source." + audio_extension(canonical_mime),
+            )
+            output_path = os.path.join(directory, "provider.mp3")
+            with open(source_path, "wb") as source:
+                source.write(audio)
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-y", "-i", source_path, "-map", "0:a:0", "-vn", "-sn",
+                    "-dn", "-map_metadata", "-1", "-map_chapters", "-1",
+                    "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame",
+                    "-b:a", "16k", "-fs", str(output_limit + 1),
+                    "-f", "mp3", output_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=MEDIA_TRANSCODE_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise MediaProbeError("錄音格式轉換失敗")
+            try:
+                output_size = os.path.getsize(output_path)
+            except OSError as exc:
+                raise MediaProbeError(
+                    "伺服器未能讀取已轉換錄音",
+                    service_unavailable=True,
+                ) from exc
+            if not 1 <= output_size <= output_limit:
+                raise MediaProbeError("已轉換錄音超出大小上限")
+            with open(output_path, "rb") as converted_file:
+                converted = converted_file.read(output_limit + 1)
+    except MediaProbeError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MediaProbeError(
+            "伺服器未能執行音訊格式轉換",
+            service_unavailable=True,
+        ) from exc
+
+    if not converted or len(converted) > output_limit:
+        raise MediaProbeError("已轉換錄音超出大小上限")
+    return converted, PROVIDER_AUDIO_MIME
+
+
 def _decoded_duration_seconds(source_path: str, max_seconds: float) -> float:
-    """Measure audio by bounded PCM decode when live WebM has no duration tag."""
-    sample_rate = 16_000
-    bytes_per_sample = 2
+    """Measure duration without buffering decoded PCM when metadata is absent."""
     decode_limit = float(max_seconds) + 1.0
     result = subprocess.run(
         [
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-progress", "pipe:1", "-nostats",
             "-i", source_path, "-map", "0:a:0", "-vn", "-sn", "-dn",
-            "-ac", "1", "-ar", str(sample_rate), "-t", f"{decode_limit:g}",
-            "-f", "s16le", "pipe:1",
+            "-t", f"{decode_limit:g}", "-f", "null", os.devnull,
         ],
         capture_output=True,
-        timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
+        text=True,
+        timeout=MEDIA_TRANSCODE_TIMEOUT_SECONDS,
         check=False,
     )
     if result.returncode != 0:
         raise MediaProbeError("錄音檔案損壞或實際格式不受支援")
-    return len(result.stdout or b"") / (sample_rate * bytes_per_sample)
+    duration = 0.0
+    for line in str(result.stdout or "").splitlines():
+        if not line.startswith("out_time_us="):
+            continue
+        try:
+            duration = max(duration, int(line.split("=", 1)[1]) / 1_000_000)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    if duration <= 0:
+        raise MediaProbeError("錄音未包含可量度長度的聲音軌")
+    return duration
 
 
 def probe_audio(

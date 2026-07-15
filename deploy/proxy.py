@@ -49,7 +49,7 @@ from core.config_store import (
     get_configs_from_connection,
     set_configs_on_connection,
 )
-from core.ai_provider import post_json_bounded
+from core.ai_provider import post_json_bounded, _usage as _provider_usage
 from core.db_runtime import RuntimeDb, dispose_db_engine, get_db_engine
 from core.runtime_secrets import get_secret
 from debate_timing import (  # pure helpers, no side effects
@@ -69,6 +69,7 @@ from ai_model_config import (
     GEMINI_LIVE_PROVIDER,
     TTS_PROVIDER_OPTIONS,
     TTS_PROVIDER_SECRET,
+    get_model_by_slug,
     get_tts_provider_config,
     model_slugs_for_feature,
 )
@@ -96,7 +97,8 @@ from api.ai_coach_api import router as ai_coach_router
 from api.ai_training_api import router as ai_training_router
 from api.admin_console_api import router as admin_console_router
 from api.kiosk_api import router as kiosk_router, require_kiosk_user
-from api.access import require_page_user
+from api.projector_ai_api import router as projector_ai_router
+from api.access import require_competition_staff, require_page_user
 from version import APP_VERSION
 from system_limits import (
     BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
@@ -185,6 +187,7 @@ ESSENTIAL_ONLY_BLOCKED_PATHS = {
     "/api/ai-training/rag/reindex",
     "/api/kiosk/match-review/analyze",
     "/api/tts/azure",
+    "/api/tts/synthesize",
     "/api/vote/ai-review",
     "/api/vote/analysis/ai",
 }
@@ -358,6 +361,7 @@ app.include_router(ai_coach_router)
 app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 app.include_router(kiosk_router)
+app.include_router(projector_ai_router)
 logger = logging.getLogger("skh_proxy")
 
 
@@ -1107,17 +1111,24 @@ def _selected_tts_provider():
 
 
 def tts_provider_configured() -> bool:
-    """Whether the active TTS provider has the secrets it needs. Drives whether
-    live-room server-side TTS turns on (else the room stays on Gemini native audio)."""
+    """Whether the selected provider or its supported fallback can synthesize.
+
+    Custom TTS deliberately falls back to Azure in :func:`_synthesize_tts`.
+    Readiness must use the same rule or competition-day callers can incorrectly
+    suppress speech even though the Azure fallback is fully configured.
+    """
     provider, config = _selected_tts_provider()
     if provider == CUSTOM_TTS_PROVIDER:
         model_id = _get_proxy_secret(config["model_secret"]).strip()
-        return bool(
+        custom_ready = bool(
             _get_proxy_secret(config["url_secret"]).strip()
             and _get_proxy_secret(config["api_key_secret"]).strip()
             and model_id
             and _model_is_deployable(model_id, config["registry_model_type"])
         )
+        if custom_ready:
+            return True
+        config = TTS_PROVIDER_OPTIONS[AZURE_TTS_PROVIDER]
     return bool(
         _get_proxy_secret(config["speech_key_secret"]).strip()
         and _get_proxy_secret(config["region_secret"]).strip()
@@ -1225,7 +1236,43 @@ def _preprocess_tts_text(text_value: str) -> str:
     return pattern.sub(lambda match: replacements[match.group(0)], processed)
 
 
-async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
+async def _record_tts_attempt(
+    accounting: dict | None,
+    *,
+    provider: str,
+    text_value: str,
+    model_label: str,
+    success: bool,
+    error_message: str = "",
+) -> None:
+    """Best-effort ledger write for one real provider HTTP attempt."""
+    if not accounting:
+        return
+    try:
+        from core.funds_logic import log_tts_usage
+
+        await asyncio.to_thread(
+            log_tts_usage,
+            accounting.get("user_id"),
+            accounting.get("feature") or "tts",
+            success,
+            provider=provider,
+            text=text_value,
+            operation_id=accounting.get("operation_id"),
+            operation_stage=accounting.get("operation_stage") or "synthesis",
+            model_label=model_label,
+            error_message=str(error_message or "")[:300],
+            db=get_vote_db(),
+        )
+    except Exception as exc:
+        # Voice playback remains available during a temporary ledger outage;
+        # the failed write is visible in server logs for reconciliation.
+        logger.warning("TTS usage ledger write failed: %s", type(exc).__name__)
+
+
+async def _synthesize_azure(
+    text_value: str, *, accounting: dict | None = None
+) -> tuple[bytes, str]:
     config = TTS_PROVIDER_OPTIONS[AZURE_TTS_PROVIDER]
     speech_key = _get_proxy_secret(config["speech_key_secret"]).strip()
     speech_region = _get_proxy_secret(config["region_secret"]).strip()
@@ -1249,9 +1296,12 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
     ssml = _build_azure_tts_ssml(text_value, voice, rate)
     endpoint = f"https://{speech_region}.tts.speech.microsoft.com/cognitiveservices/v1"
 
+    attempted = False
+    succeeded = False
+    failure = ""
     try:
         async with httpx.AsyncClient(timeout=TTS_PROVIDER_TIMEOUT_SECONDS) as client:
-            async with client.stream(
+            request = client.build_request(
                 "POST",
                 endpoint,
                 content=ssml.encode("utf-8"),
@@ -1261,20 +1311,45 @@ async def _synthesize_azure(text_value: str) -> tuple[bytes, str]:
                     "X-Microsoft-OutputFormat": output_format,
                     "User-Agent": "skhlmc-dbt-marksys",
                 },
-            ) as azure_response:
+            )
+            # Client/request construction is local setup, not a provider call.
+            # Mark exactly when send() crosses the HTTP boundary so transport
+            # failures count but malformed local requests do not.
+            attempted = True
+            azure_response = await client.send(request, stream=True)
+            try:
                 if azure_response.status_code != 200:
                     logger.warning("Azure TTS returned %s", azure_response.status_code)
                     raise TtsUnavailable("Azure TTS request failed", status=502)
                 audio = await _read_bounded_audio(azure_response)
                 mime = azure_response.headers.get("content-type") or "audio/mpeg"
+            finally:
+                await azure_response.aclose()
+        succeeded = True
     except httpx.HTTPError as e:
+        failure = type(e).__name__
         logger.warning("Azure TTS request failed: %s", e)
         raise TtsUnavailable("Azure TTS request failed", status=502)
+    except TtsUnavailable as exc:
+        failure = str(exc)
+        raise
+    finally:
+        if attempted:
+            await _record_tts_attempt(
+                accounting,
+                provider=AZURE_TTS_PROVIDER,
+                text_value=text_value,
+                model_label=voice,
+                success=succeeded,
+                error_message=failure,
+            )
 
     return audio, mime
 
 
-async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
+async def _synthesize_custom(
+    text_value: str, *, accounting: dict | None = None
+) -> tuple[bytes, str]:
     """Call the authenticated custom TTS service using the stable wire contract."""
     config = TTS_PROVIDER_OPTIONS[CUSTOM_TTS_PROVIDER]
     custom_url = _get_proxy_secret(config["url_secret"]).strip()
@@ -1286,31 +1361,66 @@ async def _synthesize_custom(text_value: str) -> tuple[bytes, str]:
         raise TtsUnavailable("Custom TTS model has not passed the deployable gate", status=503)
     request_id = secrets.token_urlsafe(12)
     started = time.monotonic()
+    attempted = False
+    succeeded = False
+    failure = ""
+    response_model = model_version
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(
             TTS_PROVIDER_TIMEOUT_SECONDS, connect=TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
         )) as client:
-            async with client.stream("POST", custom_url, headers={
-                    "Authorization": f"Bearer {api_key}", "Accept": "audio/*",
+            request = client.build_request(
+                "POST",
+                custom_url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "audio/*",
                     "X-Request-ID": request_id,
-                }, json={"text": text_value, "model_version": model_version,
-                         "request_id": request_id}) as response:
+                },
+                json={
+                    "text": text_value,
+                    "model_version": model_version,
+                    "request_id": request_id,
+                },
+            )
+            attempted = True
+            response = await client.send(request, stream=True)
+            try:
                 response.raise_for_status()
                 mime = (response.headers.get("content-type") or "audio/wav").split(";", 1)[0]
                 if not mime.startswith("audio/"):
                     raise TtsUnavailable("Custom TTS returned invalid audio", status=502)
                 audio = await _read_bounded_audio(response)
                 response_model = response.headers.get("x-model-version") or model_version
+            finally:
+                await response.aclose()
+        succeeded = True
     except httpx.HTTPError as exc:
+        failure = type(exc).__name__
         logger.warning("custom TTS failed request_id=%s: %s", request_id, exc)
         raise TtsUnavailable("Custom TTS request failed", status=502) from exc
+    except TtsUnavailable as exc:
+        failure = str(exc)
+        raise
+    finally:
+        if attempted:
+            await _record_tts_attempt(
+                accounting,
+                provider=CUSTOM_TTS_PROVIDER,
+                text_value=text_value,
+                model_label=response_model,
+                success=succeeded,
+                error_message=failure,
+            )
     logger.info("custom TTS success request_id=%s model=%s elapsed_ms=%d bytes=%d",
                 request_id, response_model,
                 int((time.monotonic() - started) * 1000), len(audio))
     return audio, mime
 
 
-async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
+async def _synthesize_tts(
+    text_value: str, *, accounting: dict | None = None
+) -> tuple[bytes, str]:
     """統一 TTS 入口:單人 (/api/tts/azure route)、聯機 (_room_gemini_pump)、
     將來 custom model 全部行呢度。換 provider = 改 TTS_PROVIDER secret。"""
     raw = str(text_value or "").strip()
@@ -1325,14 +1435,39 @@ async def _synthesize_tts(text_value: str) -> tuple[bytes, str]:
     async with TTS_SEMAPHORE:
         if provider == CUSTOM_TTS_PROVIDER:
             try:
-                return await _synthesize_custom(processed)
+                return await _synthesize_custom(processed, accounting=accounting)
             except TtsUnavailable as exc:
                 logger.warning("custom TTS unavailable; falling back to Azure: %s", exc)
-                return await _synthesize_azure(processed)
-        return await _synthesize_azure(processed)
+                return await _synthesize_azure(processed, accounting=accounting)
+        return await _synthesize_azure(processed, accounting=accounting)
 
 
-@app.post("/api/tts/azure")
+async def synthesize_tts_accounted(
+    text_value: str,
+    *,
+    user_id: str | None,
+    feature: str = "tts",
+    operation_id: str,
+    operation_stage: str = "synthesis",
+):
+    """Synthesize and account every actual provider/fallback attempt."""
+    operation = str(operation_id or "").strip()[:200]
+    if not operation:
+        raise TtsUnavailable("Missing TTS accounting operation id", status=400)
+    audio, mime = await _synthesize_tts(
+        text_value,
+        accounting={
+            "user_id": user_id,
+            "feature": feature,
+            "operation_id": operation,
+            "operation_stage": str(operation_stage or "synthesis")[:80],
+        },
+    )
+    return audio, mime, {"operation_id": operation, "feature": feature}
+
+
+@app.post("/api/tts/synthesize")
+@app.post("/api/tts/azure", include_in_schema=False)
 async def azure_tts(request: Request):
     user_id = require_page_user(request, "tts")
     budget_error = _bandwidth_live_gate_error()
@@ -1356,7 +1491,16 @@ async def azure_tts(request: Request):
         raise HTTPException(status_code=400, detail="Text is too long")
 
     try:
-        audio_bytes, mime = await _synthesize_tts(tts_text)
+        operation_id = str(payload.get("operation_id") or "").strip()[:200]
+        if not operation_id:
+            operation_id = "tts-" + secrets.token_urlsafe(18)
+        audio_bytes, mime, _usage_meta = await synthesize_tts_accounted(
+            tts_text,
+            user_id=str(user_id),
+            feature="tts",
+            operation_id=operation_id,
+            operation_stage="http_synthesis",
+        )
     except TtsUnavailable as e:
         raise HTTPException(status_code=e.status, detail=str(e))
 
@@ -1517,7 +1661,9 @@ def _resolve_projector_state(engine, display_key):
 
     with engine.begin() as conn:
         m = conn.execute(
-            text("SELECT topic_text, pro_team, con_team FROM matches WHERE match_id = :id"),
+            text("""SELECT topic_text,pro_team,con_team,debate_format,
+                           free_debate_minutes
+                    FROM matches WHERE match_id=:id"""),
             {"id": match_id},
         ).fetchone()
         drows = conn.execute(
@@ -1525,10 +1671,28 @@ def _resolve_projector_state(engine, display_key):
             {"id": match_id},
         ).fetchall()
 
+    if m is None:
+        return {
+            "configured": False,
+            "visible": False,
+            "display_key": display_key,
+            "error": "所選正式場次已不存在",
+        }
+
+    mm = m._mapping
+    official_format = str(mm.get("debate_format") or "")
+    if official_format in DEBATE_FORMATS:
+        debate_format = official_format
+    free_minutes = mm.get("free_debate_minutes")
+    try:
+        free_minutes = float(free_minutes) if free_minutes is not None else None
+    except (TypeError, ValueError, OverflowError):
+        free_minutes = None
+
     names = {(d._mapping["side"], d._mapping["position"]): d._mapping["debater_name"]
              for d in drows}
 
-    seq = get_full_mock_sequence(debate_format)
+    seq = get_full_mock_sequence(debate_format, free_minutes)
     total = len(seq)
     idx = r.get("seg_index") or 0
     if total:
@@ -1537,7 +1701,6 @@ def _resolve_projector_state(engine, display_key):
     slot = _seg_speaker_slot(seg["id"])
     speaker_name = names.get(slot) if slot else None
 
-    mm = m._mapping if m else {}
     return {
         "configured": True,
         "visible": bool(r.get("visible", True)),
@@ -1553,6 +1716,7 @@ def _resolve_projector_state(engine, display_key):
         "seg_index": idx,
         "seg_total": total,
         "debate_format": debate_format,
+        "free_debate_minutes": free_minutes,
     }
 
 
@@ -1581,22 +1745,53 @@ async def projector_get_state(request: Request):
 
 @app.get("/api/projector/sequence")
 async def projector_get_sequence(request: Request):
+    match_id = str(request.query_params.get("match_id") or "").strip()
     debate_format = request.query_params.get("format", "校園隨想")
-    seq = get_full_mock_sequence(debate_format)
-    return {"format": debate_format,
-            "segments": [{"label": s["label"], "side": s["side"]} for s in seq]}
+    free_minutes = None
+    if match_id:
+        engine = _get_db_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="Database is not configured")
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("""SELECT debate_format,free_debate_minutes
+                        FROM matches WHERE match_id=:match_id"""),
+                {"match_id": match_id},
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="找不到正式場次")
+        debate_format = str(row._mapping.get("debate_format") or "校園隨想")
+        raw_free = row._mapping.get("free_debate_minutes")
+        try:
+            free_minutes = float(raw_free) if raw_free is not None else None
+        except (TypeError, ValueError, OverflowError):
+            free_minutes = None
+    if debate_format not in DEBATE_FORMATS:
+        debate_format = DEBATE_FORMATS[0]
+    seq = get_full_mock_sequence(debate_format, free_minutes)
+    return {
+        "format": debate_format,
+        "free_debate_minutes": free_minutes,
+        "segments": [
+            {"id": s["id"], "label": s["label"], "side": s["side"]}
+            for s in seq
+        ],
+    }
 
 
 @app.get("/api/projector/matches")
 async def projector_list_matches(request: Request):
-    require_page_user(request, "projector")
+    require_competition_staff(request)
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
     with engine.begin() as conn:
         rows = conn.execute(text(
-            "SELECT match_id, match_date, match_time, topic_text, pro_team, con_team "
-            "FROM matches ORDER BY match_date DESC NULLS LAST, match_time DESC NULLS LAST "
+            "SELECT match_id,match_date,match_time,topic_text,pro_team,con_team,"
+            "debate_format,free_debate_minutes FROM matches "
+            "ORDER BY CASE WHEN match_date IS NULL THEN 2 ELSE 0 END,"
+            "ABS(COALESCE(match_date,CURRENT_DATE)-CURRENT_DATE),"
+            "match_time ASC NULLS LAST,match_id ASC "
             "LIMIT :limit"
         ), {"limit": PROJECTOR_MATCH_LIMIT}).fetchall()
     return {"matches": [
@@ -1607,6 +1802,11 @@ async def projector_list_matches(request: Request):
             "topic_text": x._mapping["topic_text"] or "",
             "pro_team": x._mapping["pro_team"] or "",
             "con_team": x._mapping["con_team"] or "",
+            "debate_format": x._mapping.get("debate_format") or DEBATE_FORMATS[0],
+            "free_debate_minutes": (
+                float(x._mapping["free_debate_minutes"])
+                if x._mapping.get("free_debate_minutes") is not None else None
+            ),
         }
         for x in rows
     ]}
@@ -1614,7 +1814,7 @@ async def projector_list_matches(request: Request):
 
 @app.post("/api/projector/state")
 async def projector_set_state(request: Request):
-    require_page_user(request, "projector")
+    require_competition_staff(request)
     engine = _get_db_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database is not configured")
@@ -1625,7 +1825,9 @@ async def projector_set_state(request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    display_key = str(payload.get("display") or PROJECTOR_DEFAULT_DISPLAY)
+    display_key = str(payload.get("display") or PROJECTOR_DEFAULT_DISPLAY).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", display_key):
+        raise HTTPException(status_code=400, detail="Invalid display key")
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     with engine.begin() as conn:
@@ -1636,16 +1838,55 @@ async def projector_set_state(request: Request):
         ).fetchone()
         cur = current._mapping if current else {}
 
-        # partial update: keep existing values for any field not supplied
+        # Partial update.  The official match row, never browser input, is the
+        # source of truth for format and free-debate duration.
         match_id = payload.get("match_id", cur.get("match_id"))
-        debate_format = payload.get("debate_format", cur.get("debate_format") or "校園隨想")
+        match_id = str(match_id or "").strip()
+        if not match_id:
+            raise HTTPException(status_code=400, detail="請先選擇正式場次")
+        match_row = conn.execute(
+            text("""SELECT match_id,topic_text,pro_team,con_team,debate_format,
+                           free_debate_minutes
+                    FROM matches WHERE match_id=:match_id"""),
+            {"match_id": match_id},
+        ).fetchone()
+        if match_row is None:
+            raise HTTPException(status_code=404, detail="找不到正式場次")
+        match_map = match_row._mapping
+        debate_format = str(match_map.get("debate_format") or DEBATE_FORMATS[0])
+        if debate_format not in DEBATE_FORMATS:
+            raise HTTPException(status_code=409, detail="正式場次賽制設定無效")
+        raw_free = match_map.get("free_debate_minutes")
+        try:
+            free_minutes = float(raw_free) if raw_free is not None else None
+        except (TypeError, ValueError, OverflowError):
+            free_minutes = None
+        sequence = get_full_mock_sequence(debate_format, free_minutes)
         seg_index = payload.get("seg_index", cur.get("seg_index") or 0)
         visible = payload.get("visible", cur.get("visible") if current else True)
         try:
             seg_index = int(seg_index)
         except Exception:
             seg_index = 0
+        seg_index = max(0, min(seg_index, max(0, len(sequence) - 1)))
         visible = bool(visible)
+
+        ai_schema_ready = bool(
+            conn.execute(text("SELECT to_regclass('public.projector_ai_sessions') IS NOT NULL")).scalar()
+        )
+        if ai_schema_ready:
+            active = conn.execute(
+                text("""SELECT match_id FROM projector_ai_sessions
+                        WHERE display_key=:display
+                          AND status IN ('start_requested','recording','stop_requested','processing')
+                        ORDER BY created_at DESC LIMIT 1"""),
+                {"display": display_key},
+            ).fetchone()
+            if active is not None and str(active._mapping.get("match_id") or "") != match_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="AI評判易進行期間不可轉換正式場次。",
+                )
 
         conn.execute(
             text("""
@@ -1662,6 +1903,23 @@ async def projector_set_state(request: Request):
             {"k": display_key, "match_id": match_id, "debate_format": debate_format,
              "seg_index": seg_index, "visible": visible, "now": now},
         )
+
+        old_index = int(cur.get("seg_index") or 0) if current else None
+        old_match = str(cur.get("match_id") or "") if current else ""
+        if ai_schema_ready and (old_index != seg_index or old_match != match_id):
+            from api.projector_ai_api import record_projector_segment_change
+
+            record_projector_segment_change(
+                conn,
+                display=display_key,
+                match={
+                    "match_id": match_id,
+                    "debate_format": debate_format,
+                    "free_debate_minutes": free_minutes,
+                },
+                seg_index=seg_index,
+                now=now,
+            )
 
     return _resolve_projector_state(engine, display_key)
 
@@ -1756,9 +2014,13 @@ async def video_admin_page():
 @app.get("/match-photos")
 async def match_photos_page():
     """Primary HTML committee match-photo gallery."""
-    return FileResponse(BASE_DIR / "frontend" / "match_photos" / "index.html",
-                        media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "match_photos" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    html = html.replace("__APP_VERSION__", APP_VERSION)
+    return Response(
+        content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
+    )
 
 
 @app.get("/team-roster")
@@ -4601,6 +4863,7 @@ def _tts_new_turn_state():
     return {
         "pending": "", "native": [], "native_bytes": 0,
         "fallback": False, "transcript_seen": False,
+        "operation_id": "tts-room-" + secrets.token_urlsafe(18),
     }
 
 
@@ -4655,7 +4918,14 @@ async def _room_tts_synth(room, chunk, state):
     """Synthesize one sentence and broadcast it to the whole room. On failure,
     flip to native-audio fallback. Returns False once fallback is active."""
     try:
-        audio_bytes, mime = await _synthesize_tts(chunk)
+        audio_bytes, mime, _usage_meta = await synthesize_tts_accounted(
+            chunk,
+            user_id=str(room.created_by),
+            feature="tts",
+            operation_id=str(state.get("operation_id") or "")
+            or ("tts-room-" + secrets.token_urlsafe(18)),
+            operation_stage="room_synthesis",
+        )
     except Exception as exc:
         logger.info(
             "room TTS synth failed (%s, %s); using native audio",
@@ -5480,6 +5750,69 @@ async def _room_request_judgement(room):
                 )
 
 
+def _log_room_judgement_attempt(
+    room,
+    model,
+    success,
+    *,
+    operation_id,
+    operation_stage,
+    response_data=None,
+    error_message="",
+):
+    """Best-effort AI-fund row for one real final-judgement HTTP attempt."""
+    try:
+        from core.funds_logic import log_ai_usage
+
+        try:
+            model_label, config = get_model_by_slug(model)
+        except KeyError:
+            # Tests and emergency centrally supplied overrides still get a
+            # transparent zero-rate provider-call row instead of disappearing.
+            model_label = str(model or "unknown")[:200]
+            config = {"provider": "gemini"}
+        actual = _provider_usage(response_data or {}, "gemini") if response_data else {}
+        input_tokens = int(actual.get("input_tokens") or 0)
+        output_tokens = int(actual.get("output_tokens") or 0)
+        audio_tokens = int(actual.get("audio_tokens") or 0)
+        usd = (
+            input_tokens * float(config.get("input_price_per_million") or 0)
+            + audio_tokens
+            * float(
+                config.get("audio_input_price_per_million")
+                or config.get("input_price_per_million")
+                or 0
+            )
+            + output_tokens * float(config.get("output_price_per_million") or 0)
+        ) / 1_000_000
+        log_ai_usage(
+            getattr(room, "created_by", None),
+            "full_mock_live" if getattr(room, "structure", "") == "mock" else "free_debate_live",
+            success,
+            usage={
+                "model_label": model_label,
+                "provider": config.get("provider") or "gemini",
+                "estimated_cost_usd": usd,
+                "estimated_cost_hkd": usd * 7.8,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "audio_tokens": audio_tokens,
+                "search_calls": 0,
+                "cost_source": actual.get("cost_source") or (
+                    "provider_attempt_unknown_usage" if not success else "estimate"
+                ),
+                "operation_id": str(operation_id or "")[:200],
+                "operation_stage": str(operation_stage or "")[:80],
+            },
+            error_message=str(error_message or "")[:300],
+            db=get_vote_db(),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Room judgement usage ledger write failed: %s", type(exc).__name__
+        )
+
+
 async def _room_request_judgement_unlocked(room):
     target_revision = getattr(room, "transcript_revision", 0)
     budget_error = _bandwidth_essential_gate_error()
@@ -5519,9 +5852,18 @@ async def _room_request_judgement_unlocked(room):
     }
     last_error = ""
     result = ""
+    operation_id = (
+        "room-judgement-"
+        + str(getattr(room, "code", "room"))[:40]
+        + "-"
+        + str(target_revision)
+        + "-"
+        + secrets.token_urlsafe(12)
+    )
     try:
         async with httpx.AsyncClient(timeout=ROOM_JUDGEMENT_TIMEOUT_SECONDS) as client:
-            for model in ROOM_JUDGEMENT_MODELS:
+            for attempt_number, model in enumerate(ROOM_JUDGEMENT_MODELS, 1):
+                operation_stage = f"judgement_attempt_{attempt_number}"
                 url = (
                     "https://generativelanguage.googleapis.com/v1beta/models/"
                     f"{model}:generateContent"
@@ -5534,10 +5876,41 @@ async def _room_request_judgement_unlocked(room):
                 except httpx.TimeoutException:
                     last_error = f"{model}：AI服務逾時"
                     logger.warning("Room judgement Gemini failed %s", last_error)
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        False,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        error_message=last_error,
+                    )
                     continue
                 except httpx.HTTPStatusError as exc:
                     last_error = f"{model}：AI服務HTTP {exc.response.status_code}錯誤"
                     logger.warning("Room judgement Gemini failed %s", last_error)
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        False,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        error_message=last_error,
+                    )
+                    continue
+                except httpx.HTTPError as exc:
+                    last_error = f"{model}：AI服務連線錯誤"
+                    logger.warning(
+                        "Room judgement Gemini transport failed (%s)",
+                        type(exc).__name__,
+                    )
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        False,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        error_message=last_error,
+                    )
                     continue
                 except ValueError as exc:
                     detail = str(exc)
@@ -5549,18 +5922,67 @@ async def _room_request_judgement_unlocked(room):
                         detail = "AI回應格式無效"
                     last_error = f"{model}：{detail}"
                     logger.warning("Room judgement Gemini failed %s", last_error)
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        False,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        error_message=last_error,
+                    )
                     continue
+                except Exception as exc:
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        False,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        error_message=f"{model}：AI服務發生非預期錯誤",
+                    )
+                    raise
                 candidates = data.get("candidates") or []
                 if not candidates or not isinstance(candidates[0], dict):
                     last_error = f"{model}：AI未有回傳候選結果"
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        False,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        response_data=data,
+                        error_message=last_error,
+                    )
                     continue
-                parts = (
-                    (candidates[0].get("content") or {}).get("parts") or []
-                )
-                result = "\n".join(str(p.get("text", "")) for p in parts).strip()
+                content = candidates[0].get("content") or {}
+                if not isinstance(content, dict):
+                    content = {}
+                parts = content.get("parts") or []
+                result = "\n".join(
+                    str(part.get("text", ""))
+                    for part in parts
+                    if isinstance(part, dict)
+                ).strip()
                 if result:
+                    _log_room_judgement_attempt(
+                        room,
+                        model,
+                        True,
+                        operation_id=operation_id,
+                        operation_stage=operation_stage,
+                        response_data=data,
+                    )
                     break
                 last_error = f"{model}：AI回應為空"
+                _log_room_judgement_attempt(
+                    room,
+                    model,
+                    False,
+                    operation_id=operation_id,
+                    operation_stage=operation_stage,
+                    response_data=data,
+                    error_message=last_error,
+                )
             else:
                 result = (
                     "AI 評判暫時失敗。"
