@@ -22,9 +22,10 @@ Launcher 會優先使用 repo 的 `venv`，沒有便使用 `python3`；亦可直
 `python3 tools/gpt_sovits_preparer_app.py`。
 
 Browser 會自動開啟「GPT-SoVITS 本機資料準備器」。把 AI Training 頁下載的單一錄音者
-`recordings.json` 拖入頁面後，程式會自動：
+`recordings.json` 拖入頁面前，可以在「輸出根目錄」輸入絕對路徑或 `~/` 開頭的路徑並
+按「套用路徑」；程式會重新核對該位置的可用空間。拖入檔案後，程式會自動：
 
-1. 在 `~/private-ai-training/` 建立權限為 `700` 的獨立 workspace；
+1. 在所選輸出根目錄建立權限為 `700` 的獨立 workspace；
 2. 驗證 manifest、單一 speaker、ID、稿句、重複 SHA-256 及下載 URL；
 3. 直接從 R2 下載、retry、核對 size/hash/音訊 metadata，且不在 log 顯示 signed URL；
 4. 只做 decode、32 kHz mono PCM16 轉檔，不做 denoise、音量 normalization 或變聲；
@@ -32,6 +33,10 @@ Browser 會自動開啟「GPT-SoVITS 本機資料準備器」。把 AI Training 
 6. 保存不含 signed URL 的 provenance、實際檔案 SHA-256、quality report 及 read-only raw；
 7. 偵測 OS、CPU、RAM、磁碟、PyTorch／NVIDIA GPU、逐張 VRAM 及 driver，顯示保守的
    GPT-SoVITS batch、precision、epoch、save frequency 及 OOM fallback。
+
+每個工作仍會在所選根目錄下建立權限為 `700` 的獨立 `tts-日期-編號` workspace。需要在
+啟動時固定路徑亦可使用 `./tools/start_gpt_sovits_preparer.sh --output-root /absolute/path`。
+若處理失敗，紅色提示會顯示已移除 signed URL 的實際驗證或下載錯誤。
 
 參數 profile 鎖定正式 release `20250606v2pro`、commit
 `d7c2210da8c013e81a94bfc7b811a477c99fd506`；epoch 沿用該 release default，batch 才按

@@ -605,12 +605,12 @@
     }
     reviewWarning.innerHTML = model.supports_audio
       ? ""
-      : '<div class="notice warn">⚠️ 呢個模型不支援錄音分析。如需錄音分析，請選擇支援錄音嘅模型（如 Gemini 系列）。</div>';
+      : '<div class="notice warn">⚠️ 此模型不支援錄音分析。如需錄音分析，請選擇支援錄音的模型（如 Gemini 系列）。</div>';
     const searchWarning = model.supports_web_search
       ? ""
       : searchModel
         ? `<div class="notice warn">⚠️ ${esc(model.label)} 不支援上網搜尋；搵料及 Fact Check 會自動改用 ${esc(searchModel.label)}。下列估算已按替代模型顯示。</div>`
-        : '<div class="notice warn">⚠️ 呢個模型不支援上網搜尋，而預設搜尋模型亦不可用。請改選支援搜尋嘅模型。</div>';
+        : '<div class="notice warn">⚠️ 此不支援上網搜尋，而預設搜尋模型亦不可用。請改選支援搜尋的模型。</div>';
     const searchAvailabilityWarning = searchModel?.available
       ? ""
       : searchModel
