@@ -805,9 +805,12 @@
         roomInfo(sessionStorage.aiRoom).catch(() =>
           sessionStorage.removeItem("aiRoom"),
         );
+      return true;
     } catch (error) {
-      if (error.message === "未登入") $("login").classList.remove("hidden");
-      else toast(`⚠️ ${error.message}`);
+      $("app").classList.add("hidden");
+      $("login").classList.remove("hidden");
+      if (error.message !== "未登入") toast(`⚠️ ${error.message}`);
+      return false;
     }
   }
 
@@ -859,8 +862,7 @@
           password: $("password").value,
         }),
       });
-      await boot();
-      toast("✅ 已登入。");
+      if (await boot()) toast("✅ 已登入。");
     } catch (error) {
       toast(`⚠️ ${error.message}`);
     } finally {

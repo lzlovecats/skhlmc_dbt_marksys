@@ -8,6 +8,7 @@ are used only before the first successful read.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import threading
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -49,7 +50,40 @@ def _number(value):
     if isinstance(value, Decimal):
         value = float(value)
     number = float(value)
+    if not math.isfinite(number):
+        return None
     return int(number) if number.is_integer() else number
+
+
+def _json_value(value):
+    """Convert database/pandas values into standard JSON-compatible values."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return None
+        exponent = value.as_tuple().exponent
+        return int(value) if isinstance(exponent, int) and exponent >= 0 else float(value)
+    value_type = type(value)
+    if (
+        value_type.__module__.startswith("pandas.")
+        and value_type.__name__ in {"NAType", "NaTType"}
+    ):
+        return None
+    if hasattr(value, "item"):
+        try:
+            return _json_value(value.item())
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def _normalise(row: dict, *, fallback: dict | None = None) -> dict:
@@ -57,7 +91,7 @@ def _normalise(row: dict, *, fallback: dict | None = None) -> dict:
     for key, value in row.items():
         result[key] = _number(value) if key.endswith("_value") or key in {
             "allocated_hkd", "fx_hkd_per_usd",
-        } else value
+        } else _json_value(value)
     return result
 
 

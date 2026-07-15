@@ -1,7 +1,11 @@
 """Hong Kong month and AI-fund settlement boundary regressions."""
 
 import datetime as dt
+import json
+from decimal import Decimal
 from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 from core import funds_logic, resource_limits
 
@@ -71,3 +75,27 @@ def test_safe_defaults_keep_only_system_wide_render_and_r2_thresholds():
     assert (r2["warning_value"], r2["stop_value"], r2["hard_value"]) == (
         7_000_000_000, 8_000_000_000, 8_000_000_000,
     )
+
+
+def test_monthly_resource_rows_are_json_safe_after_pandas_query():
+    row = pd.DataFrame([{
+        "period_month": dt.date(2026, 7, 1),
+        "limit_key": "render_bandwidth",
+        "warning_value": Decimal("3000000000.0000"),
+        "allocated_hkd": float("nan"),
+        "external_cap_confirmed": False,
+        "notified_at": pd.NaT,
+        "notification_audit": {"sent": False},
+    }]).iloc[0].to_dict()
+
+    normalised = resource_limits._normalise(row)
+
+    assert json.loads(json.dumps(normalised)) == {
+        "period_month": "2026-07-01",
+        "limit_key": "render_bandwidth",
+        "warning_value": 3_000_000_000,
+        "allocated_hkd": None,
+        "external_cap_confirmed": False,
+        "notified_at": None,
+        "notification_audit": {"sent": False},
+    }
