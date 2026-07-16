@@ -247,7 +247,7 @@
             </ul>
             <p>
               實際 bandwidth
-              門檻會由伺服器集中設定並顯示於上方；3.5GB 後停止新錄音分析及 server TTS，4GB 後停止一般 AI 及聯機 AI 評判。真人 P2P 練習仍可在沒有 AI 評判下繼續。
+              門檻會由伺服器集中設定並顯示於上方；3.5GB 後停止新錄音分析及 server TTS，4GB 後停止一般 AI、聯機 AI 評判及聯機 Web Speech 逐字稿。真人 P2P 練習仍可在沒有逐字稿／AI 評判下繼續。
             </p>
           </div>
         </details>
@@ -546,21 +546,25 @@
           <section class="card">
             <h2>🎧 連線練習</h2>
             <p class="caption">
-              與另一位委員作真人對真人（1 對 1）Free De 或完整 Mock，完成後由 AI 根據逐字稿評判。音訊以 STUN-only WebRTC 直接傳送，不會經 Render。
+              與另一位委員作真人對真人（1 對 1）Free De 或完整 Mock。收音只會在連線測試及 Server 確認輪到你發言後，以 STUN-only WebRTC P2P 直傳；主持可在完場後明確按一次要求 AI 評判。
             </p>
-            <p class="caption">建議所有用戶使用電腦版 Chrome。</p>
+            <p class="caption">
+              私隱提示：STUN／ICE 可能向已登入對手顯示網絡候選地址；Web Speech 逐字稿可能按瀏覽器供應商條款處理。房間控制及已提交逐字稿經 Render；只有主持完場後按掣，逐字稿先會交予 Gemini，結果在記憶體短暫保留約 15 分鐘。建議使用電腦版 Chrome。
+            </p>
           </section>
           <div id="activeRoom" class="card hidden">
             <h2>連線練習房間</h2>
             <p>房間代碼：<span id="roomCode" class="room-code"></span></p>
             <p id="activeRoomNote" class="caption"></p>
             <div class="actions">
+              <button id="retryRoom" class="hidden">重新連線</button>
               <button id="leaveRoom" class="danger">離開房間</button>
             </div>
             <iframe
               id="roomFrame"
               class="room-frame"
               title="連線練習房間"
+              allow="microphone; autoplay"
             ></iframe>
           </div>
           <div id="roomSetup">
@@ -612,7 +616,17 @@
             <form id="joinRoom" class="card hidden">
               <h2>加入房間</h2>
               <label
-                >房間代碼<input id="joinCode" maxlength="8" required /></label
+                >房間代碼<input
+                  id="joinCode"
+                  maxlength="5"
+                  minlength="5"
+                  pattern="[A-HJ-KM-NP-Z2-9]{5}"
+                  placeholder="例如：ABC23"
+                  autocapitalize="characters"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                /></label
               ><button class="primary">加入房間</button>
             </form>
           </div>

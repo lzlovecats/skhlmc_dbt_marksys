@@ -112,13 +112,21 @@ BANDWIDTH_LOG_RETENTION_DAYS = _limit("BANDWIDTH_LOG_RETENTION_DAYS", 62, minimu
 MAX_ROOMS = _limit("MAX_ROOMS", 2, minimum=1, maximum=2, group="live", description="Concurrent in-memory rooms")
 ROOM_MAX_CAPACITY = _limit("ROOM_MAX_CAPACITY", 2, minimum=2, maximum=2, group="live", description="Members per P2P room")
 ROOM_EMPTY_GRACE_SECONDS = _limit("ROOM_EMPTY_GRACE_SECONDS", 60, minimum=10, maximum=300, group="live", description="Empty-room reconnect grace")
-ROOM_MAX_AGE_SECONDS = _limit("ROOM_MAX_AGE_SECONDS", 90 * 60, minimum=60, maximum=90 * 60, group="live", description="Room hard TTL")
+ROOM_LOBBY_TTL_SECONDS = _limit("ROOM_LOBBY_TTL_SECONDS", 10 * 60, minimum=10 * 60, maximum=10 * 60, group="live", description="P2P lobby lifetime before formal start")
+ROOM_FREE_HARD_GRACE_SECONDS = _limit("ROOM_FREE_HARD_GRACE_SECONDS", 15 * 60, minimum=15 * 60, maximum=15 * 60, group="live", description="Free Debate overall grace beyond both side banks")
+ROOM_MOCK_HARD_GRACE_SECONDS = _limit("ROOM_MOCK_HARD_GRACE_SECONDS", 15 * 60, minimum=15 * 60, maximum=15 * 60, group="live", description="Mock overall grace beyond planned duration")
+ROOM_ENDED_RETENTION_SECONDS = _limit("ROOM_ENDED_RETENTION_SECONDS", 15 * 60, minimum=15 * 60, maximum=15 * 60, group="live", description="Member-only ended room result retention")
+ROOM_RETAINED_ENDED_MAX = _limit("ROOM_RETAINED_ENDED_MAX", 8, minimum=2, maximum=8, group="live", description="Retained ended rooms in the in-process registry")
+ROOM_TURN_FINALIZE_TIMEOUT_SECONDS = _limit("ROOM_TURN_FINALIZE_TIMEOUT_SECONDS", 1, minimum=1, maximum=2, group="live", description="Bounded client transcript finalization window on forced turn stops")
+ROOM_MANUAL_TURN_FINALIZE_TIMEOUT_SECONDS = _limit("ROOM_MANUAL_TURN_FINALIZE_TIMEOUT_SECONDS", 3, minimum=3, maximum=3, group="live", description="Manual speech-recognition drain watchdog after an authoritative stop intent")
 ROOM_TRANSCRIPT_MAX_ITEMS = _limit("ROOM_TRANSCRIPT_MAX_ITEMS", 80, minimum=10, maximum=80, group="live", description="Transcript items retained in RAM")
 ROOM_TRANSCRIPT_ITEM_MAX_CHARS = _limit("ROOM_TRANSCRIPT_ITEM_MAX_CHARS", 2_000, minimum=100, maximum=2_000, group="live", description="Characters per transcript item")
+ROOM_TRANSCRIPT_TOTAL_MAX_CHARS = _limit("ROOM_TRANSCRIPT_TOTAL_MAX_CHARS", 40_000, minimum=10_000, maximum=60_000, group="live", description="Total transcript characters retained per P2P room")
 ROOM_CONTROL_RATE_MESSAGES_PER_SECOND = _limit("ROOM_CONTROL_RATE_MESSAGES_PER_SECOND", 10, minimum=5, maximum=10, group="live", description="Sustained multiplayer control messages per member/second")
 ROOM_CONTROL_RATE_BURST_MESSAGES = _limit("ROOM_CONTROL_RATE_BURST_MESSAGES", 20, minimum=10, maximum=20, group="live", description="Multiplayer control-message token-bucket burst per member")
+ROOM_CRITICAL_RATE_MESSAGES_PER_SECOND = _limit("ROOM_CRITICAL_RATE_MESSAGES_PER_SECOND", 2, minimum=1, maximum=2, group="live", description="Safety-critical room-control reserve refill per member/second")
+ROOM_CRITICAL_RATE_BURST_MESSAGES = _limit("ROOM_CRITICAL_RATE_BURST_MESSAGES", 8, minimum=6, maximum=8, group="live", description="Safety-critical room-control reserve burst per member")
 ROOM_WS_TEXT_MAX_BYTES = _limit("ROOM_WS_TEXT_MAX_BYTES", 100 * KIB, minimum=90 * KIB, maximum=100 * KIB, group="live", description="Room client JSON text bytes accepted before parsing")
-ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS = _limit("ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS", 20, minimum=5, maximum=60, group="live", description="Bounded final room judgement wait before sockets close")
 PRACTICE_LIVE_MIN_GAP_SECONDS = _limit("PRACTICE_LIVE_MIN_GAP_SECONDS", 3, minimum=1, maximum=60, group="live", description="Minimum seconds between token mints")
 PRACTICE_LIVE_RATE_WINDOW_SECONDS = _limit("PRACTICE_LIVE_RATE_WINDOW_SECONDS", 60 * 60, minimum=60, maximum=24 * 60 * 60, group="live", description="In-memory duplicate-mint timestamp retention")
 LIVE_FREE_MAX_MINUTES = _limit("LIVE_FREE_MAX_MINUTES", 10, minimum=1, maximum=10, group="live", description="Server-authoritative Free De duration per side")
@@ -153,6 +161,7 @@ AI_PROVIDER_RESPONSE_MAX_BYTES = _limit("AI_PROVIDER_RESPONSE_MAX_BYTES", 2 * MI
 RAG_PROVIDER_TIMEOUT_SECONDS = _limit("RAG_PROVIDER_TIMEOUT_SECONDS", 30, minimum=1, maximum=120, group="ai", description="RAG embedding provider timeout")
 RAG_SCHEMA_CHECK_TTL_SECONDS = _limit("RAG_SCHEMA_CHECK_TTL_SECONDS", 300, minimum=30, maximum=3_600, group="ai", description="Failed RAG schema readiness cache TTL")
 ROOM_JUDGEMENT_TIMEOUT_SECONDS = _limit("ROOM_JUDGEMENT_TIMEOUT_SECONDS", 45, minimum=1, maximum=120, group="ai", description="Room judgement provider timeout")
+ROOM_JUDGEMENT_CONCURRENCY = _limit("ROOM_JUDGEMENT_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent ended-room judgement workflows")
 MEDIA_PROBE_TIMEOUT_SECONDS = _limit("MEDIA_PROBE_TIMEOUT_SECONDS", 10, minimum=1, maximum=60, group="ai", description="ffprobe recording inspection timeout")
 MEDIA_TRANSCODE_TIMEOUT_SECONDS = _limit("MEDIA_TRANSCODE_TIMEOUT_SECONDS", 120, minimum=10, maximum=300, group="ai", description="ffmpeg full-match audio normalization timeout")
 MAX_AUDIO_BYTES = _limit("MAX_AUDIO_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MIB, group="ai", description="TTS training recording bytes")
@@ -164,7 +173,6 @@ KIOSK_MATCH_REVIEW_MAX_SECONDS = _limit("KIOSK_MATCH_REVIEW_MAX_SECONDS", 90 * 6
 KIOSK_MATCH_REVIEW_CONCURRENCY = _limit("KIOSK_MATCH_REVIEW_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent full-match audio reviews")
 KIOSK_MATCH_REVIEW_MARKER_LIMIT = _limit("KIOSK_MATCH_REVIEW_MARKER_LIMIT", 600, minimum=20, maximum=600, group="ai", description="Timestamped side markers accepted per full match")
 KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS = _limit("KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS", 120_000, minimum=20_000, maximum=120_000, group="ai", description="Detailed full-match transcript characters passed to judgement")
-KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_OUTPUT_TOKENS = _limit("KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_OUTPUT_TOKENS", 65_536, minimum=4_096, maximum=65_536, group="ai", description="Gemini transcript output token ceiling")
 KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS = _limit("KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS", 300, minimum=60, maximum=300, group="ai", description="Per-pass full-match Gemini timeout")
 LIVE_BRIEF_TTL_MINUTES = _limit("LIVE_BRIEF_TTL_MINUTES", 15, minimum=1, maximum=60, group="ai", description="Prepared Live research brief TTL")
 LIVE_BRIEF_MAX_CHARS = _limit("LIVE_BRIEF_MAX_CHARS", 4_500, minimum=500, maximum=4_500, group="ai", description="Prepared Live research brief characters")
@@ -194,14 +202,12 @@ AI_SUGGESTION_BATCH_MAX = _limit("AI_SUGGESTION_BATCH_MAX", 50, minimum=1, maxim
 AI_PROVIDER_PROMPT_MAX_CHARS = _limit("AI_PROVIDER_PROMPT_MAX_CHARS", 60_000, minimum=4_000, maximum=60_000, group="ai", description="Provider prompt characters")
 OPENROUTER_WEB_SEARCH_MAX_RESULTS = _limit("OPENROUTER_WEB_SEARCH_MAX_RESULTS", 5, minimum=1, maximum=10, group="ai", description="OpenRouter results returned per web-search call")
 OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS = _limit("OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS", 15, minimum=1, maximum=25, group="ai", description="OpenRouter cumulative web-search results per request")
-AI_PROVIDER_MAX_OUTPUT_TOKENS = _limit("AI_PROVIDER_MAX_OUTPUT_TOKENS", 4_096, minimum=256, maximum=4_096, group="ai", description="Provider output tokens")
 AI_PROVIDER_SOURCE_LIMIT = _limit("AI_PROVIDER_SOURCE_LIMIT", 20, minimum=1, maximum=20, group="ai", description="Grounded sources returned")
 DATASET_ARCHIVE_MAX_ITEMS = _limit("DATASET_ARCHIVE_MAX_ITEMS", 5_000, minimum=100, maximum=5_000, group="ai", description="Files accepted from an offline training archive")
 DATASET_ARCHIVE_MAX_BYTES = _limit("DATASET_ARCHIVE_MAX_BYTES", 10 * GB, minimum=MIB, maximum=10 * GB, group="ai", description="Uncompressed bytes accepted from an offline training archive")
 DATASET_MANIFEST_MAX_BYTES = _limit("DATASET_MANIFEST_MAX_BYTES", 10 * MIB, minimum=64 * KIB, maximum=10 * MIB, group="ai", description="Offline recordings manifest bytes loaded in RAM")
 DATASET_MEDIA_PROCESS_TIMEOUT_SECONDS = _limit("DATASET_MEDIA_PROCESS_TIMEOUT_SECONDS", 120, minimum=10, maximum=600, group="ai", description="Offline ffmpeg or ffprobe timeout per training clip")
 VOTE_AI_PROMPT_MAX_CHARS = _limit("VOTE_AI_PROMPT_MAX_CHARS", 60_000, minimum=4_000, maximum=60_000, group="ai", description="Vote-AI prompt characters")
-VOTE_AI_MAX_OUTPUT_TOKENS = _limit("VOTE_AI_MAX_OUTPUT_TOKENS", 2_048, minimum=256, maximum=2_048, group="ai", description="Vote-AI output tokens")
 VOTE_AI_TOPIC_SAMPLE_LIMIT = _limit("VOTE_AI_TOPIC_SAMPLE_LIMIT", 500, minimum=50, maximum=500, group="ai", description="Topics sampled for Vote AI")
 VOTE_AI_DISCUSSION_COMMENT_LIMIT = _limit("VOTE_AI_DISCUSSION_COMMENT_LIMIT", 30, minimum=1, maximum=30, group="ai", description="Comments sent to Vote AI")
 VOTE_AI_CATEGORY_EXAMPLE_LIMIT = _limit("VOTE_AI_CATEGORY_EXAMPLE_LIMIT", 15, minimum=1, maximum=15, group="ai", description="Category examples sent to Vote AI")
@@ -320,6 +326,14 @@ def _validate_relationships() -> None:
     if ROOM_CONTROL_RATE_BURST_MESSAGES < ROOM_CONTROL_RATE_MESSAGES_PER_SECOND:
         raise RuntimeError(
             "ROOM_CONTROL_RATE_BURST_MESSAGES must cover one second of control traffic"
+        )
+    if ROOM_CRITICAL_RATE_BURST_MESSAGES < ROOM_CRITICAL_RATE_MESSAGES_PER_SECOND:
+        raise RuntimeError(
+            "ROOM_CRITICAL_RATE_BURST_MESSAGES must cover one second of critical traffic"
+        )
+    if ROOM_TRANSCRIPT_TOTAL_MAX_CHARS < ROOM_TRANSCRIPT_ITEM_MAX_CHARS:
+        raise RuntimeError(
+            "ROOM_TRANSCRIPT_TOTAL_MAX_CHARS must cover one transcript item"
         )
     if LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS >= LIVE_CONTEXT_COMPRESSION_TRIGGER_TOKENS:
         raise RuntimeError(

@@ -14,7 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 from xml.sax.saxutils import escape as xml_escape
 from zoneinfo import ZoneInfo
 
@@ -128,12 +128,18 @@ from system_limits import (
     PUSH_INACTIVE_RETENTION_DAYS, PUSH_KEY_MAX_CHARS,
     PUSH_SUBSCRIPTION_MAX_BYTES,
     REQUEST_BODY_BUFFER_CONCURRENCY,
+    ROOM_CRITICAL_RATE_BURST_MESSAGES,
+    ROOM_CRITICAL_RATE_MESSAGES_PER_SECOND,
     ROOM_CONTROL_RATE_BURST_MESSAGES, ROOM_CONTROL_RATE_MESSAGES_PER_SECOND,
-    ROOM_EMPTY_GRACE_SECONDS,
-    ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS,
-    ROOM_JUDGEMENT_TIMEOUT_SECONDS,
-    ROOM_MAX_AGE_SECONDS, ROOM_MAX_CAPACITY, ROOM_TRANSCRIPT_ITEM_MAX_CHARS,
-    ROOM_TRANSCRIPT_MAX_ITEMS, ROOM_WS_SEND_TIMEOUT_SECONDS,
+    ROOM_EMPTY_GRACE_SECONDS, ROOM_ENDED_RETENTION_SECONDS,
+    ROOM_FREE_HARD_GRACE_SECONDS,
+    ROOM_JUDGEMENT_CONCURRENCY, ROOM_JUDGEMENT_TIMEOUT_SECONDS,
+    ROOM_LOBBY_TTL_SECONDS, ROOM_MAX_CAPACITY,
+    ROOM_MANUAL_TURN_FINALIZE_TIMEOUT_SECONDS,
+    ROOM_MOCK_HARD_GRACE_SECONDS, ROOM_RETAINED_ENDED_MAX,
+    ROOM_TRANSCRIPT_ITEM_MAX_CHARS, ROOM_TRANSCRIPT_MAX_ITEMS,
+    ROOM_TRANSCRIPT_TOTAL_MAX_CHARS, ROOM_TURN_FINALIZE_TIMEOUT_SECONDS,
+    ROOM_WS_SEND_TIMEOUT_SECONDS,
     ROOM_WS_TEXT_MAX_BYTES,
     TTS_CONCURRENCY, TTS_LEXICON_CACHE_TTL_SECONDS, TTS_LEXICON_LIMIT,
     TTS_MAX_RESPONSE_BYTES, TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
@@ -2067,7 +2073,7 @@ async def ai_coach_page():
     )
     html = html.replace("__APP_VERSION__", APP_VERSION)
     return Response(
-        content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
+        content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_CACHE)
     )
 
 
@@ -2077,13 +2083,22 @@ async def ai_coach_room_page(code: str, request: Request):
     room = ROOMS.get((code or "").upper())
     if not room:
         return _practice_error_page("房間不存在", "房間已結束或不存在。", "/ai-coach")
-    if room.phase == "ended" and user_id not in room.members:
-        return _practice_error_page("無權查看", "只有原房間成員可查看完場逐字稿。", "/ai-coach")
+    access_error = _room_nonmember_access_error(room, user_id)
+    if access_error:
+        _status, message = access_error
+        title = "房間已滿" if _status == 409 else "無權查看"
+        return _practice_error_page(title, message, "/ai-coach")
     html = (BASE_DIR / "templates" / "room_debate.html").read_text(encoding="utf-8")
-    html = html.replace("__ROOM_CODE__", json.dumps(room.code))
-    html = html.replace("__ROOM_WS_BASE__", json.dumps(_get_proxy_secret("ROOM_WS_BASE", "") or ""))
-    html = html.replace("__MODE__", json.dumps(room.mode))
-    html = html.replace("__BELL_SRC__", json.dumps(_practice_bell_src()))
+    html = html.replace("__ROOM_CODE__", _script_safe_json(room.code))
+    html = html.replace(
+        "__ROOM_WS_BASE__",
+        _script_safe_json(_get_proxy_secret("ROOM_WS_BASE", "") or ""),
+    )
+    html = html.replace("__MODE__", _script_safe_json(room.mode))
+    html = html.replace("__BELL_SRC__", _script_safe_json(_practice_bell_src()))
+    # This placeholder lives inside a quoted script URL, rather than inside
+    # executable JavaScript.  APP_VERSION is a server-owned cache-buster.
+    html = html.replace("__APP_VERSION__", APP_VERSION)
     return Response(
         content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_STORE)
     )
@@ -3537,7 +3552,7 @@ async def appliance_ai_debate_page(request: Request):
         )
     return FileResponse(BASE_DIR / "templates" / "appliance_ai_debate.html",
                         media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+                        headers=_cache_headers(CACHE_NO_CACHE))
 
 
 @app.get("/practice/ai-debate/live")
@@ -3704,8 +3719,10 @@ GEMINI_LIVE_WS_URL = (
 ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no O/0/I/1
 ROOM_CODE_LEN = 5
 ROOM_EMPTY_GRACE_MS = ROOM_EMPTY_GRACE_SECONDS * 1000
-ROOM_MAX_AGE_MS = ROOM_MAX_AGE_SECONDS * 1000
+ROOM_LOBBY_TTL_MS = ROOM_LOBBY_TTL_SECONDS * 1000
+ROOM_ENDED_RETENTION_MS = ROOM_ENDED_RETENTION_SECONDS * 1000
 ROOM_JUDGEMENT_MODELS = model_slugs_for_feature("room_judgement")
+ROOM_JUDGEMENT_SEMAPHORE = asyncio.Semaphore(ROOM_JUDGEMENT_CONCURRENCY)
 
 ROOMS = {}  # code -> Room
 ROOMS_LOCK = asyncio.Lock()
@@ -3738,9 +3755,17 @@ class RoomMember:
         self.name = user_id
         self.connected = True
         self.rtc_status = "new"
+        # An active control-socket replacement is a real disconnect boundary:
+        # preserve the pause timestamp until the replacement has received its
+        # bootstrap state, then start the single bounded ICE-restart window.
+        self.restart_required = None
+        self.leave_token = secrets.token_urlsafe(24)
         self.joined_at = _now_ms()
         self.control_rate_tokens = float(ROOM_CONTROL_RATE_BURST_MESSAGES)
         self.control_rate_updated_ms = self.joined_at
+        self.critical_rate_tokens = float(ROOM_CRITICAL_RATE_BURST_MESSAGES)
+        self.critical_rate_updated_ms = self.joined_at
+        self.send_lock = asyncio.Lock()
 
 
 class Room:
@@ -3769,27 +3794,39 @@ class Room:
         self.active_turn_side = None
         self.active_turn_started_ms = None
         self.active_turn_id = None
+        self.active_turn_request_id = None
         self.turn_transcript_chunks = {}
-        self.free_first_done = False
+        self.free_next_side = "正方"
         self.precheck_id = None
         self.precheck_results = {}
         self.members = {}                # user_id -> RoomMember
         self.transcript = []             # {speaker, side, seg, text}
+        self.transcript_chars = 0
         self.transcript_revision = 0
         self.judgement = ""
         self.judgement_revision = -1
+        self.judgement_request_started = False
+        self.judgement_request_revision = -1
         self.judge_enabled = True
         self.judge_disabled_reason = ""
         self.roster_generation = 0
+        self.state_sequence = 0
         self.rtc_pause_started_ms = None
         self.rtc_restart_task = None
         self.empty_since = None
         self.terminal_requested = False
+        self.turn_stop_pending = False
+        self.segment_transitioning = False
         self.creator_side = None
         self.tick_task = None
         self.lifecycle_task = None
         self.judgement_task = None
         self.empty_cleanup_task = None
+        self.ended_cleanup_task = None
+        self.manual_stop_task = None
+        self.control_tasks = {}
+        self.segment_generation = 0
+        self.fired_bell_keys = set()
         # Approximate Render egress for this room. We count successful control,
         # signalling and transcript WebSocket fan-out only; media never enters
         # this channel. The aggregate is checkpointed for the live tracker.
@@ -3802,6 +3839,7 @@ class Room:
         self.activation_lock = asyncio.Lock()
         self.judgement_lock = asyncio.Lock()
         self.segment_lock = asyncio.Lock()
+        self.turn_finalize_lock = asyncio.Lock()
         self.end_complete_event = asyncio.Event()
 
     def roster(self):
@@ -3834,9 +3872,16 @@ class Room:
 
     def expected_turn_side(self):
         seg = self.current_segment()
-        if self.phase == "active" and seg and seg.get("side") == "雙方" and not self.free_first_done:
-            return "正方"
-        return None
+        if self.phase != "active" or not seg or seg.get("side") != "雙方":
+            return None
+        expected = self.free_next_side if self.free_next_side in ("正方", "反方") else "正方"
+        other = "反方" if expected == "正方" else "正方"
+        limit_ms = max(0, int(seg.get("seconds") or 0) * 1000)
+        if limit_ms and self.side_elapsed_ms.get(expected, 0) >= limit_ms:
+            if self.side_elapsed_ms.get(other, 0) < limit_ms:
+                return other
+            return None
+        return expected
 
     def is_open_free_segment(self):
         """Whether the current segment is a timed, alternating free debate.
@@ -3848,20 +3893,43 @@ class Room:
         seg = self.current_segment()
         return bool(self.phase == "active" and seg and seg.get("side") == "雙方")
 
+    def timer_now_ms(self, now_ms=None):
+        now = _now_ms() if now_ms is None else int(now_ms)
+        if self.rtc_pause_started_ms is not None:
+            return min(now, self.rtc_pause_started_ms)
+        return now
+
+    def side_elapsed_snapshot(self, now_ms=None):
+        timer_now = self.timer_now_ms(now_ms)
+        state = self.turn_transcript_chunks.get(self.active_turn_id) or {}
+        for cutoff_key in ("stop_intent_ms", "forced_stop_ms"):
+            cutoff = state.get(cutoff_key)
+            if cutoff is not None:
+                timer_now = min(timer_now, int(cutoff))
+        elapsed = dict(self.side_elapsed_ms)
+        if (
+            self.active_turn_side in elapsed
+            and self.active_turn_started_ms is not None
+        ):
+            elapsed[self.active_turn_side] += max(
+                0, timer_now - self.active_turn_started_ms,
+            )
+        return elapsed
+
+    def segment_elapsed_ms(self, now_ms=None):
+        if self.seg_started_ms is None:
+            return 0
+        return max(0, self.timer_now_ms(now_ms) - self.seg_started_ms)
+
     def state_msg(self):
         seg = self.current_segment()
         now = _now_ms()
-        side_elapsed_ms = dict(self.side_elapsed_ms)
-        if (
-            self.active_turn_side in side_elapsed_ms
-            and self.active_turn_started_ms is not None
-            and self.rtc_pause_started_ms is None
-        ):
-            side_elapsed_ms[self.active_turn_side] += max(
-                0, now - self.active_turn_started_ms,
-            )
+        side_elapsed_ms = self.side_elapsed_snapshot(now)
+        seg_elapsed_ms = self.segment_elapsed_ms(now)
+        self.state_sequence += 1
         return {
             "type": "state",
+            "state_sequence": self.state_sequence,
             "phase": self.phase,
             "seg_index": self.seg_index,
             "seg_total": len(self.segments),
@@ -3870,13 +3938,19 @@ class Room:
             "seconds": seg.get("seconds") if seg else 0,
             "bells": seg.get("bells") if seg else [],
             "active_speaker": self.active_speaker(),
+            "started_ms": self.started_ms,
+            "hard_deadline_ms": self.hard_deadline_ms,
             "seg_started_ms": self.seg_started_ms,
+            "seg_elapsed_ms": seg_elapsed_ms,
+            "segment_generation": self.segment_generation,
             "server_now_ms": now,
             "side_elapsed_ms": side_elapsed_ms,
             "active_turn_user": self.active_turn_user,
             "active_turn_side": self.active_turn_side,
             "active_turn_started_ms": self.active_turn_started_ms,
             "active_turn_id": self.active_turn_id,
+            "active_turn_request_id": self.active_turn_request_id,
+            "turn_stop_pending": self.turn_stop_pending,
             "expected_turn_side": self.expected_turn_side(),
             "judge_enabled": self.judge_enabled,
             "judge_disabled_reason": self.judge_disabled_reason,
@@ -3904,7 +3978,28 @@ def _record_room_bandwidth_once(room):
     _checkpoint_room_bandwidth(room, final=True)
 
 
+def _room_expiry_deadline_ms(room):
+    """Return the fixed wall-clock expiry for the room's current lifecycle."""
+    if room.phase in ("lobby", "starting"):
+        return int(room.created_at) + ROOM_LOBBY_TTL_MS
+    if room.phase in ("active", "ending") and room.hard_deadline_ms:
+        return int(room.hard_deadline_ms)
+    return None
+
+
+def _room_extend_ended_retention(room, *, now_ms=None):
+    """Give members a fresh result window after end or late judgement work."""
+    now = _now_ms() if now_ms is None else int(now_ms)
+    room.ended_retain_until_ms = max(
+        int(getattr(room, "ended_retain_until_ms", 0) or 0),
+        now + ROOM_ENDED_RETENTION_MS,
+    )
+    if getattr(room, "phase", "") == "ended":
+        _room_schedule_ended_cleanup(room)
+
+
 def _gc_rooms():
+    """Prune/schedule expired rooms while the caller holds ``ROOMS_LOCK``."""
     def dispose(code, room, reason):
         if room.phase == "ended":
             ROOMS.pop(code, None)
@@ -3926,7 +4021,7 @@ def _gc_rooms():
             for task in (
                 room.tick_task, room.lifecycle_task,
                 room.judgement_task, room.rtc_restart_task,
-                room.empty_cleanup_task,
+                room.empty_cleanup_task, room.ended_cleanup_task,
             ):
                 if task is not None and not task.done():
                     task.cancel()
@@ -3945,8 +4040,13 @@ def _gc_rooms():
                 continue
             ROOMS.pop(code, None)
             continue
-        if now - room.created_at > ROOM_MAX_AGE_MS:
-            dispose(code, room, "ttl")
+        expiry_ms = _room_expiry_deadline_ms(room)
+        if expiry_ms is not None and now >= expiry_ms:
+            dispose(
+                code, room,
+                "lobby_ttl" if room.phase in ("lobby", "starting")
+                else "server_time_limit",
+            )
             continue
         if any(m.connected for m in room.members.values()):
             _room_cancel_empty_cleanup(room)
@@ -3959,6 +4059,50 @@ def _gc_rooms():
 
 def _active_room_count():
     return len([r for r in ROOMS.values() if r.phase != "ended"])
+
+
+def _retained_ended_room_count():
+    now = _now_ms()
+    return sum(
+        1 for room in ROOMS.values()
+        if room.phase == "ended"
+        and (
+            now < room.ended_retain_until_ms
+            or (
+                room.judgement_task is not None
+                and not room.judgement_task.done()
+            )
+        )
+    )
+
+
+def _room_nonmember_access_error(room, user_id):
+    """Return an admission error for page/info reads by a non-member."""
+    members = getattr(room, "members", {})
+    if user_id in members:
+        return None
+    if room.phase != "lobby":
+        return 403, "練習開始後只有原房間成員可查看。"
+    connected = (
+        room.connected_user_ids()
+        if hasattr(room, "connected_user_ids")
+        else [
+            member for member in members.values()
+            if getattr(member, "connected", False)
+        ]
+    )
+    if len(connected) >= int(getattr(room, "capacity", ROOM_MAX_CAPACITY)):
+        return 409, "房間已滿。"
+    connected_ids = set(connected)
+    capacity = int(getattr(room, "capacity", ROOM_MAX_CAPACITY))
+    creator_id = str(getattr(room, "created_by", "") or "")
+    if (
+        user_id != creator_id
+        and creator_id not in connected_ids
+        and len(connected_ids) >= max(0, capacity - 1)
+    ):
+        return 409, "房間正預留一個位置畀主持。"
+    return None
 
 
 def _room_prune_lobby_offline_members(room, *, limit=None):
@@ -3979,9 +4123,60 @@ def _room_prune_lobby_offline_members(room, *, limit=None):
         if member.connected:
             continue
         room.members.pop(user_id, None)
-        room.precheck_results.pop(user_id, None)
+        _room_bump_roster_generation(room)
+        _room_invalidate_precheck(room)
         removed += 1
     return removed
+
+
+def _room_invalidate_precheck(room):
+    """Discard media-test evidence after any role or roster mutation."""
+    room.precheck_id = None
+    room.precheck_results = {}
+
+
+def _room_bump_roster_generation(room):
+    """Advance the signaling epoch and invalidate active RTC confirmations."""
+    room.roster_generation += 1
+    if room.phase == "active":
+        for member in room.members.values():
+            if member.connected:
+                member.rtc_status = "new"
+
+
+def _room_control_task_active(room, key):
+    task = room.control_tasks.get(key)
+    return bool(task is not None and not task.done())
+
+
+def _room_schedule_control_task(room, key, coroutine_factory):
+    """Run one bounded control transition without blocking a WS receive loop."""
+    existing = room.control_tasks.get(key)
+    if existing is not None and not existing.done():
+        return existing
+    try:
+        task = asyncio.create_task(coroutine_factory())
+    except Exception:
+        return None
+    room.control_tasks[key] = task
+
+    def completed(done_task):
+        if room.control_tasks.get(key) is done_task:
+            room.control_tasks.pop(key, None)
+        if done_task.cancelled():
+            return
+        try:
+            error = done_task.exception()
+        except (asyncio.CancelledError, Exception):
+            return
+        if error is not None:
+            logger.error(
+                "room control task failed (%s, %s, %s)",
+                room.code, key, type(error).__name__,
+            )
+
+    task.add_done_callback(completed)
+    return task
 
 
 def _room_cancel_empty_cleanup(room):
@@ -4032,6 +4227,87 @@ def _room_schedule_empty_cleanup(room):
     )
 
 
+async def _room_ended_cleanup(room):
+    """Remove one terminal room once its member-result window has elapsed."""
+    try:
+        while ROOMS.get(room.code) is room and room.phase == "ended":
+            judgement_pending = (
+                room.judgement_task is not None
+                and not room.judgement_task.done()
+            )
+            remaining_ms = room.ended_retain_until_ms - _now_ms()
+            if not judgement_pending and remaining_ms <= 0:
+                async with ROOMS_LOCK:
+                    if (
+                        ROOMS.get(room.code) is room
+                        and room.phase == "ended"
+                        and (
+                            room.judgement_task is None
+                            or room.judgement_task.done()
+                        )
+                        and _now_ms() >= room.ended_retain_until_ms
+                    ):
+                        ROOMS.pop(room.code, None)
+                return
+            await asyncio.sleep(
+                1.0 if judgement_pending else max(0.01, remaining_ms / 1000),
+            )
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if room.ended_cleanup_task is asyncio.current_task():
+            room.ended_cleanup_task = None
+
+
+def _room_schedule_ended_cleanup(room):
+    if room.phase != "ended":
+        return
+    if room.ended_cleanup_task is not None and not room.ended_cleanup_task.done():
+        return
+    room.ended_cleanup_task = asyncio.create_task(_room_ended_cleanup(room))
+
+
+async def _room_send_member(
+    room, member, message, *, websocket=None, generation=None,
+    encoded_text=None, close_on_failure=True,
+):
+    """Bound one member send and account successful room-control egress."""
+    target = websocket if websocket is not None else member.ws
+    expected_generation = (
+        member.connection_generation if generation is None else generation
+    )
+    text_value = (
+        encoded_text
+        if encoded_text is not None
+        else json.dumps(message, ensure_ascii=False)
+    )
+    try:
+        async with member.send_lock:
+            # Revalidate after waiting: a replacement may have advanced the
+            # generation while another state/roster send held this lock.
+            if (
+                member.ws is not target
+                or member.connection_generation != expected_generation
+                or not member.connected
+            ):
+                return False
+            await asyncio.wait_for(
+                target.send_text(text_value), timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+            )
+            room.bandwidth_bytes += len(text_value.encode("utf-8"))
+            return True
+    except Exception:
+        if close_on_failure:
+            try:
+                await asyncio.wait_for(
+                    target.close(code=1011, reason="room control send failed"),
+                    timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                pass
+        return False
+
+
 async def _room_broadcast(room, msg, exclude=None):
     text = json.dumps(msg, ensure_ascii=False)
     recipients = [
@@ -4041,15 +4317,13 @@ async def _room_broadcast(room, msg, exclude=None):
     ]
 
     async def send(member, websocket, generation):
-        try:
-            # A stalled mobile client must not block room control messages.
-            await asyncio.wait_for(
-                websocket.send_text(text), timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
-            )
-            room.bandwidth_bytes += len(text.encode("utf-8"))
+        if await _room_send_member(
+            room, member, None,
+            websocket=websocket, generation=generation,
+            encoded_text=text, close_on_failure=False,
+        ):
             return None
-        except Exception:
-            return member, websocket, generation
+        return member, websocket, generation
 
     if recipients:
         results = await asyncio.gather(*(send(*recipient) for recipient in recipients))
@@ -4065,19 +4339,114 @@ async def _room_broadcast(room, msg, exclude=None):
                     or not member.connected
                 ):
                     continue
+                pause_started_ms = _room_claim_control_disconnect_pause_locked(
+                    room, member,
+                )
                 member.connected = False
+                member.connection_generation += 1
+                _room_bump_roster_generation(room)
+                _room_invalidate_precheck(room)
                 if room.phase == "lobby":
                     room.members.pop(member.user_id, None)
-                    room.precheck_results.pop(member.user_id, None)
-                failed.append(member)
-        for member in failed:
-            if room.active_turn_user == member.user_id:
-                await _room_handle_turn(room, member, False)
+                failed.append((member, websocket, pause_started_ms))
+        if failed:
+            await asyncio.gather(*(
+                asyncio.wait_for(
+                    websocket.close(
+                        code=1011, reason="room control send failed",
+                    ),
+                    timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+                )
+                for _member, websocket, _pause_started_ms in failed
+            ), return_exceptions=True)
+        for member, _websocket, _pause_started_ms in failed:
+            await _room_broadcast(room, {
+                "type": "peer_left", "user_id": member.user_id,
+                "roster_generation": room.roster_generation,
+            })
+        if failed:
+            await _room_broadcast(room, {
+                "type": "roster", "roster": room.roster(),
+                "roster_generation": room.roster_generation,
+            })
+        for _member, _websocket, pause_started_ms in failed:
+            if pause_started_ms is not None:
+                _room_schedule_control_task(
+                    room, f"rtc_pause:{pause_started_ms}",
+                    lambda stamp=pause_started_ms: _room_complete_disconnect_pause(
+                        room, stamp, "control_send_failure",
+                    ),
+                )
         if (
             failed and not room.connected_user_ids()
             and not room.terminal_requested
         ):
             _room_schedule_empty_cleanup(room)
+
+
+def _room_claim_disconnect_pause_locked(room, member, *, now_ms=None):
+    """Freeze active debate clocks once; caller must hold ``room.lock``."""
+    member.rtc_status = "disconnected"
+    now = _now_ms() if now_ms is None else int(now_ms)
+    if (
+        room.phase == "active"
+        and not room.terminal_requested
+        and room.rtc_pause_started_ms is None
+    ):
+        room.rtc_pause_started_ms = now
+        return now
+    return None
+
+
+def _room_claim_control_disconnect_pause_locked(room, member, *, now_ms=None):
+    """Claim an offline control boundary, including a pending replacement.
+
+    A replacement socket can fail or explicitly leave after registration but
+    before its bootstrap consumes ``restart_required``.  In that race the room
+    is already paused, so a fresh claim returns ``None``; carrying forward the
+    saved stamp ensures the required restart timeout is still started exactly
+    once.
+    """
+    claimed_pause_started_ms = _room_claim_disconnect_pause_locked(
+        room, member, now_ms=now_ms,
+    )
+    pause_started_ms = (
+        member.restart_required
+        if member.restart_required is not None
+        else claimed_pause_started_ms
+    )
+    member.restart_required = None
+    return pause_started_ms
+
+
+async def _room_complete_disconnect_pause(room, pause_started_ms, reason):
+    """Finalize speech and start the one bounded reconnect window."""
+    if pause_started_ms is None:
+        return False
+    await _room_request_turn_finalization(room, reason)
+    restart_started = False
+    async with room.lock:
+        if (
+            room.phase == "active"
+            and not room.terminal_requested
+            and room.rtc_pause_started_ms == pause_started_ms
+            and (
+                room.rtc_restart_task is None
+                or room.rtc_restart_task.done()
+            )
+        ):
+            room.rtc_restart_task = asyncio.create_task(
+                _room_rtc_restart_timeout(room, pause_started_ms),
+            )
+            restart_started = True
+    if not restart_started:
+        return False
+    await _room_broadcast(room, room.state_msg())
+    await _room_broadcast(room, {
+        "type": "rtc_status", "status": "restart",
+        "roster_generation": room.roster_generation,
+    })
+    return True
 
 
 async def _room_rtc_restart_timeout(room, pause_started_ms):
@@ -4097,6 +4466,46 @@ async def _room_rtc_restart_timeout(room, pause_started_ms):
             room.rtc_restart_task = None
 
 
+async def _room_emit_due_bells(room, *, now_ms=None, allow_paused=False):
+    """Publish each authoritative bell threshold once per segment run/side."""
+    if (
+        room.phase != "active"
+        or not room.activation_ready
+        or (room.rtc_pause_started_ms is not None and not allow_paused)
+    ):
+        return
+    seg = room.current_segment()
+    if not seg:
+        return
+    side = ""
+    if seg.get("side") == "雙方":
+        side = room.active_turn_side or ""
+        if side not in ("正方", "反方"):
+            return
+        elapsed_ms = room.side_elapsed_snapshot(now_ms).get(side, 0)
+    else:
+        elapsed_ms = room.segment_elapsed_ms(now_ms)
+    due = []
+    for bell_index, bell in enumerate(seg.get("bells") or []):
+        key = (side, bell_index)
+        threshold_ms = max(0, int(float(bell.get("t") or 0) * 1000))
+        if key in room.fired_bell_keys or elapsed_ms < threshold_ms:
+            continue
+        room.fired_bell_keys.add(key)
+        due.append({
+            "type": "bell",
+            "segment_generation": room.segment_generation,
+            "seg_index": room.seg_index,
+            "side": side,
+            "bell_index": bell_index,
+            "t": bell.get("t") or 0,
+            "rings": bell.get("rings") or 1,
+            "label": str(bell.get("label") or "")[:200],
+        })
+    for payload in due:
+        await _room_broadcast(room, payload)
+
+
 async def _room_tick(room):
     try:
         while room.phase == "active" and ROOMS.get(room.code) is room:
@@ -4104,37 +4513,41 @@ async def _room_tick(room):
             if room.phase != "active" or ROOMS.get(room.code) is not room:
                 break
             now = _now_ms()
-            if room.rtc_pause_started_ms is not None:
-                await _room_broadcast(room, room.state_msg())
-                continue
+            # The fixed overall deadline includes RTC/restart and handoff grace;
+            # only the segment and per-side speech clocks pause.
             if room.hard_deadline_ms and now >= room.hard_deadline_ms:
                 await _room_end(room, "server_time_limit")
                 break
+            if room.rtc_pause_started_ms is not None:
+                await _room_broadcast(room, room.state_msg())
+                continue
+            await _room_emit_due_bells(room, now_ms=now)
             seg = room.current_segment()
             seg_seconds = int((seg or {}).get("seconds") or 0)
-            if (
-                room.structure == "free"
-                and seg and seg.get("side") == "雙方"
-                and seg_seconds > 0
-            ):
+            if seg and seg.get("side") == "雙方" and seg_seconds > 0:
                 budget_ms = seg_seconds * 1000
                 active_side = room.active_turn_side
                 active_user = room.active_turn_user
-                active_used = room.side_elapsed_ms.get(active_side, 0)
-                if active_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
-                    active_used += max(0, now - room.active_turn_started_ms)
+                active_used = room.side_elapsed_snapshot(now).get(active_side, 0)
                 if active_user and active_used >= budget_ms:
-                    member = room.members.get(active_user)
-                    if member is not None:
-                        await _room_handle_turn(room, member, False)
+                    await _room_request_turn_finalization(
+                        room, "side_time_limit",
+                    )
                 if all(
                     room.side_elapsed_ms.get(side, 0) >= budget_ms
                     for side in ("正方", "反方")
                 ):
-                    await _room_end(room, "server_side_budgets_complete")
-                    break
-            elif (seg and room.seg_started_ms and seg_seconds > 0
-                    and now - room.seg_started_ms >= seg_seconds * (2 if seg.get("side") == "雙方" else 1) * 1000):
+                    if room.structure == "free" or room.seg_index >= len(room.segments) - 1:
+                        await _room_end(room, "server_side_budgets_complete")
+                        break
+                    current_index = room.seg_index
+                    await _room_advance_segment(
+                        room, current_index + 1, expected_from=current_index,
+                    )
+            elif (
+                seg and room.seg_started_ms and seg_seconds > 0
+                and room.segment_elapsed_ms(now) >= seg_seconds * 1000
+            ):
                 if room.seg_index >= len(room.segments) - 1:
                     await _room_end(room, "server_segment_limit")
                     break
@@ -4172,9 +4585,17 @@ async def _room_lifecycle(room):
             and room.phase not in ("ending", "ended")
             and not room.terminal_requested
         ):
-            remaining_ms = ROOM_MAX_AGE_MS - (_now_ms() - room.created_at)
+            expiry_ms = _room_expiry_deadline_ms(room)
+            if expiry_ms is None:
+                await _room_end(room, "server_lifecycle_failure")
+                return
+            remaining_ms = expiry_ms - _now_ms()
             if remaining_ms <= 0:
-                await _room_end(room, "ttl")
+                await _room_end(
+                    room,
+                    "lobby_ttl" if room.phase in ("lobby", "starting")
+                    else "server_time_limit",
+                )
                 return
             await asyncio.sleep(min(
                 float(BANDWIDTH_CHECKPOINT_SECONDS),
@@ -4187,8 +4608,13 @@ async def _room_lifecycle(room):
             ):
                 return
             now = _now_ms()
-            if now - room.created_at >= ROOM_MAX_AGE_MS:
-                await _room_end(room, "ttl")
+            expiry_ms = _room_expiry_deadline_ms(room)
+            if expiry_ms is None or now >= expiry_ms:
+                await _room_end(
+                    room,
+                    "lobby_ttl" if room.phase in ("lobby", "starting")
+                    else "server_time_limit",
+                )
                 return
             await asyncio.to_thread(_checkpoint_room_bandwidth, room, False)
             room.last_bandwidth_checkpoint_ms = now
@@ -4234,9 +4660,18 @@ def _room_precheck_msg(room, msg_type="precheck_status"):
 
 
 def _room_connected_roster_signature(room):
-    return tuple(
-        (member.user_id, member.connection_generation)
-        for member in room.members.values() if member.connected
+    """Bind a precheck to identities, sockets, roles and roster revision."""
+    return (
+        int(room.roster_generation),
+        tuple(sorted(
+            (
+                member.user_id,
+                int(member.connection_generation),
+                str(member.role or ""),
+                str(member.rtc_status or ""),
+            )
+            for member in room.members.values() if member.connected
+        )),
     )
 
 
@@ -4245,7 +4680,11 @@ def _room_precheck_snapshot_matches(room, check_id, roster_signature):
         return False
     if _room_connected_roster_signature(room) != tuple(roster_signature or ()):
         return False
-    users = [user_id for user_id, _generation in roster_signature or ()]
+    try:
+        _generation, roster = roster_signature
+        users = [user_id for user_id, _connection, _role, _rtc in roster]
+    except (TypeError, ValueError):
+        return False
     return bool(
         users
         and all(user_id in room.precheck_results for user_id in users)
@@ -4265,6 +4704,8 @@ def _room_failed_activation_state(room):
     room.active_turn_user = None
     room.active_turn_side = None
     room.active_turn_started_ms = None
+    room.active_turn_id = None
+    room.active_turn_request_id = None
     room.activation_ready = False
 
 
@@ -4275,7 +4716,7 @@ async def _room_rollback_activation(room, users, released_message):
     return released_message
 
 
-async def _room_start_active(
+async def _room_start_active_impl(
     room, *, expected_precheck_id=None, expected_roster_signature=None,
 ) -> str | None:
     # Multiple final precheck messages can arrive in the same event-loop tick.
@@ -4314,10 +4755,22 @@ async def _room_start_active(
                 "成員名單或連線在檢查後有變；"
                 "請重新進行連線測試。"
             )
-        bandwidth = await asyncio.to_thread(bandwidth_budget_status, notify=True)
+        try:
+            bandwidth = await asyncio.to_thread(
+                bandwidth_budget_status, notify=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "room activation budget check failed (%s, %s)",
+                room.code, type(exc).__name__,
+            )
+            return await _room_rollback_activation(
+                room, users,
+                "暫時未能完成資源檢查；房間未有開始，請稍後再試。",
+            )
         if bandwidth["total_bytes"] >= int(bandwidth["essential_only_bytes"]):
             await _room_disable_judge(
-                room, "本月 Render 傳輸量已達 4GB；真人 P2P 練習可繼續，但 AI 評判已停用。",
+                room, "本月 Render 傳輸量已達 4GB；真人 P2P 練習可繼續，但 AI 評判及 Web Speech 逐字稿已停用。",
             )
         async with room.lock:
             roster_changed = (
@@ -4347,21 +4800,31 @@ async def _room_start_active(
             )
             if not roster_changed:
                 room.seg_index = 0
+                room.segment_generation += 1
+                room.fired_bell_keys.clear()
                 room.started_ms = _now_ms()
                 room.seg_started_ms = room.started_ms
-                total_seconds = full_mock_total_seconds(room.segments)
-                # Preserve the pre-existing multiplayer Free hard stop. Solo's
-                # separate browser-direct session owns the 30-minute deadline.
                 if room.structure == "free":
-                    total_seconds = min(10 * 60, total_seconds)
+                    side_seconds = int(
+                        (room.current_segment() or {}).get("seconds") or 0
+                    )
+                    total_seconds = side_seconds * 2
+                    grace_seconds = ROOM_FREE_HARD_GRACE_SECONDS
+                else:
+                    total_seconds = full_mock_total_seconds(room.segments)
+                    grace_seconds = ROOM_MOCK_HARD_GRACE_SECONDS
                 room.hard_deadline_ms = (
-                    room.started_ms + max(30, int(total_seconds)) * 1000
+                    room.started_ms
+                    + (max(0, int(total_seconds)) + grace_seconds) * 1000
                 )
                 room.side_elapsed_ms = {"正方": 0, "反方": 0}
                 room.active_turn_user = None
                 room.active_turn_side = None
                 room.active_turn_started_ms = None
-                room.free_first_done = False
+                room.active_turn_id = None
+                room.active_turn_request_id = None
+                room.free_next_side = "正方"
+                room.turn_stop_pending = False
         if roster_changed:
             return await _room_rollback_activation(
                 room, users,
@@ -4400,7 +4863,39 @@ async def _room_start_active(
             )
         _room_ensure_tick(room)
         await _room_broadcast(room, room.state_msg())
+        await _room_emit_due_bells(room)
         return None
+
+
+async def _room_start_active(
+    room, *, expected_precheck_id=None, expected_roster_signature=None,
+) -> str | None:
+    """Fail closed to a retryable lobby for unexpected activation errors."""
+    try:
+        return await _room_start_active_impl(
+            room,
+            expected_precheck_id=expected_precheck_id,
+            expected_roster_signature=expected_roster_signature,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "room activation failed (%s): %s", room.code, type(exc).__name__,
+        )
+        if room.phase == "active" and room.activation_ready:
+            # Activation has already committed its authoritative state.  Keep
+            # the timer alive instead of publishing a contradictory lobby.
+            try:
+                _room_ensure_tick(room)
+                return None
+            except Exception:
+                await _room_end(room, "server_timer_failure")
+                return "房間計時器未能啟動，練習已安全結束。"
+        if room.phase not in ("ending", "ended") and not room.terminal_requested:
+            async with room.lock:
+                _room_failed_activation_state(room)
+        return "開始房間時發生伺服器錯誤；房間未有開始，請重新測試。"
 
 
 async def _room_begin_precheck(room):
@@ -4446,10 +4941,16 @@ async def _room_handle_precheck_result(room, member, msg):
             return
         if msg.get("check_id") != room.precheck_id:
             return
+        rtc_connected = member.rtc_status == "connected"
+        media_ok = bool(msg.get("media_ok", msg.get("ok"))) and rtc_connected
         room.precheck_results[member.user_id] = {
-            "ok": bool(msg.get("media_ok", msg.get("ok"))),
-            "media_ok": bool(msg.get("media_ok", msg.get("ok"))),
-            "message": str(msg.get("message") or "")[:800],
+            "ok": media_ok,
+            "media_ok": media_ok,
+            "message": (
+                str(msg.get("message") or "")[:800]
+                if rtc_connected
+                else "P2P RTC 連線未建立或已中斷。"
+            ),
         }
         users = room.connected_user_ids()
         ready = bool(
@@ -4496,11 +4997,13 @@ def _room_start_blocker(room):
     members = [m for m in room.members.values() if m.connected]
     if len(members) != 2 or {m.role for m in members} != {"正方", "反方"}:
         return "真人對真人練習必須兩位委員在線，並分別擔任正方及反方。"
+    if any(member.rtc_status != "connected" for member in members):
+        return "開始前必須兩位委員均完成並維持 P2P RTC 連線。"
     return None
 
 
 def _room_member_control_rate_allowed(member, *, now_ms=None):
-    """Consume one reconnect-stable token for a non-audio client message."""
+    """Consume one reconnect-stable token for a client message."""
     now = _now_ms() if now_ms is None else int(now_ms)
     previous = int(member.control_rate_updated_ms)
     elapsed_ms = max(0, now - previous)
@@ -4516,51 +5019,154 @@ def _room_member_control_rate_allowed(member, *, now_ms=None):
     return True
 
 
+def _room_member_critical_rate_allowed(member, *, now_ms=None):
+    """Consume the small reserve for a validated safety-critical message."""
+    now = _now_ms() if now_ms is None else int(now_ms)
+    previous = int(member.critical_rate_updated_ms)
+    elapsed_ms = max(0, now - previous)
+    member.critical_rate_tokens = min(
+        float(ROOM_CRITICAL_RATE_BURST_MESSAGES),
+        float(member.critical_rate_tokens)
+        + elapsed_ms * float(ROOM_CRITICAL_RATE_MESSAGES_PER_SECOND) / 1000,
+    )
+    member.critical_rate_updated_ms = max(previous, now)
+    if member.critical_rate_tokens < 1:
+        return False
+    member.critical_rate_tokens -= 1
+    return True
+
+
+def _room_message_is_safety_critical(room, member, mtype, msg):
+    """Return true only for state-bound operations that safely stop progress."""
+    if mtype == "transcript_commit":
+        return bool(
+            room.phase == "active"
+            and room.active_turn_user == member.user_id
+            and room.active_turn_id
+            and isinstance(msg.get("turn_id"), str)
+            and msg.get("turn_id") == room.active_turn_id
+        )
+    if mtype in {"turn_end", "turn_stop_intent"}:
+        return _room_message_matches_active_turn(room, member, msg)
+    if mtype == "end":
+        return bool(
+            member.user_id == room.created_by
+            and room.phase not in ("ending", "ended")
+            and not room.terminal_requested
+        )
+    if mtype == "rtc_status" and room.phase == "active":
+        try:
+            generation = int(msg.get("roster_generation"))
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            generation == room.roster_generation
+            and str(msg.get("status") or "") in {"disconnected", "failed"}
+        )
+    return False
+
+
+def _room_message_matches_active_turn(room, member, msg):
+    if (
+        room.phase != "active"
+        or room.active_turn_user != member.user_id
+        or not room.active_turn_id
+    ):
+        return False
+    turn_id = msg.get("turn_id")
+    request_id = msg.get("request_id")
+    matched_identifier = False
+    if turn_id is not None:
+        if not (
+            isinstance(turn_id, str)
+            and 0 < len(turn_id) <= 80
+            and turn_id == room.active_turn_id
+        ):
+            return False
+        matched_identifier = True
+    if request_id is not None:
+        if not (
+            isinstance(request_id, str)
+            and 0 < len(request_id) <= 80
+            and request_id == room.active_turn_request_id
+        ):
+            return False
+        matched_identifier = True
+    return matched_identifier
+
+
+async def _room_run_scheduled_segment_advance(room, index, expected_from):
+    try:
+        await _room_advance_segment(
+            room, index, expected_from=expected_from,
+        )
+    finally:
+        room.segment_transitioning = False
+
+
 async def _room_advance_segment(room, index: int, *, expected_from=None):
     """Move the authoritative server timer without trusting client clocks."""
     async with room.segment_lock:
-        if room.phase != "active" or not room.activation_ready:
+        if (
+            room.phase != "active"
+            or not room.activation_ready
+            or room.terminal_requested
+            or room.rtc_pause_started_ms is not None
+        ):
             return
         if expected_from is not None and room.seg_index != expected_from:
             return
-        if room.active_turn_user:
-            member = room.members.get(room.active_turn_user)
-            if member is not None:
-                # End the active speech before advancing the authoritative
-                # timer. A missing transcript is handled at judgement time.
-                await _room_handle_turn(room, member, False)
-        now = _now_ms()
-        if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
-            room.side_elapsed_ms[room.active_turn_side] += max(0, now - room.active_turn_started_ms)
-        room.seg_index = max(0, min(int(index), len(room.segments) - 1))
-        room.seg_started_ms = now
-        room.active_turn_user = None
-        room.active_turn_side = None
-        room.active_turn_started_ms = None
-        room.free_first_done = False
-        if room.current_segment() and room.current_segment().get("side") == "雙方":
-            room.side_elapsed_ms = {"正方": 0, "反方": 0}
-        await _room_broadcast(room, room.state_msg())
-        if room.phase == "active" and room.seg_index == max(
-            0, min(int(index), len(room.segments) - 1),
-        ):
-            # Handoff/setup latency is not debate speech time.
-            room.seg_started_ms = _now_ms()
+        target = max(0, min(int(index), len(room.segments) - 1))
+        if target == room.seg_index:
+            return
+        room.segment_transitioning = True
+        try:
+            if room.active_turn_user:
+                await _room_request_turn_finalization(room, "segment_advance")
+            if (
+                room.phase != "active"
+                or room.terminal_requested
+                or room.rtc_pause_started_ms is not None
+            ):
+                return
+            now = _now_ms()
+            room.seg_index = target
+            room.segment_generation += 1
+            room.fired_bell_keys.clear()
+            room.seg_started_ms = now
+            room.active_turn_user = None
+            room.active_turn_side = None
+            room.active_turn_started_ms = None
+            room.active_turn_id = None
+            room.active_turn_request_id = None
+            room.free_next_side = "正方"
+            if room.current_segment() and room.current_segment().get("side") == "雙方":
+                room.side_elapsed_ms = {"正方": 0, "反方": 0}
             await _room_broadcast(room, room.state_msg())
+            if (
+                room.phase == "active"
+                and not room.terminal_requested
+                and room.seg_index == target
+            ):
+                # Handoff/setup latency is not debate speech time.
+                room.seg_started_ms = _now_ms()
+                await _room_broadcast(room, room.state_msg())
+                await _room_emit_due_bells(room)
+        finally:
+            room.segment_transitioning = False
 
 
 async def _room_end(room, reason: str = "host"):
     # Serialize the terminal transition with activation.  Otherwise a host end
     # arriving while activation work is in flight can be overwritten by the
     # activation coroutine setting the room back to ``active``.
-    if room.phase == "active" and room.active_turn_user:
-        member = room.members.get(room.active_turn_user)
-        if member is not None:
-            await _room_handle_turn(room, member, False)
+    # Block new turns and segment changes before yielding for STT finalization.
     room.terminal_requested = True
     async with room.activation_lock:
         if room.phase in ("ending", "ended"):
             return
+        if room.phase == "active" and room.active_turn_user:
+            await _room_request_turn_finalization(room, "room_end")
         room.phase = "ending"
     current = asyncio.current_task()
     if room.tick_task is not None and room.tick_task is not current and not room.tick_task.done():
@@ -4579,48 +5185,20 @@ async def _room_end(room, reason: str = "host"):
     ):
         room.lifecycle_task.cancel()
     _room_cancel_empty_cleanup(room)
-    # Final transcript judgement is a single shared provider call.  Preserve an
-    # in-flight request, or start one before clients are told the room ended.
-    if (
-        room.judge_enabled
-        and
-        room.transcript
-        and room.judgement_revision != room.transcript_revision
-    ):
-        existing = room.judgement_task
-        if existing is None or existing.done():
-            task = asyncio.create_task(_room_request_judgement(room))
-        else:
-            # Queue a final-revision request behind the in-flight lock.  It will
-            # reuse the result if that request already covered this revision.
-            task = asyncio.create_task(_room_request_judgement(room))
-        room.judgement_task = task
-        if task is not current:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(task),
-                    timeout=ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                await _room_broadcast(room, {
-                    "type": "judgement_pending",
-                    "message": "完場評判仍在處理，可稍後重新開啟逐字稿查看結果。",
-                })
-            except Exception as exc:
-                logger.warning(
-                    "room final judgement failed (%s, %s)",
-                    room.code, type(exc).__name__,
-                )
     room.phase = "ended"
+    room.activation_ready = False
     room.ended_at_ms = _now_ms()
-    room.ended_retain_until_ms = max(
-        room.ended_retain_until_ms,
-        room.ended_at_ms + ROOM_EMPTY_GRACE_MS,
-    )
+    if room.members:
+        _room_extend_ended_retention(room, now_ms=room.ended_at_ms)
+    else:
+        room.ended_retain_until_ms = room.ended_at_ms
     try:
         await _room_broadcast(room, {"type": "ended", "reason": reason})
         try:
-            await asyncio.to_thread(_record_room_bandwidth_once, room)
+            await asyncio.wait_for(
+                asyncio.to_thread(_record_room_bandwidth_once, room),
+                timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             logger.warning(
                 "room final bandwidth checkpoint failed (%s, %s)",
@@ -4629,10 +5207,15 @@ async def _room_end(room, reason: str = "host"):
         sockets = [member.ws for member in room.members.values() if member.connected]
         if sockets:
             await asyncio.gather(*(
-                socket.close(code=1000, reason="practice ended") for socket in sockets
+                asyncio.wait_for(
+                    socket.close(code=1000, reason="practice ended"),
+                    timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+                )
+                for socket in sockets
             ), return_exceptions=True)
     finally:
         room.end_complete_event.set()
+        _room_schedule_ended_cleanup(room)
 
 
 async def _room_end_and_remove(room, reason):
@@ -4642,15 +5225,15 @@ async def _room_end_and_remove(room, reason):
         try:
             await asyncio.wait_for(
                 asyncio.shield(room.end_complete_event.wait()),
-                timeout=ROOM_FINAL_JUDGEMENT_TIMEOUT_SECONDS + 5,
+                timeout=ROOM_TURN_FINALIZE_TIMEOUT_SECONDS + 5,
             )
         except asyncio.TimeoutError:
             return
     if room.phase == "ended":
-        room.ended_retain_until_ms = max(
-            room.ended_retain_until_ms,
-            _now_ms() + ROOM_EMPTY_GRACE_MS,
-        )
+        if room.members:
+            _room_extend_ended_retention(room)
+        else:
+            _room_schedule_ended_cleanup(room)
 
 
 # --- message handling ------------------------------------------------------
@@ -4668,78 +5251,340 @@ def _parse_room_client_text(value) -> dict | None:
     return message if isinstance(message, dict) else None
 
 
-async def _room_handle_turn(room, member, speaking):
+def _room_store_turn_transcript(room, state, *, partial):
+    """Commit one bounded server-owned turn state exactly once."""
+    if not state or state.get("committed"):
+        return None
+    text_value = " ".join(state.get("chunks") or []).strip()
+    if not text_value:
+        return None
+    stored_chars = int(getattr(room, "transcript_chars", 0) or 0)
+    if stored_chars <= 0 and getattr(room, "transcript", None):
+        stored_chars = sum(
+            len(str(item.get("text") or "")) for item in room.transcript
+        )
+    remaining = max(0, ROOM_TRANSCRIPT_TOTAL_MAX_CHARS - stored_chars)
+    accepted = text_value[:min(ROOM_TRANSCRIPT_ITEM_MAX_CHARS, remaining)]
+    state["committed"] = True
+    state["chunks"] = []
+    if not accepted:
+        return None
+    item_revision = room.transcript_revision + 1
+    item = {
+        "revision": item_revision,
+        "turn_id": str(state.get("turn_id") or ""),
+        "speaker": str(state.get("user_id") or ""),
+        "side": str(state.get("side") or ""),
+        "seg": int(state.get("seg_index") or 0),
+        "label": str(state.get("label") or "")[:300],
+        "text": accepted,
+        "partial": bool(
+            partial or state.get("truncated") or len(accepted) < len(text_value)
+        ),
+        "created_ms": _now_ms(),
+    }
+    room.transcript.append(item)
+    if len(room.transcript) > ROOM_TRANSCRIPT_MAX_ITEMS:
+        room.transcript = room.transcript[-ROOM_TRANSCRIPT_MAX_ITEMS:]
+    room.transcript_chars = sum(
+        len(str(existing.get("text") or "")) for existing in room.transcript
+    )
+    room.transcript_revision = item_revision
+    state["item"] = item
+    return item
+
+
+async def _room_finish_turn(room, turn_id, *, partial_fallback):
+    """Close the current turn once, accounting time and preserving chunks."""
+    if not turn_id or room.active_turn_id != turn_id:
+        return False
+    user_id = room.active_turn_user
+    side = room.active_turn_side
+    state = room.turn_transcript_chunks.get(turn_id) or {}
+    now = room.timer_now_ms()
+    for cutoff_key in ("stop_intent_ms", "forced_stop_ms"):
+        cutoff = state.get(cutoff_key)
+        if cutoff is not None:
+            now = min(now, int(cutoff))
+    # Capture threshold bells while the authoritative side/turn identity still
+    # exists.  Clearing it first would make a manual stop just after the bank
+    # limit silently lose the final two-ring bell.
+    await _room_emit_due_bells(room, now_ms=now, allow_paused=True)
+    if room.active_turn_id != turn_id:
+        return False
+    if side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
+        elapsed = max(0, now - room.active_turn_started_ms)
+        if room.is_open_free_segment():
+            limit_ms = int((room.current_segment() or {}).get("seconds") or 0) * 1000
+            room.side_elapsed_ms[side] = min(
+                limit_ms,
+                room.side_elapsed_ms.get(side, 0) + elapsed,
+            )
+        else:
+            room.side_elapsed_ms[side] += elapsed
+    if (room.current_segment() or {}).get("side") == "雙方" and side in ("正方", "反方"):
+        room.free_next_side = "反方" if side == "正方" else "正方"
+    item = _room_store_turn_transcript(
+        room, state,
+        partial=bool(partial_fallback or state.get("force_partial")),
+    )
+    finalized = state.get("finalized_event")
+    if isinstance(finalized, asyncio.Event):
+        finalized.set()
+    room.active_turn_user = None
+    room.active_turn_side = None
+    room.active_turn_started_ms = None
+    room.active_turn_id = None
+    room.active_turn_request_id = None
+    room.turn_stop_pending = False
+    room.turn_transcript_chunks.pop(turn_id, None)
+    manual_stop_task = room.manual_stop_task
+    room.manual_stop_task = None
+    if (
+        manual_stop_task is not None
+        and manual_stop_task is not asyncio.current_task()
+        and not manual_stop_task.done()
+    ):
+        manual_stop_task.cancel()
+    if item is not None:
+        await _room_broadcast(room, {"type": "transcript", "item": item})
+    await _room_broadcast(
+        room, {"type": "speaking", "user_id": user_id, "speaking": False},
+    )
+    await _room_broadcast(room, room.state_msg())
+    return True
+
+
+async def _room_request_turn_finalization(room, reason):
+    """Ask for a final commit, then persist received chunks after ~1 second."""
+    # ``_room_finish_turn`` deliberately clears ``active_turn_id`` before it
+    # broadcasts the final transcript/state.  A failed send during one of
+    # those broadcasts can synchronously enter the disconnect-pause path and
+    # request finalization again.  Avoid waiting on our own non-reentrant lock
+    # in that case.  A room pause/transition blocks a new turn from starting,
+    # and the locked check below still protects all other races.
+    if not room.active_turn_id:
+        return
+    async with room.turn_finalize_lock:
+        turn_id = room.active_turn_id
+        if not turn_id:
+            return
+        state = room.turn_transcript_chunks.get(turn_id) or {}
+        state["force_partial"] = True
+        forced_stop_ms = room.timer_now_ms()
+        if state.get("stop_intent_ms") is not None:
+            forced_stop_ms = min(forced_stop_ms, int(state["stop_intent_ms"]))
+        state["forced_stop_ms"] = forced_stop_ms
+        existing_item = state.get("item")
+        item_was_upgraded = bool(
+            isinstance(existing_item, dict)
+            and not existing_item.get("partial")
+        )
+        if item_was_upgraded:
+            existing_item["partial"] = True
+            room.transcript_revision += 1
+            existing_item["revision"] = room.transcript_revision
+            await _room_broadcast(
+                room, {"type": "transcript", "item": existing_item},
+            )
+        user_id = room.active_turn_user
+        member = room.members.get(user_id)
+        deadline_ms = _now_ms() + ROOM_TURN_FINALIZE_TIMEOUT_SECONDS * 1000
+        room.turn_stop_pending = True
+        delivered = False
+        try:
+            if member is not None and member.connected:
+                delivered = await _room_send_member(room, member, {
+                    "type": "turn_stop_requested",
+                    "user_id": user_id,
+                    "turn_id": turn_id,
+                    "reason": str(reason or "server_transition")[:80],
+                    "deadline_ms": deadline_ms,
+                })
+            finalized = state.get("finalized_event")
+            remaining = max(0, deadline_ms - _now_ms()) / 1000
+            if delivered and isinstance(finalized, asyncio.Event) and remaining > 0:
+                try:
+                    await asyncio.wait_for(finalized.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    pass
+            await _room_finish_turn(
+                room, turn_id, partial_fallback=True,
+            )
+        finally:
+            if room.active_turn_id in {None, turn_id}:
+                room.turn_stop_pending = False
+
+
+async def _room_manual_stop_watchdog(room, turn_id):
+    try:
+        await asyncio.sleep(ROOM_MANUAL_TURN_FINALIZE_TIMEOUT_SECONDS)
+        if room.active_turn_id == turn_id:
+            state = room.turn_transcript_chunks.get(turn_id) or {}
+            finalized = state.get("finalized_event")
+            if state.get("committed") or (
+                isinstance(finalized, asyncio.Event) and finalized.is_set()
+            ):
+                await _room_finish_turn(
+                    room, turn_id, partial_fallback=False,
+                )
+            else:
+                await _room_request_turn_finalization(
+                    room, "manual_stop_timeout",
+                )
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if room.manual_stop_task is asyncio.current_task():
+            room.manual_stop_task = None
+
+
+async def _room_publish_turn_stop_intent(room, turn_id, stop_intent_ms):
+    """Publish ordered stop UI events without occupying the owner's WS loop."""
+    if room.active_turn_id != turn_id:
+        return
+    await _room_emit_due_bells(
+        room, now_ms=stop_intent_ms, allow_paused=True,
+    )
+    state = room.turn_transcript_chunks.get(turn_id) or {}
+    if (
+        room.active_turn_id == turn_id
+        and state.get("stop_intent_ms") == stop_intent_ms
+    ):
+        await _room_broadcast(room, room.state_msg())
+
+
+async def _room_handle_turn_stop_intent(room, member, msg):
+    """Freeze speech time at server receipt while the browser drains STT."""
     if room.phase != "active" or not room.activation_ready:
         return
-    now = _now_ms()
+    if room.active_turn_user != member.user_id or not room.active_turn_id:
+        return
+    if not _room_message_matches_active_turn(room, member, msg):
+        return
+    state = room.turn_transcript_chunks.get(room.active_turn_id) or {}
+    if state.get("stop_intent_ms") is None:
+        state["stop_intent_ms"] = room.timer_now_ms()
+        room.turn_stop_pending = True
+        if room.manual_stop_task is None or room.manual_stop_task.done():
+            room.manual_stop_task = asyncio.create_task(
+                _room_manual_stop_watchdog(room, room.active_turn_id),
+            )
+        turn_id = room.active_turn_id
+        stop_intent_ms = state["stop_intent_ms"]
+        _room_schedule_control_task(
+            room, f"stop_intent:{turn_id}",
+            lambda: _room_publish_turn_stop_intent(
+                room, turn_id, stop_intent_ms,
+            ),
+        )
+
+
+async def _room_handle_turn(room, member, speaking, *, request_id=""):
+    if room.phase != "active" or not room.activation_ready:
+        return
+    now = room.timer_now_ms()
     if speaking:
+        if (
+            room.terminal_requested
+            or room.segment_transitioning
+            or room.turn_stop_pending
+            or room.rtc_pause_started_ms is not None
+        ):
+            return
         if not member.connected:
+            return
+        rtc_members = [
+            candidate for candidate in room.members.values()
+            if candidate.connected
+        ]
+        if (
+            len(rtc_members) != room.capacity
+            or any(candidate.rtc_status != "connected" for candidate in rtc_members)
+        ):
+            await _room_send_member(room, member, {
+                "type": "turn_rejected",
+                "message": "雙方 RTC 連線未準備好，請等待重新連線完成。",
+            })
             return
         if room.active_turn_user == member.user_id:
             return
         if room.active_turn_user and room.active_turn_user != member.user_id:
-            await member.ws.send_text(json.dumps({
+            await _room_send_member(room, member, {
                 "type": "turn_rejected",
                 "message": "已有成員發言中，請等待對方停止後再開始。",
-            }, ensure_ascii=False))
+            })
             return
         seg = room.current_segment()
+        if not seg or seg.get("side") == "準備":
+            await _room_send_member(room, member, {
+                "type": "turn_rejected",
+                "message": "準備環節不設發言，請等待下一個正式發言環節。",
+            })
+            return
         active = room.active_speaker()
         if active is not None and member.user_id != active:
-            await member.ws.send_text(json.dumps({
+            await _room_send_member(room, member, {
                 "type": "turn_rejected",
                 "message": "呢段未輪到你嘅辯位發言。",
-            }, ensure_ascii=False))
+            })
             return
         expected_side = room.expected_turn_side()
         if expected_side and member.role != expected_side:
-            await member.ws.send_text(json.dumps({
-                "type": "error",
-                "message": f"自由辯論由{expected_side}先發言。",
-            }, ensure_ascii=False))
+            await _room_send_member(room, member, {
+                "type": "turn_rejected",
+                "message": f"自由辯論而家輪到{expected_side}發言。",
+            })
             return
         if room.is_open_free_segment() and member.role in room.side_elapsed_ms:
-            if room.side_elapsed_ms.get(member.role, 0) >= int((seg.get("seconds") or 0) * 1000):
+            if room.side_elapsed_ms.get(member.role, 0) >= int(
+                (seg.get("seconds") or 0) * 1000
+            ):
+                await _room_send_member(room, member, {
+                    "type": "turn_rejected",
+                    "message": f"{member.role}嘅自由辯論時間已用完。",
+                })
                 return
         room.active_turn_user = member.user_id
         room.active_turn_side = member.role
         room.active_turn_started_ms = now
         room.active_turn_id = secrets.token_urlsafe(12)
+        room.active_turn_request_id = (
+            request_id
+            if isinstance(request_id, str) and 0 < len(request_id) <= 80
+            else ""
+        )
         room.turn_transcript_chunks[room.active_turn_id] = {
-            "user_id": member.user_id, "next_sequence": 0,
-            "chunks": [], "committed": False,
+            "turn_id": room.active_turn_id,
+            "user_id": member.user_id,
+            "side": member.role or "",
+            "seg_index": room.seg_index,
+            "label": seg.get("label", ""),
+            "next_sequence": 0,
+            "chunks": [],
+            "total_chars": 0,
+            "committed": False,
+            "force_partial": False,
+            "stop_intent_ms": None,
+            "truncated": False,
+            "finalized_event": asyncio.Event(),
         }
-    else:
-        if room.active_turn_user != member.user_id:
-            return
-        if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
-            elapsed = max(0, now - room.active_turn_started_ms)
-            if room.is_open_free_segment():
-                limit_ms = int((room.current_segment() or {}).get("seconds") or 0) * 1000
-                room.side_elapsed_ms[room.active_turn_side] = min(
-                    limit_ms,
-                    room.side_elapsed_ms.get(room.active_turn_side, 0) + elapsed,
-                )
-            else:
-                room.side_elapsed_ms[room.active_turn_side] += elapsed
-        if (room.current_segment() or {}).get("side") == "雙方" and room.active_turn_side == "正方":
-            room.free_first_done = True
-        ended_turn_id = room.active_turn_id
-        room.active_turn_user = None
-        room.active_turn_side = None
-        room.active_turn_started_ms = None
-        room.active_turn_id = None
-    await _room_broadcast(
-        room, {"type": "speaking", "user_id": member.user_id, "speaking": speaking},
+        await _room_broadcast(
+            room, {"type": "speaking", "user_id": member.user_id, "speaking": True},
+        )
+        await _room_broadcast(room, room.state_msg())
+        await _room_emit_due_bells(room)
+        return
+    if room.active_turn_user != member.user_id:
+        return
+    await _room_finish_turn(
+        room, room.active_turn_id, partial_fallback=True,
     )
-    await _room_broadcast(room, room.state_msg())
-    if not speaking and ended_turn_id:
-        room.turn_transcript_chunks.pop(ended_turn_id, None)
 
 
 async def _room_handle_transcript(room, member, msg):
     """Accept ordered final SpeechRecognition chunks for the active turn."""
-    if room.phase != "active" or not room.activation_ready or not room.judge_enabled:
+    if room.phase != "active" or not room.activation_ready:
         return
     turn_id = str(msg.get("turn_id") or "")
     state = room.turn_transcript_chunks.get(turn_id)
@@ -4747,6 +5592,7 @@ async def _room_handle_transcript(room, member, msg):
         room.active_turn_user != member.user_id
         or turn_id != room.active_turn_id
         or not state or state.get("user_id") != member.user_id
+        or state.get("committed")
     ):
         return
     try:
@@ -4755,15 +5601,30 @@ async def _room_handle_transcript(room, member, msg):
         return
     if sequence != int(state.get("next_sequence") or 0):
         return
-    text_value = str(msg.get("text") or "").strip()
+    raw_text = msg.get("text")
+    if not isinstance(raw_text, str):
+        return
+    text_value = raw_text.strip()
     if not text_value:
         return
-    state["chunks"].append(text_value[:ROOM_TRANSCRIPT_ITEM_MAX_CHARS])
+    used = max(0, int(state.get("total_chars") or 0))
+    separator_chars = 1 if state.get("chunks") else 0
+    remaining = max(
+        0, ROOM_TRANSCRIPT_ITEM_MAX_CHARS - used - separator_chars,
+    )
+    if remaining:
+        accepted = text_value[:remaining]
+        state["chunks"].append(accepted)
+        state["total_chars"] = used + separator_chars + len(accepted)
+    if len(text_value) > remaining:
+        state["truncated"] = True
+    # Continue ordered protocol progress at the ceiling so a final sequence can
+    # commit the bounded server copy without accepting unbounded text.
     state["next_sequence"] = sequence + 1
 
 
 async def _room_commit_transcript(room, member, msg):
-    if room.phase != "active" or not room.activation_ready or not room.judge_enabled:
+    if room.phase != "active" or not room.activation_ready:
         return
     turn_id = str(msg.get("turn_id") or "")
     state = room.turn_transcript_chunks.get(turn_id)
@@ -4773,28 +5634,25 @@ async def _room_commit_transcript(room, member, msg):
         or not state or state.get("user_id") != member.user_id
     ):
         return
+    finalized = state.get("finalized_event")
+    if state.get("committed"):
+        if isinstance(finalized, asyncio.Event):
+            finalized.set()
+        return
     try:
         final_sequence = int(msg.get("final_sequence"))
     except (TypeError, ValueError):
         final_sequence = -1
     if final_sequence != int(state.get("next_sequence") or 0) or not state.get("chunks"):
         return
-    text_value = "".join(state["chunks"]).strip()
-    if not text_value:
-        return
-    item = {
-        "speaker": member.user_id,
-        "side": member.role or "",
-        "seg": room.seg_index,
-        "label": (room.current_segment() or {}).get("label", ""),
-        "text": text_value[:ROOM_TRANSCRIPT_ITEM_MAX_CHARS],
-        "created_ms": _now_ms(),
-    }
-    room.transcript.append(item)
-    room.transcript = room.transcript[-ROOM_TRANSCRIPT_MAX_ITEMS:]
-    room.transcript_revision += 1
-    state["committed"] = True
-    await _room_broadcast(room, {"type": "transcript", "item": item})
+    item = _room_store_turn_transcript(
+        room, state,
+        partial=bool(state.get("force_partial") or msg.get("partial") is True),
+    )
+    if isinstance(finalized, asyncio.Event):
+        finalized.set()
+    if item is not None:
+        await _room_broadcast(room, {"type": "transcript", "item": item})
 
 
 async def _room_request_judgement(room):
@@ -4812,15 +5670,26 @@ async def _room_request_judgement(room):
                 )
                 return
             await _room_request_judgement_unlocked(room)
-        finally:
-            # A final judgement may complete after _room_end's bounded wait.
-            # Give members a full retrieval window from that late completion,
-            # instead of letting the next room-create GC immediately erase it.
-            if getattr(room, "phase", "active") in ("ending", "ended"):
-                room.ended_retain_until_ms = max(
-                    getattr(room, "ended_retain_until_ms", 0),
-                    _now_ms() + ROOM_EMPTY_GRACE_MS,
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Room judgement setup failed (%s)", type(exc).__name__,
+            )
+            room.judgement = (
+                "本次 AI 評判未能啟動。"
+                "\n本房評判要求已完成；請聯絡管理員檢查伺服器設定。"
+            )
+            room.judgement_revision = getattr(room, "transcript_revision", 0)
+            try:
+                await _room_broadcast(
+                    room, {"type": "judgement", "text": room.judgement},
                 )
+            except Exception:
+                pass
+        finally:
+            if getattr(room, "phase", "active") in ("ending", "ended"):
+                _room_extend_ended_retention(room)
 
 
 def _room_judgement_transcript_error(room) -> str:
@@ -4839,7 +5708,7 @@ def _room_judgement_transcript_error(room) -> str:
     )
 
 
-def _log_room_judgement_attempt(
+def _log_room_judgement_attempt_sync(
     room,
     model,
     success,
@@ -4902,6 +5771,28 @@ def _log_room_judgement_attempt(
         )
 
 
+async def _log_room_judgement_attempt(
+    room,
+    model,
+    success,
+    *,
+    operation_id,
+    operation_stage,
+    response_data=None,
+    error_message="",
+):
+    await asyncio.to_thread(
+        _log_room_judgement_attempt_sync,
+        room,
+        model,
+        success,
+        operation_id=operation_id,
+        operation_stage=operation_stage,
+        response_data=response_data,
+        error_message=error_message,
+    )
+
+
 async def _room_request_judgement_unlocked(room):
     target_revision = getattr(room, "transcript_revision", 0)
     if not getattr(room, "judge_enabled", True):
@@ -4921,7 +5812,7 @@ async def _room_request_judgement_unlocked(room):
             room, {"type": "judgement", "text": transcript_error},
         )
         return
-    budget_error = _bandwidth_essential_gate_error()
+    budget_error = await asyncio.to_thread(_bandwidth_essential_gate_error)
     if budget_error:
         room.judgement = budget_error
         room.judgement_revision = target_revision
@@ -4947,7 +5838,7 @@ async def _room_request_judgement_unlocked(room):
             "role": "user",
             "parts": [{"text": prompt_text}],
         }],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200},
+        "generationConfig": {"temperature": 0.2},
     }
     last_error = ""
     result = ""
@@ -4960,7 +5851,10 @@ async def _room_request_judgement_unlocked(room):
         + secrets.token_urlsafe(12)
     )
     try:
-        async with httpx.AsyncClient(timeout=ROOM_JUDGEMENT_TIMEOUT_SECONDS) as client:
+        async with (
+            ROOM_JUDGEMENT_SEMAPHORE,
+            httpx.AsyncClient(timeout=ROOM_JUDGEMENT_TIMEOUT_SECONDS) as client,
+        ):
             for attempt_number, model in enumerate(ROOM_JUDGEMENT_MODELS, 1):
                 operation_stage = f"judgement_attempt_{attempt_number}"
                 url = (
@@ -4975,7 +5869,7 @@ async def _room_request_judgement_unlocked(room):
                 except httpx.TimeoutException:
                     last_error = f"{model}：AI服務逾時"
                     logger.warning("Room judgement Gemini failed %s", last_error)
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         False,
@@ -4987,7 +5881,7 @@ async def _room_request_judgement_unlocked(room):
                 except httpx.HTTPStatusError as exc:
                     last_error = f"{model}：AI服務HTTP {exc.response.status_code}錯誤"
                     logger.warning("Room judgement Gemini failed %s", last_error)
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         False,
@@ -5002,7 +5896,7 @@ async def _room_request_judgement_unlocked(room):
                         "Room judgement Gemini transport failed (%s)",
                         type(exc).__name__,
                     )
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         False,
@@ -5021,7 +5915,7 @@ async def _room_request_judgement_unlocked(room):
                         detail = "AI回應格式無效"
                     last_error = f"{model}：{detail}"
                     logger.warning("Room judgement Gemini failed %s", last_error)
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         False,
@@ -5031,7 +5925,7 @@ async def _room_request_judgement_unlocked(room):
                     )
                     continue
                 except Exception as exc:
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         False,
@@ -5043,7 +5937,7 @@ async def _room_request_judgement_unlocked(room):
                 candidates = data.get("candidates") or []
                 if not candidates or not isinstance(candidates[0], dict):
                     last_error = f"{model}：AI未有回傳候選結果"
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         False,
@@ -5063,7 +5957,7 @@ async def _room_request_judgement_unlocked(room):
                     if isinstance(part, dict)
                 ).strip()
                 if result:
-                    _log_room_judgement_attempt(
+                    await _log_room_judgement_attempt(
                         room,
                         model,
                         True,
@@ -5073,7 +5967,7 @@ async def _room_request_judgement_unlocked(room):
                     )
                     break
                 last_error = f"{model}：AI回應為空"
-                _log_room_judgement_attempt(
+                await _log_room_judgement_attempt(
                     room,
                     model,
                     False,
@@ -5084,18 +5978,18 @@ async def _room_request_judgement_unlocked(room):
                 )
             else:
                 result = (
-                    "AI 評判暫時失敗。"
+                    "本次 AI 評判未能完成。"
                     + (f"\n原因：{last_error}" if last_error else "")
-                    + "\n請檢查 GEMINI_API_KEY、模型權限或稍後再試。"
+                    + "\n本房評判要求已完成；如需跟進，請聯絡管理員檢查模型權限。"
                 )
     except Exception as e:
         # Provider exceptions can include request URLs or headers.  Neither the
         # room transcript nor server logs should ever receive those details.
         logger.warning("Room judgement failed (%s)", type(e).__name__)
         result = (
-            "AI 評判暫時無法連線。"
+            "本次 AI 評判未能連線。"
             "\n原因：上游服務連線錯誤。"
-            "\n請檢查伺服器網絡或 GEMINI_API_KEY。"
+            "\n本房評判要求已完成；請聯絡管理員檢查伺服器網絡或設定。"
         )
 
     room.judgement = result
@@ -5112,11 +6006,31 @@ async def _room_handle_message(
         or not member.connected
     ):
         return
+    # Every syntactically valid JSON object consumes normal control capacity.
+    # A small independently bounded reserve prevents a transcript commit or
+    # stop/disconnect operation from being silently dropped after a chunk burst.
+    normal_rate_allowed = _room_member_control_rate_allowed(member)
     mtype = msg.get("type")
+    if not isinstance(mtype, str) or not mtype or len(mtype) > 80:
+        return
+    if not normal_rate_allowed:
+        critical = _room_message_is_safety_critical(
+            room, member, mtype, msg,
+        )
+        if not critical or not _room_member_critical_rate_allowed(member):
+            if critical and websocket is not None:
+                try:
+                    await asyncio.wait_for(
+                        websocket.close(
+                            code=1008, reason="room control rate exceeded",
+                        ),
+                        timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    pass
+            return
     if mtype in {"audio", "test_audio", "test_received"} or "realtimeInput" in msg:
         # Breaking change: Render no longer accepts room media frames.
-        return
-    if not _room_member_control_rate_allowed(member):
         return
 
     is_host = member.user_id == room.created_by
@@ -5147,31 +6061,38 @@ async def _room_handle_message(
 
     if mtype == "rtc_status":
         status = str(msg.get("status") or "")
+        try:
+            roster_generation = int(msg.get("roster_generation"))
+        except (TypeError, ValueError):
+            return
+        if roster_generation != room.roster_generation:
+            return
         now = _now_ms()
         if status == "preflight_ready" and room.phase == "lobby":
-            try:
-                roster_generation = int(msg.get("roster_generation"))
-            except (TypeError, ValueError):
-                return
-            if roster_generation != room.roster_generation:
-                return
             await _room_broadcast(room, {
                 "type": "rtc_status", "status": "preflight_ready",
                 "from": member.user_id,
                 "roster_generation": room.roster_generation,
             }, exclude=member.user_id)
+        elif status in {"disconnected", "failed"} and room.phase == "starting":
+            member.rtc_status = status
+            _room_invalidate_precheck(room)
+            await _room_broadcast(room, {
+                "type": "precheck_failed",
+                "message": "開始期間 P2P RTC 連線中斷；請重新進行連線測試。",
+            })
         elif status == "disconnected" and room.phase == "active":
-            member.rtc_status = "disconnected"
-            if room.rtc_pause_started_ms is None:
-                room.rtc_pause_started_ms = now
-                room.rtc_restart_task = asyncio.create_task(
-                    _room_rtc_restart_timeout(room, now),
+            async with room.lock:
+                pause_started_ms = _room_claim_disconnect_pause_locked(
+                    room, member, now_ms=now,
                 )
-                await _room_broadcast(room, room.state_msg())
-                await _room_broadcast(room, {
-                    "type": "rtc_status", "status": "restart",
-                    "roster_generation": room.roster_generation,
-                })
+            if pause_started_ms is not None:
+                _room_schedule_control_task(
+                    room, f"rtc_pause:{pause_started_ms}",
+                    lambda stamp=pause_started_ms: _room_complete_disconnect_pause(
+                        room, stamp, "rtc_disconnect",
+                    ),
+                )
         elif status == "connected" and room.rtc_pause_started_ms is not None:
             member.rtc_status = "connected"
             connected_members = [
@@ -5185,7 +6106,7 @@ async def _room_handle_message(
                 if restart_task is not None and not restart_task.done():
                     restart_task.cancel()
                 paused = max(0, now - room.rtc_pause_started_ms)
-                for attr in ("started_ms", "seg_started_ms", "hard_deadline_ms", "active_turn_started_ms"):
+                for attr in ("seg_started_ms", "active_turn_started_ms"):
                     value = getattr(room, attr, None)
                     if value is not None:
                         setattr(room, attr, value + paused)
@@ -5193,8 +6114,16 @@ async def _room_handle_message(
                 await _room_broadcast(room, room.state_msg())
         elif status == "connected":
             member.rtc_status = "connected"
+        elif status in ("disconnected", "failed") and room.phase == "lobby":
+            member.rtc_status = status
+            _room_invalidate_precheck(room)
+            await _room_broadcast(room, _room_precheck_msg(room))
         elif status == "failed" and room.phase not in ("ending", "ended"):
-            await _room_end(room, "p2p_ice_failed")
+            room.terminal_requested = True
+            _room_schedule_control_task(
+                room, "end",
+                lambda: _room_end(room, "p2p_ice_failed"),
+            )
         return
 
     if mtype == "claim_role":
@@ -5202,8 +6131,11 @@ async def _room_handle_message(
         if room.phase == "lobby" and room.mode == "A" and side in ("正方", "反方"):
             if all(m.role != side or m.user_id == member.user_id
                    for m in room.members.values()):
+                if member.role == side:
+                    return
                 member.role = side
-                room.roster_generation += 1
+                _room_bump_roster_generation(room)
+                _room_invalidate_precheck(room)
                 await _room_broadcast(room, {
                     "type": "roster", "roster": room.roster(),
                     "roster_generation": room.roster_generation,
@@ -5215,6 +6147,13 @@ async def _room_handle_message(
         return
 
     if mtype in ("next_segment", "set_segment") and is_host:
+        if (
+            room.rtc_pause_started_ms is not None
+            or room.segment_transitioning
+            or _room_control_task_active(room, "segment")
+        ):
+            return
+        expected_from = room.seg_index
         if mtype == "set_segment":
             try:
                 idx = int(msg.get("index", room.seg_index))
@@ -5222,15 +6161,39 @@ async def _room_handle_message(
                 idx = room.seg_index
         else:
             idx = room.seg_index + 1
-        await _room_advance_segment(room, idx)
+        room.segment_transitioning = True
+        task = _room_schedule_control_task(
+            room, "segment",
+            lambda: _room_run_scheduled_segment_advance(
+                room, idx, expected_from,
+            ),
+        )
+        if task is None:
+            room.segment_transitioning = False
         return
 
     if mtype == "end" and is_host:
-        await _room_end(room, "host")
+        if room.phase not in ("ending", "ended") and not room.terminal_requested:
+            room.terminal_requested = True
+            _room_schedule_control_task(
+                room, "end", lambda: _room_end(room, "host"),
+            )
         return
 
     if mtype in ("turn_begin", "turn_end"):
-        await _room_handle_turn(room, member, mtype == "turn_begin")
+        request_id = msg.get("request_id")
+        if mtype == "turn_end" and not _room_message_matches_active_turn(
+            room, member, msg,
+        ):
+            return
+        await _room_handle_turn(
+            room, member, mtype == "turn_begin",
+            request_id=request_id if isinstance(request_id, str) else "",
+        )
+        return
+
+    if mtype == "turn_stop_intent":
+        await _room_handle_turn_stop_intent(room, member, msg)
         return
 
     if mtype == "precheck_result":
@@ -5245,18 +6208,11 @@ async def _room_handle_message(
         await _room_commit_transcript(room, member, msg)
         return
 
-    if mtype == "request_judgement" and is_host:
-        if not room.judge_enabled:
-            return
-        if (
-            room.judgement
-            and room.judgement_revision == room.transcript_revision
-        ):
-            await member.ws.send_text(json.dumps({
-                "type": "judgement", "text": room.judgement,
-            }, ensure_ascii=False))
-        elif room.judgement_task is None or room.judgement_task.done():
-            room.judgement_task = asyncio.create_task(_room_request_judgement(room))
+    if mtype == "request_judgement":
+        await _room_send_member(room, member, {
+            "type": "error",
+            "message": "AI 評判只可由主持在完場後透過結果頁要求一次。",
+        })
         return
 
     if mtype == "test_ping":
@@ -5269,15 +6225,17 @@ async def _room_handle_message(
             or client_ts > 10**16
         ):
             return
-        await member.ws.send_text(json.dumps({
+        await _room_send_member(room, member, {
             "type": "test_pong",
             "client_ts": client_ts,
             "server_now_ms": _now_ms(),
-        }, ensure_ascii=False))
+        })
         return
 
     if mtype == "heartbeat":
-        await member.ws.send_text(json.dumps({"type": "heartbeat_ack", "server_now_ms": _now_ms()}))
+        await _room_send_member(room, member, {
+            "type": "heartbeat_ack", "server_now_ms": _now_ms(),
+        })
         return
 
     if mtype == "chat":
@@ -5312,34 +6270,68 @@ async def room_create(request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    mode = str(payload.get("mode") or "A").upper()
+    raw_mode = payload.get("mode")
+    if not isinstance(raw_mode, str) or not raw_mode.strip():
+        raise HTTPException(status_code=400, detail="練習模式無效。")
+    mode = raw_mode.strip().upper()
     if mode == "B":
         raise HTTPException(status_code=400, detail="多人一隊對 AI（Mode B）已移除。")
     if mode != "A":
         raise HTTPException(status_code=400, detail="只支援 Mode A 真人 P2P 練習。")
-    debate_format = str(payload.get("debate_format") or DEBATE_FORMATS[0])
+    raw_format = payload.get("debate_format")
+    if not isinstance(raw_format, str):
+        raise HTTPException(status_code=400, detail="賽制無效。")
+    debate_format = raw_format.strip()
     if debate_format not in DEBATE_FORMATS:
-        debate_format = DEBATE_FORMATS[0]
-    structure = str(payload.get("structure") or "free")
+        raise HTTPException(status_code=400, detail="不支援的賽制。")
+    raw_structure = payload.get("structure")
+    if not isinstance(raw_structure, str):
+        raise HTTPException(status_code=400, detail="練習結構無效。")
+    structure = raw_structure.strip()
     if structure not in ("free", "mock"):
-        structure = "free"
+        raise HTTPException(status_code=400, detail="只支援自由辯論或完整 Mock。")
     if structure == "free" and debate_format not in FREE_DEBATE_FORMATS:
         raise HTTPException(status_code=400, detail=f"{debate_format}不設自由辯論，請改用完整 Mock。")
-    topic = str(payload.get("topic") or "").strip()[:500]
+    raw_side = payload.get("side")
+    if not isinstance(raw_side, str) or raw_side.strip() not in ("正方", "反方"):
+        raise HTTPException(status_code=400, detail="立場必須為正方或反方。")
+    side = raw_side.strip()
+    raw_topic = payload.get("topic")
+    if not isinstance(raw_topic, str) or not raw_topic.strip():
+        raise HTTPException(status_code=400, detail="請輸入辯題。")
+    topic = raw_topic.strip()
+    if len(topic) > 500:
+        raise HTTPException(status_code=400, detail="辯題不可超過500字。")
+    raw_minutes = payload.get("free_minutes")
+    if isinstance(raw_minutes, bool):
+        raise HTTPException(status_code=400, detail="自由辯論時間無效。")
     try:
-        free_minutes = float(payload.get("free_minutes") or 2.5)
-    except Exception:
-        free_minutes = 2.5
-    # The browser is not authoritative over practice duration.  Without this
-    # clamp a crafted room-create request could keep a Free De room running far
-    # beyond the advertised ten-minute format and room-safety boundary.
-    free_minutes = min(float(LIVE_FREE_MAX_MINUTES), max(0.5, free_minutes))
+        free_minutes = float(raw_minutes)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail="自由辯論時間無效。") from exc
+    minimum_minutes = 2.0 if structure == "mock" else 0.5
+    if (
+        not math.isfinite(free_minutes)
+        or not minimum_minutes <= free_minutes <= float(LIVE_FREE_MAX_MINUTES)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"自由辯論每邊時間必須為{minimum_minutes:g}至"
+                f"{float(LIVE_FREE_MAX_MINUTES):g}分鐘。"
+            ),
+        )
     capacity = 2
 
     async with ROOMS_LOCK:
         _gc_rooms()
         if _active_room_count() >= MAX_ROOMS:
             raise HTTPException(status_code=429, detail="太多練習房，請稍後再試")
+        if _retained_ended_room_count() >= ROOM_RETAINED_ENDED_MAX:
+            raise HTTPException(
+                status_code=429,
+                detail="完場結果暫存已滿，請稍後再建立房間。",
+            )
         code = None
         for _ in range(20):
             candidate = "".join(
@@ -5352,10 +6344,11 @@ async def room_create(request: Request):
             raise HTTPException(status_code=503, detail="未能產生房間代碼，請再試。")
         room = _build_room_plan(
             code, mode, user_id, debate_format, topic, structure,
-            free_minutes, capacity, payload,
+            free_minutes, capacity, {**payload, "side": side},
         )
         ROOMS[code] = room
         _room_ensure_lifecycle(room)
+        _room_schedule_empty_cleanup(room)
     return JSONResponse(
         {"ok": True, "code": code, "mode": mode},
         headers={"Cache-Control": CACHE_NO_STORE},
@@ -5364,10 +6357,14 @@ async def room_create(request: Request):
 
 @app.get("/api/room/{code}")
 async def room_info(code: str, request: Request):
-    require_page_user(request, "ai_room")
+    user_id = require_page_user(request, "ai_room")
     room = ROOMS.get((code or "").upper())
-    if not room or room.phase == "ended":
-        raise HTTPException(status_code=404, detail="房間不存在或已結束")
+    if not room:
+        raise HTTPException(status_code=404, detail="房間不存在")
+    access_error = _room_nonmember_access_error(room, user_id)
+    if access_error:
+        status_code, detail = access_error
+        raise HTTPException(status_code=status_code, detail=detail)
     return JSONResponse({
         "ok": True, "code": room.code, "mode": room.mode, "phase": room.phase,
         "debate_format": room.debate_format, "topic": room.topic,
@@ -5379,25 +6376,64 @@ async def room_info(code: str, request: Request):
 @app.post("/api/room/{code}/leave")
 async def room_leave(code: str, request: Request):
     user_id = require_page_user(request, "ai_room")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    leave_token = payload.get("leave_token") if isinstance(payload, dict) else None
     room = ROOMS.get((code or "").upper())
     if room and user_id in room.members:
-        m = room.members[user_id]
-        if m.connected and room.active_turn_user == user_id:
-            await _room_handle_turn(room, m, False)
-        m.connected = False
-        try:
-            await m.ws.close()
-        except Exception:
-            pass
-        if room.phase == "lobby":
-            room.members.pop(user_id, None)
-            room.precheck_results.pop(user_id, None)
-        await _room_broadcast(room, {
-            "type": "roster", "roster": room.roster(),
-            "roster_generation": room.roster_generation,
-        })
-        if not room.connected_user_ids():
-            _room_schedule_empty_cleanup(room)
+        websocket = None
+        changed = False
+        pause_started_ms = None
+        async with room.lock:
+            member = room.members.get(user_id)
+            if member is not None and member.connected:
+                if (
+                    not isinstance(leave_token, str)
+                    or not 0 < len(leave_token) <= 128
+                    or not secrets.compare_digest(member.leave_token, leave_token)
+                ):
+                    return JSONResponse({
+                        "ok": False,
+                        "detail": "離開憑證已過期；目前連線未有中斷。",
+                    }, status_code=409, headers={
+                        "Cache-Control": CACHE_NO_STORE,
+                    })
+                member.leave_token = secrets.token_urlsafe(24)
+                pause_started_ms = _room_claim_control_disconnect_pause_locked(
+                    room, member,
+                )
+                websocket = member.ws
+                member.connected = False
+                member.connection_generation += 1
+                _room_bump_roster_generation(room)
+                _room_invalidate_precheck(room)
+                if room.phase == "lobby":
+                    room.members.pop(user_id, None)
+                changed = True
+        if websocket is not None:
+            try:
+                await asyncio.wait_for(
+                    websocket.close(code=1000, reason="member left room"),
+                    timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                pass
+        if changed:
+            await _room_broadcast(room, {
+                "type": "peer_left", "user_id": user_id,
+                "roster_generation": room.roster_generation,
+            })
+            await _room_broadcast(room, {
+                "type": "roster", "roster": room.roster(),
+                "roster_generation": room.roster_generation,
+            })
+            await _room_complete_disconnect_pause(
+                room, pause_started_ms, "room_leave",
+            )
+            if not room.connected_user_ids() and not room.terminal_requested:
+                _room_schedule_empty_cleanup(room)
     return JSONResponse(
         {"ok": True}, headers={"Cache-Control": CACHE_NO_STORE},
     )
@@ -5411,19 +6447,81 @@ async def room_transcript(code: str, request: Request):
         raise HTTPException(status_code=404, detail="房間不存在")
     if user_id not in room.members:
         raise HTTPException(status_code=403, detail="只有房間成員可查看逐字稿")
+    judgement_pending = bool(
+        room.judgement_request_started
+        and room.judgement_task is not None
+        and not room.judgement_task.done()
+    )
+    transcript_error = _room_judgement_transcript_error(room)
     return JSONResponse({
         "ok": True, "topic": room.topic, "debate_format": room.debate_format,
         "phase": room.phase,
+        "host": room.created_by,
+        "is_host": user_id == room.created_by,
+        "roster": room.roster(),
         "transcript": room.transcript, "judgement": room.judgement,
         "transcript_revision": room.transcript_revision,
         "judgement_revision": room.judgement_revision,
-        "judgement_pending": bool(
-            room.judge_enabled
-            and
-            room.transcript
-            and room.judgement_revision != room.transcript_revision
+        "judge_enabled": room.judge_enabled,
+        "judge_disabled_reason": room.judge_disabled_reason,
+        "judgement_requested": room.judgement_request_started,
+        "judgement_pending": judgement_pending,
+        "can_request_judgement": bool(
+            room.phase == "ended"
+            and user_id == room.created_by
+            and room.judge_enabled
+            and not room.judgement_request_started
+            and not transcript_error
         ),
     }, headers={"Cache-Control": CACHE_NO_STORE})
+
+
+@app.post("/api/room/{code}/judgement")
+async def room_request_judgement(code: str, request: Request):
+    """Atomically launch the host's one explicit post-match judgement."""
+    user_id = require_page_user(request, "ai_room")
+    room = ROOMS.get((code or "").upper())
+    if not room:
+        raise HTTPException(status_code=404, detail="房間不存在")
+    if user_id != room.created_by or user_id not in room.members:
+        raise HTTPException(status_code=403, detail="只有原房主持可要求 AI 評判。")
+    if room.phase != "ended":
+        raise HTTPException(status_code=409, detail="只可在完場後要求 AI 評判。")
+    if not room.judge_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=room.judge_disabled_reason or "本房 AI 評判已停用。",
+        )
+    transcript_error = _room_judgement_transcript_error(room)
+    if transcript_error:
+        # Missing evidence is retryable and does not consume the once-only
+        # judgement claim or create any provider task.
+        raise HTTPException(status_code=409, detail=transcript_error)
+
+    async with ROOMS_LOCK:
+        if ROOMS.get(room.code) is not room:
+            raise HTTPException(status_code=404, detail="房間結果已過期。")
+        async with room.lock:
+            if not room.judgement_request_started:
+                room.judgement_request_started = True
+                room.judgement_request_revision = room.transcript_revision
+                _room_extend_ended_retention(room)
+                room.judgement_task = asyncio.create_task(
+                    _room_request_judgement(room),
+                )
+            task = room.judgement_task
+            pending = bool(task is not None and not task.done())
+            judgement = room.judgement
+    return JSONResponse({
+        "ok": True,
+        "judgement": judgement,
+        "judgement_pending": pending,
+        "judgement_requested": True,
+        "judge_enabled": room.judge_enabled,
+        "judge_disabled_reason": room.judge_disabled_reason,
+    }, status_code=202 if pending else 200, headers={
+        "Cache-Control": CACHE_NO_STORE,
+    })
 
 
 async def _room_register_socket(room, user_id, websocket):
@@ -5437,38 +6535,105 @@ async def _room_register_socket(room, user_id, websocket):
         if existing is None:
             if room.phase != "lobby":
                 return None, "練習開始後不可加入新成員。", 1008
-            if len(room.connected_user_ids()) >= room.capacity:
+            connected_ids = set(room.connected_user_ids())
+            if len(connected_ids) >= room.capacity:
                 return None, "房間已滿", 1013
+            if (
+                user_id != room.created_by
+                and room.created_by not in connected_ids
+                and len(connected_ids) >= max(0, room.capacity - 1)
+            ):
+                return None, "房間正預留一個位置畀主持。", 1013
             member = RoomMember(user_id, websocket)
             if user_id == room.created_by and room.creator_side:
                 member.role = room.creator_side
             else:
                 taken = {m.role for m in room.members.values() if m.connected}
+                if room.created_by not in connected_ids and room.creator_side:
+                    taken.add(room.creator_side)
                 for side in ("正方", "反方"):
                     if side not in taken:
                         member.role = side
                         break
             room.members[user_id] = member
-            room.roster_generation += 1
+            _room_bump_roster_generation(room)
+            _room_invalidate_precheck(room)
         else:
             if not existing.connected and len(room.connected_user_ids()) >= room.capacity:
                 return None, "房間已滿", 1013
             if existing.ws is not websocket:
                 stale_websocket = existing.ws
+                replacement_pause_started_ms = _room_claim_disconnect_pause_locked(
+                    room, existing,
+                )
+                if replacement_pause_started_ms is not None:
+                    existing.restart_required = replacement_pause_started_ms
                 existing.connection_generation += 1
-                room.precheck_results.pop(user_id, None)
             existing.ws = websocket
             existing.connected = True
             existing.rtc_status = "new"
+            existing.leave_token = secrets.token_urlsafe(24)
             member = existing
-            room.roster_generation += 1
+            _room_bump_roster_generation(room)
+            _room_invalidate_precheck(room)
         _room_cancel_empty_cleanup(room)
     if stale_websocket is not None:
         try:
-            await stale_websocket.close(code=1000, reason="connection replaced")
+            await asyncio.wait_for(
+                stale_websocket.close(code=1000, reason="connection replaced"),
+                timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+            )
         except Exception:
             pass
     return member, "", 0
+
+
+def _room_websocket_origin_allowed(websocket):
+    """Require a browser WebSocket Origin matching the request Host."""
+    headers = getattr(websocket, "headers", {})
+    origin = str(headers.get("origin") or "").strip()
+    host = str(headers.get("host") or "").strip()
+    if not origin or not host:
+        return False
+    forwarded_proto = str(headers.get("x-forwarded-proto") or "").split(",", 1)[0]
+    forwarded_proto = forwarded_proto.strip().lower()
+    if forwarded_proto in {"http", "https"}:
+        public_scheme = forwarded_proto
+    else:
+        request_scheme = str(
+            getattr(websocket, "scope", {}).get("scheme") or ""
+        ).lower()
+        public_scheme = {"ws": "http", "wss": "https"}.get(request_scheme)
+    if public_scheme not in {"http", "https"}:
+        return False
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_host = urlsplit(f"//{host}")
+        if (
+            parsed_origin.scheme not in {"http", "https"}
+            or parsed_origin.scheme != public_scheme
+            or parsed_origin.username is not None
+            or parsed_origin.password is not None
+            or parsed_origin.path not in {"", "/"}
+            or parsed_origin.query
+            or parsed_origin.fragment
+        ):
+            return False
+        origin_hostname = (parsed_origin.hostname or "").lower()
+        host_hostname = (parsed_host.hostname or "").lower()
+        origin_port = parsed_origin.port or (
+            443 if parsed_origin.scheme == "https" else 80
+        )
+        host_port = parsed_host.port or (
+            443 if public_scheme == "https" else 80
+        )
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        origin_hostname
+        and origin_hostname == host_hostname
+        and origin_port == host_port
+    )
 
 
 @app.websocket("/room/{code}")
@@ -5477,6 +6642,9 @@ async def room_ws(websocket: WebSocket, code: str):
     # browser credential, so signed member tokens never enter URLs or storage.
     user_id = _verify_committee_token(websocket.cookies.get("committee_user") or "")
     if not user_id or not account_can_access(user_id, "ai_room"):
+        await websocket.close(code=1008)
+        return
+    if not _room_websocket_origin_allowed(websocket):
         await websocket.close(code=1008)
         return
 
@@ -5493,9 +6661,13 @@ async def room_ws(websocket: WebSocket, code: str):
     )
     if registration_error:
         try:
-            await websocket.send_text(json.dumps(
-                {"type": "error", "message": registration_error}, ensure_ascii=False,
-            ))
+            await asyncio.wait_for(
+                websocket.send_text(json.dumps(
+                    {"type": "error", "message": registration_error},
+                    ensure_ascii=False,
+                )),
+                timeout=ROOM_WS_SEND_TIMEOUT_SECONDS,
+            )
         except Exception:
             pass
         await websocket.close(code=close_code)
@@ -5503,7 +6675,7 @@ async def room_ws(websocket: WebSocket, code: str):
     socket_generation = member.connection_generation
 
     try:
-        await websocket.send_text(json.dumps({
+        if not await _room_send_member(room, member, {
             "type": "roster", "you": user_id, "mode": room.mode,
             "roster": room.roster(), "topic": room.topic,
             "debate_format": room.debate_format, "structure": room.structure,
@@ -5512,13 +6684,40 @@ async def room_ws(websocket: WebSocket, code: str):
             "judgement": room.judgement,
             "judge_enabled": room.judge_enabled,
             "judge_disabled_reason": room.judge_disabled_reason,
+            "leave_token": member.leave_token,
             "roster_generation": room.roster_generation,
-        }, ensure_ascii=False))
-        await websocket.send_text(json.dumps(room.state_msg(), ensure_ascii=False))
+        }, websocket=websocket, generation=socket_generation):
+            return
+        # Publish the new signaling generation to the existing peer before any
+        # paused state can trigger an ICE-restart offer from this socket.
         await _room_broadcast(room, {
             "type": "roster", "roster": room.roster(),
             "roster_generation": room.roster_generation,
         }, exclude=user_id)
+        if not await _room_send_member(
+            room, member, room.state_msg(),
+            websocket=websocket, generation=socket_generation,
+        ):
+            return
+        replacement_pause_started_ms = None
+        async with room.lock:
+            if (
+                member.ws is websocket
+                and member.connection_generation == socket_generation
+                and member.connected
+                and member.restart_required is not None
+            ):
+                replacement_pause_started_ms = member.restart_required
+                member.restart_required = None
+        if replacement_pause_started_ms is not None:
+            _room_schedule_control_task(
+                room, f"rtc_pause:{replacement_pause_started_ms}",
+                lambda stamp=replacement_pause_started_ms: (
+                    _room_complete_disconnect_pause(
+                        room, stamp, "control_replaced",
+                    )
+                ),
+            )
         while True:
             raw = await websocket.receive()
             if (
@@ -5559,32 +6758,38 @@ async def room_ws(websocket: WebSocket, code: str):
         # its disconnect event.  Only the currently registered socket may mark
         # the member offline; otherwise the old loop drops the new connection
         # and corrupts the P2P roster generation.
-        if (
-            member.ws is websocket
-            and member.connection_generation == socket_generation
-        ):
-            if room.active_turn_user == user_id:
-                await _room_handle_turn(room, member, False)
-            async with room.lock:
-                is_current = (
-                    member.ws is websocket
-                    and member.connection_generation == socket_generation
-                )
-                if is_current:
-                    member.connected = False
-                    room.roster_generation += 1
-                    if room.phase == "lobby":
-                        room.members.pop(user_id, None)
-                        room.precheck_results.pop(user_id, None)
+        is_current = False
+        pause_started_ms = None
+        async with room.lock:
+            is_current = (
+                member.ws is websocket
+                and member.connection_generation == socket_generation
+                and member.connected
+            )
             if is_current:
-                await _room_broadcast(room, {"type": "peer_left", "user_id": user_id})
-                await _room_broadcast(room, {
-                    "type": "roster", "roster": room.roster(),
-                    "roster_generation": room.roster_generation,
-                })
-                if not room.connected_user_ids() and not room.terminal_requested:
-                    _room_schedule_empty_cleanup(room)
-        _gc_rooms()
+                pause_started_ms = _room_claim_control_disconnect_pause_locked(
+                    room, member,
+                )
+                member.connected = False
+                member.connection_generation += 1
+                _room_bump_roster_generation(room)
+                _room_invalidate_precheck(room)
+                if room.phase == "lobby":
+                    room.members.pop(user_id, None)
+        if is_current:
+            await _room_broadcast(room, {
+                "type": "peer_left", "user_id": user_id,
+                "roster_generation": room.roster_generation,
+            })
+            await _room_broadcast(room, {
+                "type": "roster", "roster": room.roster(),
+                "roster_generation": room.roster_generation,
+            })
+            await _room_complete_disconnect_pause(
+                room, pause_started_ms, "control_disconnect",
+            )
+            if not room.connected_user_ids() and not room.terminal_requested:
+                _room_schedule_empty_cleanup(room)
 
 
 @app.websocket("/{path:path}")

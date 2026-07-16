@@ -345,7 +345,8 @@
             <li>Render、R2、provider 月度預算及登入、檔案、並行、房間容量／TTL等技術安全邊界。</li>
             <li>實際限額由伺服器集中設定；到達 system-wide 門檻時會停用相應高流量或 AI 功能。</li>
           </ul>
-          <p>聯機真人聲音以 STUN-only P2P 直傳；Render 只同步房間控制、逐字稿及 AI 評判。</p>
+          <p>聯機收音只會在連線測試及 Server 確認輪到你發言後，以 STUN-only P2P 直傳；Render 只同步房間控制及已提交逐字稿。主持只可在完場後明確按一次要求 AI 評判。</p>
+          <p>STUN／ICE 可能向已登入對手顯示網絡候選地址；Web Speech 逐字稿可能按瀏覽器供應商條款處理。只有主持完場後按掣，逐字稿先會交予 Gemini；結果在記憶體短暫保留約 15 分鐘。</p>
         </details>
 
         <section class="panel-card">
@@ -484,7 +485,7 @@
 
           <form id="create-room-form">
             <section class="panel-card">
-              <div class="field"><div class="info">真人對真人（1 對 1，STUN-only P2P 音訊；逐字稿可用時由 AI 評判）</div></div>
+              <div class="field"><div class="info">真人對真人（1 對 1）：測試及輪到自己發言時先開啟 STUN-only P2P 收音；主持可在完場後按一次要求 AI 評判。</div></div>
               <div class="field">
                 <label class="title">練習模式</label>
                 <div class="toggle-row">
@@ -513,12 +514,14 @@
                 <div class="field hidden" id="room-minutes-field">
                   <label class="title" for="room-minutes"
                     >自由辯論每邊時間</label
-                  ><select id="room-minutes">
-                    <option value="3">3 分鐘</option>
-                    <option value="4">4 分鐘</option>
-                    <option value="5" selected>5 分鐘</option>
-                    <option value="6">6 分鐘</option>
-                  </select>
+                  ><input
+                    id="room-minutes"
+                    type="number"
+                    min=".5"
+                    max="10"
+                    step=".5"
+                    value="5"
+                  />
                 </div>
                 <div class="field">
                   <label class="title" for="room-side" id="room-side-title"
@@ -543,9 +546,13 @@
                 ><input
                   type="text"
                   id="join-code"
-                  maxlength="8"
+                  maxlength="5"
+                  minlength="5"
+                  pattern="[A-HJ-KM-NP-Z2-9]{5}"
                   autocomplete="off"
-                  placeholder="例如：ABC123"
+                  autocapitalize="characters"
+                  spellcheck="false"
+                  placeholder="例如：ABC23"
                   required
                 />
               </div>
@@ -675,10 +682,18 @@
         fillFormats("room-format", structure);
         var format = $("room-format").value;
         $("room-minutes-field").classList.toggle("hidden", format !== "聯中");
+        var minimum = structure === "mock" ? 2 : 0.5;
+        var minutes = Number($("room-minutes").value);
+        $("room-minutes").min = String(minimum);
+        if (!Number.isFinite(minutes) || minutes < minimum) {
+          $("room-minutes").value = String(minimum);
+        } else if (minutes > 10) {
+          $("room-minutes").value = "10";
+        }
         $("room-side-title").textContent = "你嘅立場";
         $("room-info").textContent =
           (structure === "mock" ? "完整 Mock" : "Free De") +
-          "（真人對真人）：STUN-only P2P 音訊，完成後由 AI 根據逐字稿評判。建議所有用戶使用電腦版 Chrome。";
+          "（真人對真人）：只在測試及輪到自己發言時開啟 STUN-only P2P 收音；自由辯論由正方開始，每次停咪後嚴格正反交替，一方用完時間先跳過。主持可在完場後按一次要求 AI 評判。建議使用電腦版 Chrome。";
       }
       function syncSession() {
         var room = selected("session_type") === "room";
@@ -785,7 +800,10 @@
         event.preventDefault();
         var code = $("join-code").value.trim().toUpperCase(),
           button = event.submitter;
-        if (!code) return;
+        if (!/^[A-HJ-KM-NP-Z2-9]{5}$/.test(code)) {
+          showMessage("房間代碼必須為 5 個有效大寫英文字母或數字。", true);
+          return;
+        }
         button.disabled = true;
         try {
           var data = await api("/api/room/" + encodeURIComponent(code));
@@ -794,6 +812,9 @@
           showMessage("未能加入房間：" + escError(error), true);
           button.disabled = false;
         }
+      });
+      $("join-code").addEventListener("input", function () {
+        this.value = this.value.toUpperCase().replace(/[^A-HJ-KM-NP-Z2-9]/g, "").slice(0, 5);
       });
       syncTopicSource();
       syncSolo();

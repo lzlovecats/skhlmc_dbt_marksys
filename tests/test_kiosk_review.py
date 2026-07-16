@@ -617,6 +617,7 @@ def test_raw_recording_is_deleted_and_both_provider_passes_receive_audio(monkeyp
         assert kwargs["audio_base64"]
         assert kwargs["audio_mime"] == "audio/mpeg"
         assert kwargs["require_complete"] is True
+        assert "max_output_tokens" not in kwargs
         text = (
             "[00:00.000–00:10.000] [未能確定] [S01] 開場\n"
             if "專業粵語逐字員" in system

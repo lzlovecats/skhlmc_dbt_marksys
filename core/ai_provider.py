@@ -10,15 +10,14 @@ import math
 import httpx
 from system_limits import (
     AI_PROVIDER_GEMINI_TIMEOUT_SECONDS, AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS,
-    AI_PROVIDER_MAX_OUTPUT_TOKENS, AI_PROVIDER_PROMPT_MAX_CHARS,
-    AI_PROVIDER_RESPONSE_MAX_BYTES, AI_PROVIDER_SOURCE_LIMIT,
+    AI_PROVIDER_PROMPT_MAX_CHARS, AI_PROVIDER_RESPONSE_MAX_BYTES,
+    AI_PROVIDER_SOURCE_LIMIT,
     OPENROUTER_WEB_SEARCH_MAX_RESULTS,
     OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS,
 )
 
 
 _DEFAULT_TEMPERATURE = object()
-_MAX_OUTPUT_TOKENS_PER_CALL = 65_536
 _MAX_PROMPT_CHARS_PER_CALL = 250_000
 _MAX_TIMEOUT_SECONDS_PER_CALL = 300
 
@@ -192,25 +191,19 @@ async def generate_text(
     audio_mime="audio/webm",
     audio_file_uri="",
     web_search=False,
-    max_output_tokens=None,
     max_prompt_chars=None,
     timeout_seconds=None,
     temperature=_DEFAULT_TEMPERATURE,
     require_complete=False,
 ):
     system, user = _bounded_prompt_pair(system, user, max_prompt_chars)
-    output_limit = _bounded_integer(
-        max_output_tokens,
-        AI_PROVIDER_MAX_OUTPUT_TOKENS,
-        _MAX_OUTPUT_TOKENS_PER_CALL,
-    )
     selected_temperature = _bounded_temperature(temperature, web_search)
     if config["provider"] in ("openrouter", "custom"):
         if audio_file_uri:
             raise ValueError("所選 provider 不支援 Google Files URI")
         payload = {"model": config["model"], "messages": [
             {"role": "system", "content": system}, {"role": "user", "content": user},
-        ], "max_tokens": output_limit}
+        ]}
         if selected_temperature is not None:
             payload["temperature"] = selected_temperature
         if web_search and config["provider"] == "openrouter":
@@ -239,10 +232,12 @@ async def generate_text(
             "mime_type": audio_mime or "audio/webm", "file_uri": audio_file_uri,
         }})
     payload = {"system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"maxOutputTokens": output_limit}}
+        "contents": [{"role": "user", "parts": parts}]}
+    generation_config = {}
     if selected_temperature is not None:
-        payload["generationConfig"]["temperature"] = selected_temperature
+        generation_config["temperature"] = selected_temperature
+    if generation_config:
+        payload["generationConfig"] = generation_config
     if web_search:
         payload["tools"] = [{"google_search": {}}]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{config['model']}:generateContent"

@@ -19,8 +19,8 @@ from schema import TABLE_TOPIC_REMOVAL_VOTES, TABLE_TOPIC_VOTES, TABLE_TOPICS
 from core.vote_logic import parse_reason_list
 from system_limits import (
     ACCOUNT_LIST_LIMIT, VOTE_AI_CATEGORY_EXAMPLE_LIMIT,
-    VOTE_AI_DISCUSSION_COMMENT_LIMIT, VOTE_AI_MAX_OUTPUT_TOKENS,
-    VOTE_AI_PROMPT_MAX_CHARS, VOTE_AI_TOPIC_SAMPLE_LIMIT,
+    VOTE_AI_DISCUSSION_COMMENT_LIMIT, VOTE_AI_PROMPT_MAX_CHARS,
+    VOTE_AI_TOPIC_SAMPLE_LIMIT,
 )
 
 CATEGORIES = [
@@ -121,7 +121,6 @@ def _generate_gemini(model, system_prompt, user_text, secrets):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.7,
-                max_output_tokens=VOTE_AI_MAX_OUTPUT_TOKENS,
             ),
         )
         meta = _read_attr(response, "usage_metadata", "usageMetadata")
@@ -152,7 +151,6 @@ def _generate_openrouter(model, system_prompt, user_text, secrets):
                 {"role": "user", "content": user_text},
             ],
             temperature=0.7,
-            max_tokens=VOTE_AI_MAX_OUTPUT_TOKENS,
         )
         usage_meta = _read_attr(response, "usage")
         usage = _usage_record(
