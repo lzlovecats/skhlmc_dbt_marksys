@@ -1,5 +1,7 @@
 """AI helpers for topic review and vote analysis."""
 
+import logging
+
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, is_non_member_account
 from ai_model_config import (
     AI_MODEL_OPTIONS, NON_MANUAL_DEFAULT_AI_MODEL,
@@ -16,12 +18,16 @@ from prompts import (
     build_vote_topic_review_prompt,
 )
 from schema import TABLE_TOPIC_REMOVAL_VOTES, TABLE_TOPIC_VOTES, TABLE_TOPICS
+from core.ai_provider import generate_text
 from core.vote_logic import parse_reason_list
 from system_limits import (
     ACCOUNT_LIST_LIMIT, VOTE_AI_CATEGORY_EXAMPLE_LIMIT,
     VOTE_AI_DISCUSSION_COMMENT_LIMIT, VOTE_AI_PROMPT_MAX_CHARS,
     VOTE_AI_TOPIC_SAMPLE_LIMIT,
 )
+
+
+logger = logging.getLogger(__name__)
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -57,40 +63,52 @@ def _model_config(model_label=None, feature="vote_discussion"):
     return {**config, "label": label if label in AI_MODEL_OPTIONS or label in NON_MANUAL_MODEL_OPTIONS else NON_MANUAL_DEFAULT_AI_MODEL}
 
 
-def _read_attr(value, *names):
-    for name in names:
-        if isinstance(value, dict) and name in value:
-            return value[name]
-        if hasattr(value, name):
-            return getattr(value, name)
-    return None
-
-
-def _usage_record(model, input_tokens=0, output_tokens=0):
-    input_tokens = int(input_tokens or 0)
-    output_tokens = int(output_tokens or 0)
+def _usage_record(model, actual=None):
+    actual = actual if isinstance(actual, dict) else {}
+    input_tokens = max(0, int(actual.get("input_tokens") or 0))
+    output_tokens = max(0, int(actual.get("output_tokens") or 0))
+    audio_tokens = max(0, int(actual.get("audio_tokens") or 0))
+    search_calls = max(0, int(actual.get("search_calls") or 0))
     usd = (
         input_tokens * float(model.get("input_price_per_million") or 0)
+        + audio_tokens * float(
+            model.get("audio_input_price_per_million")
+            or model.get("input_price_per_million")
+            or 0
+        )
         + output_tokens * float(model.get("output_price_per_million") or 0)
     ) / 1_000_000
+    usd += search_calls * float(model.get("web_search_price_per_call") or 0)
     return {
         "model_label": model.get("label") or NON_MANUAL_DEFAULT_AI_MODEL,
         "provider": model.get("provider") or "other",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "audio_tokens": 0,
-        "search_calls": 0,
+        "audio_tokens": audio_tokens,
+        "search_calls": search_calls,
         "estimated_cost_usd": round(usd, 6),
         "estimated_cost_hkd": round(usd * 7.8, 4),
-        "cost_source": "actual_tokens",
+        "cost_source": actual.get("cost_source") or "actual_tokens",
     }
 
 
-def _format_ai_error(provider, error):
-    return f"❌ {provider} 回覆失敗：{error}"
+def _provider_label(provider):
+    return {"gemini": "Gemini", "openrouter": "OpenRouter"}.get(provider, "AI")
 
 
-def generate_general_ai_reply(
+def _missing_key_error(key_name):
+    if key_name == "GEMINI_API_KEY":
+        return "❌ 未設定 Gemini API Key，請聯絡開發人員。"
+    if key_name == "OPENROUTER_API_KEY":
+        return "❌ 未設定 OpenRouter API Key，請聯絡開發人員。"
+    return "❌ 未設定 AI Provider API Key，請聯絡開發人員。"
+
+
+def _format_ai_error(provider):
+    return f"❌ {_provider_label(provider)} 回覆失敗，請稍後再試。"
+
+
+async def generate_general_ai_reply(
     system_prompt, user_text, secrets, model_label=None, *, feature="vote_discussion",
 ):
     user_text = str(user_text or "")
@@ -99,68 +117,35 @@ def generate_general_ai_reply(
     model = _model_config(model_label, feature)
     if not model:
         return "❌ 未能載入 AI 模型設定。", None
-    if model.get("provider") == "gemini":
-        return _generate_gemini(model, system_prompt, user_text, secrets)
-    return _generate_openrouter(model, system_prompt, user_text, secrets)
-
-
-def _generate_gemini(model, system_prompt, user_text, secrets):
-    api_key = secrets.get("GEMINI_API_KEY")
+    provider = str(model.get("provider") or "").lower()
+    key_name = str(
+        model.get("api_key")
+        or ("GEMINI_API_KEY" if provider == "gemini" else "OPENROUTER_API_KEY")
+    )
+    api_key = str((secrets or {}).get(key_name) or "").strip()
     if not api_key:
-        return "❌ 未設定 Gemini API Key，請聯絡開發人員。", None
+        return _missing_key_error(key_name), None
     try:
-        from google import genai
-        from google.genai import types
-    except ImportError:
-        return "❌ Gemini SDK 尚未安裝，請先更新 requirements.txt 並重新部署。", None
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model["model"],
-            contents=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.7,
-            ),
-        )
-        meta = _read_attr(response, "usage_metadata", "usageMetadata")
-        usage = _usage_record(
+        text, actual_usage = await generate_text(
             model,
-            _read_attr(meta, "prompt_token_count", "promptTokenCount"),
-            _read_attr(meta, "candidates_token_count", "candidatesTokenCount"),
-        )
-        return response.text or "AI 未能生成回覆，請再試一次。", usage
-    except Exception as e:
-        return _format_ai_error("Gemini", e), None
-
-
-def _generate_openrouter(model, system_prompt, user_text, secrets):
-    api_key = secrets.get("OPENROUTER_API_KEY")
-    if not api_key:
-        return "❌ 未設定 OpenRouter API Key，請聯絡開發人員。", None
-    try:
-        from openai import OpenAI
-    except ImportError:
-        return "❌ OpenAI SDK 尚未安裝，請先更新 requirements.txt 並重新部署。", None
-    try:
-        client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
-        response = client.chat.completions.create(
-            model=model["model"],
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
+            system_prompt,
+            user_text,
+            api_key=api_key,
+            web_search=False,
+            # Vote AI historically bounds user input separately from its fixed
+            # server prompt. Preserve that contract while the shared transport
+            # still enforces its own absolute combined-prompt safety ceiling.
+            max_prompt_chars=len(str(system_prompt or "")) + len(user_text),
             temperature=0.7,
         )
-        usage_meta = _read_attr(response, "usage")
-        usage = _usage_record(
-            model,
-            _read_attr(usage_meta, "prompt_tokens", "promptTokens"),
-            _read_attr(usage_meta, "completion_tokens", "completionTokens"),
+        return text or "AI 未能生成回覆，請再試一次。", _usage_record(model, actual_usage)
+    except Exception:
+        logger.exception(
+            "Vote AI provider request failed (provider=%s, model=%s)",
+            provider or "unknown",
+            str(model.get("model") or "unknown"),
         )
-        return response.choices[0].message.content or "AI 未能生成回覆，請再試一次。", usage
-    except Exception as e:
-        return _format_ai_error("OpenRouter", e), None
+        return _format_ai_error(provider), None
 
 
 def gather_topic_review_context(category, difficulty, db):
@@ -211,7 +196,7 @@ def gather_topic_review_context(category, difficulty, db):
     return "\n".join(lines)
 
 
-def review_topic(topic, category, difficulty, db, secrets):
+async def review_topic(topic, category, difficulty, db, secrets):
     difficulty_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
     user_text = build_vote_topic_review_prompt(
         topic,
@@ -221,7 +206,7 @@ def review_topic(topic, category, difficulty, db, secrets):
         difficulty_definitions=DIFFICULTY_CRITERIA,
         analytics_context=gather_topic_review_context(category, difficulty, db),
     )
-    return generate_general_ai_reply(
+    return await generate_general_ai_reply(
         VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, secrets,
         feature="vote_review",
     )
@@ -270,10 +255,10 @@ def gather_bank_analysis_context(db):
     return "\n".join(summary_lines), topic_lines
 
 
-def analyze_topic_bank(db, secrets):
+async def analyze_topic_bank(db, secrets):
     bank_summary, topic_lines = gather_bank_analysis_context(db)
     user_text = build_vote_bank_analysis_prompt(bank_summary, topic_lines)
-    return generate_general_ai_reply(
+    return await generate_general_ai_reply(
         VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, secrets,
         feature="vote_analysis",
     )
@@ -372,10 +357,10 @@ def gather_vote_history_analysis_context(vote_df, db):
     return "\n".join(summary_lines), member_lines, category_lines, reason_lines
 
 
-def analyze_vote_history(vote_df, db, secrets):
+async def analyze_vote_history(vote_df, db, secrets):
     overall_summary, member_lines, category_lines, reason_lines = gather_vote_history_analysis_context(vote_df, db)
     user_text = build_vote_history_analysis_prompt(overall_summary, member_lines, category_lines, reason_lines)
-    return generate_general_ai_reply(
+    return await generate_general_ai_reply(
         VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, secrets,
         feature="vote_analysis",
     )
@@ -408,7 +393,7 @@ def build_motion_background(motion_type, motion_key, db):
     return "\n".join(lines)
 
 
-def discussion_reply(motion_type, motion_key, comments, db, secrets, question=None):
+async def discussion_reply(motion_type, motion_key, comments, db, secrets, question=None):
     recent_comments = comments[-VOTE_AI_DISCUSSION_COMMENT_LIMIT:]
     discussion_lines = [f"{c['user_id']}：{str(c['comment_text'])[:2000]}" for c in recent_comments]
     removal_reasons = None
@@ -426,7 +411,7 @@ def discussion_reply(motion_type, motion_key, comments, db, secrets, question=No
         question=question,
         background=build_motion_background(motion_type, motion_key, db),
     )
-    return generate_general_ai_reply(
+    return await generate_general_ai_reply(
         VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, secrets,
         feature="vote_discussion",
     )
