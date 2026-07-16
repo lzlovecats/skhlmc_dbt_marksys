@@ -8,6 +8,8 @@ The read path and state transitions reuse ``core.vote_logic`` so HTTP and
 domain code stay on one source of truth.
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from account_access import AI_COMMENT_ACCOUNT_ID
@@ -39,6 +41,17 @@ def _ai_secrets():
         "GEMINI_API_KEY": _get_proxy_secret("GEMINI_API_KEY"),
         "OPENROUTER_API_KEY": _get_proxy_secret("OPENROUTER_API_KEY"),
     }
+
+
+def _run_vote_ai(awaitable):
+    """Run async provider transport inside FastAPI's sync-route worker.
+
+    Vote handlers deliberately remain synchronous because their DB and push
+    dependencies are synchronous. FastAPI runs these handlers in its bounded
+    worker pool, so this bridge avoids blocking the application's event loop or
+    silently changing the existing request-concurrency boundary.
+    """
+    return asyncio.run(awaitable)
 
 
 def _log_vote_ai(user_id, feature, text, usage, db):
@@ -500,9 +513,9 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
     if should_ai:
         vl.ensure_ai_comment_account(db=db)
         existing = vl.fetch_comments(motion_type, motion_key, db=db)
-        ai_text, usage = vote_ai.discussion_reply(
+        ai_text, usage = _run_vote_ai(vote_ai.discussion_reply(
             motion_type, motion_key, existing, db, _ai_secrets(), question=question
-        )
+        ))
         _log_vote_ai(user_id, "vote_discussion", ai_text, usage, db)
         if vote_ai.is_successful_ai_result(ai_text):
             vl.insert_comment(
@@ -537,7 +550,9 @@ def ai_review(body: AiReviewBody, user_id: str = Depends(_committee_user)):
         raise HTTPException(400, "請先輸入完整辯題")
     _validate_ai_selection(body.category, body.difficulty)
     db = _vote_db()
-    text, usage = review_topic(topic, body.category, body.difficulty, db, _ai_secrets())
+    text, usage = _run_vote_ai(
+        review_topic(topic, body.category, body.difficulty, db, _ai_secrets())
+    )
     _log_vote_ai(user_id, "vote_review", text, usage, db)
     return {"status": "ok", "review": text}
 
@@ -581,13 +596,15 @@ def run_analysis(body: AiAnalysisBody, user_id: str = Depends(_committee_user)):
     db = _vote_db()
     if body.kind == "bank":
         source_signature = vl.analysis_source_signature("bank", db=db)
-        text, usage = vote_ai.analyze_topic_bank(db, _ai_secrets())
+        text, usage = _run_vote_ai(vote_ai.analyze_topic_bank(db, _ai_secrets()))
         if vote_ai.is_successful_ai_result(text):
             vl.save_analysis("bank", text, user_id, source_signature=source_signature, db=db)
     elif body.kind == "history":
         history_df = vl.fetch_vote_history_analysis_data(db=db)
         source_signature = vl.analysis_source_signature("history", db=db, vote_df=history_df)
-        text, usage = vote_ai.analyze_vote_history(history_df, db, _ai_secrets())
+        text, usage = _run_vote_ai(
+            vote_ai.analyze_vote_history(history_df, db, _ai_secrets())
+        )
         if vote_ai.is_successful_ai_result(text):
             vl.save_analysis("history", text, user_id, source_signature=source_signature, db=db)
     else:

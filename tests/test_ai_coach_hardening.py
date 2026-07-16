@@ -609,6 +609,7 @@ def test_gemini_rest_keys_are_headers_never_urls(monkeypatch):
     assert "key=" not in coach_call["url"]
     assert coach_call["kwargs"]["headers"] == {"x-goog-api-key": secret}
     assert "params" not in coach_call["kwargs"]
+    assert "maxOutputTokens" not in coach_call["kwargs"]["json"]["generationConfig"]
 
     from core import rag
 
@@ -625,7 +626,7 @@ def test_gemini_rest_keys_are_headers_never_urls(monkeypatch):
     assert "params" not in rag_call["kwargs"]
 
 
-def test_provider_per_call_generation_overrides_are_bounded(monkeypatch):
+def test_provider_generation_overrides_are_bounded_without_token_ceiling(monkeypatch):
     captured = {"timeouts": [], "payloads": []}
 
     class _Client:
@@ -656,7 +657,6 @@ def test_provider_per_call_generation_overrides_are_bounded(monkeypatch):
         "S" * 10,
         "U" * 10,
         api_key="key",
-        max_output_tokens=12_345,
         max_prompt_chars=12,
         timeout_seconds=45,
         temperature=None,
@@ -666,7 +666,7 @@ def test_provider_per_call_generation_overrides_are_bounded(monkeypatch):
     first = captured["payloads"][0]
     assert first["system_instruction"]["parts"][0]["text"] == "S" * 10
     assert first["contents"][0]["parts"][0]["text"] == "U" * 2
-    assert first["generationConfig"] == {"maxOutputTokens": 12_345}
+    assert "generationConfig" not in first
     assert captured["timeouts"][0] == 45
 
     asyncio.run(ai_provider.generate_text(
@@ -674,7 +674,6 @@ def test_provider_per_call_generation_overrides_are_bounded(monkeypatch):
         "S" * 300_000,
         "U" * 300_000,
         api_key="key",
-        max_output_tokens=999_999,
         max_prompt_chars=999_999,
         timeout_seconds=999_999,
         temperature=999,
@@ -683,10 +682,7 @@ def test_provider_per_call_generation_overrides_are_bounded(monkeypatch):
     system_text = second["system_instruction"]["parts"][0]["text"]
     user_text = second["contents"][0]["parts"][0]["text"]
     assert len(system_text) + len(user_text) == 250_000
-    assert second["generationConfig"] == {
-        "maxOutputTokens": 65_536,
-        "temperature": 2.0,
-    }
+    assert second["generationConfig"] == {"temperature": 2.0}
     assert captured["timeouts"][1] == 300
 
 
@@ -777,6 +773,7 @@ def test_openrouter_web_search_payload_uses_bounded_result_caps(monkeypatch):
         "system", "question", api_key="key", web_search=True,
     ))
     parameters = captured["tools"][0]["parameters"]
+    assert "max_tokens" not in captured
     assert parameters["max_results"] == system_limits.OPENROUTER_WEB_SEARCH_MAX_RESULTS
     assert parameters["max_total_results"] == system_limits.OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS
     assert parameters["max_total_results"] >= parameters["max_results"]
@@ -1626,6 +1623,9 @@ def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     assert "key=" not in captured[0]["url"]
     assert captured[0]["kwargs"]["headers"] == {"x-goog-api-key": "key"}
     assert "params" not in captured[0]["kwargs"]
+    assert captured[0]["kwargs"]["json"]["generationConfig"] == {
+        "temperature": 0.2,
+    }
     assert "2MiB" in room.judgement
     assert broadcasts[-1] == {"type": "judgement", "text": room.judgement}
 

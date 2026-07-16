@@ -1,8 +1,8 @@
 # 系統服務、成本及用量限制
 
-更新日期：2026-07-15
+更新日期：2026-07-16
 
-目前已核實的Render production為 **4.2.1**；repo release版本為 **4.5.1**，尚未
+目前已核實的Render production為 **4.2.1**；repo release版本為 **4.5.5**，尚未
 部署，程式碼版本唯一來源仍是[`version.py`](../version.py)。Production migration
 head為`20260714_0002`；兩個legacy BYTEA columns及
 legacy `system_config`已由versioned migrations退役。45張相片、45張縮圖及148段錄音共238個R2 objects
@@ -70,7 +70,8 @@ Browser ⇄ Google Gemini Live：WebSocket audio及session（直連）
 
 Mode A真人聯機
 Browser ⇄ Browser：STUN-only WebRTC Opus audio
-Browser ⇄ Render WebSocket：SDP／ICE、roster、turn、timer、逐字稿、文字AI評判
+Browser ⇄ Render WebSocket：SDP／ICE、roster、turn、timer、逐字稿
+Browser ⇄ Render HTTPS：完場結果及由主持手動觸發一次文字AI評判
 ```
 
 Solo Gemini Live只有短小HTML、prompt及token response經Render，Live audio直接在
@@ -101,11 +102,17 @@ TOAST空間，未經maintenance評估不為追求dashboard數字而跑`VACUUM FU
 - 只接受兩位真人的Mode A；`mode=B`明確400。Free De及完整Mock保留。
 - 音訊為Cloudflare public STUN-only WebRTC Opus mono P2P；不設TURN、SFU或Render fallback。
 - Render只轉發authenticated SDP／ICE及低流量control；訊息受member、roster generation、
-  byte、rate、room capacity、90分鐘TTL及兩房並行上限保護，ICE不寫log／database。
+  byte、rate、room capacity、lobby 10分鐘TTL、開始後流程時限及兩房並行上限保護，ICE不寫log／database。
 - 每部裝置由使用者按鍵做咪／播放、ICE、data-channel及remote packets／energy測試；
-  兩位通過才開始聯機。
-- 每次發言用server簽發`turn_id`及ordered final chunks；可用的逐字稿會逐段保存。要求AI
-  評價時，前端及server都會先確認正反雙方各有至少一段逐字稿，未齊不會呼叫provider。
+  兩位通過才開始聯機；測試後停傳，正式練習只在輪到本人並按開始發言後啟用音軌。
+- Free De每方有完整設定時間，整體另有15分鐘安全寬限；由正方開始並在每次停咪後嚴格正反交替，
+  一方用完時間先跳過；完整Mock以預定流程加15分鐘為硬上限。
+- 每次發言用server簽發`turn_id`及ordered final chunks；可用的逐字稿會逐段保存。系統截停時
+  逾時未收到browser final會保留server已收到內容並標示可能不完整。
+- 房間完結後只可由主持手動要求一次AI評價；前端及server會先確認正反雙方各有至少一段
+  逐字稿，未齊不呼叫provider，亦不消耗該次機會。評判呼叫不另設output token上限，
+  由provider／模型預設控制長度，但回應仍受2MiB byte上限、45秒timeout及一次性要求保護。
+- 完場逐字稿及結果只在process記憶體保留15分鐘；最多保留8個完場房，AI評判workflow同時最多2個。
 - P2P中斷先暫停timer，只做一次10秒ICE restart；失敗安全完場，永不改經Render。
 
 ### AI Coach錄音分析
@@ -168,7 +175,7 @@ manual baseline，完整月份後自動停止依賴baseline。Developer另有手
 
 - 3GB：一次性全體委員push及developer warning。
 - 3.5GB：停止新AI Coach錄音分析傳輸及server TTS；Mode A P2P真人練習及文字AI可用。
-- 4GB：停止一般AI及Mode A AI評判；Mode A仍可作無AI評判真人練習。
+- 4GB：停止一般AI、Mode A AI評判及該房Web Speech逐字稿；Mode A仍可作無逐字稿／AI評判真人練習。
 - R2 7GB warning、8GB stop／hard；停止新PUT intent但不影響讀取。
 
 AI基金每期香港時間上月25日00:00（包括）至本月25日00:00（不包括），只加總

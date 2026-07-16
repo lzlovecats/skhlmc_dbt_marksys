@@ -25,7 +25,11 @@
     });
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) throw new Error("未登入");
-    if (!response.ok) throw new Error(data.detail || "操作失敗");
+    if (!response.ok) {
+      const error = new Error(data.detail || "操作失敗");
+      error.status = response.status;
+      throw error;
+    }
     return data;
   };
 
@@ -42,6 +46,11 @@
   let previousReviewMarkdown = "";
   let reviewContextSnapshot = "";
   let retakeConsumed = false;
+  let pendingRoomCode = "";
+  let pendingRoomSuccess = "";
+  let roomHandshakeTimer = 0;
+  let roomPhase = "";
+  let roomLeaveToken = "";
 
   const modelByLabel = (label) =>
     meta?.models.find((model) => model.label === label);
@@ -64,12 +73,24 @@
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   };
 
-  function showPane(name) {
+  function hasUnendedRoom() {
+    return Boolean(
+      (pendingRoomCode || sessionStorage.aiRoom)
+      && roomPhase !== "ended"
+    );
+  }
+
+  function showPane(name, options = {}) {
+    if (name !== "room" && !options.force && hasUnendedRoom()) {
+      toast("⚠️ 連線房間仍在進行；請先返回房間並按「離開房間」，或由主持結束房間。");
+      return false;
+    }
     document
       .querySelectorAll(".pane, .tabs button")
       .forEach((element) => element.classList.remove("active"));
     $(name).classList.add("active");
     document.querySelector(`[data-pane="${name}"]`).classList.add("active");
+    return true;
   }
 
   function currentReviewContext() {
@@ -747,9 +768,16 @@
     $("roomMinutes").min = structure === "mock" ? "2" : ".5";
     $("roomSideLabel").firstChild.textContent = "你的立場";
     $("roomModeInfo").textContent =
-      "真人對真人（1 對 1），聲音經 STUN-only P2P 直傳；完成後可請 AI 根據逐字稿評判。";
+      "真人對真人（1 對 1）：只在測試及 Server 確認輪到你發言後開咪；自由辯論由正方開始，每次停咪後嚴格正反交替，一方用完時間先跳過。主持可在完場後按一次要求 AI 評判。";
     $("roomTimeNote").textContent =
       !adjustable && free ? "校園隨想自由辯論為每邊 2:30。" : "";
+    const minimum = structure === "mock" ? 2 : 0.5;
+    const maximum = Number($("roomMinutes").max || 10);
+    const current = Number($("roomMinutes").value);
+    if (!Number.isFinite(current) || current < minimum)
+      $("roomMinutes").value = String(minimum);
+    else if (current > maximum)
+      $("roomMinutes").value = String(maximum);
   }
 
   function switchRoomAction(action) {
@@ -759,20 +787,111 @@
     $("showCreate").classList.toggle("active", create);
     $("showJoin").classList.toggle("active", !create);
   }
-  function roomOpen(code) {
-    $("roomCode").textContent = code;
-    $("activeRoomNote").textContent =
-      "真人對真人練習；音訊由兩部裝置 P2P 直傳，Render 只同步逐字稿、計時及 AI 評判。";
-    $("roomFrame").src = `/ai-coach/room/${encodeURIComponent(code)}`;
+  function clearRoomHandshake() {
+    if (roomHandshakeTimer) clearTimeout(roomHandshakeTimer);
+    roomHandshakeTimer = 0;
+  }
+
+  function resetRoomUi(clearStored = true) {
+    clearRoomHandshake();
+    pendingRoomCode = "";
+    pendingRoomSuccess = "";
+    roomPhase = "";
+    roomLeaveToken = "";
+    if (clearStored) {
+      sessionStorage.removeItem("aiRoom");
+      sessionStorage.removeItem("aiRoomMode");
+    }
+    $("roomFrame").src = "about:blank";
+    $("retryRoom").classList.add("hidden");
+    $("activeRoom").classList.add("hidden");
+    $("roomSetup").classList.remove("hidden");
+  }
+
+  function roomOpen(code, options = {}) {
+    const normalized = String(code || "").trim().toUpperCase();
+    pendingRoomCode = normalized;
+    pendingRoomSuccess = String(options.successMessage || "");
+    roomPhase = String(options.initialPhase || "pending");
+    roomLeaveToken = "";
+    // Persist the authoritative create/info result before the iframe handshake
+    // so a refresh during a slow control connection can restore the room.
+    sessionStorage.aiRoom = normalized;
+    sessionStorage.aiRoomMode = "A";
+    $("roomCode").textContent = normalized;
+    $("activeRoomNote").textContent = "正在確認房間連線…";
+    $("retryRoom").classList.add("hidden");
+    showPane("room", { force: true });
+    $("roomFrame").src =
+      `/ai-coach/room/${encodeURIComponent(normalized)}?embedded=1&attempt=${Date.now()}`;
     $("activeRoom").classList.remove("hidden");
     $("roomSetup").classList.add("hidden");
-    sessionStorage.aiRoom = code;
-    sessionStorage.aiRoomMode = "A";
+    clearRoomHandshake();
+    roomHandshakeTimer = setTimeout(() => {
+      if (pendingRoomCode !== normalized) return;
+      roomHandshakeTimer = 0;
+      $("activeRoomNote").textContent =
+        "房間控制連線仍在重試；為免意外離開，已保留房間。你可等候恢復，或明確按「離開房間」。";
+      toast("⚠️ 房間連線暫未恢復，系統會繼續重試。");
+    }, 60000);
   }
-  async function roomInfo(code) {
-    const data = await api(`/api/room/${encodeURIComponent(code)}`);
-    roomOpen(data.code, data.mode);
+  async function roomInfo(code, options = {}) {
+    const normalized = String(code || "").trim().toUpperCase();
+    if (!/^[A-HJ-KM-NP-Z2-9]{5}$/.test(normalized)) {
+      throw new Error("房間代碼必須為 5 個有效大寫英文字母或數字。");
+    }
+    const data = await api(`/api/room/${encodeURIComponent(normalized)}`);
+    roomOpen(data.code, { ...options, initialPhase: data.phase });
+    return data;
   }
+
+  window.addEventListener("message", (event) => {
+    if (
+      event.origin !== location.origin
+      || event.source !== $("roomFrame").contentWindow
+      || event.data?.channel !== "ai-coach-room"
+    ) return;
+    const message = event.data;
+    const expectedCode = pendingRoomCode || sessionStorage.aiRoom || "";
+    if (!expectedCode || String(message.code || "").toUpperCase() !== expectedCode)
+      return;
+    if (message.type === "room_ready") {
+      clearRoomHandshake();
+      pendingRoomCode = expectedCode;
+      roomPhase = String(message.phase || roomPhase || "lobby");
+      if (typeof message.leave_token === "string" && message.leave_token) {
+        roomLeaveToken = message.leave_token;
+      }
+      sessionStorage.aiRoom = expectedCode;
+      sessionStorage.aiRoomMode = "A";
+      $("retryRoom").classList.add("hidden");
+      $("activeRoomNote").textContent = message.phase === "ended"
+        ? "房間已結束；可查看短暫保留嘅逐字稿及 AI 評判。"
+        : "真人對真人練習；只在測試及輪到自己發言時 P2P 傳聲，Render 同步控制及已提交逐字稿。";
+      if (pendingRoomSuccess) toast(`✅ ${pendingRoomSuccess}`);
+      pendingRoomSuccess = "";
+    } else if (message.type === "room_phase") {
+      roomPhase = String(message.phase || roomPhase);
+      if (roomPhase === "ended") {
+        clearRoomHandshake();
+        $("activeRoomNote").textContent =
+          "房間已結束；可切換功能，亦可留喺本頁查看短暫保留嘅結果。";
+      }
+    } else if (message.type === "room_terminal") {
+      const text = String(message.message || "房間連線已終止。");
+      if (message.recoverable) {
+        clearRoomHandshake();
+        $("activeRoomNote").textContent =
+          `${text} 房間仍然保留；請重新連線，或明確離開房間。`;
+        $("retryRoom").classList.remove("hidden");
+        showPane("room", { force: true });
+        toast(`⚠️ ${text}`);
+        return;
+      }
+      resetRoomUi(true);
+      toast(`⚠️ ${text}`);
+    }
+  });
 
   async function boot() {
     try {
@@ -801,10 +920,22 @@
       syncLive();
       await syncMock();
       syncRoom();
-      if (sessionStorage.aiRoom)
-        roomInfo(sessionStorage.aiRoom).catch(() =>
-          sessionStorage.removeItem("aiRoom"),
-        );
+      if (sessionStorage.aiRoom) {
+        const storedRoom = sessionStorage.aiRoom;
+        try {
+          await roomInfo(storedRoom, { restore: true });
+        } catch (error) {
+          if (error.message === "未登入") throw error;
+          if ([403, 404, 409].includes(error.status)
+              || !/^[A-HJ-KM-NP-Z2-9]{5}$/.test(storedRoom)) {
+            sessionStorage.removeItem("aiRoom");
+            sessionStorage.removeItem("aiRoomMode");
+          } else {
+            roomOpen(storedRoom, { restore: true });
+            toast(`⚠️ 暫未能驗證房間，已保留並嘗試重新連線：${error.message}`);
+          }
+        }
+      }
       return true;
     } catch (error) {
       $("app").classList.add("hidden");
@@ -1045,8 +1176,7 @@
         method: "POST",
         body: JSON.stringify(payload),
       });
-      roomOpen(data.code);
-      toast("✅ 房間已建立。");
+      roomOpen(data.code, { successMessage: "房間已建立。" });
     } catch (error) {
       toast(`⚠️ ${error.message}`);
     } finally {
@@ -1057,25 +1187,61 @@
     event.preventDefault();
     busy(true);
     try {
-      await roomInfo($("joinCode").value.trim().toUpperCase());
-      toast("✅ 已加入房間。");
+      await roomInfo($("joinCode").value.trim().toUpperCase(), {
+        successMessage: "已加入房間。",
+      });
     } catch (error) {
       toast(`⚠️ ${error.message}`);
     } finally {
       busy(false);
     }
   });
+  $("joinCode").addEventListener("input", function () {
+    this.value = this.value
+      .toUpperCase()
+      .replace(/[^A-HJ-KM-NP-Z2-9]/g, "")
+      .slice(0, 5);
+  });
   $("leaveRoom").addEventListener("click", async () => {
-    const code = sessionStorage.aiRoom;
-    if (code)
-      await api(`/api/room/${encodeURIComponent(code)}/leave`, {
-        method: "POST",
-      }).catch(() => {});
-    sessionStorage.removeItem("aiRoom");
-    sessionStorage.removeItem("aiRoomMode");
-    $("roomFrame").src = "about:blank";
-    $("activeRoom").classList.add("hidden");
-    $("roomSetup").classList.remove("hidden");
+    const code = sessionStorage.aiRoom || pendingRoomCode;
+    if (code) {
+      $("roomFrame").contentWindow?.postMessage({
+        channel: "ai-coach-room",
+        type: "parent_leave",
+        code,
+      }, location.origin);
+      const token = roomLeaveToken;
+      roomLeaveToken = "";
+      const leaveRequest = token
+        ? api(`/api/room/${encodeURIComponent(code)}/leave`, {
+          method: "POST",
+          body: JSON.stringify({ leave_token: token }),
+          keepalive: true,
+        }).catch(() => {})
+        : Promise.resolve();
+      resetRoomUi(true);
+      await leaveRequest;
+      return;
+    }
+    resetRoomUi(true);
+  });
+  $("retryRoom").addEventListener("click", () => {
+    const code = sessionStorage.aiRoom || pendingRoomCode;
+    if (!code) return;
+    roomOpen(code, { initialPhase: roomPhase || "pending" });
+  });
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!hasUnendedRoom()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest?.("a[href]");
+    if (!link || !hasUnendedRoom()) return;
+    event.preventDefault();
+    showPane("room", { force: true });
+    toast("⚠️ 連線房間仍在進行；請先離開房間，或由主持結束房間。");
   });
   [
     ["downloadStrategy", "策略建議.txt", "strategyResult"],

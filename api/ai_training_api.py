@@ -917,7 +917,7 @@ async def recording_quality_check(body: RecordingBody, request: Request):
         except Exception as exc:
             raise HTTPException(502, "未能從R2讀取錄音作音質檢查") from exc
         probe = _probe_audio(audio, mime)
-        payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode("ascii")}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0, "maxOutputTokens": 2048}}
+        payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode("ascii")}}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
         try:
             from deploy.proxy import record_bandwidth_usage
             await asyncio.to_thread(
@@ -982,7 +982,7 @@ async def llm(body: LlmBody, request: Request):
             url=_gemini_generation_url("llm_review")
             async with LLM_REVIEW_SEMAPHORE:
                 async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-                    response_data = await _post_gemini_json(client, url, key, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0,"maxOutputTokens":2048}})
+                    response_data = await _post_gemini_json(client, url, key, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0}})
             review=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
             _log_ai(user, db, "llm_review", True, response_data=response_data)
         except Exception as exc:
@@ -1182,7 +1182,7 @@ async def coverage_ai(request: Request):
     summary = "\n".join(f"[{x['category']}] {sid}｜accepted={x['accepted']}｜pending={x['pending']}｜{x['text']}" for sid,x in grouped.items()) or "（句庫為空）"
     url = _gemini_generation_url("tts_script_analysis")
     coverage_prompt = build_tts_coverage_prompt(summary)[:AI_TRAINING_PROMPT_MAX_CHARS]
-    body = {"systemInstruction":{"parts":[{"text":TTS_COVERAGE_SYSTEM_PROMPT}]}, "contents":[{"parts":[{"text":coverage_prompt}]}], "generationConfig":{"responseMimeType":"application/json","temperature":.4,"maxOutputTokens":2048}}
+    body = {"systemInstruction":{"parts":[{"text":TTS_COVERAGE_SYSTEM_PROMPT}]}, "contents":[{"parts":[{"text":coverage_prompt}]}], "generationConfig":{"responseMimeType":"application/json","temperature":.4}}
     try:
         async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
             response_data = await _post_gemini_json(client, url, key, json=body)
@@ -1269,7 +1269,7 @@ async def regenerate_suggestions(request: Request):
     unlocked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) not in locked_ids) or "（暫時冇未錄音句子）"
     prompt = build_tts_regenerate_prompt(locked, unlocked)[:AI_TRAINING_PROMPT_MAX_CHARS]
     url = _gemini_generation_url("tts_script_analysis")
-    payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5, "maxOutputTokens": 2048}}
+    payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5}}
     try:
         async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
             response_data = await _post_gemini_json(client, url, key, json=payload)

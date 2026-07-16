@@ -31,19 +31,24 @@
       .timer { text-align:center; font-size:clamp(54px,9vw,92px); font-weight:850; font-variant-numeric:tabular-nums; margin:10px; }
       .talk { width:100%; min-height:90px; margin-top:12px; background:var(--blue); border-color:var(--blue); font-size:clamp(22px,3vw,34px); }
       .talk.live { background:var(--red); }
+      .mic-status { margin:12px 0 0; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:#11141b; color:var(--muted); font-weight:750; text-align:center; }
+      .mic-status.testing { color:#ffe09d; border-color:#8b6a27; background:#29251d; }
+      .mic-status.live { color:#baf5d3; border-color:#26784b; background:#143322; }
       .side-timers { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
       .side-timers > div { padding:12px; border-radius:12px; background:#11141b; text-align:center; }
       .side-timers span { display:block; font-size:28px; font-weight:800; }
       #networkTestResult,#log,#transcript,#judgement { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.55; }
       #log { max-height:180px; overflow:auto; font-family:ui-monospace,monospace; font-size:13px; }
       .hidden { display:none !important; }
+      html.embedded body { padding-top:12px; }
+      html.embedded #practiceNav { display:none; }
       @media (max-width:600px) { .side-timers { grid-template-columns:1fr; } button { width:100%; } }
     </style>
   </head>
   <body>
     <nav class="practice-nav" id="practiceNav">
       <strong>聯機辯論練習</strong>
-      <a href="/ai-coach">返回 AI Coach</a>
+      <a id="roomBack" href="/ai-coach" target="_top">離開房間並返回 AI Coach</a>
     </nav>
 
     <section class="card">
@@ -54,9 +59,9 @@
         <div><span class="muted">房間碼</span><div id="codeText" class="code"></div></div>
       </div>
       <p id="connStatus" class="muted">建立控制連線中…</p>
-      <p class="notice">
-        建議所有用戶使用電腦版 Chrome。
-      </p>
+      <div class="notice">
+        <strong>私隱及傳送提示：</strong>只會在連線測試及 Server 確認輪到你發言後開啟 P2P 收音；STUN／ICE 可能向已登入對手顯示網絡候選地址。Web Speech 逐字稿可能按瀏覽器供應商條款處理；控制及已提交逐字稿經 Render。完場後只會在主持按一次要求時，將逐字稿交予 Gemini 評判，結果在記憶體短暫保留約 15 分鐘。建議所有用戶使用電腦版 Chrome。
+      </div>
     </section>
 
     <section class="card" id="networkTest">
@@ -87,6 +92,8 @@
         <div id="conTimerBox"><b>反方</b><span id="conTimer">00:00</span></div>
       </div>
       <div id="segSub" class="muted" style="text-align:center"></div>
+      <p id="roomAlert" class="notice hidden" role="alert"></p>
+      <p id="micStatus" class="mic-status" role="status" aria-live="polite">🔇 咪高峰：已靜音（聲音不會傳送）</p>
       <div id="meter" class="hidden"></div>
       <button id="talkBtn" class="talk" disabled>按一下開始發言</button>
     </section>
@@ -97,7 +104,7 @@
         <button id="startBtn" class="primary">開始練習</button>
         <button id="prevBtn">上一節</button>
         <button id="nextBtn">下一節</button>
-        <button id="judgeBtn">要求 AI 評價</button>
+        <button id="judgeBtn" disabled>要求 AI 評判（一次）</button>
         <button id="endBtn" class="warn">結束</button>
       </div>
     </section>
@@ -109,6 +116,6 @@
     <script>
       window.ROOM_P2P_BOOTSTRAP = { code: __ROOM_CODE__, wsBase: __ROOM_WS_BASE__, bellSrc: __BELL_SRC__ };
     </script>
-    <script src="/shared/room-debate-p2p.js"></script>
+    <script src="/shared/room-debate-p2p.js?v=__APP_VERSION__"></script>
   </body>
 </html>

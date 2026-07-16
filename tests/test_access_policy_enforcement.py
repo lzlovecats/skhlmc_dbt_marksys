@@ -83,11 +83,13 @@ def test_room_websocket_applies_the_same_central_policy(
 ):
     class Socket:
         cookies = {"committee_user": "signed"}
+        headers = {"origin": "https://example.test", "host": "example.test"}
+        scope = {"scheme": "wss"}
 
         def __init__(self):
             self.closed = []
 
-        async def close(self, code):
+        async def close(self, code, reason=""):
             self.closed.append(code)
 
     class Rooms:
