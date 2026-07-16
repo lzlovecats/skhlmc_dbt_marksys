@@ -1,6 +1,6 @@
 """Committee-authenticated JSON endpoints for the HTML replay page."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from api.access import require_page_user
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from pydantic import BaseModel, Field
@@ -25,10 +25,16 @@ class ChapterItem(BaseModel):
     is_best_debater: bool | None = None
 
 
+class RosterItem(BaseModel):
+    role_label: str = Field(max_length=40)
+    user_id: str | None = Field(default=None, max_length=200)
+
+
 class ChaptersBody(BaseModel):
     video_id: int
     chapters: list[ChapterItem] = Field(max_length=30)
     best_debater_role: str | None = Field(default=None, max_length=40)
+    assignments: list[RosterItem] | None = Field(default=None, max_length=10)
 
 
 def _context(request: Request):
@@ -37,10 +43,21 @@ def _context(request: Request):
 
 
 @router.get("/data")
-def data(request: Request, video_id: int | None = None, mine_only: bool = False):
+def data(
+    request: Request,
+    video_id: int | None = None,
+    mine_only: bool = False,
+    member_user_ids: list[str] | None = Query(default=None),
+):
     from core import media_logic as logic
     user_id, db = _context(request)
-    return logic.replay_data(user_id, video_id, mine_only=mine_only, db=db)
+    return logic.replay_data(
+        user_id,
+        video_id,
+        mine_only=mine_only,
+        participant_user_ids=member_user_ids,
+        db=db,
+    )
 
 @router.get("/comments")
 def comments(request: Request, video_id: int, page: int = 1):
@@ -77,9 +94,29 @@ def chapters(body: ChaptersBody, request: Request):
         if "best_debater_role" in body.model_fields_set
         else logic.PRESERVE_BEST_DEBATER
     )
-    return logic.save_chapters(
+    result = logic.save_chapters(
         body.video_id,
         [item.model_dump(exclude_unset=True) for item in body.chapters],
         best_debater_role=best_role,
         db=db,
     )
+    if not result.get("ok") or body.assignments is None:
+        return result
+    roster_result = logic.save_video_roster(
+        body.video_id,
+        [item.model_dump() for item in body.assignments],
+        db=db,
+    )
+    if not roster_result.get("ok"):
+        return {
+            "ok": False,
+            "message": (
+                "章節時間表已更新，但委員帳戶連結未能儲存："
+                + roster_result.get("message", "未知錯誤")
+            ),
+        }
+    return {
+        **result,
+        "message": "章節時間表及委員帳戶連結已更新。",
+        "roster": roster_result.get("roster", []),
+    }

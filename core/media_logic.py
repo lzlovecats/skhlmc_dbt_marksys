@@ -157,7 +157,14 @@ def is_youtube_url(url):
     )
 
 
-def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT, mine_only=False):
+def _replay_rows(
+    user_id,
+    db,
+    limit=VIDEO_REPLAY_LIST_LIMIT,
+    mine_only=False,
+    participant_user_ids=None,
+):
+    participant_user_ids = safe_text_list(participant_user_ids)
     return db.query(
         f"""
         SELECT v.id, v.match_id, COALESCE(NULLIF(v.match_label, ''), v.match_id) AS match_display,
@@ -208,10 +215,23 @@ def _replay_rows(user_id, db, limit=VIDEO_REPLAY_LIST_LIMIT, mine_only=False):
               SELECT 1 FROM {TABLE_VIDEO_ROSTER} mine
               WHERE mine.video_id=v.id AND mine.member_user_id=:user_id
           ))
+          AND (:filter_participants = FALSE OR EXISTS (
+              SELECT 1 FROM {TABLE_VIDEO_ROSTER} selected_roster
+              WHERE selected_roster.video_id=v.id
+                AND selected_roster.member_user_id = ANY(
+                    CAST(:participant_user_ids AS TEXT[])
+                )
+          ))
         ORDER BY progress.updated_at DESC NULLS LAST, m.match_date DESC NULLS LAST, m.match_time DESC NULLS LAST,
                  v.display_order ASC, v.created_at DESC
         LIMIT :limit
-        """, {"user_id": user_id, "mine_only": bool(mine_only), "limit": max(1, int(limit))}
+        """, {
+            "user_id": user_id,
+            "mine_only": bool(mine_only),
+            "filter_participants": bool(participant_user_ids),
+            "participant_user_ids": participant_user_ids,
+            "limit": max(1, int(limit)),
+        }
     )
 
 
@@ -233,18 +253,40 @@ def _replay_record(row):
     }
 
 
-def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
+def replay_data(
+    user_id,
+    selected_video_id=None,
+    mine_only=False,
+    participant_user_ids=None,
+    db=None,
+):
     db = _resolve_db(db)
+    member_accounts = member_account_options(db)
+    valid_members = set(member_accounts)
+    participant_user_ids = list(
+        dict.fromkeys(
+            member
+            for member in safe_text_list(participant_user_ids)
+            if member in valid_members and not is_non_member_account(member)
+        )
+    )
     videos = [
         _replay_record(row)
-        for _, row in _replay_rows(user_id, db, mine_only=mine_only).iterrows()
+        for _, row in _replay_rows(
+            user_id,
+            db,
+            mine_only=mine_only,
+            participant_user_ids=participant_user_ids,
+        ).iterrows()
     ]
     if not videos:
         return {
-            "videos": [], "selected": None, "chapters": [], "comments": [],
+            "videos": [], "selected": None, "chapters": [], "roster": [],
+            "comments": [],
             "my_vote": None, "vote_labels": VOTE_LABELS,
             "chapter_labels": CHAPTER_LABELS,
             "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
+            "member_accounts": member_accounts,
             "best_debater_role": None,
             "best_debater_roles": [],
         }
@@ -264,18 +306,46 @@ def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
             ORDER BY c.display_order ASC, c.start_seconds ASC""",
         {"video_id": selected_id},
     )
-    chapter_items = [
-        {
-            "chapter_label": clean_text(row["chapter_label"]),
-            "start_seconds": safe_int(row["start_seconds"]),
-            "label": seconds_to_label(row["start_seconds"]),
-            "display_order": safe_int(row.get("display_order")),
-            "is_best_debater": safe_bool(row.get("is_best_debater")),
-            "speaker_user_id": clean_text(row.get("speaker_user_id")) or None,
-        }
-        for _, row in chapters.iterrows()
-    ]
+    chapter_items = []
+    for _, row in chapters.iterrows():
+        speaker_user_id = clean_text(row.get("speaker_user_id"))
+        chapter_items.append(
+            {
+                "chapter_label": clean_text(row["chapter_label"]),
+                "start_seconds": safe_int(row["start_seconds"]),
+                "label": seconds_to_label(row["start_seconds"]),
+                "display_order": safe_int(row.get("display_order")),
+                "is_best_debater": safe_bool(row.get("is_best_debater")),
+                "speaker_user_id": (
+                    speaker_user_id
+                    if speaker_user_id
+                    and not is_non_member_account(speaker_user_id)
+                    else None
+                ),
+            }
+        )
     chapter_items.sort(key=lambda row: (CHAPTER_ORDER.get(row["chapter_label"], row["display_order"] + len(CHAPTER_LABELS)), row["start_seconds"]))
+    roster_rows = db.query(
+        f"""SELECT role_label, member_user_id FROM {TABLE_VIDEO_ROSTER}
+            WHERE video_id=:video_id""",
+        {"video_id": selected_id},
+    )
+    roster_items = []
+    for _, row in roster_rows.iterrows():
+        member_user_id = clean_text(row.get("member_user_id"))
+        if not member_user_id or is_non_member_account(member_user_id):
+            continue
+        roster_items.append(
+            {
+                "role_label": clean_text(row.get("role_label")),
+                "user_id": member_user_id,
+            }
+        )
+    roster_items.sort(
+        key=lambda row: INDIVIDUAL_SPEECH_ORDER.get(
+            row["role_label"], len(INDIVIDUAL_SPEECH_LABELS)
+        )
+    )
     best_debater_roles = [
         row["chapter_label"] for row in chapter_items if row["is_best_debater"]
     ]
@@ -284,9 +354,11 @@ def replay_data(user_id, selected_video_id=None, mine_only=False, db=None):
     my_vote = clean_text(vote.iloc[0]["vote_choice"]) if not vote.empty else None
     return {
         "videos": videos, "selected": selected, "chapters": chapter_items,
+        "roster": roster_items,
         "comments": comment_items, "my_vote": my_vote,
         "vote_labels": VOTE_LABELS, "chapter_labels": CHAPTER_LABELS,
         "individual_speech_labels": INDIVIDUAL_SPEECH_LABELS,
+        "member_accounts": member_accounts,
         # Keep the singular field temporarily for older replay clients.
         "best_debater_role": best_debater_roles[0] if best_debater_roles else None,
         "best_debater_roles": best_debater_roles,

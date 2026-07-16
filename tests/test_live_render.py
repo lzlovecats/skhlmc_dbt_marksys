@@ -65,6 +65,29 @@ def test_free_and_mock_feedback_prompts_require_comparative_review_sections():
         assert "範圍之外" in prompt
         assert "可供同學參考" in prompt
         assert "真人學生" in prompt
+    assert "point form" in LIVE_RUNTIME_PROMPTS["feedback_free"]
+    assert "每個標題及重點另起一行" in LIVE_RUNTIME_PROMPTS["feedback_free"]
+
+
+def test_free_feedback_is_visible_point_form_without_any_audio_playback():
+    html = proxy._render_live_debate_html("tok-f", "prompt", 2.5, [], True)
+    model_parts = html.split("function processAiModelTurnParts", 1)[1].split(
+        "function playPcm", 1
+    )[0]
+    socket_messages = html.split("ws.onmessage = async", 1)[1].split(
+        "ws.onerror", 1
+    )[0]
+    finish_feedback = html.split("if (isFinalFeedbackTurn)", 1)[1].split(
+        "isWaiting = false", 1
+    )[0]
+
+    assert "silentFreeFeedback" in model_parts
+    assert "!silentFreeFeedback && part.inlineData" in model_parts
+    assert 'responsePurpose === "feedback" && !MOCK_MODE' in socket_messages
+    assert "!discardNormal && !silentFreeFeedback" in socket_messages
+    assert "formatFreeFeedbackPointForm" in finish_feedback
+    assert 'MOCK_MODE ? "pending" : "pending feedback-points"' in html
+    assert ".line.feedback-points" in html
 
 
 def test_free_debate_render_keeps_original_copy_and_prompt():
@@ -236,6 +259,7 @@ let nativeAudioParts = [];
 let played = [];
 let appended = [];
 let accountCalls = 0;
+let responsePurpose;
 const aiLine = {{}};
 function accountAiPcmAudio() {{ accountCalls += 1; return accountCalls === 1; }}
 function playPcm(data) {{ played.push(data); }}
@@ -261,6 +285,18 @@ accountCalls = 0;
 processAiModelTurnParts(parts);
 if (accountCalls !== 2 || nativeAudioParts.length !== 0 || played.join(",") !== "accepted")
   throw new Error("native playback continued after the crossing part");
+
+responsePurpose = "feedback";
+azureTtsEnabled = true;
+nativeAudioParts = [];
+played = [];
+appended = [];
+accountCalls = 0;
+processAiModelTurnParts(parts);
+if (accountCalls !== 0 || nativeAudioParts.length !== 0 || played.length !== 0)
+  throw new Error("Free De feedback entered an audio accounting or playback path");
+if (appended.join(",") !== "first,crossing,later")
+  throw new Error("silent Free De feedback lost its visible text");
 """
     completed = subprocess.run(
         ["node", "-e", script],

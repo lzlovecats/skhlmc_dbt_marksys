@@ -4434,7 +4434,7 @@ async def _room_disable_judge(room, reason: str):
     if not room.judge_enabled:
         return
     room.judge_enabled = False
-    room.judge_disabled_reason = str(reason or "逐字稿已停用")[:500]
+    room.judge_disabled_reason = str(reason or "AI 評價目前不可用")[:500]
     await _room_broadcast(room, {
         "type": "judge_disabled", "reason": room.judge_disabled_reason,
     })
@@ -4449,7 +4449,6 @@ async def _room_handle_precheck_result(room, member, msg):
         room.precheck_results[member.user_id] = {
             "ok": bool(msg.get("media_ok", msg.get("ok"))),
             "media_ok": bool(msg.get("media_ok", msg.get("ok"))),
-            "transcript_ok": bool(msg.get("transcript_ok")),
             "message": str(msg.get("message") or "")[:800],
         }
         users = room.connected_user_ids()
@@ -4470,15 +4469,6 @@ async def _room_handle_precheck_result(room, member, msg):
     if not complete:
         return
     if ready:
-        transcript_failed = [
-            user for user in users
-            if not room.precheck_results[user].get("transcript_ok")
-        ]
-        if transcript_failed:
-            await _room_disable_judge(
-                room,
-                "至少一部裝置未通過粵語逐字稿測試；真人練習繼續，但本房不會呼叫 AI 評判。",
-            )
         start_error = _room_start_blocker(room)
         if start_error:
             await _room_reset_precheck_if_current(
@@ -4536,9 +4526,8 @@ async def _room_advance_segment(room, index: int, *, expected_from=None):
         if room.active_turn_user:
             member = room.members.get(room.active_turn_user)
             if member is not None:
-                # Advancing a timer may never silently omit the tail of a
-                # speech. A browser that has not committed its final chunks
-                # permanently loses AI judgement, while human practice moves on.
+                # End the active speech before advancing the authoritative
+                # timer. A missing transcript is handled at judgement time.
                 await _room_handle_turn(room, member, False)
         now = _now_ms()
         if room.active_turn_side in room.side_elapsed_ms and room.active_turn_started_ms is not None:
@@ -4736,7 +4725,6 @@ async def _room_handle_turn(room, member, speaking):
         if (room.current_segment() or {}).get("side") == "雙方" and room.active_turn_side == "正方":
             room.free_first_done = True
         ended_turn_id = room.active_turn_id
-        turn_state = room.turn_transcript_chunks.get(ended_turn_id or "") or {}
         room.active_turn_user = None
         room.active_turn_side = None
         room.active_turn_started_ms = None
@@ -4745,10 +4733,8 @@ async def _room_handle_turn(room, member, speaking):
         room, {"type": "speaking", "user_id": member.user_id, "speaking": speaking},
     )
     await _room_broadcast(room, room.state_msg())
-    if not speaking and ended_turn_id and not turn_state.get("committed"):
-        await _room_disable_judge(
-            room, "發言結束時逐字稿未成功 commit；真人練習繼續，AI 評判已停用。",
-        )
+    if not speaking and ended_turn_id:
+        room.turn_transcript_chunks.pop(ended_turn_id, None)
 
 
 async def _room_handle_transcript(room, member, msg):
@@ -4766,10 +4752,8 @@ async def _room_handle_transcript(room, member, msg):
     try:
         sequence = int(msg.get("sequence"))
     except (TypeError, ValueError):
-        await _room_disable_judge(room, "逐字稿 sequence 無效；AI 評判已停用。")
         return
     if sequence != int(state.get("next_sequence") or 0):
-        await _room_disable_judge(room, "逐字稿 sequence 缺漏；AI 評判已停用。")
         return
     text_value = str(msg.get("text") or "").strip()
     if not text_value:
@@ -4794,13 +4778,9 @@ async def _room_commit_transcript(room, member, msg):
     except (TypeError, ValueError):
         final_sequence = -1
     if final_sequence != int(state.get("next_sequence") or 0) or not state.get("chunks"):
-        await _room_disable_judge(
-            room, "逐字稿 commit 為空或 sequence 缺漏；AI 評判已停用。",
-        )
         return
     text_value = "".join(state["chunks"]).strip()
     if not text_value:
-        await _room_disable_judge(room, "逐字稿 commit 為空；AI 評判已停用。")
         return
     item = {
         "speaker": member.user_id,
@@ -4841,6 +4821,22 @@ async def _room_request_judgement(room):
                     getattr(room, "ended_retain_until_ms", 0),
                     _now_ms() + ROOM_EMPTY_GRACE_MS,
                 )
+
+
+def _room_judgement_transcript_error(room) -> str:
+    transcript_sides = {
+        str(item.get("side") or "")
+        for item in getattr(room, "transcript", [])
+        if str(item.get("text") or "").strip()
+    }
+    missing_sides = [side for side in ("正方", "反方") if side not in transcript_sides]
+    if not missing_sides:
+        return ""
+    return (
+        "暫未能要求 AI 評價："
+        + "、".join(missing_sides)
+        + "未有逐字稿。請雙方先完成至少一次發言。"
+    )
 
 
 def _log_room_judgement_attempt(
@@ -4911,11 +4907,19 @@ async def _room_request_judgement_unlocked(room):
     if not getattr(room, "judge_enabled", True):
         result = (
             "本房 AI 評判已停用："
-            + str(getattr(room, "judge_disabled_reason", "逐字稿測試或發言逐字稿失敗。"))
+            + str(getattr(room, "judge_disabled_reason", "AI 評價目前不可用。"))
         )
         room.judgement = result
         room.judgement_revision = target_revision
         await _room_broadcast(room, {"type": "judgement", "text": result})
+        return
+    transcript_error = _room_judgement_transcript_error(room)
+    if transcript_error:
+        room.judgement = transcript_error
+        room.judgement_revision = target_revision
+        await _room_broadcast(
+            room, {"type": "judgement", "text": transcript_error},
+        )
         return
     budget_error = _bandwidth_essential_gate_error()
     if budget_error:
@@ -4923,13 +4927,6 @@ async def _room_request_judgement_unlocked(room):
         room.judgement_revision = target_revision
         await _room_broadcast(room, {"type": "judgement", "text": budget_error})
         return
-    if not room.transcript:
-        result = "暫時未有逐字稿，AI 評判未能判定哪一方勝出。請先完成發言，或使用支援語音轉文字的瀏覽器。"
-        room.judgement = result
-        room.judgement_revision = target_revision
-        await _room_broadcast(room, {"type": "judgement", "text": result})
-        return
-
     api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
     if not api_key:
         result = "未設定 GEMINI_API_KEY，暫時無法使用 AI 評判。"
@@ -5246,12 +5243,6 @@ async def _room_handle_message(
 
     if mtype == "transcript_commit":
         await _room_commit_transcript(room, member, msg)
-        return
-
-    if mtype == "judge_disabled":
-        await _room_disable_judge(
-            room, str(msg.get("reason") or "瀏覽器逐字稿發生 terminal error。"),
-        )
         return
 
     if mtype == "request_judgement" and is_host:

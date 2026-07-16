@@ -113,11 +113,11 @@ def test_media_preflight_failure_blocks_start_and_is_retryable(monkeypatch):
         monkeypatch.setattr(proxy, "_room_broadcast", broadcast)
         await proxy._room_handle_precheck_result(room, room.members["host"], {
             "type": "precheck_result", "check_id": "check",
-            "media_ok": True, "transcript_ok": True,
+            "media_ok": True,
         })
         await proxy._room_handle_precheck_result(room, room.members["guest"], {
             "type": "precheck_result", "check_id": "check",
-            "media_ok": False, "transcript_ok": True, "message": "ICE failed",
+            "media_ok": False, "message": "ICE failed",
         })
         assert room.phase == "lobby"
         assert room.precheck_id is None and room.precheck_results == {}
@@ -126,7 +126,7 @@ def test_media_preflight_failure_blocks_start_and_is_retryable(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_transcript_preflight_failure_disables_only_judge(monkeypatch):
+def test_preflight_ignores_legacy_transcript_result(monkeypatch):
     async def scenario():
         room = _free_room()
         room.precheck_id = "check"
@@ -147,8 +147,15 @@ def test_transcript_preflight_failure_disables_only_judge(monkeypatch):
             "check_id": "check", "media_ok": True, "transcript_ok": False,
         })
         assert room.phase == "active" and room.activation_ready is True
-        assert room.judge_enabled is False
-        assert any(item["type"] == "judge_disabled" for item in broadcasts)
+        assert room.judge_enabled is True
+        reported_results = [
+            result
+            for item in broadcasts if item.get("type") == "precheck_status"
+            for result in item.get("results", {}).values() if result
+        ]
+        assert reported_results
+        assert all("transcript_ok" not in result for result in reported_results)
+        assert all(item["type"] != "judge_disabled" for item in broadcasts)
 
     asyncio.run(scenario())
 
@@ -252,7 +259,7 @@ def test_authoritative_turn_accepts_ordered_final_transcript(monkeypatch):
 
 
 @pytest.mark.parametrize("failure", ["gap", "empty", "uncommitted"])
-def test_terminal_transcript_failures_disable_judge_but_keep_room_active(
+def test_incomplete_transcript_is_skipped_without_disabling_judge(
     monkeypatch, failure,
 ):
     async def scenario():
@@ -275,10 +282,11 @@ def test_terminal_transcript_failures_disable_judge_but_keep_room_active(
             await proxy._room_commit_transcript(room, host, {
                 "turn_id": turn_id, "final_sequence": 0,
             })
-        else:
+        if room.active_turn_user:
             await proxy._room_handle_turn(room, host, False)
         assert room.phase == "active"
-        assert room.judge_enabled is False
+        assert room.judge_enabled is True
+        assert room.transcript == []
 
     asyncio.run(scenario())
 
@@ -298,7 +306,8 @@ def test_segment_advance_cannot_silently_drop_uncommitted_active_turn(monkeypatc
         await proxy._room_advance_segment(room, 0)
         assert room.phase == "active"
         assert room.active_turn_user is None
-        assert room.judge_enabled is False
+        assert room.judge_enabled is True
+        assert room.transcript == []
 
     asyncio.run(scenario())
 
@@ -449,6 +458,30 @@ def test_disabled_judge_never_starts_final_provider_call(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_judgement_requires_transcript_from_both_sides_before_provider(monkeypatch):
+    async def scenario():
+        room = _free_room()
+        room.phase = "active"
+        room.transcript = [{"side": "正方", "text": "已有逐字稿"}]
+        room.transcript_revision = 1
+        broadcasts = []
+
+        async def broadcast(_room, payload, **_kwargs):
+            broadcasts.append(payload)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("missing-side transcript reached provider setup")
+
+        monkeypatch.setattr(proxy, "_room_broadcast", broadcast)
+        monkeypatch.setattr(proxy, "_get_proxy_secret", forbidden)
+        await proxy._room_request_judgement(room)
+
+        assert "反方未有逐字稿" in room.judgement
+        assert broadcasts[-1] == {"type": "judgement", "text": room.judgement}
+
+    asyncio.run(scenario())
+
+
 def test_room_frontend_is_stun_only_and_has_no_render_media_fallback():
     html = (proxy.BASE_DIR / "templates" / "room_debate.html").read_text("utf-8")
     js = (proxy.BASE_DIR / "frontend/shared/room-debate-p2p.js").read_text("utf-8")
@@ -457,8 +490,13 @@ def test_room_frontend_is_stun_only_and_has_no_render_media_fallback():
     assert "MediaRecorder" not in js and "audio_base64" not in js
     assert "preflight_ready" in js
     assert "ensurePeer().then" not in js
-    assert "建議全員使用電腦版 Chrome" in html
-    assert "網絡候選地址" in html
+    assert "建議所有用戶使用電腦版 Chrome。" in html
+    assert "Mode A · STUN-only P2P" not in html + js
+    assert "8 秒粵語 final transcript" not in html
+    assert "只會傳送 P2P Opus 音訊" not in html
+    assert "要求 AI 評價" in html
+    assert "transcriptSides" in js
+    assert "cantoneseTranscriptTest" not in js
     referenced_ids = set(re.findall(r'\$\("([A-Za-z][A-Za-z0-9_-]*)"\)', js))
     html_ids = set(re.findall(r'\bid="([A-Za-z][A-Za-z0-9_-]*)"', html))
     assert referenced_ids <= html_ids

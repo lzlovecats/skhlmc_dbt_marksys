@@ -673,7 +673,7 @@
           if (!matchId) {
             sequenceMatchId = "";
             segments = [];
-            renderSeq();
+            renderSeq({ revealCurrent: true });
             return;
           }
           var epoch = ++sequenceEpoch;
@@ -690,7 +690,7 @@
             if (data.free_debate_minutes !== undefined)
               state.free_debate_minutes = data.free_debate_minutes;
             renderOfficialMatch();
-            renderSeq();
+            renderSeq({ revealCurrent: true });
           } catch (error) {
             if (epoch !== sequenceEpoch || authRedirecting) return;
             segments = [];
@@ -705,8 +705,21 @@
           return '<span class="pill ' + cls + '">' + esc(side) + "</span>";
         }
 
-        function renderSeq() {
+        function revealCurrentSegment(box, current) {
+          if (!box || !current) return;
+          var boxRect = box.getBoundingClientRect();
+          var currentRect = current.getBoundingClientRect();
+          if (currentRect.top < boxRect.top) {
+            box.scrollTop -= boxRect.top - currentRect.top;
+          } else if (currentRect.bottom > boxRect.bottom) {
+            box.scrollTop += currentRect.bottom - boxRect.bottom;
+          }
+        }
+
+        function renderSeq(options) {
           var box = el("seq");
+          var previousScrollTop = box.scrollTop;
+          var revealCurrent = !!(options && options.revealCurrent);
           box.innerHTML = "";
           if (!segments.length) {
             var empty = document.createElement("div");
@@ -728,8 +741,13 @@
             };
             box.appendChild(div);
           });
-          var cur = box.querySelector(".seg.cur");
-          if (cur) cur.scrollIntoView({ block: "nearest" });
+          // Polling redraws this list every two seconds. Preserve the operator's
+          // manual list position, and never ask the browser to reveal an item:
+          // on mobile that also scrolls the whole control page back to this card.
+          box.scrollTop = previousScrollTop;
+          if (revealCurrent) {
+            revealCurrentSegment(box, box.querySelector(".seg.cur"));
+          }
           updateControlAvailability();
         }
 
@@ -793,6 +811,7 @@
         function applyState(serverState) {
           if (!serverState) return;
           var previousMatch = state.match_id;
+          var previousSegment = state.seg_index;
           state.configured = !!serverState.configured;
           state.match_id = serverState.match_id || "";
           state.seg_index = Math.max(0, Number(serverState.seg_index) || 0);
@@ -820,7 +839,11 @@
           t.textContent = state.visible ? "■ 隱藏大屏" : "▶ 顯示大屏";
           t.className = "big " + (state.visible ? "toggle-on" : "toggle-off");
           renderOfficialMatch();
-          renderSeq();
+          renderSeq({
+            revealCurrent:
+              state.match_id !== previousMatch ||
+              state.seg_index !== previousSegment,
+          });
           if (
             state.match_id &&
             (state.match_id !== previousMatch || sequenceMatchId !== state.match_id)

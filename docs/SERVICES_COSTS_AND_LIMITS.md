@@ -102,10 +102,10 @@ TOAST空間，未經maintenance評估不為追求dashboard數字而跑`VACUUM FU
 - 音訊為Cloudflare public STUN-only WebRTC Opus mono P2P；不設TURN、SFU或Render fallback。
 - Render只轉發authenticated SDP／ICE及低流量control；訊息受member、roster generation、
   byte、rate、room capacity、90分鐘TTL及兩房並行上限保護，ICE不寫log／database。
-- 每部裝置由使用者按鍵做咪／播放、ICE、data-channel、remote packets／energy及8秒粵語
-  final transcript測試。Media失敗阻止開始；transcript失敗只會全房停AI評判。
-- 每次發言用server簽發`turn_id`及ordered final chunks；terminal error、空commit或sequence
-  缺漏會sticky停用AI評判，但P2P聲音及timer繼續。
+- 每部裝置由使用者按鍵做咪／播放、ICE、data-channel及remote packets／energy測試；
+  兩位通過才開始聯機。
+- 每次發言用server簽發`turn_id`及ordered final chunks；可用的逐字稿會逐段保存。要求AI
+  評價時，前端及server都會先確認正反雙方各有至少一段逐字稿，未齊不會呼叫provider。
 - P2P中斷先暫停timer，只做一次10秒ICE restart；失敗安全完場，永不改經Render。
 
 ### AI Coach錄音分析

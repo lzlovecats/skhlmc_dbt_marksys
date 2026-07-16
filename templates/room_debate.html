@@ -49,21 +49,20 @@
     <section class="card">
       <div class="row">
         <div class="grow">
-          <div id="modeLabel" class="muted">Mode A · STUN-only P2P</div>
           <div id="topicLine">載入房間資料中…</div>
         </div>
         <div><span class="muted">房間碼</span><div id="codeText" class="code"></div></div>
       </div>
       <p id="connStatus" class="muted">建立控制連線中…</p>
       <p class="notice">
-        建議全員使用電腦版 Chrome。電話可以練習，但逐字稿可能因 browser、Siri、鎖屏或轉 app 而停用 AI 評判。聲音經兩部裝置直接傳送，系統沒有 TURN／Render audio fallback；P2P 亦會向房內另一位已驗證委員披露網絡候選地址，請只同可信任委員使用。
+        建議所有用戶使用電腦版 Chrome。
       </p>
     </section>
 
     <section class="card" id="networkTest">
-      <h2>每部裝置開始前實測</h2>
-      <p class="muted">兩位都要按一次：測試咪、播放、P2P ICE、data-channel、remote audio packets／energy，以及 8 秒粵語 final transcript。</p>
-      <button id="deviceTestBtn" class="primary">開始本機 P2P 及粵語測試</button>
+      <h2>開始前測試</h2>
+      <p class="muted">兩位通過測試後才可以開始聯機。</p>
+      <button id="deviceTestBtn" class="primary">開始連線測試</button>
       <p id="networkTestResult" class="muted">尚未測試。</p>
     </section>
 
@@ -90,7 +89,6 @@
       <div id="segSub" class="muted" style="text-align:center"></div>
       <div id="meter" class="hidden"></div>
       <button id="talkBtn" class="talk" disabled>按一下開始發言</button>
-      <p id="turnHint" class="muted">只會傳送 P2P Opus 音訊；Render 只接收控制訊息及 final transcript。</p>
     </section>
 
     <section class="card hidden" id="hostControls">
@@ -99,13 +97,13 @@
         <button id="startBtn" class="primary">開始練習</button>
         <button id="prevBtn">上一節</button>
         <button id="nextBtn">下一節</button>
-        <button id="judgeBtn">更新 AI 評判</button>
+        <button id="judgeBtn">要求 AI 評價</button>
         <button id="endBtn" class="warn">結束</button>
       </div>
     </section>
 
     <section class="card"><h3>逐字稿</h3><div id="transcript" class="muted">暫未有已 commit 逐字稿。</div></section>
-    <section class="card"><h3>AI 評判</h3><div id="judgement" class="muted">完場後以逐字稿分析；任何裝置逐字稿失敗會全房停用。</div></section>
+    <section class="card"><h3>AI 評判</h3><div id="judgement" class="muted">要求 AI 評價前，正反雙方都需要有逐字稿。</div></section>
     <section class="card"><h3>狀態紀錄</h3><div id="log" class="muted"></div></section>
 
     <script>
