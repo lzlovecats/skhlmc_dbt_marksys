@@ -10,6 +10,7 @@ from api.video_admin_api import (
     RosterBody,
     router as video_admin_router,
 )
+from api.video_replay_api import ChaptersBody as ReplayChaptersBody
 from core import media_logic
 from core.db_migrations import discover_migrations
 import schema
@@ -186,6 +187,18 @@ def test_admin_roster_api_uses_post_assignments_and_nullable_user_ids():
     assert route.methods == {"POST"}
 
 
+def test_replay_chapter_save_accepts_the_visible_roster_dropdown_assignments():
+    body = ReplayChaptersBody(
+        video_id=7,
+        chapters=[_chapter("正二", is_best_debater=True)],
+        assignments=[{"role_label": "正二", "user_id": "lawcc"}],
+    )
+    assert body.assignments[0].model_dump() == {
+        "role_label": "正二",
+        "user_id": "lawcc",
+    }
+
+
 def test_video_roster_replacement_accepts_only_normal_member_accounts():
     db = _TransactionDb(accounts=("alice", "bob"))
     result = media_logic.save_video_roster(
@@ -269,6 +282,63 @@ def test_mine_only_filter_is_applied_before_the_replay_limit():
     assert "EXISTS" in db.sql and "mine.member_user_id=:user_id" in db.sql
     assert db.sql.index("EXISTS") < db.sql.index("LIMIT :limit")
     assert db.params["mine_only"] is True
+
+
+def test_multi_member_filter_is_applied_before_the_replay_limit():
+    class CaptureDb:
+        def query(self, sql, params):
+            self.sql = sql
+            self.params = params
+            return pd.DataFrame()
+
+    db = CaptureDb()
+    media_logic._replay_rows(
+        "viewer",
+        db,
+        participant_user_ids=["alice", "bob"],
+    )
+    assert "selected_roster.member_user_id = ANY" in db.sql
+    assert db.sql.index("selected_roster.member_user_id") < db.sql.index(
+        "LIMIT :limit"
+    )
+    assert db.params["filter_participants"] is True
+    assert db.params["participant_user_ids"] == ["alice", "bob"]
+
+
+def test_replay_member_filter_discards_hidden_system_accounts(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        media_logic, "member_account_options", lambda _db: ["alice", "bob"]
+    )
+
+    def replay_rows(_user_id, _db, **kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(media_logic, "_replay_rows", replay_rows)
+    result = media_logic.replay_data(
+        "viewer",
+        participant_user_ids=[
+            "alice", "Gemini", "kiosk", "admin", "developer", "bob",
+        ],
+        db=object(),
+    )
+    assert captured["participant_user_ids"] == ["alice", "bob"]
+    assert result["member_accounts"] == ["alice", "bob"]
+
+
+def test_replay_html_has_member_multiselect_inline_roster_and_copy_button():
+    html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="appearanceMembers" multiple' in html
+    assert "myAppearances" not in html
+    assert 'params.append("member_user_ids", member)' in html
+    assert 'select[data-roster-role]' in html
+    assert "assignments," in html
+    assert 'id="copyShareLink"' in html
+    assert "navigator.clipboard.writeText(link)" in html
 
 
 def test_bootstrap_and_versioned_migration_allow_multiple_best_and_enforce_roster_roles():

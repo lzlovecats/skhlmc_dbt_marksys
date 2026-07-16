@@ -529,7 +529,7 @@
                   </select>
                 </div>
               </div>
-              <div class="field"><div class="info" id="room-info">建議全員使用電腦版 Chrome；電話可以練習，但逐字稿可能因 browser、Siri、鎖屏或轉 app 而停用 AI 評判。</div></div>
+              <div class="field"><div class="info" id="room-info">建議所有用戶使用電腦版 Chrome。</div></div>
               <button type="submit" class="start-btn secondary">
                 ➕ 建立並進入房間
               </button>
@@ -678,7 +678,7 @@
         $("room-side-title").textContent = "你嘅立場";
         $("room-info").textContent =
           (structure === "mock" ? "完整 Mock" : "Free De") +
-          "（真人對真人）：STUN-only P2P 音訊，完成後由 AI 根據逐字稿評判。建議全員使用電腦版 Chrome。";
+          "（真人對真人）：STUN-only P2P 音訊，完成後由 AI 根據逐字稿評判。建議所有用戶使用電腦版 Chrome。";
       }
       function syncSession() {
         var room = selected("session_type") === "room";

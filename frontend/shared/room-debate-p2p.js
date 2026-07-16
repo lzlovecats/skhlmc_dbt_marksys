@@ -215,38 +215,9 @@
     return energy > 20;
   }
 
-  function cantoneseTranscriptTest() {
-    return new Promise((resolve) => {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) return resolve({ ok: false, text: "", reason: "browser 不支援 SpeechRecognition" });
-      const test = new SpeechRecognition();
-      let text = "";
-      test.lang = "zh-HK";
-      test.continuous = true;
-      test.interimResults = false;
-      test.onresult = (event) => {
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          if (event.results[index].isFinal) text += event.results[index][0].transcript || "";
-        }
-      };
-      test.onerror = () => {};
-      test.onend = () => {
-        const cjk = (text.match(/[\u3400-\u9fff]/g) || []).length;
-        const confirmed = cjk >= 2 && confirm(`粵語測試逐字稿：\n「${text.trim()}」\n\n內容正確？`);
-        resolve({ ok: confirmed, text: text.trim(), reason: confirmed ? "" : "逐字稿不足兩個中文字或本人未確認" });
-      };
-      try {
-        test.start();
-        setTimeout(() => { try { test.stop(); } catch (_) {} }, 8000);
-      } catch (error) {
-        resolve({ ok: false, text: "", reason: error.message });
-      }
-    });
-  }
-
   async function runDeviceTest() {
     $("deviceTestBtn").disabled = true;
-    $("networkTestResult").textContent = "請兩部裝置同時對咪講粵語約 8 秒；正在測試 STUN-only P2P…";
+    $("networkTestResult").textContent = "請兩部裝置同時對咪講話；正在測試咪、播放、P2P ICE、data-channel 及遠端聲音…";
     try {
       dataPingOk = false;
       await ensureLocalStream();
@@ -258,25 +229,22 @@
       });
       if (isHost) await makeOffer();
       const connected = await waitFor(() => pc?.connectionState === "connected", 12000);
-      if (!connected) throw new Error("P2P ICE 未能連接；請轉 Wi-Fi／流動數據再試（系統沒有 TURN fallback）");
+      if (!connected) throw new Error("P2P ICE 未能連接；請轉 Wi-Fi／流動數據再試");
       ensureRemoteAudio();
       await remoteAudio.play();
       if (dataChannel?.readyState === "open") dataChannel.send("ping:" + Date.now());
       const ping = await waitFor(() => dataPingOk, 3000);
       const media = ping && await remoteMediaEvidence();
       if (!media) throw new Error("未收到對方 data-channel ping 及 remote audio packets／energy");
-      const transcript = await cantoneseTranscriptTest();
       localTest = {
-        media_ok: true, transcript_ok: transcript.ok,
-        message: transcript.ok
-          ? "P2P、remote audio、粵語逐字稿均通過"
-          : `P2P media 通過；逐字稿失敗（${transcript.reason}），AI 評判會停用`,
+        media_ok: true,
+        message: "連線測試通過",
         testedAt: Date.now(),
       };
       $("networkTestResult").textContent = localTest.message;
       if (activeCheckId) submitPrecheck(activeCheckId);
     } catch (error) {
-      localTest = { media_ok: false, transcript_ok: false, message: error.message, testedAt: Date.now() };
+      localTest = { media_ok: false, message: error.message, testedAt: Date.now() };
       $("networkTestResult").textContent = `未通過：${error.message}`;
       if (activeCheckId) submitPrecheck(activeCheckId);
     } finally {
@@ -337,6 +305,21 @@
       : "暫未有已 commit 逐字稿。";
   }
 
+  function requestJudgement() {
+    const transcriptSides = new Set(
+      transcriptItems
+        .filter((item) => String(item.text || "").trim())
+        .map((item) => item.side),
+    );
+    const missingSides = ["正方", "反方"].filter((side) => !transcriptSides.has(side));
+    if (missingSides.length) {
+      $("judgement").textContent =
+        `暫未能要求 AI 評價：${missingSides.join("、")}未有逐字稿。請雙方先完成至少一次發言。`;
+      return;
+    }
+    send({ type: "request_judgement" });
+  }
+
   function renderState(message) {
     state = message;
     phase = message.phase || phase;
@@ -352,7 +335,7 @@
     $("segLabel").textContent = message.seg_label || (phase === "lobby" ? "等待開始…" : "");
     $("segSub").textContent = message.rtc_paused ? "P2P 中斷，計時已暫停，正在 ICE restart…" : (message.side || "");
     if (message.judge_enabled === false) {
-      $("judgement").textContent = `AI 評判已停用：${message.judge_disabled_reason || "逐字稿不可用"}`;
+      $("judgement").textContent = `AI 評判已停用：${message.judge_disabled_reason || "AI 評價目前不可用"}`;
     }
     updateButtons();
   }
@@ -437,25 +420,19 @@
     };
     recognition.onerror = (event) => {
       if (!recognitionStopping && !["aborted", "no-speech"].includes(event.error)) {
-        send({ type: "judge_disabled", reason: `SpeechRecognition terminal error：${event.error}` });
+        log(`逐字稿暫停：${event.error}`);
       }
     };
     recognition.onend = () => {
       if (!recognitionStopping) {
-        send({
-          type: "judge_disabled",
-          reason: "SpeechRecognition 意外停止；逐字稿可能缺漏。",
-        });
+        log("逐字稿意外停止；本段可能沒有逐字稿。");
       }
       recognition = null;
     };
     try {
       recognition.start();
     } catch (error) {
-      send({
-        type: "judge_disabled",
-        reason: `SpeechRecognition 未能開始：${error.message}`,
-      });
+      log(`逐字稿未能開始：${error.message}`);
     }
   }
 
@@ -480,7 +457,9 @@
     try { recognition?.stop(); } catch (_) {}
     await new Promise((resolve) => setTimeout(resolve, 500));
     flushTranscriptChunks();
-    send({ type: "transcript_commit", turn_id: activeTurnId, final_sequence: transcriptSequence });
+    if (transcriptSequence > 0) {
+      send({ type: "transcript_commit", turn_id: activeTurnId, final_sequence: transcriptSequence });
+    }
     send({ type: "turn_end" });
     recognition = null;
   }
@@ -526,7 +505,7 @@
         if (message.type === "precheck_request") submitPrecheck(activeCheckId);
         $("networkTestResult").textContent = (message.members || []).map((uid) => {
           const result = message.results?.[uid];
-          return `${uid}：${result ? (result.ok ? "media通過" : "media未通過") : "等待測試"}${result?.transcript_ok === false ? "；逐字稿失敗" : ""}`;
+          return `${uid}：${result ? (result.ok ? "通過" : "未通過") : "等待測試"}`;
         }).join("\n") || $("networkTestResult").textContent;
         break;
       case "precheck_failed": log("開始前 P2P media 測試未全部通過。"); break;
@@ -569,12 +548,11 @@
   }
 
   $("codeText").textContent = code;
-  $("modeLabel").textContent = "Mode A · STUN-only P2P";
   $("deviceTestBtn").onclick = runDeviceTest;
   $("startBtn").onclick = () => send({ type: "start" });
   $("nextBtn").onclick = () => send({ type: "next_segment" });
   $("prevBtn").onclick = () => send({ type: "set_segment", index: Math.max(0, Number(state.seg_index || 0) - 1) });
-  $("judgeBtn").onclick = () => send({ type: "request_judgement" });
+  $("judgeBtn").onclick = requestJudgement;
   $("endBtn").onclick = () => confirm("結束呢節練習？") && send({ type: "end" });
   $("talkBtn").onclick = () => state.active_turn_user === myUid ? stopTalk() : startTalk();
   setInterval(() => {

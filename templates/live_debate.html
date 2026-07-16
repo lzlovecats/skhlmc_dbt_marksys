@@ -257,6 +257,9 @@
         background: #29200f;
         color: #fff7ed;
       }
+      .line.feedback-points {
+        white-space: pre-wrap;
+      }
       .who {
         font-weight: 800;
         color: #fca5a5;
@@ -802,6 +805,33 @@
           line.textNode.textContent = current + text;
           scrollLogToBottom();
         }
+      }
+
+      function formatFreeFeedbackPointForm(text) {
+        const clean = String(text || "").trim();
+        if (!clean) return clean;
+        const numbered = clean.replace(
+          /\s+(?=(?:\d{1,2}[.、]|[一二三四五六七八九十]+[.、])\s*)/gu,
+          "\n",
+        );
+        let points = numbered
+          .split(/\n+/u)
+          .map((item) => item.trim())
+          .filter(Boolean);
+        if (points.length <= 1) {
+          points = (clean.match(/[^。！？]+[。！？]?/gu) || [clean])
+            .map((item) => item.trim())
+            .filter(Boolean);
+        }
+        return points
+          .map((item) =>
+            /^(?:[•●▪‣-]|\d{1,2}[.、]|[一二三四五六七八九十]+[.、])/u.test(
+              item,
+            )
+              ? item
+              : "• " + item,
+          )
+          .join("\n");
       }
 
       function setActiveAiLine(line) {
@@ -2114,9 +2144,13 @@
 
       function processAiModelTurnParts(parts) {
         if (!Array.isArray(parts)) return;
+        const silentFreeFeedback =
+          !MOCK_MODE &&
+          typeof responsePurpose !== "undefined" &&
+          responsePurpose === "feedback";
         for (const part of parts) {
           if (!part || typeof part !== "object") continue;
-          if (part.inlineData && part.inlineData.data) {
+          if (!silentFreeFeedback && part.inlineData && part.inlineData.data) {
             if (
               !accountAiPcmAudio(
                 part.inlineData.data,
@@ -2792,7 +2826,8 @@
           if (sc.outputTranscription && sc.outputTranscription.text) {
             if (beginAiResponse()) {
               appendLineText(aiLine, sc.outputTranscription.text);
-              queueAzureTtsText(sc.outputTranscription.text, false);
+              if (!(responsePurpose === "feedback" && !MOCK_MODE))
+                queueAzureTtsText(sc.outputTranscription.text, false);
             }
           }
           if (sc.modelTurn && sc.modelTurn.parts) {
@@ -2805,7 +2840,14 @@
             pauseSpeechTimer();
             clearWaitTimer();
             showRetry(false);
-            setState("AI 回覆中", "AI 已生成回覆，正在播放。", "reply", true);
+            setState(
+              "AI 回覆中",
+              responsePurpose === "feedback" && !MOCK_MODE
+                ? "AI 已生成 point form 文字評價。"
+                : "AI 已生成回覆，正在播放。",
+              "reply",
+              true,
+            );
           }
           if (sc.turnComplete) {
             const completedPurpose =
@@ -2817,8 +2859,10 @@
             const discardNormal =
               completedPurpose === "normal" &&
               (feedbackPromptShown || retryPromptQueued);
+            const silentFreeFeedback =
+              !MOCK_MODE && completedPurpose === "feedback";
             responsePurpose = null;
-            if (!discardNormal) {
+            if (!discardNormal && !silentFreeFeedback) {
               queueAzureTtsText("", true);
               if (
                 azureTtsEnabled &&
@@ -3100,7 +3144,11 @@
         talkBtn.textContent = "等待評價";
         talkHintEl.textContent = "自由辯論時間已到，正在等待 AI 總結評價。";
         setState("總結評價", "正在請 AI 給予評價。", "reply", true);
-        setSubstatus("AI 會根據剛才攻防給予總結評語和改善建議。");
+        setSubstatus(
+          MOCK_MODE
+            ? "AI 會根據剛才攻防給予總結評語和改善建議。"
+            : "AI 評價會以 point form 文字顯示，不會讀出。",
+        );
         setHint("正在等待 AI 總結評價。");
         addLine("系統", "正在請 AI 給予總結評價。", false);
 
@@ -3125,7 +3173,12 @@
           userLine = null;
           aiLine = null;
           clearActiveAiLine();
-          aiLine = addLine("AI", "正在整理評價...", false, "pending");
+          aiLine = addLine(
+            "AI",
+            "正在整理評價...",
+            false,
+            MOCK_MODE ? "pending" : "pending feedback-points",
+          );
           sendTextTurn(buildFeedbackPrompt(), "feedback");
           startFinalFeedbackWaitTimer();
         } catch (e) {
@@ -3141,12 +3194,23 @@
 
       function beginAiResponse() {
         if (isDiscardingNormalResponse()) return false;
+        const silentFreeFeedback =
+          responsePurpose === "feedback" && !MOCK_MODE;
         isWaiting = false;
         pauseSpeechTimer();
         clearWaitTimer();
         showRetry(false);
-        setState("AI 回覆中", "AI 正在回覆。", "reply", true);
-        setSubstatus("請聽完 AI 回覆，再開始下一輪。");
+        setState(
+          "AI 回覆中",
+          silentFreeFeedback ? "AI 正在整理 point form 文字評價。" : "AI 正在回覆。",
+          "reply",
+          true,
+        );
+        setSubstatus(
+          silentFreeFeedback
+            ? "評價只會顯示文字，不會讀出。"
+            : "請聽完 AI 回覆，再開始下一輪。",
+        );
         talkBtn.disabled = true;
         talkBtn.className = "talk-btn waiting";
         talkBtn.textContent = "AI 回覆中...";
@@ -3194,6 +3258,12 @@
             if (!isFinalFeedbackTurn && responsePurpose === "feedback") return;
             if (isFinalFeedbackTurn) {
               clearWaitTimer();
+              if (!MOCK_MODE && aiLine) {
+                setLineText(
+                  aiLine,
+                  formatFreeFeedbackPointForm(aiLine.textNode.textContent),
+                );
+              }
               userLine = null;
               aiLine = null;
               clearActiveAiLine();

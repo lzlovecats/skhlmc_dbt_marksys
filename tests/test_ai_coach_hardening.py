@@ -1614,7 +1614,10 @@ def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     monkeypatch.setattr(proxy, "ROOM_JUDGEMENT_MODELS", ("model-a",))
     room = SimpleNamespace(
         topic="辯題", debate_format="校園隨想", structure="free",
-        transcript=[{"side": "正方", "text": "內容"}], judgement="",
+        transcript=[
+            {"side": "正方", "text": "正方內容"},
+            {"side": "反方", "text": "反方內容"},
+        ], judgement="",
         judgement_lock=asyncio.Lock(),
     )
     asyncio.run(proxy._room_request_judgement(room))
@@ -1677,7 +1680,10 @@ def test_room_judgement_fallback_logs_each_attempt_under_one_operation(monkeypat
         topic="辯題",
         debate_format="校園隨想",
         structure="mock",
-        transcript=[{"side": "正方", "text": "內容"}],
+        transcript=[
+            {"side": "正方", "text": "正方內容"},
+            {"side": "反方", "text": "反方內容"},
+        ],
         transcript_revision=7,
         judgement="",
         judgement_lock=asyncio.Lock(),
@@ -1721,7 +1727,10 @@ def test_room_judgement_missing_key_does_not_log_phantom_provider_call(monkeypat
         topic="辯題",
         debate_format="校園隨想",
         structure="free",
-        transcript=[{"side": "正方", "text": "內容"}],
+        transcript=[
+            {"side": "正方", "text": "正方內容"},
+            {"side": "反方", "text": "反方內容"},
+        ],
         judgement="",
         judgement_lock=asyncio.Lock(),
     )
@@ -1759,7 +1768,10 @@ def test_room_judgement_unexpected_error_never_broadcasts_secret(monkeypatch):
     monkeypatch.setattr(proxy, "ROOM_JUDGEMENT_MODELS", ("model-a",))
     room = SimpleNamespace(
         topic="辯題", debate_format="校園隨想", structure="free",
-        transcript=[{"side": "正方", "text": "內容"}], judgement="",
+        transcript=[
+            {"side": "正方", "text": "正方內容"},
+            {"side": "反方", "text": "反方內容"},
+        ], judgement="",
         judgement_lock=asyncio.Lock(),
     )
     asyncio.run(proxy._room_request_judgement(room))

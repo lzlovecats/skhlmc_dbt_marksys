@@ -247,6 +247,17 @@ def test_competition_templates_use_separate_staff_control_and_kiosk_engine():
     assert "投影並讀出" not in control
 
 
+def test_projector_control_polling_never_scrolls_the_whole_operator_page():
+    control = (ROOT / "templates" / "projector_control.html").read_text(
+        encoding="utf-8"
+    )
+    assert ".scrollIntoView(" not in control
+    assert "var previousScrollTop = box.scrollTop" in control
+    assert "box.scrollTop = previousScrollTop" in control
+    assert "revealCurrentSegment(box, box.querySelector" in control
+    assert "state.seg_index !== previousSegment" in control
+
+
 def test_projector_public_match_binding_and_backend_only_schema_contract():
     source = (ROOT / "api" / "projector_ai_api.py").read_text(encoding="utf-8")
     public_block = source.split('@router.get("/api/projector/ai/public")', 1)[1].split(
