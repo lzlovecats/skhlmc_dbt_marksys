@@ -332,13 +332,18 @@ def test_replay_html_has_member_multiselect_inline_roster_and_copy_button():
     html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert 'id="appearanceMembers" multiple' in html
+    assert 'id="appearanceMembers"' in html
+    assert 'class="member-options"' in html
+    assert 'input type="checkbox" value="${esc(userId)}"' in html
+    assert "selectedOptions" not in html
     assert "myAppearances" not in html
     assert 'params.append("member_user_ids", member)' in html
     assert 'select[data-roster-role]' in html
     assert "assignments," in html
     assert 'id="copyShareLink"' in html
     assert "navigator.clipboard.writeText(link)" in html
+    assert 'shareUrl.searchParams.set("video_id", videoId)' in html
+    assert '$("shareLink").value = shareLinkFor(selected.id)' in html
 
 
 def test_bootstrap_and_versioned_migration_allow_multiple_best_and_enforce_roster_roles():
