@@ -166,8 +166,34 @@
         align-items: end;
         margin: 1rem 0;
       }
-      .member-filter select {
+      .filter-label {
+        display: block;
+        font-weight: 600;
+        margin: 0.8rem 0 0.28rem;
+      }
+      .member-options {
         min-height: 6.4rem;
+        max-height: 10.5rem;
+        overflow-y: auto;
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface);
+      }
+      .member-option {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        min-height: 2.25rem;
+        margin: 0;
+        padding: 0.25rem 0.15rem;
+        cursor: pointer;
+      }
+      .member-option input {
+        width: 1.1rem;
+        min-height: 1.1rem;
+        margin: 0;
+        flex: 0 0 auto;
       }
       .layout {
         display: grid;
@@ -385,8 +411,15 @@
             />
           </div>
           <div class="member-filter">
-            <label for="appearanceMembers">出賽委員篩選（可多選）</label
-            ><select id="appearanceMembers" multiple size="4"></select>
+            <div id="appearanceMembersLabel" class="filter-label">
+              出賽委員篩選（可多選）
+            </div>
+            <div
+              id="appearanceMembers"
+              class="member-options"
+              role="group"
+              aria-labelledby="appearanceMembersLabel"
+            ></div>
             <div class="caption">無選擇時顯示所有片段。</div>
           </div>
         </div>
@@ -501,8 +534,12 @@
           setTimeout(() => $("toast").classList.add("hidden"), 2800);
         }
         function selectedAppearanceMembers() {
-          return [...$("appearanceMembers").selectedOptions].map(
-            (option) => option.value,
+          return [
+            ...$("appearanceMembers").querySelectorAll(
+              'input[type="checkbox"]:checked',
+            ),
+          ].map(
+            (checkbox) => checkbox.value,
           );
         }
         function renderAppearanceMembers() {
@@ -513,7 +550,7 @@
           $("appearanceMembers").innerHTML = accounts
             .map(
               (userId) =>
-                `<option value="${esc(userId)}" ${selected.has(userId) ? "selected" : ""}>${esc(userId)}</option>`,
+                `<label class="member-option"><input type="checkbox" value="${esc(userId)}" ${selected.has(userId) ? "checked" : ""}><span>${esc(userId)}</span></label>`,
             )
             .join("");
         }
@@ -534,6 +571,11 @@
           } catch (_error) {
             toast("⚠️ 未能自動複製，請長按連結手動複製");
           }
+        }
+        function shareLinkFor(videoId) {
+          const shareUrl = new URL(location.href);
+          shareUrl.searchParams.set("video_id", videoId);
+          return shareUrl.toString();
         }
         function currentVideos() {
           const match = $("matchFilter").value,
@@ -778,7 +820,7 @@
               return `<div class="chapter-edit"><label><input type="checkbox" data-label="${label}" ${c ? "checked" : ""}> ${label}</label><input data-time="${label}" placeholder="例：12:34" value="${c ? c.label : ""}"><select data-roster-role="${label}" aria-label="${label}連結委員帳戶">${options.join("")}</select><label class="best-check"><input type="checkbox" data-best="${label}" ${c && c.is_best_debater ? "checked" : ""}>佳辯</label></div>`;
             })
             .join("");
-          $("shareLink").value = location.href;
+          $("shareLink").value = shareLinkFor(selected.id);
           $("playlistTitle").textContent = `片單（共 ${filtered.length} 條）`;
           $("playlist").innerHTML = filtered
             .map(
