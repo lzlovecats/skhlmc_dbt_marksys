@@ -1296,7 +1296,7 @@ def _compiled_lexicon(rows):
 
 
 def _preprocess_tts_text(text_value: str) -> str:
-    """讀音字典前處理 (docs/ROADMAP.md P3「讀音層」). 合成前把 tts_lexicon 嘅
+    """讀音字典前處理。合成前把 tts_lexicon 嘅
     term → reading 覆寫。單人 `/api/tts/azure` 及賽事評判 TTS 都經呢度。
     將來可喺呢度加 G2P (ToJyutping/PyCantonese)。"""
     processed = (text_value or "").strip()

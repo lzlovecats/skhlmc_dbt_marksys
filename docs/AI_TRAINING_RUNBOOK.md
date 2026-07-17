@@ -66,8 +66,7 @@ Browser 會自動開啟「GPT-SoVITS 本機資料準備器」。把 AI Training 
 
 因此本手冊會先在 workstation 建立不可變的本機 manifest。等
 `ai_dataset_snapshots`、`ai_dataset_snapshot_items` 及 `ai_model_versions` 正式
-provision 後，才以 server snapshot ID 取代這個過渡做法。整體 gate 亦以
-[`ROADMAP.md`](ROADMAP.md#p4-自家粵語tts) 為準。
+provision 後，才以 server snapshot ID 取代這個過渡做法；完整 gate 以本手冊各節為準。
 
 ## 2. 標準 workstation
 

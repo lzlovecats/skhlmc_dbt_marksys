@@ -1244,7 +1244,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_LLM_TRAINING_SUBMISSIONS} (
 """
 
 # Dataset/model, eval and RAG schemas are intentionally absent from the
-# bootstrap until their roadmap gates and versioned migrations are complete.
+# bootstrap until their security/readiness gates and versioned migrations are complete.
 CREATE_AI_TRAINING_AUDIT = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_TRAINING_AUDIT} (
     id             BIGSERIAL PRIMARY KEY,
