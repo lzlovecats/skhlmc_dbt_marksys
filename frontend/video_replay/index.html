@@ -670,6 +670,26 @@
             }).catch(() => {});
           }
         }
+        async function syncFullscreenOrientation() {
+          const orientation = screen.orientation,
+            fullscreenPlayer =
+              document.fullscreenElement &&
+              $("player").contains(document.fullscreenElement);
+          try {
+            if (fullscreenPlayer && typeof orientation?.lock === "function")
+              await orientation.lock("landscape");
+            else if (
+              !document.fullscreenElement &&
+              typeof orientation?.unlock === "function"
+            )
+              orientation.unlock();
+          } catch (error) {
+            console.warn(
+              "Replay fullscreen orientation change was rejected.",
+              error?.name || "Error",
+            );
+          }
+        }
         function saveProgress(videoId) {
           if (!player || !player.getCurrentTime) return;
           fetch("/api/video/progress", {
@@ -894,6 +914,7 @@
           }
         }
         $("matchFilter").addEventListener("change", render);
+        document.addEventListener("fullscreenchange", syncFullscreenOrientation);
         $("search").addEventListener("input", render);
         $("appearanceMembers").addEventListener("change", () =>
           load(data && data.selected && data.selected.id),
