@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import asyncio
+import json
 
 import pandas as pd
 import pytest
@@ -83,6 +84,38 @@ def test_membership_validation_requires_an_end_year_only_for_left_or_graduated()
                 "exit_type": "left",
             }
         )
+
+
+def test_history_memberships_default_oldest_and_allow_newest_server_sort(monkeypatch):
+    class CaptureDb:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, sql, params=None):
+            self.calls.append((sql, dict(params or {})))
+            if "COUNT(*) total" in sql:
+                return pd.DataFrame([{"total": 0}])
+            return pd.DataFrame()
+
+    db = CaptureDb()
+    monkeypatch.setattr(
+        community_api,
+        "_member_context",
+        lambda _request, _page: ("member", db),
+    )
+
+    community_api.history_memberships(SimpleNamespace())
+    default_sql = next(sql for sql, _params in db.calls if "SELECT id,member_user_id" in sql)
+    assert "ORDER BY joined_academic_year ASC,display_name ASC,id ASC" in default_sql
+
+    db.calls.clear()
+    community_api.history_memberships(SimpleNamespace(), order="newest")
+    newest_sql = next(sql for sql, _params in db.calls if "SELECT id,member_user_id" in sql)
+    assert "ORDER BY joined_academic_year DESC,display_name ASC,id DESC" in newest_sql
+
+    with pytest.raises(community_api.HTTPException) as caught:
+        community_api.history_memberships(SimpleNamespace(), order="sideways")
+    assert caught.value.status_code == 400
 
 
 def test_recent_match_contract_and_first_result_notification_copy():
@@ -290,6 +323,30 @@ def test_linked_community_resources_open_their_actual_video_or_photo():
         assert 'href="/match-photos?photo_id=${row.id}"' in page
     assert "new URLSearchParams(location.search).get(\"photo_id\")" in gallery
     assert "&photo_id=${encodeURIComponent(linkedPhotoId)}" in gallery
+
+
+def test_history_membership_sort_controls_share_url_backed_server_order():
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="memberSort"' in history
+    assert 'id="memberManagementSort"' in history
+    assert history.count('<option value="oldest">由舊至新</option>') == 2
+    assert history.count('<option value="newest">由新至舊</option>') == 2
+    assert 'searchParams.get("membership_order")' in history
+    assert 'searchParams.set("membership_order", membershipOrder)' in history
+    assert "history.replaceState(null, \"\", url)" in history
+    assert "memberships?order=${membershipOrder}" in history
+
+
+def test_installed_web_app_allows_device_orientation_changes():
+    manifest = json.loads(
+        (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["display"] == "standalone"
+    assert manifest["orientation"] == "any"
 
 
 def test_ghost_forum_uses_post_language_split_resources_and_refreshes_latest_replies():

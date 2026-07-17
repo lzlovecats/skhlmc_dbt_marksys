@@ -617,8 +617,14 @@ def delete_history_event(event_id: int, revision: int, request: Request):
 
 
 @router.get("/history/memberships")
-def history_memberships(request: Request, page: int = 1):
+def history_memberships(request: Request, page: int = 1, order: str = "oldest"):
     _user, db = _member_context(request, "team_history")
+    order_sql = {
+        "oldest": "joined_academic_year ASC,display_name ASC,id ASC",
+        "newest": "joined_academic_year DESC,display_name ASC,id DESC",
+    }.get(str(order or "").strip().lower())
+    if order_sql is None:
+        raise HTTPException(400, "任期排序方向無效。")
     page, _, offset = bounds(page)
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_COMMITTEE_MEMBERSHIPS}")
     frame = db.query(
@@ -626,7 +632,7 @@ def history_memberships(request: Request, page: int = 1):
                    ended_academic_year,exit_type,revision,created_by,updated_by,
                    created_at,updated_at
             FROM {TABLE_COMMITTEE_MEMBERSHIPS}
-            ORDER BY joined_academic_year DESC,display_name,id DESC
+            ORDER BY {order_sql}
             LIMIT :limit OFFSET :offset""",
         {"limit": PAGE_SIZE, "offset": offset},
     )

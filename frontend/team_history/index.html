@@ -26,6 +26,9 @@
       .highlight { border-color:var(--warn); }
       .pane { display:none; }
       .pane.active { display:block; }
+      .sort-control { display:flex; justify-content:flex-end; align-items:center; gap:.55rem; margin:.4rem 0 .8rem; }
+      .sort-control label { margin:0; }
+      .sort-control select { width:auto; min-width:9rem; }
     </style>
   </head>
   <body>
@@ -45,6 +48,7 @@
           <div id="events" class="timeline"></div>
         </section>
         <section id="membersPane" class="pane">
+          <div class="sort-control"><label for="memberSort">入隊年份排序</label><select id="memberSort"><option value="oldest">由舊至新</option><option value="newest">由新至舊</option></select></div>
           <div id="members"></div>
         </section>
         <section id="managePane" class="pane">
@@ -64,7 +68,7 @@
               <div class="actions"><button id="memberSave" class="primary" type="submit">新增任期</button><button id="memberCancel" type="button" class="hidden">取消編輯</button></div>
             </form>
           </section>
-          <section class="card"><h2>現有委員任期管理</h2><div id="memberManagementList"></div></section>
+          <section class="card"><h2>現有委員任期管理</h2><div class="sort-control"><label for="memberManagementSort">入隊年份排序</label><select id="memberManagementSort"><option value="oldest">由舊至新</option><option value="newest">由新至舊</option></select></div><div id="memberManagementList"></div></section>
         </section>
       </section>
     </main>
@@ -76,8 +80,11 @@
         const $ = (id) => document.getElementById(id);
         const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
         const statusLabels = {current:"現役",left:"離隊",graduated:"畢業"};
+        const requestedMembershipOrder = new URL(location.href).searchParams.get("membership_order");
         let context = null, eventRows = {}, memberRows = {}, resources = {matches:[],photos:[]};
         let resourceKind = "matches", resourceRequest = 0;
+        let membershipOrder = ["oldest", "newest"].includes(requestedMembershipOrder) ? requestedMembershipOrder : "oldest";
+        let membershipSortBusy = false;
         let selectedMatches = new Map(), selectedPhotos = new Map();
 
         async function api(path, options = {}) {
@@ -92,9 +99,14 @@
         function linkHtml(links) { return `<div class="linked">${(links.matches || []).map(linkedMatchHtml).join("")}${(links.photos || []).map((row) => `<a class="resource" href="/match-photos?photo_id=${row.id}"><img loading="lazy" src="/api/match-photos/image/${row.id}?thumbnail=true" alt="${esc(row.photo_title || row.album_label)}" /><b>🖼️ ${esc(row.photo_title || row.album_label)}</b></a>`).join("")}</div>`; }
         function renderEvents(items, management = false) { if (management) eventRows = Object.fromEntries(items.map((row) => [String(row.id), row])); if (!items.length) return '<section class="card"><p class="caption">暫時未有歷史事件。</p></section>'; return items.map((row) => `<article class="card event"><div class="event-head"><div><div class="year">${esc(row.academic_year_label)} 學年${row.event_date ? `・${esc(String(row.event_date).slice(0,10))}` : ""}</div><h2>${esc(row.title)}</h2></div>${management ? `<div class="actions"><button data-event-edit="${row.id}">編輯</button><button class="danger" data-event-delete="${row.id}">刪除</button></div>` : ""}</div><div class="pre">${esc(row.description)}</div>${linkHtml(row.links)}</article>`).join(""); }
         function renderMembers(items, management = false) { if (management) memberRows = Object.fromEntries(items.map((row) => [String(row.id), row])); if (!items.length) return '<section class="card"><p class="caption">暫時未有委員任期資料。</p></section>'; return `<div class="table-wrap"><table><thead><tr><th>姓名</th><th>帳戶</th><th>入隊</th><th>離隊／畢業</th><th>狀態</th>${management ? "<th>管理</th>" : ""}</tr></thead><tbody>${items.map((row) => `<tr><td>${esc(row.display_name)}</td><td>${esc(row.member_user_id || "—")}</td><td>${esc(row.joined_academic_year_label)}</td><td>${esc(row.ended_academic_year_label || "—")}</td><td><span class="member-status">${esc(statusLabels[row.exit_type] || row.exit_type)}</span></td>${management ? `<td><button data-member-edit="${row.id}">編輯</button> <button class="danger" data-member-delete="${row.id}">刪除</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`; }
-        async function loadCollections() { const loads = [VoteUI.serverPaged($("events"), "/api/community/history/events", (items) => renderEvents(items, false)), VoteUI.serverPaged($("members"), "/api/community/history/memberships", (items) => renderMembers(items, false))]; if (context.can_manage) loads.push(VoteUI.serverPaged($("eventManagementList"), "/api/community/history/events", (items) => renderEvents(items, true)), VoteUI.serverPaged($("memberManagementList"), "/api/community/history/memberships", (items) => renderMembers(items, true))); await Promise.all(loads); }
+        function membershipUrl() { return `/api/community/history/memberships?order=${membershipOrder}`; }
+        function syncMembershipOrderControls() { ["memberSort", "memberManagementSort"].forEach((id) => { $(id).value = membershipOrder; $(id).disabled = membershipSortBusy; }); }
+        function writeMembershipOrderUrl() { const url = new URL(location.href); url.searchParams.set("membership_order", membershipOrder); history.replaceState(null, "", url); }
+        async function loadMemberships() { const loads = [VoteUI.serverPaged($("members"), membershipUrl(), (items) => renderMembers(items, false))]; if (context.can_manage) loads.push(VoteUI.serverPaged($("memberManagementList"), membershipUrl(), (items) => renderMembers(items, true))); await Promise.all(loads); }
+        async function loadCollections() { const loads = [VoteUI.serverPaged($("events"), "/api/community/history/events", (items) => renderEvents(items, false)), loadMemberships()]; if (context.can_manage) loads.push(VoteUI.serverPaged($("eventManagementList"), "/api/community/history/events", (items) => renderEvents(items, true))); await Promise.all(loads); }
+        async function changeMembershipOrder(order) { if (membershipSortBusy || !["oldest", "newest"].includes(order)) return; membershipOrder = order; membershipSortBusy = true; syncMembershipOrderControls(); writeMembershipOrderUrl(); try { await loadMemberships(); } catch (error) { VoteUI.toast($("toast"), `⚠️ ${error.message}`); } finally { membershipSortBusy = false; syncMembershipOrderControls(); } }
         function switchPane(paneId) { document.querySelectorAll("#mainTabs button").forEach((button) => button.classList.toggle("active", button.dataset.pane === paneId)); document.querySelectorAll("#app > .pane").forEach((pane) => pane.classList.toggle("active", pane.id === paneId)); }
-        async function load() { VoteUI.setBusy($("busy"), true); try { context = await api("/history/data"); $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("manageTab").classList.toggle("hidden", !context.can_manage); if (!context.can_manage && $("managePane").classList.contains("active")) switchPane("eventsPane"); $("memberUser").innerHTML = '<option value="">不連結帳戶</option>' + context.accounts.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join(""); await loadCollections(); await showLinkedMatch(); } catch (error) { if (error.status === 401) { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); } else VoteUI.toast($("toast"), `⚠️ ${error.message}`); } finally { VoteUI.setBusy($("busy"), false); } }
+        async function load() { VoteUI.setBusy($("busy"), true); try { context = await api("/history/data"); $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("manageTab").classList.toggle("hidden", !context.can_manage); if (!context.can_manage && $("managePane").classList.contains("active")) switchPane("eventsPane"); $("memberUser").innerHTML = '<option value="">不連結帳戶</option>' + context.accounts.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join(""); syncMembershipOrderControls(); writeMembershipOrderUrl(); await loadCollections(); await showLinkedMatch(); } catch (error) { if (error.status === 401) { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); } else VoteUI.toast($("toast"), `⚠️ ${error.message}`); } finally { VoteUI.setBusy($("busy"), false); } }
         async function showLinkedMatch() { const id = new URLSearchParams(location.search).get("match_id"); if (!id) return; const data = await api(`/resources?search=${encodeURIComponent(id)}`); const row = data.matches.find((item) => String(item.match_id) === id); if (row) { $("linkedMatch").innerHTML = `<b>已連結比賽：${esc(matchLabel(row))}</b><div>${esc(row.topic_text || "未有辯題")}</div>`; $("linkedMatch").classList.remove("hidden"); } }
         function renderResourceResults() { $("eventResourceResults").innerHTML = resources.matches.map((row) => `<button type="button" data-add-match="${esc(row.match_id)}">🎬 ${esc(matchLabel(row))}</button>`).join("") + resources.photos.map((row) => `<button type="button" data-add-photo="${row.id}">🖼️ ${esc(photoLabel(row))}</button>`).join("") || '<p class="caption">找不到資源。</p>'; }
         function renderResourcePager(data) { $("eventResourcePager").innerHTML = data.total_pages > 1 ? `<button type="button" data-resource-page="${data.page - 1}" ${data.page <= 1 ? "disabled" : ""}>上一頁</button><span>第 ${data.page} / ${data.total_pages} 頁（每頁 ${data.page_size} 項）</span><button type="button" data-resource-page="${data.page + 1}" ${data.page >= data.total_pages ? "disabled" : ""}>下一頁</button>` : `<span class="caption">共 ${data.total} 項（每頁最多 ${data.page_size} 項）</span>`; }
@@ -109,6 +121,7 @@
         async function mutate(path, options, message) { VoteUI.setBusy($("busy"), true); try { await api(path, options); VoteUI.toast($("toast"), `✅ ${message}`); await loadCollections(); return true; } catch (error) { VoteUI.toast($("toast"), `⚠️ ${error.message}`); return false; } finally { VoteUI.setBusy($("busy"), false); } }
 
         document.querySelectorAll("#mainTabs button").forEach((button) => button.addEventListener("click", () => switchPane(button.dataset.pane)));
+        ["memberSort", "memberManagementSort"].forEach((id) => $(id).addEventListener("change", (event) => changeMembershipOrder(event.target.value)));
         $("loginForm").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/api/committee/login", {method:"POST",body:JSON.stringify({user_id:$("loginUser").value,password:$("loginPassword").value})}); $("loginPassword").value=""; await load(); } catch(error) { $("loginMessage").textContent=error.message; } });
         $("eventResourceButton").addEventListener("click", () => searchResources(1).catch((e)=>VoteUI.toast($("toast"),`⚠️ ${e.message}`)));
         $("eventResourceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchResources(1).catch((error)=>VoteUI.toast($("toast"),`⚠️ ${error.message}`)); } });

@@ -16,7 +16,7 @@
 |---|---|
 | App | Render production 已運行 `4.6.0`；maintenance mode 關閉 |
 | Database | Supabase PostgreSQL 17.6，Singapore pooler；未發現獨立 staging database |
-| Migration | Production head `20260717_0003`；repo head `20260717_0004` 待授權套用；既有 gap、unknown version、name/checksum mismatch 全部為 0 |
+| Migration | Production及repo head均為 `20260717_0004`；pending、gap、unknown version、name/checksum mismatch 全部為 0 |
 | Catalog | 61 public tables（60 application + `schema_migrations`）、0 production-only tables；ledger及新增community tables均無browser角色權限 |
 | Canonical checksum | `91e2f363834ef7d5dfc9ac9cefad88e55d8fda20f02a1ffb19e168e92338536e`（2026-07-17）；reconciliation 0 drift、0 runtime DDL site（budget已收緊至0） |
 | Migration files | `baseline.json`加18對 up/down；已套用版本全部永久 freeze |
@@ -47,7 +47,7 @@ P0聯機Live direct media、P3粵語讀音、P4自家TTS、P5自家辯論LLM及P
 | Phase | 未來能力／結果 | 類型 | 現況及下一個gate |
 |---|---|---|---|
 | **P0** | Mode A STUN-only P2P direct media | 使用者功能／成本 | Repo已實作；下一gate係browser自動回歸、真機／嚴格NAT矩陣及授權deploy後zero-audio-through-Render驗證 |
-| **P0** | `4.6.1` bugfix deploy後smoke及admin credential rotation | 運維／安全 | Production仍是`4.6.0`；下一gate係套用`20260717_0004`、部署`4.6.1`及登入後smoke，本roadmap不授權deploy、migration或secret變更 |
+| **P0** | `4.6.1` bugfix deploy後smoke及admin credential rotation | 運維／安全 | `20260717_0004`已於2026-07-17套用，Production app仍是`4.6.0`；下一gate係部署`4.6.1`及登入後smoke，本roadmap不授權deploy或secret變更 |
 | **P1** | 可重現staging／空DB、schema cleanup、不可變motion ID、時區及roster token收口 | 資料庫 | 先完成staging restore及migration replay |
 | **P2** | Supabase最小權限、trusted request context及全面RLS | 安全 | Runtime仍使用`BYPASSRLS`角色，需分批canary |
 | **P3** | 粵語讀音回歸集、字典、G2P及provider-neutral preprocessing | 使用者功能 | 未建固定eval corpus，以現有Azure path做baseline |
