@@ -4,6 +4,7 @@ import csv
 import datetime as dt
 import io
 import itertools
+import json
 import os
 import re
 from urllib.parse import parse_qs, urlparse
@@ -53,6 +54,14 @@ VOTE_LABELS = {"pro": "正方勝出", "con": "反方勝出", "undecided": "難�
 BRACKET_RE = re.compile(r"[（(﹙]\s*([^（(﹙）)﹚]*?)\s*[）)﹚]")
 PRESERVE_BEST_DEBATER = object()
 _NON_MEMBER_ACCOUNT_SQL = sql_account_id_literals(NON_MEMBER_ACCOUNT_DB_KEYS)
+
+
+class PhotoStorageDeleteError(RuntimeError):
+    """An uploader-owned photo could not be fully removed from R2."""
+
+
+class PhotoMetadataDeleteError(RuntimeError):
+    """R2 deletion succeeded but the owner-scoped metadata delete failed."""
 
 
 def now_hkt():
@@ -935,6 +944,71 @@ def update_photo_metadata(user_id, photo_id, album_label, match_video_id,
         },
     )
     return bool(changed)
+
+
+def delete_owned_photo(user_id, photo_id, db=None):
+    """Permanently delete one uploader-owned R2 photo and then its metadata."""
+    from core import r2_storage
+
+    db = _resolve_db(db)
+    current = db.query(
+        f"""SELECT r2_key,thumbnail_r2_key FROM {TABLE_MATCH_PHOTOS}
+        WHERE id=:id AND uploaded_by=:uploaded_by LIMIT 1""",
+        {"id": int(photo_id), "uploaded_by": str(user_id)},
+    )
+    if current.empty:
+        return False
+
+    row = current.iloc[0]
+    r2_key = clean_text(row.get("r2_key"))
+    thumbnail_r2_key = clean_text(row.get("thumbnail_r2_key"))
+    if not r2_key or not thumbnail_r2_key:
+        raise PhotoStorageDeleteError("photo R2 keys are incomplete")
+
+    # Delete the expendable thumbnail first. If the original delete then fails,
+    # the authoritative metadata and original remain available for a safe retry.
+    try:
+        r2_storage.delete(thumbnail_r2_key)
+        r2_storage.delete(r2_key)
+    except Exception as exc:
+        raise PhotoStorageDeleteError("photo R2 deletion failed") from exc
+
+    params = {
+        "id": int(photo_id),
+        "uploaded_by": str(user_id),
+        "r2_key": r2_key,
+        "thumbnail_r2_key": thumbnail_r2_key,
+    }
+    try:
+        with db.transaction() as conn:
+            changed = conn.execute(
+                text(f"""DELETE FROM {TABLE_MATCH_PHOTOS}
+                WHERE id=:id AND uploaded_by=:uploaded_by
+                  AND r2_key IS NOT DISTINCT FROM :r2_key
+                  AND thumbnail_r2_key IS NOT DISTINCT FROM :thumbnail_r2_key"""),
+                params,
+            ).rowcount
+            if int(changed or 0) != 1:
+                raise PhotoMetadataDeleteError(
+                    "photo metadata changed during deletion"
+                )
+            conn.execute(
+                text(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+                SET status='orphan_deleted',completed_at=:completed_at
+                WHERE user_id=:uploaded_by AND media_kind='photo'
+                  AND status IN ('issued','completed','processing')
+                  AND CAST(object_keys AS jsonb) @> CAST(:object_keys AS jsonb)"""),
+                {
+                    "uploaded_by": str(user_id),
+                    "completed_at": now_hkt(),
+                    "object_keys": json.dumps([r2_key]),
+                },
+            )
+    except PhotoMetadataDeleteError:
+        raise
+    except Exception as exc:
+        raise PhotoMetadataDeleteError("photo metadata deletion failed") from exc
+    return True
 
 
 def register_r2_photos(user_id, album_label, match_video_id, photo_date,

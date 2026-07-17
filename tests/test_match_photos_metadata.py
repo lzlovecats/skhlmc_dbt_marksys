@@ -7,7 +7,8 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from api import match_photos_api
-from core import media_logic
+from core import media_logic, r2_storage
+from system_limits import PHOTO_BATCH_MAX_ITEMS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -316,6 +317,14 @@ def test_photo_metadata_body_enforces_bounds_before_database_access():
         _body(match_video_id=0)
 
 
+def test_photo_completion_keeps_internal_batch_safety_limit():
+    with pytest.raises(ValidationError):
+        match_photos_api.PhotoCompleteBody(
+            album_label="其他相片",
+            upload_tokens=["token"] * (PHOTO_BATCH_MAX_ITEMS + 1),
+        )
+
+
 def test_gallery_only_offers_server_authorized_metadata_editor():
     source = (ROOT / "frontend/shared/server-tables.js").read_text(encoding="utf-8")
 
@@ -326,6 +335,165 @@ def test_gallery_only_offers_server_authorized_metadata_editor():
     assert "原有：" in source
     assert "原有場次已不可選" not in source
     assert "await load(1)" in source
+
+
+def test_gallery_search_keeps_controls_visible_and_waits_for_ime_commit():
+    source = (ROOT / "frontend/shared/server-tables.js").read_text(encoding="utf-8")
+    gallery = source.split('if (location.pathname === "/match-photos")', 1)[1]
+
+    assert '.classList.toggle("hidden", !meta.total)' not in gallery
+    assert "目前未有符合搜尋條件的圖片。" in gallery
+    assert "event.isComposing" in gallery
+    assert '"compositionend"' in gallery
+
+
+def test_photo_upload_batches_unbounded_selection_with_progress_and_single_flight():
+    html = (ROOT / "frontend" / "match_photos" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    upload = html.split("async function uploadR2Photos", 1)[1]
+
+    assert "files.length > state.limits.batch_max_items" not in upload
+    assert "start < files.length" in upload
+    assert "state.limits.batch_max_items" in upload
+    assert "uploadInFlight" in upload
+    assert "submitButton.disabled = true" in upload
+    assert "上載中" in upload
+    assert "match-photos:uploaded" in upload
+    assert "location.reload()" not in upload
+
+
+class _DeletePhotoDb:
+    def __init__(self, row=None, *, changed=1, events=None):
+        self.row = row
+        self.changed = changed
+        self.events = events if events is not None else []
+        self.executed = []
+
+    def query(self, sql, params=None):
+        self.events.append(("query", sql, params))
+        rows = [] if self.row is None else [self.row]
+        return pd.DataFrame(
+            rows,
+            columns=["r2_key", "thumbnail_r2_key"],
+        )
+
+    def transaction(self):
+        db = self
+
+        class Transaction:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, _exc, _traceback):
+                return False
+
+            def execute(self, statement, params):
+                sql = str(statement)
+                event = "db_delete" if "DELETE FROM match_photos" in sql else "intent_delete"
+                db.events.append((event, sql, params))
+                db.executed.append((sql, params))
+
+                class Result:
+                    rowcount = db.changed if event == "db_delete" else 1
+
+                return Result()
+
+        return Transaction()
+
+
+def test_delete_owned_photo_removes_r2_before_owner_scoped_metadata(monkeypatch):
+    events = []
+    db = _DeletePhotoDb(
+        {
+            "r2_key": "photos/original/alice/one.webp",
+            "thumbnail_r2_key": "photos/thumb/alice/one.webp",
+        },
+        events=events,
+    )
+    monkeypatch.setattr(
+        r2_storage, "delete", lambda key: events.append(("r2_delete", key))
+    )
+
+    assert media_logic.delete_owned_photo("alice", 17, db=db) is True
+
+    assert [event[:2] for event in events if event[0] == "r2_delete"] == [
+        ("r2_delete", "photos/thumb/alice/one.webp"),
+        ("r2_delete", "photos/original/alice/one.webp"),
+    ]
+    assert [event[0] for event in events][-2:] == ["db_delete", "intent_delete"]
+    sql, params = db.executed[0]
+    assert "uploaded_by=:uploaded_by" in sql
+    assert "r2_key IS NOT DISTINCT FROM :r2_key" in sql
+    assert "thumbnail_r2_key IS NOT DISTINCT FROM :thumbnail_r2_key" in sql
+    assert params == {
+        "id": 17,
+        "uploaded_by": "alice",
+        "r2_key": "photos/original/alice/one.webp",
+        "thumbnail_r2_key": "photos/thumb/alice/one.webp",
+    }
+    intent_sql, intent_params = db.executed[1]
+    assert "UPDATE r2_upload_intents" in intent_sql
+    assert "status='orphan_deleted'" in intent_sql
+    assert intent_params["uploaded_by"] == "alice"
+    assert intent_params["object_keys"] == '["photos/original/alice/one.webp"]'
+
+
+def test_delete_owned_photo_missing_or_other_owner_does_not_touch_r2(monkeypatch):
+    db = _DeletePhotoDb()
+    deleted = []
+    monkeypatch.setattr(r2_storage, "delete", deleted.append)
+
+    assert media_logic.delete_owned_photo("alice", 17, db=db) is False
+    assert deleted == []
+    assert db.executed == []
+
+
+def test_delete_owned_photo_stops_before_metadata_if_r2_delete_fails(monkeypatch):
+    db = _DeletePhotoDb(
+        {
+            "r2_key": "photos/original/alice/one.webp",
+            "thumbnail_r2_key": "photos/thumb/alice/one.webp",
+        }
+    )
+
+    def fail_delete(_key):
+        raise RuntimeError("provider detail must stay private")
+
+    monkeypatch.setattr(r2_storage, "delete", fail_delete)
+
+    with pytest.raises(media_logic.PhotoStorageDeleteError):
+        media_logic.delete_owned_photo("alice", 17, db=db)
+
+    assert db.executed == []
+
+
+def test_photo_delete_endpoint_maps_owner_and_storage_failures(monkeypatch):
+    monkeypatch.setattr(match_photos_api, "_context", lambda _request: ("alice", object()))
+    monkeypatch.setattr(media_logic, "delete_owned_photo", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(HTTPException) as missing:
+        match_photos_api.delete_photo(17, object())
+    assert missing.value.status_code == 404
+    assert missing.value.detail == "找不到可刪除的圖片。"
+
+    def fail_storage(*_args, **_kwargs):
+        raise media_logic.PhotoStorageDeleteError
+
+    monkeypatch.setattr(media_logic, "delete_owned_photo", fail_storage)
+    with pytest.raises(HTTPException) as failed:
+        match_photos_api.delete_photo(17, object())
+    assert failed.value.status_code == 502
+    assert "provider detail" not in failed.value.detail
+
+
+def test_gallery_only_offers_owner_delete_with_confirmation():
+    source = (ROOT / "frontend/shared/server-tables.js").read_text(encoding="utf-8")
+    gallery = source.split('if (location.pathname === "/match-photos")', 1)[1]
+
+    assert "data-delete-photo" in gallery
+    assert 'method: "DELETE"' in gallery
+    assert "永久刪除" in gallery
 
 
 def test_gallery_opens_original_photo_on_demand_in_accessible_lightbox():

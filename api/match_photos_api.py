@@ -138,6 +138,22 @@ def update_photo(photo_id: int, body: PhotoMetadataBody, request: Request):
     return {"ok": True, "message": "圖片資料已更新。"}
 
 
+@router.delete("/photos/{photo_id}")
+def delete_photo(photo_id: int, request: Request):
+    from core import media_logic as logic
+
+    user_id, db = _context(request)
+    try:
+        deleted = logic.delete_owned_photo(user_id, photo_id, db=db)
+    except logic.PhotoStorageDeleteError as exc:
+        raise HTTPException(502, "R2 未能完整刪除圖片，資料仍然保留，請稍後再試。") from exc
+    except logic.PhotoMetadataDeleteError as exc:
+        raise HTTPException(502, "圖片檔案已刪除，但資料清理未完成，請重新整理後再試。") from exc
+    if not deleted:
+        raise HTTPException(404, "找不到可刪除的圖片。")
+    return {"ok": True, "message": "圖片已永久刪除。"}
+
+
 @router.post("/upload-intent")
 def upload_intent(body: PhotoUploadIntentBody, request: Request):
     """Issue two short-lived direct R2 PUTs: original and gallery thumbnail."""

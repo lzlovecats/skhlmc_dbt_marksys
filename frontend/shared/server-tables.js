@@ -533,7 +533,7 @@
         },
         photoEditor = (photo) =>
           photo.can_edit
-            ? `<details><summary>編輯資料</summary><form class="photo-edit-form" data-photo-id="${esc(photo.id)}"><label>所屬場次</label><select name="album_label" required>${editAlbumOptions(photo)}</select><label>相片日期（可留空）</label><input name="photo_date" type="date" value="${esc(photo.photo_date)}"><label>圖片標題（可留空）</label><input name="photo_title" maxlength="300" value="${esc(photo.photo_title)}"><label>圖片說明（可留空）</label><textarea name="caption" maxlength="2000" rows="3">${esc(photo.caption)}</textarea><button class="primary" type="submit">儲存修改</button></form></details>`
+            ? `<details><summary>編輯資料</summary><form class="photo-edit-form" data-photo-id="${esc(photo.id)}"><label>所屬場次</label><select name="album_label" required>${editAlbumOptions(photo)}</select><label>相片日期（可留空）</label><input name="photo_date" type="date" value="${esc(photo.photo_date)}"><label>圖片標題（可留空）</label><input name="photo_title" maxlength="300" value="${esc(photo.photo_title)}"><label>圖片說明（可留空）</label><textarea name="caption" maxlength="2000" rows="3">${esc(photo.caption)}</textarea><button class="primary" type="submit">儲存修改</button></form><button class="danger" type="button" data-delete-photo="${esc(photo.id)}">永久刪除圖片</button></details>`
             : "",
         linkedPhotoId = new URLSearchParams(location.search).get("photo_id"),
         load = (page = 1) => {
@@ -544,12 +544,18 @@
             },
             url = `/api/match-photos/photos?album=${encodeURIComponent(document.getElementById("filter").value || "全部")}&search=${encodeURIComponent(document.getElementById("search").value)}&sort=${sortMap[document.getElementById("sort").value] || "date_desc"}${linkedPhotoId ? `&photo_id=${encodeURIComponent(linkedPhotoId)}` : ""}`;
           return VoteUI.serverPaged(target, url, (rows, meta) => {
-            document
-              .getElementById("empty")
-              .classList.toggle("hidden", meta.total > 0);
-            document
-              .getElementById("galleryApp")
-              .classList.toggle("hidden", !meta.total);
+            const empty = document.getElementById("empty"),
+              hasSearch = Boolean(
+                document.getElementById("search").value.trim(),
+              ),
+              hasAlbumFilter =
+                document.getElementById("filter").value !== "全部";
+            empty.textContent =
+              hasSearch || hasAlbumFilter || linkedPhotoId
+                ? "目前未有符合搜尋條件的圖片。"
+                : "目前未有已上載的比賽圖片。";
+            empty.classList.toggle("hidden", meta.total > 0);
+            document.getElementById("galleryApp").classList.remove("hidden");
             document.getElementById("count").textContent =
               `共 ${meta.total} 張圖片`;
             target.className =
@@ -570,7 +576,34 @@
         };
       let lastPhotoTrigger = null;
       load();
-      target.addEventListener("click", (event) => {
+      target.addEventListener("click", async (event) => {
+        const deleteButton = event.target.closest("[data-delete-photo]");
+        if (deleteButton) {
+          const photoId = deleteButton.dataset.deletePhoto;
+          if (
+            !window.confirm(
+              "永久刪除這張圖片？原圖、縮圖，以及歷史／討論區內的圖片連結都會移除，不能復原。",
+            )
+          )
+            return;
+          deleteButton.disabled = true;
+          try {
+            const response = await fetch(
+                `/api/match-photos/photos/${encodeURIComponent(photoId)}`,
+                { method: "DELETE", credentials: "same-origin" },
+              ),
+              data = await response.json().catch(() => ({}));
+            if (!response.ok)
+              throw new Error(data.detail || `HTTP ${response.status}`);
+            showPhotoNotice(`☑️ ${data.message || "圖片已永久刪除。"}`);
+            await load(1);
+          } catch (error) {
+            showPhotoNotice(error.message || "未能刪除圖片。", true);
+          } finally {
+            if (deleteButton.isConnected) deleteButton.disabled = false;
+          }
+          return;
+        }
         const trigger = event.target.closest(".photo-preview");
         if (!trigger) return;
         openPhotoLightbox(trigger);
@@ -656,14 +689,29 @@
           true,
         ),
       );
+      let searchTimer = null;
+      const scheduleSearch = () => {
+        window.clearTimeout(searchTimer);
+        searchTimer = window.setTimeout(() => load(), 180);
+      };
       document.getElementById("search").addEventListener(
         "input",
         (event) => {
           event.stopImmediatePropagation();
-          load();
+          if (event.isComposing) return;
+          scheduleSearch();
         },
         true,
       );
+      document.getElementById("search").addEventListener(
+        "compositionend",
+        (event) => {
+          event.stopImmediatePropagation();
+          scheduleSearch();
+        },
+        true,
+      );
+      window.addEventListener("match-photos:uploaded", () => load(1));
     });
   if (location.pathname === "/match-photos")
     observeVisible("app", () => {
