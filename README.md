@@ -45,15 +45,15 @@ Solo Gemini Live：Browser ──WebSocket（一次性ephemeral token）──> 
 - `core/`：可獨立測試的業務規則、SQL及storage/provider adapters。
 - `deploy/proxy.py`：FastAPI app、靜態路由、多人Live WebSocket rooms及process runtime；
   Solo Live只在此完成登入、地區、配額、prompt及一次性token簽發，audio不經Render。
-- 多人Live的實時audio現時仍經Render；未來將media plane搬離Render、保留低流量
-  control plane的工程及gate見[`docs/ROADMAP.md` P0.1](docs/ROADMAP.md)；此項仍未實作。
+- 多人Live Mode A的repo實作使用STUN-only WebRTC P2P audio；Render只處理低流量
+  control／signaling／逐字稿。實際production版本及真機cutover狀態須另行核實。
 - `schema.py`：只供新、空database bootstrap；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理，runtime不再執行舊式retrofit清單。
-- 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
+- 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍然fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
 Production schema 以 migration ledger 為準，現行 migration head 由 migration lint／status 輸出；
-media binary只存private R2，database只保存metadata。未完成的RLS、自家TTS、自家LLM、
-migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
+media binary只存private R2，database只保存metadata。未provision的RLS、自家TTS、自家LLM
+schema bundle必須繼續fail-closed，唔可以由request-time DDL自動建立。
 
 ## 資料及資源原則
 
@@ -180,12 +180,12 @@ Production資料分為：
 - AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions及private audit；eval/RAG/model lifecycle仍未provision；
 - finance/operations：AI fund、lateness fund、bug reports及resource accounting。
 
-Production exact baseline、已知drift及待處理indexes/FKs見[`docs/ROADMAP.md`](docs/ROADMAP.md)。
+Production exact baseline、drift及indexes／FK現況屬時間敏感資料，以 migration status、
+`tools/audit_db_schema.py` 及 `tools/reconcile_db_schema.py` 的即時read-only輸出為準。
 
 ## 營運文件
 
-- [`docs/SERVICES_COSTS_AND_LIMITS.md`](docs/SERVICES_COSTS_AND_LIMITS.md)：外部服務、費用、限額、deploy及R2／Cloudflare操作
-- [`docs/ROADMAP.md`](docs/ROADMAP.md)：所有未完成工程的單一路線圖
+- [`docs/SERVICES_COSTS_AND_LIMITS.md`](docs/SERVICES_COSTS_AND_LIMITS.md)：外部服務成本速查
 
 ## 維護規則
 
@@ -193,7 +193,7 @@ Production exact baseline、已知drift及待處理indexes/FKs見[`docs/ROADMAP.
 2. 新SQL必須parameterized，list query有界，寫入同一業務動作用transaction。
 3. 新table/column/index/RLS要有versioned migration、rollback及可重現permission驗證。
 4. HTML source保持正常縮排，不提交minified inline document；共用樣式/行為放`frontend/shared/`。
-5. Runtime需要的assets才放`assets/`；計劃更新`docs/ROADMAP.md`，不再新增散落migration diary。
+5. Runtime需要的assets才放`assets/`；只更新真正受影響的職責文件，不新增散落migration diary。
 6. 修bug附可重現驗證步驟，並在`tests/`加入對應regression case。資源改動同時更新`system_limits.py`及對應docs。
 
 Maintained by lzlovecats and contributors.

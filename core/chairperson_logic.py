@@ -69,7 +69,14 @@ def chairperson_data(selected_match_id=None, db=None):
         db=db,
         match_ids=[item["match_id"] for item in matches],
     )
-    closing = {"has_scores": bool(result.get("has_scores")), "pro_votes": 0, "con_votes": 0, "draw_votes": 0, "best_debater": "（資料不足，暫時未能判定）"}
+    closing = {
+        "has_scores": bool(result.get("has_scores")),
+        "submitted_judge_count": int(result.get("judge_count") or 0),
+        "pro_votes": 0,
+        "con_votes": 0,
+        "draw_votes": 0,
+        "best_debater": "（資料不足，暫時未能判定）",
+    }
     if result.get("has_scores"):
         best = result.get("best_debater") or {}
         tied_roles = best.get("tied_roles") or []

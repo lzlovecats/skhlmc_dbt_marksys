@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="theme-color" content="#0e1117" />
     <title>主席主持易</title>
-    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
     <style>
       main {
         max-width: 84rem;
@@ -253,6 +253,7 @@
         </section>
         <section id="closing" class="pane card">
           <button id="refreshClosing">🔄 重新整理賽果</button>
+          <div id="closingStatus" class="notice warn" aria-live="polite"></div>
           <div id="closingScript" class="script"></div>
         </section>
         <section id="timer" class="pane card">
@@ -325,8 +326,8 @@
     <div id="busy" class="busy">
       <div class="busy-pill"><i class="spinner"></i>處理中…</div>
     </div>
-    <script src="/shared/vote-ui.js"></script>
-    <script src="/shared/markdown.js"></script>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
+    <script src="/shared/markdown.js?v=__APP_VERSION__"></script>
     <script>
       (() => {
         "use strict";
@@ -367,7 +368,11 @@
               ...opt,
             }),
             d = await r.json().catch(() => ({}));
-          if (!r.ok) throw Error(d.detail || "操作失敗");
+          if (!r.ok) {
+            const error = Error(d.detail || "操作失敗");
+            error.status = r.status;
+            throw error;
+          }
           return d;
         }
         function values() {
@@ -442,6 +447,14 @@
             con_votes: c.con_votes || 0,
             draw_votes: c.draw_votes || 0,
           };
+          const submittedJudges = Math.max(
+            0,
+            Number(c.submitted_judge_count) || 0,
+          );
+          $("closingStatus").textContent =
+            "現時已有 " + submittedJudges + " 位評判提交分紙";
+          $("closingStatus").className =
+            "notice " + (c.has_scores ? "ok" : "warn");
           let fill = (t) =>
             Object.entries(repl).reduce(
               (x, [k, val]) => x.replaceAll("{" + k + "}", val),
@@ -505,8 +518,9 @@
             $("app").classList.remove("hidden");
             renderInputs(saved);
           } catch (e) {
-            if (e.message === "未登入") {
+            if (e.status === 401) {
               $("loading").classList.add("hidden");
+              $("app").classList.add("hidden");
               $("login").classList.remove("hidden");
             } else $("loading").textContent = "連線錯誤：" + e.message;
           } finally {
@@ -568,9 +582,9 @@
             String(cs % 100).padStart(2, "0")
           );
         }
-        function current(t) {
+        function current(t, now = performance.now()) {
           return t.running
-            ? t.elapsed + (performance.now() - t.start) / 1000
+            ? t.elapsed + (now - t.start) / 1000
             : t.elapsed;
         }
         function styleClock(el, seconds, clockStage = stage) {
@@ -610,9 +624,13 @@
               .map((b, i) => `<li id="${prefix}${i}">${esc(b.label)}</li>`)
               .join("");
         }
-        function stop(t) {
-          t.elapsed = current(t);
+        function stop(t, now = performance.now()) {
+          t.elapsed = current(t, now);
           t.running = false;
+        }
+        function resume(t, now = performance.now()) {
+          t.start = now;
+          t.running = true;
         }
         function freeButton(side, label = "開始") {
           const button = document.querySelector(`[data-free="${side}"]`);
@@ -741,7 +759,6 @@
         document.querySelectorAll("[data-pane]").forEach(
           (b) =>
             (b.onclick = () => {
-              if (b.dataset.pane !== "timer") resetTimers();
               document
                 .querySelectorAll("[data-pane],.pane")
                 .forEach((x) => x.classList.remove("active"));
@@ -759,8 +776,7 @@
             stop(single);
             $("singleStart").textContent = "繼續";
           } else {
-            single.start = performance.now() - single.elapsed * 1000;
-            single.running = true;
+            resume(single);
             $("singleStart").textContent = "暫停";
           }
         };
@@ -777,8 +793,7 @@
             } else {
               stop(free[other]);
               freeButton(other, free[other].elapsed ? "繼續" : "開始");
-              free[side].start = performance.now() - free[side].elapsed * 1000;
-              free[side].running = true;
+              resume(free[side]);
               freeButton(side, "暫停");
             }
           }

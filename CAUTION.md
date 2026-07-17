@@ -16,7 +16,7 @@ Render 只開一個 Uvicorn process。Live rooms、部分 token retry cache、co
 - 唔好加 worker、background process 或第二 instance 後假設 state 會共享。
 - 唔好用普通 `threading.Lock`／dict 當 database-wide consistency；跨 request／process 正確性要靠 database constraint、conditional write、transaction 或 advisory lock。
 - Process restart 會清短期 state。需要 durable 嘅資料要明確設計 schema、retention 同 recovery，唔好悄悄將 in-memory object serialize 落任意 config。
-- Room control 未完成 roadmap 拆分前，唔好將 `deploy/proxy.py` room globals 搬一半，否則 cleanup、capacity、socket replacement 同 judgement semaphore 會失去共同狀態。
+- Room control 未完整拆分並將共享 state 外置前，唔好將 `deploy/proxy.py` room globals 搬一半，否則 cleanup、capacity、socket replacement 同 judgement semaphore 會失去共同狀態。
 
 ## 2. `deploy/proxy.py` 路由次序同 catch-all 好容易吞 request
 
@@ -56,7 +56,7 @@ Render 只開一個 Uvicorn process。Live rooms、部分 token retry cache、co
 - 同步核對 table constants、bootstrap DDL、indexes、foreign keys、feature readiness、tooling、tests 同 rollback。Bootstrap parity 唔代表可以 skip migration。
 - `baseline.json` 只描述已核實既有 catalog；唔好用 baseline 掩蓋 pending migration、unknown version 或 drift。
 - Migration SQL 唔可以包含 transaction control 或 literal `%`；runner 自己包 transaction，而 psycopg2 raw execution 會將 `%` 當 interpolation。
-- 新 table 要明確 revoke `PUBLIC`、`anon`、`authenticated`；現時 backend role/RLS 仲有 roadmap 工作，唔好錯誤聲稱 migration 已得到完整 RLS 保護。
+- 新 table 要明確 revoke `PUBLIC`、`anon`、`authenticated`；現時 backend role 仍可 `BYPASSRLS`，全面 RLS 尚未完成，唔好錯誤聲稱 migration 已得到完整 RLS 保護。
 - Dataset/model/eval/RAG 係有意 fail-closed 嘅 feature bundles。未完成 schema marker、permission、retention、audit 同 rollback 前，endpoint 應 503，唔好自動 create table 或先做付費工作。
 
 ## 6. SQL parameter 唔包括 identifier
@@ -254,9 +254,9 @@ HTML/CSS/JS 原檔直接 serve。Shared asset 會被 cache，HTML 亦有 `stale-
 ## 25. 文件同 release snapshot 都可能過時
 
 - `version.py` 先係 code release version；migration head 以實際 catalog/ledger 同 `migrations/` 為準，唔好信 README 入面寫死嘅舊 head。
-- `docs/ROADMAP.md` 分清 production 現況、repo ready 同未授權 deploy；「code 已有」唔等於 production 已部署。
+- 分清 production 現況、repo ready 同未授權 deploy；「code 已有」唔等於 production 已部署。
 - Model、價格、供應商政策、production table count、R2 bytes、Render plan 都係時間敏感資料。要引用時重新核對，並加核實日期。
-- 完成功能後更新 user manual／rules／service docs／roadmap 只限真實受影響內容；唔好開散落嘅 migration diary 或複製一份 source of truth。
+- 完成功能後只更新真實受影響嘅 user manual／rules／service docs；唔好開散落嘅 migration diary 或複製一份 source of truth。
 - 任何 release bump、tag、push、deploy、migration apply 同 production smoke 都要有明確授權，唔好因 code/tests ready 自動執行。
 
 ## 提交前快速檢查

@@ -231,7 +231,6 @@
       $("app").classList.remove("hidden");
       fallback?.classList.add("hidden");
       $("consentText").textContent = data.consent_text;
-      $("rdPlan").innerHTML = SafeMarkdown.render(data.rd_plan || "");
       $("ttsBlocked").classList.toggle("hidden", data.is_allowed);
       $("ttsBlocked").textContent = data.is_admin
         ? "你並非 TTS 錄音收集名單成員；你仍可使用管理員分頁。"

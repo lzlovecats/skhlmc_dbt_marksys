@@ -12,6 +12,7 @@ from scoring import (
     SPEECH_TOTAL_MAX,
     derive_debater_ranks,
     free_debate_col,
+    is_valid_competition_ranking,
     speech_col,
 )
 from core.judging_logic import auto_derive_ranking_order, normalise_side_data
@@ -106,10 +107,26 @@ def test_best_debater_ranking_orders_all_eight_speakers():
     assert sorted(ranks.values()) == list(range(1, 9))
 
 
-def test_derived_ranking_keeps_unique_slots_when_scores_tie():
+def test_derived_ranking_uses_standard_competition_ranks_when_scores_tie():
     ranks = derive_debater_ranks([80, 80, 70, 70], [80, 60, 60, 50])
-    assert [ranks[("pro", position)] for position in range(1, 5)] == [1, 2, 4, 5]
-    assert ranks[("con", 1)] == 3
-    assert sorted(ranks.values()) == list(range(1, 9))
+    assert [ranks[("pro", position)] for position in range(1, 5)] == [1, 1, 4, 4]
+    assert [ranks[("con", position)] for position in range(1, 5)] == [1, 6, 6, 8]
+    assert sorted(ranks.values()) == [1, 1, 1, 4, 4, 6, 6, 8]
     with pytest.raises(ValueError, match="有限數值"):
         derive_debater_ranks([80, float("inf"), 70, 60], [50, 40, 30, 20])
+
+
+@pytest.mark.parametrize(
+    ("ranks", "valid"),
+    [
+        ([1, 2, 3, 4, 5, 6, 7, 8], True),
+        ([1, 1, 3, 4, 5, 6, 7, 8], True),
+        ([1, 2, 2, 4, 5, 6, 7, 8], True),
+        ([1, 1, 1, 1, 1, 1, 1, 1], True),
+        ([1, 1, 2, 4, 5, 6, 7, 8], False),
+        ([2, 2, 3, 4, 5, 6, 7, 8], False),
+        ([1, 2, 3, 4, 5, 6, 7, 9], False),
+    ],
+)
+def test_standard_competition_ranking_validation(ranks, valid):
+    assert is_valid_competition_ranking(ranks) is valid

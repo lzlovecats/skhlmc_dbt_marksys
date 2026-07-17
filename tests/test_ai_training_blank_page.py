@@ -79,7 +79,6 @@ def test_training_data_normalises_nullable_database_values(monkeypatch):
     monkeypatch.setattr(
         ai_training_api, "_has_active_voice_consent", lambda _db, _user: False
     )
-    monkeypatch.setattr(ai_training_api, "_load_ai_roadmap", lambda: "")
     monkeypatch.setattr(proxy, "bandwidth_budget_status", lambda **_kwargs: {})
 
     from core import r2_storage

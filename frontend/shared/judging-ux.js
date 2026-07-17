@@ -122,11 +122,16 @@
 
     $("saveRank").addEventListener("click", event => {
         const ranks = Array.from(document.querySelectorAll("[data-rank]"), el => Number(el.value));
-        const valid = ranks.length === 8 && [...ranks].sort((a, b) => a - b).every((rank, index) => rank === index + 1);
+        const sortedRanks = [...ranks].sort((a, b) => a - b);
+        const valid = sortedRanks.length === 8 && sortedRanks.every((rank, index) => {
+            if (!Number.isInteger(rank) || rank < 1 || rank > 8) return false;
+            if (index === 0) return rank === 1;
+            return rank === sortedRanks[index - 1] || rank === index + 1;
+        });
         if (valid) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        $("rankMsg").innerHTML = '<div class="notice warn">每個名次（1–8）必須恰好使用一次，請檢查是否有重複或遺漏。</div>';
+        $("rankMsg").innerHTML = '<div class="notice warn">名次必須使用標準競賽排名（例如 1、1、3）；同名次後須跳過相應名次。</div>';
     }, true);
 
     document.addEventListener("input", event => {

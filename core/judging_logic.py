@@ -21,6 +21,7 @@ from scoring import (
     SPEECH_CRITERIA,
     derive_debater_ranks,
     free_debate_col,
+    is_valid_competition_ranking,
     speech_col,
 )
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
@@ -334,7 +335,7 @@ def submit_best_debater_rankings(match_id, judge_name, rankings, db=None):
     if not has_final_submission(match_id, judge, db=db):
         raise ValueError("請先正式提交本場評分，才可提交最佳辯論員排名。")
     if len(rankings) != 8:
-        raise ValueError("排名資料必須包含本場 8 位辯員。")
+        raise ValueError("排名資料必須包含本場 8 個辯位。")
     try:
         parsed = [
             {
@@ -346,7 +347,7 @@ def submit_best_debater_rankings(match_id, judge_name, rankings, db=None):
             if isinstance(item, Mapping)
         ]
         slots = [(item["side"], item["position"]) for item in parsed]
-        assigned = sorted(item["rank"] for item in parsed)
+        assigned = [item["rank"] for item in parsed]
     except (TypeError, ValueError) as exc:
         raise ValueError("排名資料格式不正確。") from exc
     if len(parsed) != 8:
@@ -354,8 +355,8 @@ def submit_best_debater_rankings(match_id, judge_name, rankings, db=None):
     expected_slots = {(side, position) for side in ("pro", "con") for position in range(1, 5)}
     if set(slots) != expected_slots or len(set(slots)) != 8:
         raise ValueError("排名資料必須完整包含正反方各四個辯位。")
-    if assigned != list(range(1, 9)):
-        raise ValueError("每個名次（1–8）必須恰好使用一次，請檢查是否有重複或遺漏。")
+    if not is_valid_competition_ranking(assigned):
+        raise ValueError("名次必須使用標準競賽排名（例如 1、1、3）；同名次後須跳過相應名次。")
     params = [
         {"match_id": match_id, "judge_name": judge, **item}
         for item in parsed

@@ -30,11 +30,6 @@ MANUAL_ROLE_SECTIONS = {
     "一般人員": "四、一般人員",
     "內部委員會成員": "五、內部委員會成員",
 }
-RULES_ROLE_SECTIONS = {
-    "評判": "一、評判",
-    "賽會人員": "二、賽會人員",
-    "參賽隊伍": "三、參賽隊伍",
-}
 def _get_configs(db, keys):
     return get_configs(db, keys)
 
@@ -206,9 +201,5 @@ def manual_for_role(role):
 
 
 def rules_for_role(role):
-    role = role if role in RULES_ROLE_SECTIONS else "評判"
-    content = _read_asset("rules.md")
-    divider = content.find("---")
-    prefix, body = (content[:divider + 3], content[divider + 3:]) if divider != -1 else ("", content)
-    section = extract_markdown_section(body, 2, RULES_ROLE_SECTIONS[role]) or body
-    return f"{prefix}\n\n{section}".strip()
+    """Return the complete official rules; they are not role-specific excerpts."""
+    return _read_asset("rules.md")

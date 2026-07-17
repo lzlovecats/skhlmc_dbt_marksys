@@ -40,12 +40,43 @@ COHERENCE_MAX = 5
 GRAND_TOTAL = SPEECH_TOTAL_MAX + FREE_DEBATE_MAX + COHERENCE_MAX  # 460
 
 
-def derive_debater_ranks(pro_scores, con_scores):
-    """Return one deterministic 1–8 ranking across both teams.
+def is_valid_competition_ranking(ranks, expected_count=8):
+    """Return whether ranks use standard competition ranking (1, 1, 3)."""
+    try:
+        values = list(ranks)
+    except TypeError:
+        return False
+    if len(values) != expected_count:
+        return False
 
-    The score-sheet ranking contract requires every rank to be used exactly
-    once.  Equal speech totals therefore keep the stable score-sheet order
-    (正方 1–4, then 反方 1–4) until the judge supplies an explicit ranking.
+    normalized = []
+    for value in values:
+        if isinstance(value, bool):
+            return False
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(numeric) or not numeric.is_integer():
+            return False
+        normalized.append(int(numeric))
+
+    normalized.sort()
+    if not normalized or normalized[0] != 1:
+        return False
+    for index, rank in enumerate(normalized):
+        if not 1 <= rank <= expected_count:
+            return False
+        if index and rank not in (normalized[index - 1], index + 1):
+            return False
+    return True
+
+
+def derive_debater_ranks(pro_scores, con_scores):
+    """Return standard competition ranks across all eight debate slots.
+
+    Slots with equal individual totals share a rank.  The next distinct score
+    skips the places occupied by the tie, for example 1, 1, 3.
     """
     if len(pro_scores) != 4 or len(con_scores) != 4:
         raise ValueError("排名必須包含正反方各四位辯員。")
@@ -60,8 +91,9 @@ def derive_debater_ranks(pro_scores, con_scores):
         raise ValueError("辯員分數必須是有限數值。") from exc
     if any(not math.isfinite(row["score"]) for row in rows):
         raise ValueError("辯員分數必須是有限數值。")
-    rows.sort(key=lambda row: row["score"], reverse=True)
     return {
-        (row["side"], row["position"]): rank
-        for rank, row in enumerate(rows, 1)
+        (row["side"], row["position"]): 1 + sum(
+            other["score"] > row["score"] for other in rows
+        )
+        for row in rows
     }

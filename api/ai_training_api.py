@@ -9,8 +9,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
-from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -445,21 +443,6 @@ def _audio_ext(mime):
         return "webm"
 
 
-@lru_cache(maxsize=1)
-def _load_ai_roadmap() -> str:
-    """Return only the TTS/LLM sections from the repo's single roadmap."""
-    roadmap_path = Path(__file__).resolve().parents[1] / "docs" / "ROADMAP.md"
-    try:
-        roadmap = roadmap_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return "統一研發路線圖暫時未能讀取。"
-    start = roadmap.find("## P3.")
-    end = roadmap.find("\n## P6.", start + 1) if start >= 0 else -1
-    if start >= 0:
-        return roadmap[start:end if end >= 0 else None].strip()
-    return roadmap
-
-
 def _gemini_usage(response_data, feature="tts_review"):
     model_label, model = get_feature_model(feature)
     meta = response_data.get("usageMetadata") or {}
@@ -507,10 +490,9 @@ def data(request: Request):
     # Recorder selection only needs one status per script; full history is paged below.
     mine = _rows(db.query(f"SELECT DISTINCT ON (script_id) id,script_id,status,created_at FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user ORDER BY script_id,created_at DESC LIMIT :inventory_limit", {"user":user,"inventory_limit":AI_TRAINING_INVENTORY_LIMIT}))
     llm = []
-    rd_plan = _load_ai_roadmap()
     from core import r2_storage
     from deploy.proxy import bandwidth_budget_status
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "rd_plan":rd_plan, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
     result["limits"] = {
         "max_audio_bytes": MAX_AUDIO_BYTES,
         "max_duration_seconds": TTS_MAX_DURATION_SECONDS,
