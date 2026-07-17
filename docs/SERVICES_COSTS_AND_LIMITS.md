@@ -4,7 +4,7 @@
 
 目前已核實的Render production為 **4.6.0**；repo release版本為 **4.6.1**，尚未
 部署，程式碼版本唯一來源仍是[`version.py`](../version.py)。Production migration
-head為`20260717_0003`；repo head `20260717_0004`待授權套用。兩個legacy BYTEA columns及
+head及repo head均為`20260717_0004`，pending migrations為0。兩個legacy BYTEA columns及
 legacy `system_config`已由versioned migrations退役。45張相片、45張縮圖及148段錄音共238個R2 objects
 （122,687,464 bytes）已再次完成size、SHA、MIME及metadata驗證。
 
