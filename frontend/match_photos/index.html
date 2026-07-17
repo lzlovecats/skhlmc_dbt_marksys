@@ -168,6 +168,20 @@
       .photo {
         min-width: 0;
       }
+      .photo-preview {
+        display: block;
+        width: 100%;
+        min-height: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        cursor: zoom-in;
+      }
+      .photo-preview:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 3px;
+      }
       .photo img {
         display: block;
         width: 100%;
@@ -218,6 +232,57 @@
         gap: 0.7rem;
         margin-top: 0.35rem;
       }
+      body.photo-lightbox-open {
+        overflow: hidden;
+      }
+      .photo-lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: grid;
+        place-items: center;
+        overflow: auto;
+        padding: max(3.75rem, env(safe-area-inset-top))
+          max(1rem, env(safe-area-inset-right))
+          max(1rem, env(safe-area-inset-bottom))
+          max(1rem, env(safe-area-inset-left));
+        background: rgb(0 0 0 / 92%);
+        overscroll-behavior: contain;
+      }
+      .photo-lightbox__stage {
+        display: grid;
+        justify-items: center;
+        gap: 0.65rem;
+        max-width: 100%;
+      }
+      .photo-lightbox__image {
+        display: block;
+        width: auto;
+        max-width: 100%;
+        height: auto;
+        max-height: calc(100vh - 8rem);
+        object-fit: contain;
+      }
+      .photo-lightbox__close {
+        position: fixed;
+        top: max(0.75rem, env(safe-area-inset-top));
+        right: max(0.75rem, env(safe-area-inset-right));
+        z-index: 101;
+        width: 2.75rem;
+        min-height: 2.75rem;
+        padding: 0;
+        border-color: #777;
+        border-radius: 999px;
+        background: #171923;
+        font-size: 1.65rem;
+        line-height: 1;
+      }
+      .photo-lightbox__title,
+      .photo-lightbox__status {
+        max-width: min(48rem, calc(100vw - 2rem));
+        margin: 0;
+        text-align: center;
+      }
       .login {
         max-width: 36rem;
       }
@@ -259,6 +324,7 @@
           <li>
             上載時可選擇「比賽片段」已有的場次；未能歸類的圖片可放入「其他相片」。
           </li>
+          <li>點按圖片可用全畫面查看原圖；手機可使用捏合手勢縮放。</li>
           <li>每位委員可在圖片下方修改自己上載的場次、日期、標題及說明。</li>
         </ul>
       </details>
@@ -357,6 +423,33 @@
         </section>
       </section>
     </main>
+    <div
+      id="photoLightbox"
+      class="photo-lightbox hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+      aria-labelledby="photoLightboxTitle"
+    >
+      <button
+        id="photoLightboxClose"
+        class="photo-lightbox__close"
+        type="button"
+        aria-label="關閉放大圖片"
+      >
+        ×
+      </button>
+      <div class="photo-lightbox__stage">
+        <img id="photoLightboxImage" class="photo-lightbox__image" alt="" />
+        <p id="photoLightboxTitle" class="photo-lightbox__title"></p>
+        <p
+          id="photoLightboxStatus"
+          class="photo-lightbox__status caption"
+          role="status"
+          aria-live="polite"
+        ></p>
+      </div>
+    </div>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
     <script>
       (() => {

@@ -422,6 +422,11 @@
   if (location.pathname === "/match-photos")
     observeVisible("app", () => {
       const target = document.getElementById("gallery"),
+        lightbox = document.getElementById("photoLightbox"),
+        lightboxClose = document.getElementById("photoLightboxClose"),
+        lightboxImage = document.getElementById("photoLightboxImage"),
+        lightboxTitle = document.getElementById("photoLightboxTitle"),
+        lightboxStatus = document.getElementById("photoLightboxStatus"),
         showPhotoNotice = (message, isError = false) => {
           const notice = document.getElementById("toast");
           notice.textContent = message;
@@ -432,6 +437,29 @@
             () => notice.classList.add("hidden"),
             3200,
           );
+        },
+        openPhotoLightbox = (trigger) => {
+          lastPhotoTrigger = trigger;
+          lightboxImage.removeAttribute("src");
+          lightboxImage.classList.remove("hidden");
+          lightboxImage.alt = trigger.querySelector("img")?.alt || "";
+          lightboxTitle.textContent = trigger.dataset.photoTitle || "";
+          lightboxStatus.textContent = "載入原圖中…";
+          lightboxStatus.classList.remove("hidden", "err");
+          lightbox.classList.remove("hidden");
+          lightbox.setAttribute("aria-hidden", "false");
+          document.body.classList.add("photo-lightbox-open");
+          lightboxImage.src = trigger.dataset.photoSrc;
+          lightboxClose.focus();
+        },
+        closePhotoLightbox = () => {
+          if (lightbox.classList.contains("hidden")) return;
+          lightbox.classList.add("hidden");
+          lightbox.setAttribute("aria-hidden", "true");
+          lightboxImage.removeAttribute("src");
+          document.body.classList.remove("photo-lightbox-open");
+          lastPhotoTrigger?.focus();
+          lastPhotoTrigger = null;
         },
         editAlbumOptions = (photo) => {
           const currentVideo =
@@ -490,12 +518,48 @@
                   image = `/api/match-photos/image/${p.id}`,
                   thumbnail = `${image}?thumbnail=1`,
                   date = p.photo_date || "未設定";
-                return `<article class="photo" id="photo-${esc(p.id)}"><img loading="lazy" decoding="async" src="${thumbnail}" alt="${esc(title)}"><div class="photo-title">${esc(title)}</div><div class="photo-meta">${esc(p.album_label)} ｜ ${esc(date)} ｜ ${esc(p.uploaded_by || "未設定")}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<div class="photo-actions"><a href="${image}?download=1">下載原圖</a></div>${photoEditor(p)}</article>`;
+                return `<article class="photo" id="photo-${esc(p.id)}"><button class="photo-preview" type="button" data-photo-src="${image}" data-photo-title="${esc(title)}" aria-haspopup="dialog" aria-label="放大查看：${esc(title)}"><img loading="lazy" decoding="async" src="${thumbnail}" alt="${esc(title)}"></button><div class="photo-title">${esc(title)}</div><div class="photo-meta">${esc(p.album_label)} ｜ ${esc(date)} ｜ ${esc(p.uploaded_by || "未設定")}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<div class="photo-actions"><a href="${image}?download=1">下載原圖</a></div>${photoEditor(p)}</article>`;
               })
               .join("");
           }, page);
         };
+      let lastPhotoTrigger = null;
       load();
+      target.addEventListener("click", (event) => {
+        const trigger = event.target.closest(".photo-preview");
+        if (!trigger) return;
+        openPhotoLightbox(trigger);
+      });
+      lightboxClose.addEventListener("click", closePhotoLightbox);
+      lightbox.addEventListener("click", (event) => {
+        if (event.target === lightbox) closePhotoLightbox();
+      });
+      lightboxImage.addEventListener("load", () => {
+        lightboxStatus.classList.add("hidden");
+      });
+      lightboxImage.addEventListener("error", () => {
+        lightboxImage.classList.add("hidden");
+        lightboxStatus.textContent = "未能載入原圖，請關閉後再試。";
+        lightboxStatus.classList.add("err");
+        lightboxStatus.classList.remove("hidden");
+      });
+      document.addEventListener("keydown", (event) => {
+        if (
+          event.key === "Tab" &&
+          !lightbox.classList.contains("hidden")
+        ) {
+          event.preventDefault();
+          lightboxClose.focus();
+          return;
+        }
+        if (
+          event.key === "Escape" &&
+          !lightbox.classList.contains("hidden")
+        ) {
+          event.preventDefault();
+          closePhotoLightbox();
+        }
+      });
       target.addEventListener("submit", async (event) => {
         const form = event.target.closest(".photo-edit-form");
         if (!form) return;
