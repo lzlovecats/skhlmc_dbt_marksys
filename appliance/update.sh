@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
 #
-# update.sh — one-click updater for the appliance's local copy of the repo.
+# update.sh — administrator-only updater for the appliance's local repo.
 #
 # Pulls the latest appliance scripts (kiosk chooser, health overlay, backup,
 # systemd units) from the git remote and hard-resets to it, so the machine no
 # longer needs a manual `git pull`. Safe to run repeatedly; it only touches the
 # repo checkout, never the cloud app (that deploys separately on Render).
 #
-# Typically invoked from the boot chooser's "🔄 更新系統" entry (see
-# marksys-kiosk.sh), which runs this then restarts the X session so the freshly
-# pulled scripts take effect. Can also be run by hand:
+# 呢個腳本只畀管理員由維修 shell 手動執行；學生／主席嘅 kiosk chooser
+# 不會再提供更新入口。更新後要由管理員核對 diff、重新安裝有變更嘅
+# systemd unit，並安排重啟 kiosk session：
 #
 #     /opt/skhlmc-dbt-marksys/appliance/update.sh
 #
-# For the chooser to run this without a password prompt, the repo checkout must
-# be writable by the marksys user (see appliance/README.md → 一鍵更新).
+# Repo checkout 權限不應為咗 kiosk operator 而放寬。
 
-set -uo pipefail
+set -euo pipefail
 
 APP_DIR="${MARKSYS_APP_DIR:-/opt/skhlmc-dbt-marksys}"
 BRANCH="${MARKSYS_UPDATE_BRANCH:-main}"

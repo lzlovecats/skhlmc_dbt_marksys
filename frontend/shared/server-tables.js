@@ -462,13 +462,14 @@
           photo.can_edit
             ? `<details><summary>編輯資料</summary><form class="photo-edit-form" data-photo-id="${esc(photo.id)}"><label>所屬場次</label><select name="album_label" required>${editAlbumOptions(photo)}</select><label>相片日期（可留空）</label><input name="photo_date" type="date" value="${esc(photo.photo_date)}"><label>圖片標題（可留空）</label><input name="photo_title" maxlength="300" value="${esc(photo.photo_title)}"><label>圖片說明（可留空）</label><textarea name="caption" maxlength="2000" rows="3">${esc(photo.caption)}</textarea><button class="primary" type="submit">儲存修改</button></form></details>`
             : "",
+        linkedPhotoId = new URLSearchParams(location.search).get("photo_id"),
         load = (page = 1) => {
           const sortMap = {
               "相片日期（舊至新）": "date_asc",
               "上載時間（新至舊）": "created_desc",
               "上載時間（舊至新）": "created_asc",
             },
-            url = `/api/match-photos/photos?album=${encodeURIComponent(document.getElementById("filter").value || "全部")}&search=${encodeURIComponent(document.getElementById("search").value)}&sort=${sortMap[document.getElementById("sort").value] || "date_desc"}`;
+            url = `/api/match-photos/photos?album=${encodeURIComponent(document.getElementById("filter").value || "全部")}&search=${encodeURIComponent(document.getElementById("search").value)}&sort=${sortMap[document.getElementById("sort").value] || "date_desc"}${linkedPhotoId ? `&photo_id=${encodeURIComponent(linkedPhotoId)}` : ""}`;
           return VoteUI.serverPaged(target, url, (rows, meta) => {
             document
               .getElementById("empty")
@@ -489,7 +490,7 @@
                   image = `/api/match-photos/image/${p.id}`,
                   thumbnail = `${image}?thumbnail=1`,
                   date = p.photo_date || "未設定";
-                return `<article class="photo"><img loading="lazy" decoding="async" src="${thumbnail}" alt="${esc(title)}"><div class="photo-title">${esc(title)}</div><div class="photo-meta">${esc(p.album_label)} ｜ ${esc(date)} ｜ ${esc(p.uploaded_by || "未設定")}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<div class="photo-actions"><a href="${image}?download=1">下載原圖</a></div>${photoEditor(p)}</article>`;
+                return `<article class="photo" id="photo-${esc(p.id)}"><img loading="lazy" decoding="async" src="${thumbnail}" alt="${esc(title)}"><div class="photo-title">${esc(title)}</div><div class="photo-meta">${esc(p.album_label)} ｜ ${esc(date)} ｜ ${esc(p.uploaded_by || "未設定")}</div>${p.caption ? `<p>${esc(p.caption)}</p>` : ""}<div class="photo-actions"><a href="${image}?download=1">下載原圖</a></div>${photoEditor(p)}</article>`;
               })
               .join("");
           }, page);

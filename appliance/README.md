@@ -48,6 +48,7 @@ sudo apt install -y postgresql-client python3
 sudo useradd -r -s /usr/sbin/nologin marksys || true
 sudo mkdir -p /opt/skhlmc-dbt-marksys /etc/marksys /var/backups/marksys
 sudo chown -R marksys:marksys /var/backups/marksys
+sudo chmod 700 /var/backups/marksys
 
 # 3. 放 repo（或最少 appliance/）落 /opt/skhlmc-dbt-marksys
 #    e.g. sudo git clone <repo> /opt/skhlmc-dbt-marksys
@@ -78,7 +79,13 @@ systemctl list-timers marksys-backup.timer      # 睇下次幾時跑
 sudo systemctl start marksys-backup.service     # 比賽前手動備份一次
 journalctl -u marksys-backup.service -f         # 睇 log
 cat /var/backups/marksys/last_backup.status     # 最近一次結果（畀健康燈用）
+pg_restore --list /var/backups/marksys/marksys-YYYYMMDD-HHMMSS.dump >/dev/null
 ```
+
+每個 dump 同狀態檔只容許 `marksys` user 讀寫；腳本完成 `pg_dump` 後會先用
+`pg_restore --list` 驗證 archive，通過先原子改名成正式備份。若設定 `USB_MOUNT`，
+USB 必須使用全碟加密（例如 LUKS），亦只可由獲授權管理員保管；普通未加密 USB
+唔可以用嚟鏡像資料庫備份。
 
 ### 還原（有需要時）
 
@@ -196,6 +203,13 @@ cat /var/lib/marksys/health.json      # 健康燈讀緊嘅資料
 
 > 若 chromium 係 snap 版，kiosk 大致一樣，但個別 `--flag` 或 profile 路徑可能有出入，試機時留意 `journalctl`。
 
+### 管理員更新
+
+Kiosk chooser 刻意唔提供更新掣。只有管理員先可以喺維修 shell 執行
+`sudo /opt/skhlmc-dbt-marksys/appliance/update.sh`；完成後要檢查版本差異、重新複製
+有變更嘅 systemd units 並執行 `systemctl daemon-reload`，最後安排重啟 Kiosk。
+呢個操作會令 appliance checkout 對齊指定 remote branch，唔應交畀一般操作員。
+
 ---
 
 ## 已實作：比賽日大屏投影
@@ -220,6 +234,8 @@ cat /var/lib/marksys/health.json      # 健康燈讀緊嘅資料
 
 **比賽日建議接法**
 - 部機 HDMI 出投影機並插入收音咪／喇叭；比賽日 kiosk 設 `CONTEST_URL=<APP_URL>/projector?kiosk=1`（見 `appliance.env`）。
+- 同一投影代號同時開多部 Kiosk 時，server 只會容許一部顯示 `Active` 並接收指令；其他會顯示 `Standby`，唔會啟用收音咪、錄音、上載或呼叫 AI。不同 `display` 代號各自有獨立 owner，所以同一套機制可直接支援之後新增嘅 Kiosk 機。
+- Active Kiosk 離線後，閒置場次會由 Standby 原子接手；錄音／停止／分析進行中唔會自動轉手。需要強制接管時，用 Projector Control 嘅「撤銷 Active Kiosk／接管」，接管後必須重新做硬件測試。
 - 賽會人員用自己電話／平板先登入「主席主持易」，再開 `<APP_URL>/projector/control`。
 - 想控制同顯示都喺部機一齊做，可以喺同一部機開兩個 Chromium 視窗（一個 display 拉去投影屏，一個 control 喺 laptop 屏）。
 

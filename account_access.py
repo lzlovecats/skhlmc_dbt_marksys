@@ -90,6 +90,9 @@ PAGE_ACCESS_POLICIES = {
     "bug_report": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
     "video_replay": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
     "match_photos": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
+    "recent_matches": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
+    "team_history": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
+    "ghost_forum": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
     "ai_training": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
     # The dedicated appliance account may use AI Coach, but admin/developer and
     # the Gemini comment pseudo-account may not impersonate a committee member.

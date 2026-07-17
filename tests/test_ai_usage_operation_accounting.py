@@ -139,7 +139,7 @@ def test_generic_failed_call_without_metadata_retains_legacy_zero_cost(monkeypat
 
 def test_summary_keeps_generic_call_count_and_adds_kiosk_task_count():
     db = _RecordingDb()
-    funds_logic.ai_usage_summary("treasurer", treasurer=True, db=db)
+    funds_logic.ai_usage_summary("manager", manager=True, db=db)
     sql = db.queries[0][0]
     assert "COUNT(*) FILTER (WHERE status='success') AS uses" in sql
     assert "COUNT(*) AS provider_calls" in sql

@@ -1,8 +1,4 @@
-"""APIs for the privileged developer and database consoles.
-
-All authority stays server-side: developer and SQL verifications are short-lived
-HttpOnly sessions and the SQL runner applies strict statement/result guards.
-"""
+"""APIs for the privileged Developer settings console."""
 import datetime
 import json
 import re
@@ -31,17 +27,12 @@ from ai_model_config import (
     DEFAULT_AI_MODEL,
     resolve_interactive_model_settings,
 )
-from schema import (
-    TABLE_ACCOUNTS,
-    TABLE_BUG_REPORTS,
-    TABLE_PUSH_SUBSCRIPTIONS,
-)
+from schema import TABLE_ACCOUNTS, TABLE_BUG_REPORTS, TABLE_PUSH_SUBSCRIPTIONS
 from version import APP_VERSION
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from system_limits import (
-    ACCOUNT_INVENTORY_LIMIT, ADMIN_RECENT_LOGIN_LIMIT, ADMIN_SESSION_TTL_SECONDS,
-    MAX_ADMIN_CONSOLE_SESSIONS, SQL_RESULT_MAX_BYTES,
-    SQL_RESULT_MAX_CELL_CHARS, SQL_RESULT_MAX_ROWS, SQL_STATEMENT_TIMEOUT_MS,
+    ACCOUNT_INVENTORY_LIMIT, ADMIN_SESSION_TTL_SECONDS,
+    MAX_ADMIN_CONSOLE_SESSIONS,
 )
 
 router = APIRouter(prefix="/api", tags=["admin-console"])
@@ -52,7 +43,6 @@ MAX_SERVER_SESSIONS = MAX_ADMIN_CONSOLE_SESSIONS
 
 
 class PasswordBody(BaseModel): password: str = Field(max_length=512)
-class SqlBody(BaseModel): sql: str = Field(max_length=100_000); confirmed: bool = False
 class PasswordChange(BaseModel): current_password: str = Field(default="", max_length=512); new_password: str = Field(max_length=512); confirm_password: str = Field(default="", max_length=512)
 class BugUpdate(BaseModel): status: str = Field(max_length=40); reply: str = Field(default="", max_length=5000); fixed_version: str = Field(default="", max_length=80)
 class AccountBody(BaseModel): user_id: str = Field(max_length=200); password: str = Field(default="", max_length=512)
@@ -111,6 +101,11 @@ def _has(request,kind):
         row=_SESSIONS.get(request.cookies.get(f"{kind}_session", "")); return bool(row and row["kind"]==kind and row["expires"]>_now())
 
 
+def developer_session_active(request: Request) -> bool:
+    """Public server-side check used by shared management access gates."""
+    return _has(request, "developer")
+
+
 @router.get("/dev-settings/system-limits")
 def system_limit_registry(request: Request):
     """Developer-only view of the values resolved when this worker started."""
@@ -147,99 +142,6 @@ def _display_config(value):
     return str(value)
 
 
-@router.post("/db-management/login")
-def db_login(body:PasswordBody,response:Response):
-    db=_db(); stored=_config(db,"admin_password")
-    if not _verify_config_password_and_upgrade(db,"admin_password",body.password,stored): raise HTTPException(401,"密碼錯誤")
-    _issue(response,"db_admin"); return {"ok":True}
-
-@router.post("/db-management/verify")
-def sql_verify(body:PasswordBody,request:Request,response:Response):
-    _require(request,"db_admin"); db=_db(); stored=_config(db,"sql_password")
-    if not _verify_config_password_and_upgrade(db,"sql_password",body.password,stored): raise HTTPException(401,"SQL 存取密碼錯誤")
-    _issue(response,"sql"); return {"ok":True}
-
-@router.get("/db-management/data")
-def db_data(request:Request):
-    _require(request,"sql"); db=_db()
-    tables=_rows(db.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name"))
-    logs=_rows(db.query(
-        "SELECT id,user_id,login_type,logged_in_at FROM login_records "
-        "ORDER BY logged_in_at DESC LIMIT :limit",
-        {"limit": ADMIN_RECENT_LOGIN_LIMIT},
-    ))
-    return {"tables":[x["table_name"] for x in tables],"logs":logs}
-
-@router.get("/db-management/logs")
-def db_logs(request:Request,page:int=1):
-    _require(request,"sql"); db=_db(); page,_,offset=bounds(page)
-    total=scalar_count(db,"SELECT COUNT(*) total FROM login_records")
-    rows=_rows(db.query(
-        "SELECT id,user_id,login_type,logged_in_at FROM login_records "
-        "ORDER BY logged_in_at DESC LIMIT :limit OFFSET :offset",
-        {"limit":PAGE_SIZE,"offset":offset},
-    ))
-    return payload(rows,page,total)
-
-def _unsafe(sql):
-    compact=sql.strip().rstrip(";"); upper=compact.upper()
-    if not compact: return "請輸入 SQL"
-    if ";" in compact: return "每次只可執行一條 SQL"
-    if not re.match(r"^(SELECT|WITH|INSERT|UPDATE|DELETE)\b", upper):
-        return "此頁只可執行 SELECT、WITH、INSERT、UPDATE 或 DELETE"
-    if re.search(r"\b(SYSTEM_CONFIG|APP_CONFIG|SCHEMA_MIGRATIONS)\b",upper): return "此頁不可存取應用程式內部資料表"
-    if re.search(r"\b(DROP|TRUNCATE|ALTER|CREATE)\b",upper): return "此頁不可執行 DDL 語句"
-    return ""
-
-
-def _sql_cell(value):
-    """Make SQL-console values JSON-safe without copying legacy BYTEA payloads."""
-    if value is None:
-        return None
-    if isinstance(value, memoryview):
-        return f"<binary {value.nbytes} bytes omitted>"
-    if isinstance(value, (bytes, bytearray)):
-        return f"<binary {len(value)} bytes omitted>"
-    rendered = str(value)
-    if len(rendered) > SQL_RESULT_MAX_CELL_CHARS:
-        omitted = len(rendered) - SQL_RESULT_MAX_CELL_CHARS
-        return rendered[:SQL_RESULT_MAX_CELL_CHARS] + f"… <{omitted} chars omitted>"
-    return rendered
-
-@router.post("/db-management/execute")
-def sql_execute(body:SqlBody,request:Request):
-    _require(request,"sql"); sql=body.sql.strip().rstrip(";"); error=_unsafe(sql)
-    if error: raise HTTPException(400,error)
-    upper=sql.upper(); dangerous=bool(re.search(r"\b(UPDATE\s+.+?\s+SET|DELETE\s+FROM)\b",upper,re.S)) and not bool(re.search(r"\bWHERE\b",upper))
-    if dangerous and not body.confirmed: return {"requires_confirmation":True,"sql":sql}
-    db=_db(); engine=db._engine
-    from sqlalchemy import text
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("SELECT set_config('statement_timeout', :timeout, TRUE)"),
-                         {"timeout": f"{SQL_STATEMENT_TIMEOUT_MS}ms"})
-            is_select=upper.startswith("SELECT") or upper.startswith("WITH")
-            executor = conn.execution_options(
-                stream_results=True, max_row_buffer=min(SQL_RESULT_MAX_ROWS + 1, 100),
-            ) if is_select else conn
-            result=executor.execute(text(sql))
-            if is_select:
-                cols=list(result.keys()); fetched=result.fetchmany(SQL_RESULT_MAX_ROWS + 1)
-                rows=[]; used_bytes=0; truncated=len(fetched) > SQL_RESULT_MAX_ROWS
-                reason="row_limit" if truncated else ""
-                for raw in fetched[:SQL_RESULT_MAX_ROWS]:
-                    item={key:_sql_cell(value) for key,value in zip(cols,raw)}
-                    item_bytes=len(json.dumps(item,ensure_ascii=False,default=str).encode("utf-8"))
-                    if used_bytes + item_bytes > SQL_RESULT_MAX_BYTES:
-                        truncated=True; reason="byte_limit"; break
-                    rows.append(item); used_bytes += item_bytes
-                return {"kind":"select","columns":cols,"rows":rows,"truncated":truncated,
-                        "truncation_reason":reason,"row_limit":SQL_RESULT_MAX_ROWS,
-                        "byte_limit":SQL_RESULT_MAX_BYTES,"returned_bytes":used_bytes}
-            return {"kind":"dml","count":result.rowcount}
-    except Exception as exc: raise HTTPException(400,f"執行失敗：{exc}") from exc
-
-
 @router.post("/developer/login")
 def dev_login(body:PasswordBody,response:Response):
     db=_db(); stored=_config(db,"developer_password")
@@ -254,7 +156,7 @@ def dev_logout(request:Request,response:Response):
 @router.get("/developer/data")
 def dev_data(request:Request):
     _require(request,"developer"); db=_db()
-    config_keys=("maintenance_mode","maintenance_deadline","bypass_active_check_until","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model")
+    config_keys=("maintenance_mode","maintenance_deadline","bypass_active_check_until","tts_recording_allowed_users","ai_managers","senior_committee_members","ai_enabled_providers","ai_default_model")
     loaded_configs=_configs(db,(*config_keys,"login_disabled_accounts"))
     configs={key:_display_config(loaded_configs.get(key)) for key in config_keys}
     enabled_providers, effective_default_model = resolve_interactive_model_settings(
@@ -332,7 +234,7 @@ def update_bug(bug_id:int,body:BugUpdate,request:Request):
 @router.post("/developer/password/{key}")
 def change_system_password(key:str,body:PasswordChange,request:Request):
     _require(request,"developer")
-    if key not in ("admin_password","developer_password","sql_password"): raise HTTPException(404,"設定不存在")
+    if key not in ("admin_password","developer_password"): raise HTTPException(404,"設定不存在")
     if not body.new_password: raise HTTPException(400,"請輸入新密碼")
     if body.new_password != body.confirm_password: raise HTTPException(400,"兩次輸入的密碼不一致")
     db=_db(); stored=_config(db,key)
@@ -366,7 +268,7 @@ def set_account_access(uid:str,body:AccountAccessBody,request:Request):
     if not uid or is_protected_account(uid): raise HTTPException(400,"不可停用系統帳戶")
     db=_db()
     if db.query(f"SELECT 1 FROM {TABLE_ACCOUNTS} WHERE user_id=:uid",{"uid":uid}).empty: raise HTTPException(404,"帳戶不存在")
-    access_keys=("login_disabled_accounts","tts_recording_reviewers","lateness_fund_managers","tts_recording_allowed_users","ai_fund_treasurers","bypass_active_check_until")
+    access_keys=("login_disabled_accounts","ai_managers","senior_committee_members","tts_recording_allowed_users","bypass_active_check_until")
     with db.transaction() as conn:
         # Serialize account access-list updates. Reading before this lock
         # allowed concurrent PATCHes to overwrite one another's removals.
@@ -375,12 +277,7 @@ def set_account_access(uid:str,body:AccountAccessBody,request:Request):
         disabled=set(_list_value(access_config.get("login_disabled_accounts")))
         updates={}
         if body.disabled:
-            for key,label in (("tts_recording_reviewers","AI 訓練管理員"),("lateness_fund_managers","遲到基金管理員")):
-                members=_list_value(access_config.get(key))
-                remaining=[member for member in members if member!=uid and member not in disabled]
-                if uid in members and not remaining: raise HTTPException(400,f"請先加入另一位{label}，再停用此帳戶")
-                if uid in members: updates[key]=[member for member in members if member!=uid]
-            for key in ("tts_recording_allowed_users","ai_fund_treasurers"):
+            for key in ("tts_recording_allowed_users","ai_managers","senior_committee_members"):
                 members=_list_value(access_config.get(key))
                 if uid in members: updates[key]=[member for member in members if member!=uid]
             bypass=access_config.get("bypass_active_check_until") or {}
@@ -453,8 +350,8 @@ def update_bypass(body:BypassBody,request:Request):
 
 @router.post("/developer/settings")
 def developer_settings(body:JsonSettings,request:Request):
-    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","maintenance_deadline","tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers","ai_enabled_providers","ai_default_model"}
-    account_list_keys={"tts_recording_allowed_users","tts_recording_reviewers","ai_fund_treasurers","lateness_fund_managers"}
+    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","maintenance_deadline","tts_recording_allowed_users","ai_managers","senior_committee_members","ai_enabled_providers","ai_default_model"}
+    account_list_keys={"tts_recording_allowed_users","ai_managers","senior_committee_members"}
     cleaned={}
     for key,value in body.values.items():
         if key not in allowed: raise HTTPException(400,f"不允許的設定：{key}")
@@ -463,10 +360,6 @@ def developer_settings(body:JsonSettings,request:Request):
             value=list(dict.fromkeys(str(item).strip()[:200] for item in value if str(item).strip()))
             if len(value) > ACCOUNT_INVENTORY_LIMIT: raise HTTPException(413,f"{key} 清單超過保護上限")
         cleaned[key]=value
-    if "lateness_fund_managers" in cleaned and not cleaned["lateness_fund_managers"]:
-        raise HTTPException(400,"至少保留一位遲到基金管理員")
-    if "tts_recording_reviewers" in cleaned and not cleaned["tts_recording_reviewers"]:
-        raise HTTPException(400,"至少保留一位 AI 訓練管理員")
     if "maintenance_mode" in cleaned:
         value=str(cleaned["maintenance_mode"]).strip().lower()
         if value not in ("true","false"): raise HTTPException(400,"維護模式值無效")

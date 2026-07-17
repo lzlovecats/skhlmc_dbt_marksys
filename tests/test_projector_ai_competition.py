@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pandas as pd
 from fastapi import HTTPException
 
 from api import kiosk_api, projector_ai_api
@@ -178,24 +179,20 @@ def test_bandwidth_gate_degrades_tts_to_text_without_provider_spend(monkeypatch)
     assert "只投影文字" in detail
 
 
-def test_projector_result_requires_confirmed_recording_deletion(monkeypatch):
-    monkeypatch.setattr(projector_ai_api, "_require_kiosk", lambda _request: "kiosk")
-    body = projector_ai_api.KioskResultBody(
-        display="main",
-        session_id="session-1234567890123456",
-        revision=1,
-        markdown="完整評語",
-        transcript="逐字稿",
-        projector_summary="投影摘要",
-        recording_deleted=False,
+def test_projector_result_is_server_authoritative_without_client_fallback():
+    source = (ROOT / "api" / "projector_ai_api.py").read_text(encoding="utf-8")
+    display = (ROOT / "templates" / "projector_display.html").read_text(
+        encoding="utf-8"
     )
-    try:
-        projector_ai_api.kiosk_result(body, SimpleNamespace(cookies={}))
-    except Exception as exc:
-        assert getattr(exc, "status_code", None) == 409
-        assert "錄音已刪除" in str(getattr(exc, "detail", ""))
-    else:  # pragma: no cover - privacy gate must fail before any DB access
-        raise AssertionError("result accepted without recording deletion proof")
+    kiosk_source = (ROOT / "api" / "kiosk_api.py").read_text(encoding="utf-8")
+
+    assert "class KioskResultBody" not in source
+    assert '/api/kiosk/projector-ai/result' not in source
+    assert '/api/kiosk/projector-ai/result' not in display
+    assert "postResult(" not in display
+    assert "projector_persisted" in display
+    assert "persist_completed_review_for_projector" in kiosk_source
+    assert "authenticated browser still receives" not in kiosk_source
 
 
 def test_heartbeat_preserves_recording_or_processing_status(monkeypatch):
@@ -213,6 +210,19 @@ def test_heartbeat_preserves_recording_or_processing_status(monkeypatch):
 
     monkeypatch.setattr(projector_ai_api, "_require_kiosk", lambda _request: "kiosk")
     monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_locked_lease_control",
+        lambda _conn, _display: SimpleNamespace(_mapping={}),
+    )
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_assert_lease_mapping",
+        lambda *_args, **_kwargs: {
+            "device_id": "device-a",
+            "lease_generation": 2,
+        },
+    )
     projector_ai_api.kiosk_heartbeat(
         projector_ai_api.HeartbeatBody(display="main", capabilities={"recording": True}),
         SimpleNamespace(cookies={}),
@@ -241,6 +251,8 @@ def test_competition_templates_use_separate_staff_control_and_kiosk_engine():
     assert "/api/tts/azure" not in display
     assert 'command.ack_revision < command.revision' in display
     assert "reload_recovery" in display
+    assert "/api/projector/ai/cancel-start" in control
+    assert 'case "cancel_start"' in display
     assert 'id="kioskPrimeButton" type="button" style="display: none"' in display
     assert "投影文字並準備語音" in control
     assert "讀出／重新讀出" in control
@@ -278,3 +290,456 @@ def test_projector_public_match_binding_and_backend_only_schema_contract():
     assert "persist_completed_review_for_projector" in kiosk_source
     assert '"projector_persisted"' in kiosk_source
     assert '"projector_revision"' in kiosk_source
+
+
+def test_projector_start_expiry_and_cancelled_state_are_versioned_contracts():
+    source = (ROOT / "api" / "projector_ai_api.py").read_text(encoding="utf-8")
+    schema = (ROOT / "schema.py").read_text(encoding="utf-8")
+    migration = (
+        ROOT / "migrations" / "20260717_0001_projector_ai_cancelled_sessions.up.sql"
+    ).read_text(encoding="utf-8")
+    down = (
+        ROOT / "migrations" / "20260717_0001_projector_ai_cancelled_sessions.down.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "PROJECTOR_START_COMMAND_TTL_SECONDS" in source
+    assert "cancel_start" in source
+    assert "Kiosk 尚未確認上一個控制指令" in source
+    assert "ack_revision" in source
+    assert "'cancelled'" in schema
+    assert "'cancelled'" in migration
+    assert "status='error'" in down
+
+
+def test_kiosk_lease_claim_decision_pins_an_active_session_to_its_owner():
+    now = dt.datetime(2026, 7, 17, 12, 0, 0)
+
+    assert projector_ai_api._lease_can_claim(
+        owner_device_id="",
+        owner_client_id="",
+        requesting_device_id="device-a",
+        requesting_client_id="tab-a",
+        lease_expires_at=None,
+        session_status="",
+        now=now,
+    )
+    assert not projector_ai_api._lease_can_claim(
+        owner_device_id="device-a",
+        owner_client_id="tab-a",
+        requesting_device_id="device-b",
+        requesting_client_id="tab-b",
+        lease_expires_at=now - dt.timedelta(seconds=1),
+        session_status="recording",
+        now=now,
+    )
+    assert projector_ai_api._lease_can_claim(
+        owner_device_id="device-a",
+        owner_client_id="tab-a",
+        requesting_device_id="device-b",
+        requesting_client_id="tab-b",
+        lease_expires_at=now - dt.timedelta(seconds=1),
+        session_status="ready",
+        now=now,
+    )
+    assert projector_ai_api._lease_can_claim(
+        owner_device_id="device-a",
+        owner_client_id="tab-a",
+        requesting_device_id="device-a",
+        requesting_client_id="tab-a",
+        lease_expires_at=now - dt.timedelta(seconds=1),
+        session_status="processing",
+        now=now,
+    )
+
+
+def test_stale_lease_generation_and_command_generation_fail_closed(monkeypatch):
+    now = dt.datetime(2026, 7, 17, 12, 0, 0)
+    token = "lease-token"
+    request = SimpleNamespace(
+        headers={
+            projector_ai_api.LEASE_TOKEN_HEADER: token,
+            projector_ai_api.LEASE_CLIENT_HEADER: "client-abcdefghijklmnop",
+            projector_ai_api.LEASE_GENERATION_HEADER: "4",
+        },
+        cookies={projector_ai_api.DEVICE_COOKIE_NAME: "signed-device"},
+    )
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_verify_device_cookie",
+        lambda _token: {"device_id": "a" * 32, "generation": 1},
+    )
+    mapping = {
+        "lease_device_id": "a" * 32,
+        "lease_client_id": "client-abcdefghijklmnop",
+        "lease_token_hash": projector_ai_api._lease_token_hash(token),
+        "lease_generation": 4,
+        "lease_expires_at": now + dt.timedelta(seconds=15),
+        "lease_device_enabled": True,
+        "lease_device_revoked_at": None,
+        "lease_device_credential_generation": 1,
+        "command_lease_generation": 4,
+    }
+    assert projector_ai_api._assert_lease_mapping(
+        mapping, request, now=now, require_command_generation=True
+    )["lease_generation"] == 4
+
+    stale_request = SimpleNamespace(
+        headers={**request.headers, projector_ai_api.LEASE_GENERATION_HEADER: "3"},
+        cookies=request.cookies,
+    )
+    with pytest.raises(HTTPException) as stale:
+        projector_ai_api._assert_lease_mapping(mapping, stale_request, now=now)
+    assert stale.value.status_code == 423
+
+    with pytest.raises(HTTPException) as wrong_command:
+        projector_ai_api._assert_lease_mapping(
+            {**mapping, "command_lease_generation": 3},
+            request,
+            now=now,
+            require_command_generation=True,
+        )
+    assert wrong_command.value.status_code == 409
+
+
+def test_first_kiosk_claim_is_active_and_second_same_display_is_standby(monkeypatch):
+    now = dt.datetime(2026, 7, 17, 12, 0, 0)
+    state = {
+        "lease_device_id": "",
+        "lease_client_id": "",
+        "lease_generation": 0,
+        "lease_expires_at": None,
+        "current_session_status": "",
+        "lease_device_label": "",
+    }
+
+    class Conn:
+        def execute(self, statement, params):
+            sql = " ".join(str(statement).split())
+            if sql.startswith("UPDATE projector_ai_controls"):
+                state.update(
+                    lease_device_id=params["device"],
+                    lease_client_id=params["client"],
+                    lease_generation=params["generation"],
+                    lease_expires_at=params["expires"],
+                    lease_device_label="Kiosk A",
+                )
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class DB:
+        @contextmanager
+        def transaction(self):
+            yield Conn()
+
+    monkeypatch.setattr(projector_ai_api, "_require_kiosk", lambda _request: "kiosk")
+    monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+    monkeypatch.setattr(projector_ai_api, "_now", lambda: now)
+    monkeypatch.setattr(projector_ai_api, "_ensure_control", lambda *_args: None)
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_locked_lease_control",
+        lambda _conn, _display: SimpleNamespace(_mapping=state.copy()),
+    )
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_device_for_claim",
+        lambda _conn, request, _response, _now: {
+            "device_id": request.device_id,
+            "label": request.device_label,
+        },
+    )
+    first = projector_ai_api.claim_kiosk_lease(
+        projector_ai_api.LeaseClaimBody(
+            display="main",
+            client_id="client-a-abcdefghijkl",
+        ),
+        SimpleNamespace(device_id="a" * 32, device_label="Kiosk A", headers={}, cookies={}),
+        projector_ai_api.Response(),
+    )
+    second = projector_ai_api.claim_kiosk_lease(
+        projector_ai_api.LeaseClaimBody(
+            display="main",
+            client_id="client-b-abcdefghijkl",
+        ),
+        SimpleNamespace(device_id="b" * 32, device_label="Kiosk B", headers={}, cookies={}),
+        projector_ai_api.Response(),
+    )
+    assert first["role"] == "active"
+    assert first["lease_generation"] == 1
+    assert second["role"] == "standby"
+    assert state["lease_device_id"] == "a" * 32
+
+
+def test_staff_takeover_refuses_processing_and_interrupts_recording_only_when_confirmed(
+    monkeypatch,
+):
+    statements = []
+
+    class Conn:
+        def execute(self, statement, params):
+            statements.append((" ".join(str(statement).split()), params))
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class DB:
+        @contextmanager
+        def transaction(self):
+            yield Conn()
+
+    monkeypatch.setattr(
+        projector_ai_api, "require_competition_staff", lambda _request: "staff"
+    )
+    monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+
+    def lease_row(status):
+        return SimpleNamespace(
+            _mapping={
+                "lease_device_id": "a" * 32,
+                "lease_generation": 7,
+                "current_session_id": "session-1",
+                "current_session_status": status,
+            }
+        )
+
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_locked_lease_control",
+        lambda _conn, _display: lease_row("processing"),
+    )
+    with pytest.raises(HTTPException) as processing:
+        projector_ai_api.takeover_kiosk_lease(
+            projector_ai_api.LeaseTakeoverBody(
+                display="main",
+                expected_generation=7,
+                confirm_interrupt_active_session=True,
+            ),
+            SimpleNamespace(cookies={}),
+        )
+    assert processing.value.status_code == 409
+    assert "重複付費" in processing.value.detail
+
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_locked_lease_control",
+        lambda _conn, _display: lease_row("recording"),
+    )
+    with pytest.raises(HTTPException) as unconfirmed:
+        projector_ai_api.takeover_kiosk_lease(
+            projector_ai_api.LeaseTakeoverBody(
+                display="main",
+                expected_generation=7,
+                confirm_interrupt_active_session=False,
+            ),
+            SimpleNamespace(cookies={}),
+        )
+    assert unconfirmed.value.status_code == 409
+
+    response = projector_ai_api.takeover_kiosk_lease(
+        projector_ai_api.LeaseTakeoverBody(
+            display="main",
+            expected_generation=7,
+            confirm_interrupt_active_session=True,
+        ),
+        SimpleNamespace(cookies={}),
+    )
+    assert response["generation"] == 8
+    assert any("SET status='interrupted'" in sql for sql, _params in statements)
+    assert any("lease_token_hash=NULL" in sql for sql, _params in statements)
+
+
+def test_projector_kiosk_lease_is_a_versioned_backend_only_contract():
+    migration = (
+        ROOT / "migrations" / "20260717_0002_projector_kiosk_lease.up.sql"
+    ).read_text(encoding="utf-8")
+    down = (
+        ROOT / "migrations" / "20260717_0002_projector_kiosk_lease.down.sql"
+    ).read_text(encoding="utf-8")
+    schema = (ROOT / "schema.py").read_text(encoding="utf-8")
+    limits = (ROOT / "system_limits.py").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE public.projector_kiosk_devices" in migration
+    assert "lease_token_hash" in migration
+    assert "lease_generation" in migration
+    assert "command_lease_generation" in migration
+    assert "kiosk_device_id" in migration
+    assert "kiosk_lease_generation" in migration
+    assert "'interrupted'" in migration
+    assert "REVOKE ALL PRIVILEGES" in migration
+    assert "projector_kiosk_devices" in schema
+    assert "'interrupted'" in schema
+    assert "PROJECTOR_KIOSK_LEASE_TTL_SECONDS" in limits
+    assert "status='error'" in down
+
+
+def test_every_projector_kiosk_side_effect_is_bound_to_the_owner_lease():
+    source = (ROOT / "api" / "projector_ai_api.py").read_text(encoding="utf-8")
+    kiosk_source = (ROOT / "api" / "kiosk_api.py").read_text(encoding="utf-8")
+
+    assert '@router.post("/api/kiosk/projector-ai/lease/claim")' in source
+    assert '@router.post("/api/projector/ai/lease/takeover")' in source
+    assert "X-Kiosk-Lease-Token" in source
+    assert "command_lease_generation" in source
+    assert "kiosk_lease_generation" in source
+    assert "validate_projector_lease" in kiosk_source
+    upload_block = kiosk_source.split(
+        '@router.post("/match-review/upload-intent")', 1
+    )[1].split("def _claim_review_intent", 1)[0]
+    analyze_block = kiosk_source.split(
+        '@router.post("/match-review/analyze")', 1
+    )[1]
+    assert "validate_projector_lease" in upload_block
+    assert "lease_generation" in upload_block
+    assert "validate_projector_lease" in analyze_block
+    assert analyze_block.index("validate_projector_lease") < analyze_block.index(
+        "_claim_review_intent"
+    )
+
+
+def test_projector_templates_expose_active_standby_and_explicit_takeover():
+    control = (ROOT / "templates" / "projector_control.html").read_text(
+        encoding="utf-8"
+    )
+    display = (ROOT / "templates" / "projector_display.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "sessionStorage" in display
+    assert "/api/kiosk/projector-ai/lease/claim" in display
+    assert "X-Kiosk-Lease-Token" in display
+    assert "lease_lost" in display
+    assert "Standby" in display and "Active" in display
+    assert "/api/projector/ai/lease/takeover" in control
+    assert "kioskTakeover" in control
+    assert "interrupted" in control
+
+
+def test_hardware_confirmation_is_revision_bound_and_transactional():
+    source = (ROOT / "api" / "projector_ai_api.py").read_text(encoding="utf-8")
+    block = source.split(
+        '@router.post("/api/projector/ai/hardware-confirm")', 1
+    )[1].split('@router.post("/api/projector/ai/start")', 1)[0]
+    assert "body.revision" in block
+    assert "FOR UPDATE" in block
+    assert "with db.transaction()" in block
+
+
+def test_start_waits_for_previous_kiosk_command_ack(monkeypatch):
+    now = dt.datetime(2026, 7, 17, 12, 0, 0)
+    statements = []
+
+    class Conn:
+        def execute(self, statement, params):
+            sql = " ".join(str(statement).split())
+            statements.append(sql)
+            if sql.startswith("SELECT kiosk_last_seen_at"):
+                row = SimpleNamespace(
+                    _mapping={
+                        "kiosk_last_seen_at": now,
+                        "hardware_status": {},
+                        "capabilities": {},
+                        "command_revision": 9,
+                        "ack_revision": 8,
+                        "lease_device_id": "device-a",
+                        "lease_generation": 2,
+                        "lease_expires_at": now + dt.timedelta(seconds=15),
+                    }
+                )
+                return SimpleNamespace(fetchone=lambda: row)
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class DB:
+        def query(self, _sql, _params):
+            return pd.DataFrame([{"match_id": "M1"}])
+
+        @contextmanager
+        def transaction(self):
+            yield Conn()
+
+    monkeypatch.setattr(
+        projector_ai_api, "require_competition_staff", lambda _request: "staff"
+    )
+    monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+    monkeypatch.setattr(projector_ai_api, "_now", lambda: now)
+    monkeypatch.setattr(projector_ai_api, "_prune_expired", lambda _db, _now: None)
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_official_match",
+        lambda _db, _match: {
+            "match_id": "M1",
+            "topic": "測試辯題",
+            "pro_team": "甲隊",
+            "con_team": "乙隊",
+        },
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        projector_ai_api.start_session(
+            projector_ai_api.StartBody(
+                display="main",
+                match_id="M1",
+                recording_notice_confirmed=True,
+            ),
+            SimpleNamespace(cookies={}),
+        )
+    assert raised.value.status_code == 409
+    assert "上一個控制指令" in raised.value.detail
+    assert not any("INSERT INTO projector_ai_sessions" in sql for sql in statements)
+
+
+def test_completed_review_persists_control_then_session_under_one_transaction(
+    monkeypatch,
+):
+    statements = []
+
+    class Conn:
+        def execute(self, statement, params):
+            sql = " ".join(str(statement).split())
+            statements.append(sql)
+            if sql.startswith("SELECT display_key,command_revision"):
+                row = SimpleNamespace(
+                    _mapping={
+                        "display_key": "main",
+                        "command_revision": 12,
+                        "current_session_id": "session-12345678901234567890",
+                    }
+                )
+                return SimpleNamespace(fetchone=lambda: row)
+            if sql.startswith("SELECT match_id,status"):
+                row = SimpleNamespace(
+                    _mapping={
+                        "match_id": "M1",
+                        "status": "processing",
+                        "result_ciphertext": None,
+                        "result_expires_at": None,
+                    }
+                )
+                return SimpleNamespace(fetchone=lambda: row)
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class DB:
+        @contextmanager
+        def transaction(self):
+            yield Conn()
+
+    monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+    monkeypatch.setattr(projector_ai_api, "_seal_json", lambda _payload: b"sealed")
+    saved = projector_ai_api.persist_completed_review_for_projector(
+        session_id="session-12345678901234567890",
+        match_id="M1",
+        markdown="完整評語",
+        transcript="完整逐字稿",
+        projector_summary="摘要",
+        model_label="Gemini",
+        audio={"duration_seconds": 60},
+        recording_deleted=True,
+    )
+
+    assert saved["revision"] == 12
+    assert statements[0].startswith("SELECT display_key,command_revision")
+    assert "FROM projector_ai_controls" in statements[0]
+    assert statements[1].startswith("SELECT match_id,status")
+    assert "FROM projector_ai_sessions" in statements[1]
+    assert any(
+        sql.startswith("UPDATE projector_ai_sessions") for sql in statements[2:]
+    )
+    assert any(
+        sql.startswith("UPDATE projector_ai_controls") for sql in statements[2:]
+    )

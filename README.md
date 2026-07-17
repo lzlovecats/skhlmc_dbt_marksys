@@ -19,8 +19,10 @@
 | 比賽日投影及 AI評判易控制 | `/projector/control` | 同一賽會人員登入 |
 | 比賽日 Kiosk 大屏及錄音引擎 | `/projector?kiosk=1` | 固定 `kiosk` account |
 | 辯題徵集、投票及罷免 | `/vote` | committee account |
+| 近期比賽資訊 | `/recent-matches` | committee account；高級委員修改 |
+| 聖呂中辯歷史 | `/team-history` | committee account；高級委員修改 |
+| 老鬼專區 | `/ghost-forum` | 高級委員帳戶（手動指定或任期標示為畢業） |
 | 影片重溫、相片、AI辯論、AI訓練、基金 | 主頁committee區 | committee account；部分操作另需delegated role |
-| Database console | `/db-mgmt` | 賽會人員 + SQL password；設定／secret tables完全封鎖 |
 | Developer settings | `/dev-settings` | developer password |
 
 完整操作以[`assets/user_manual.md`](assets/user_manual.md)為準；比賽規則以[`assets/rules.md`](assets/rules.md)為準。
@@ -49,7 +51,7 @@ Solo Gemini Live：Browser ──WebSocket（一次性ephemeral token）──> 
 - 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model、eval及RAG schema仍按roadmap fail-closed，不會因首次request自動建立。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
-Production schema 以 migration ledger 為準，現行 migration head 為 `20260714_0008`；
+Production schema 以 migration ledger 為準，現行 migration head 由 migration lint／status 輸出；
 media binary只存private R2，database只保存metadata。未完成的RLS、自家TTS、自家LLM、
 migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
@@ -61,7 +63,7 @@ migration及runtime拆分已整合到唯一的[`docs/ROADMAP.md`](docs/ROADMAP.m
 - List API在database層filter/count/page；大response、external HTTP、AI、TTS及upload均有code-level上限。
 - 設定存於typed `app_config`（namespace + JSONB type + secret classification）；舊`system_config`已由migration `20260714_0002`退役。
 - 新password寫入只存bcrypt hash；成功使用legacy plaintext credential登入時會即時升級，但production仍應主動rotate。
-- `app_config`及內部`schema_migrations`均不可經Database console存取。
+- Browser 不提供 database／SQL console；`app_config`及內部`schema_migrations`只可經受控 API、migration 或一次性管理工具存取。
 
 ## 本機啟動
 
@@ -110,21 +112,20 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
 
 `init_db`只接受未有`schema_migrations` ledger的新空database；既有／production環境一律使用`tools/manage_db_migrations.py`，Developer網頁不提供runtime DDL入口。
 
-先在本機產生三個不同的bcrypt hash及一個cookie secret，切勿把plaintext放入SQL、repo或shell history：
+先在本機產生兩個不同的bcrypt hash及一個cookie secret，切勿把plaintext放入SQL、repo或shell history：
 
 ```bash
 ./venv/bin/python -c "from core.auth_logic import hash_password; import getpass; print(hash_password(getpass.getpass()))"
 ./venv/bin/python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-再以database管理介面把hash/secret寫入typed store；把placeholder換成剛產生的值：
+再以受控 migration／一次性管理工具把hash/secret寫入typed store；把placeholder換成剛產生的值：
 
 ```sql
 INSERT INTO app_config (key, namespace, value, value_type, is_secret)
 VALUES
   ('admin_password',     'auth', to_jsonb('<ADMIN_BCRYPT>'::text), 'string', TRUE),
   ('developer_password', 'auth', to_jsonb('<DEV_BCRYPT>'::text),   'string', TRUE),
-  ('sql_password',       'auth', to_jsonb('<SQL_BCRYPT>'::text),   'string', TRUE),
   ('cookie_secret',      'auth', to_jsonb('<RANDOM_SECRET>'::text),'string', TRUE)
 ON CONFLICT (key) DO UPDATE SET
   value=EXCLUDED.value,

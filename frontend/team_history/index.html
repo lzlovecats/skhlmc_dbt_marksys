@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <title>聖呂中辯歷史</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
+    <style>
+      .timeline { position: relative; display: grid; gap: 1rem; padding-left: 1.35rem; }
+      .timeline::before { content:""; position:absolute; left:.35rem; top:.5rem; bottom:.5rem; width:2px; background:var(--border); }
+      .event { position:relative; margin:0; }
+      .event::before { content:""; position:absolute; left:-1.45rem; top:1.3rem; width:.75rem; height:.75rem; border-radius:50%; background:var(--accent); }
+      .event-head, .actions { display:flex; justify-content:space-between; align-items:flex-start; gap:.7rem; flex-wrap:wrap; }
+      .year { color:var(--warn); font-weight:700; }
+      .pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+      .linked { display:grid; grid-template-columns:repeat(auto-fit,minmax(14rem,1fr)); gap:.65rem; margin-top:.8rem; }
+      .resource { border:1px solid var(--border); border-radius:8px; padding:.65rem; background:var(--surface); color:var(--text); text-decoration:none; overflow-wrap:anywhere; }
+      .resource img { display:block; width:100%; max-height:10rem; object-fit:cover; border-radius:6px; margin-bottom:.45rem; }
+      .selector-results, .selected { display:grid; gap:.4rem; margin:.6rem 0; }
+      .selector-results button, .selected button { width:100%; justify-content:flex-start; text-align:left; }
+      .selected button { border-color:#357a52; }
+      .resource-tabs { margin:.65rem 0; }
+      .pager { display:flex; justify-content:center; align-items:center; gap:.65rem; margin:.75rem 0; }
+      .pager button { width:auto; }
+      .member-status { border-radius:999px; border:1px solid var(--border); padding:.15rem .55rem; white-space:nowrap; }
+      .highlight { border-color:var(--warn); }
+      .pane { display:none; }
+      .pane.active { display:block; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back-link" href="/">← 返回主頁</a>
+      <h1>🎥 聖呂中辯歷史</h1>
+      <p class="intro">以 9 月至翌年 8 月為一個學年，記錄隊史、委員任期，以及相關比賽和圖片。已畢業委員會自動成為高級委員。</p>
+      <section id="login" class="card hidden">
+        <h2>內部委員會成員登入</h2>
+        <form id="loginForm"><label>用戶名稱<input id="loginUser" autocomplete="username" required /></label><label>密碼<input id="loginPassword" type="password" autocomplete="current-password" required /></label><button class="primary" type="submit">登入</button></form>
+        <p id="loginMessage" class="error"></p>
+      </section>
+      <section id="app" class="hidden">
+        <div id="linkedMatch" class="notice highlight hidden"></div>
+        <nav id="mainTabs" class="tabs"><button class="active" data-pane="eventsPane">歷史 Timeline</button><button data-pane="membersPane">委員任期</button><button id="manageTab" class="hidden" data-pane="managePane">🛠️ 高級委員管理</button></nav>
+        <section id="eventsPane" class="pane active">
+          <div id="events" class="timeline"></div>
+        </section>
+        <section id="membersPane" class="pane">
+          <div id="members"></div>
+        </section>
+        <section id="managePane" class="pane">
+          <section id="eventManager" class="card">
+            <h2>歷史事件管理</h2>
+            <form id="eventForm"><input id="eventId" type="hidden" /><input id="eventRevision" type="hidden" />
+              <div class="grid2"><label>學年開始年份<input id="eventYear" type="number" min="1900" max="2200" placeholder="例如 2025" required /></label><label>事件日期（可留空）<input id="eventDate" type="date" /></label></div>
+              <label>標題<input id="eventTitle" maxlength="500" required /></label><label>內容<textarea id="eventDescription" rows="5" maxlength="5000"></textarea></label>
+              <details><summary>連結現有比賽／圖片</summary><div class="grid2"><label>搜尋<input id="eventResourceSearch" maxlength="100" /></label><button id="eventResourceButton" type="button">搜尋資源</button></div><nav id="eventResourceTabs" class="tabs resource-tabs"><button class="active" data-resource-kind="matches" type="button">比賽</button><button data-resource-kind="photos" type="button">圖片</button></nav><div id="eventResourceResults" class="selector-results"></div><nav id="eventResourcePager" class="pager" aria-label="資源分頁"></nav><h3>已選擇</h3><div id="eventSelected" class="selected"></div></details>
+              <div class="actions"><button id="eventSave" class="primary" type="submit">新增歷史事件</button><button id="eventCancel" type="button" class="hidden">取消編輯</button></div>
+            </form>
+          </section>
+          <section class="card"><h2>現有歷史事件管理</h2><div id="eventManagementList" class="timeline"></div></section>
+          <section id="memberManager" class="card"><h2>委員任期管理</h2>
+            <form id="memberForm"><input id="memberId" type="hidden" /><input id="memberRevision" type="hidden" />
+              <div class="grid2"><label>連結帳戶（可留空）<select id="memberUser"><option value="">不連結帳戶</option></select></label><label>姓名<input id="memberName" maxlength="300" required /></label><label>入隊學年開始年份<input id="joinedYear" type="number" min="1900" max="2200" required /></label><label>狀態<select id="exitType"><option value="current">現役</option><option value="graduated">畢業</option><option value="left">離隊</option></select></label><label id="endedWrap" class="hidden">離隊／畢業學年開始年份<input id="endedYear" type="number" min="1900" max="2200" /></label></div>
+              <div class="actions"><button id="memberSave" class="primary" type="submit">新增任期</button><button id="memberCancel" type="button" class="hidden">取消編輯</button></div>
+            </form>
+          </section>
+          <section class="card"><h2>現有委員任期管理</h2><div id="memberManagementList"></div></section>
+        </section>
+      </section>
+    </main>
+    <div id="busy" class="busy"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div><div id="toast" class="toast"></div>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
+    <script>
+      (() => {
+        "use strict";
+        const $ = (id) => document.getElementById(id);
+        const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+        const statusLabels = {current:"現役",left:"離隊",graduated:"畢業"};
+        let context = null, eventRows = {}, memberRows = {}, resources = {matches:[],photos:[]};
+        let resourceKind = "matches", resourceRequest = 0;
+        let selectedMatches = new Map(), selectedPhotos = new Map();
+
+        async function api(path, options = {}) {
+          const response = await fetch(path.startsWith("/api/") ? path : `/api/community${path}`, {credentials:"same-origin", headers:{"Content-Type":"application/json"}, ...options});
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) { const error = new Error(data.detail || `HTTP ${response.status}`); error.status = response.status; throw error; }
+          return data;
+        }
+        function matchLabel(row) { return `${row.match_id}｜${String(row.match_date || "未定日期").slice(0,10)}｜${row.pro_team || "正方未定"} vs ${row.con_team || "反方未定"}`; }
+        function photoLabel(row) { return `圖片 #${row.id}｜${row.album_label || "未命名相簿"}｜${row.photo_title || "未命名"}`; }
+        function linkHtml(links) { return `<div class="linked">${(links.matches || []).map((row) => `<a class="resource" href="/team-history?match_id=${encodeURIComponent(row.match_id)}"><b>🎬 ${esc(row.match_id)}</b><div class="caption">${esc(row.pro_team || "正方未定")} vs ${esc(row.con_team || "反方未定")}</div><div>${esc(row.topic_text || "未有辯題")}</div></a>`).join("")}${(links.photos || []).map((row) => `<a class="resource" href="/match-photos?photo_id=${row.id}"><img loading="lazy" src="/api/match-photos/image/${row.id}?thumbnail=true" alt="${esc(row.photo_title || row.album_label)}" /><b>🖼️ ${esc(row.photo_title || row.album_label)}</b></a>`).join("")}</div>`; }
+        function renderEvents(items, management = false) { if (management) eventRows = Object.fromEntries(items.map((row) => [String(row.id), row])); if (!items.length) return '<section class="card"><p class="caption">暫時未有歷史事件。</p></section>'; return items.map((row) => `<article class="card event"><div class="event-head"><div><div class="year">${esc(row.academic_year_label)} 學年${row.event_date ? `・${esc(String(row.event_date).slice(0,10))}` : ""}</div><h2>${esc(row.title)}</h2></div>${management ? `<div class="actions"><button data-event-edit="${row.id}">編輯</button><button class="danger" data-event-delete="${row.id}">刪除</button></div>` : ""}</div><div class="pre">${esc(row.description)}</div>${linkHtml(row.links)}</article>`).join(""); }
+        function renderMembers(items, management = false) { if (management) memberRows = Object.fromEntries(items.map((row) => [String(row.id), row])); if (!items.length) return '<section class="card"><p class="caption">暫時未有委員任期資料。</p></section>'; return `<div class="table-wrap"><table><thead><tr><th>姓名</th><th>帳戶</th><th>入隊</th><th>離隊／畢業</th><th>狀態</th>${management ? "<th>管理</th>" : ""}</tr></thead><tbody>${items.map((row) => `<tr><td>${esc(row.display_name)}</td><td>${esc(row.member_user_id || "—")}</td><td>${esc(row.joined_academic_year_label)}</td><td>${esc(row.ended_academic_year_label || "—")}</td><td><span class="member-status">${esc(statusLabels[row.exit_type] || row.exit_type)}</span></td>${management ? `<td><button data-member-edit="${row.id}">編輯</button> <button class="danger" data-member-delete="${row.id}">刪除</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`; }
+        async function loadCollections() { const loads = [VoteUI.serverPaged($("events"), "/api/community/history/events", (items) => renderEvents(items, false)), VoteUI.serverPaged($("members"), "/api/community/history/memberships", (items) => renderMembers(items, false))]; if (context.can_manage) loads.push(VoteUI.serverPaged($("eventManagementList"), "/api/community/history/events", (items) => renderEvents(items, true)), VoteUI.serverPaged($("memberManagementList"), "/api/community/history/memberships", (items) => renderMembers(items, true))); await Promise.all(loads); }
+        function switchPane(paneId) { document.querySelectorAll("#mainTabs button").forEach((button) => button.classList.toggle("active", button.dataset.pane === paneId)); document.querySelectorAll("#app > .pane").forEach((pane) => pane.classList.toggle("active", pane.id === paneId)); }
+        async function load() { VoteUI.setBusy($("busy"), true); try { context = await api("/history/data"); $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("manageTab").classList.toggle("hidden", !context.can_manage); if (!context.can_manage && $("managePane").classList.contains("active")) switchPane("eventsPane"); $("memberUser").innerHTML = '<option value="">不連結帳戶</option>' + context.accounts.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join(""); await loadCollections(); await showLinkedMatch(); } catch (error) { if (error.status === 401) { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); } else VoteUI.toast($("toast"), `⚠️ ${error.message}`); } finally { VoteUI.setBusy($("busy"), false); } }
+        async function showLinkedMatch() { const id = new URLSearchParams(location.search).get("match_id"); if (!id) return; const data = await api(`/resources?search=${encodeURIComponent(id)}`); const row = data.matches.find((item) => String(item.match_id) === id); if (row) { $("linkedMatch").innerHTML = `<b>已連結比賽：${esc(matchLabel(row))}</b><div>${esc(row.topic_text || "未有辯題")}</div>`; $("linkedMatch").classList.remove("hidden"); } }
+        function renderResourceResults() { $("eventResourceResults").innerHTML = resources.matches.map((row) => `<button type="button" data-add-match="${esc(row.match_id)}">🎬 ${esc(matchLabel(row))}</button>`).join("") + resources.photos.map((row) => `<button type="button" data-add-photo="${row.id}">🖼️ ${esc(photoLabel(row))}</button>`).join("") || '<p class="caption">找不到資源。</p>'; }
+        function renderResourcePager(data) { $("eventResourcePager").innerHTML = data.total_pages > 1 ? `<button type="button" data-resource-page="${data.page - 1}" ${data.page <= 1 ? "disabled" : ""}>上一頁</button><span>第 ${data.page} / ${data.total_pages} 頁（每頁 ${data.page_size} 項）</span><button type="button" data-resource-page="${data.page + 1}" ${data.page >= data.total_pages ? "disabled" : ""}>下一頁</button>` : `<span class="caption">共 ${data.total} 項（每頁最多 ${data.page_size} 項）</span>`; }
+        function renderSelected() { $("eventSelected").innerHTML = [...selectedMatches.values()].map((row) => `<button type="button" data-remove-match="${esc(row.match_id)}">✓ 🎬 ${esc(matchLabel(row))}（按此移除）</button>`).join("") + [...selectedPhotos.values()].map((row) => `<button type="button" data-remove-photo="${row.id}">✓ 🖼️ ${esc(photoLabel(row))}（按此移除）</button>`).join("") || '<p class="caption">未選擇資源。</p>'; }
+        async function searchResources(page = 1) { const request = ++resourceRequest, kind = resourceKind; const data = await api(`/resources?search=${encodeURIComponent($("eventResourceSearch").value)}&kind=${kind}&page=${page}`); if (request !== resourceRequest || kind !== resourceKind) return; resources = {matches:kind === "matches" ? data.items : [],photos:kind === "photos" ? data.items : []}; renderResourceResults(); renderResourcePager(data); }
+        function selectResourceKind(kind) { resourceKind = kind; document.querySelectorAll("#eventResourceTabs button").forEach((button) => button.classList.toggle("active", button.dataset.resourceKind === kind)); searchResources(1).catch((error) => VoteUI.toast($("toast"), `⚠️ ${error.message}`)); }
+        function resetEvent() { $("eventForm").reset(); $("eventId").value=""; $("eventRevision").value=""; selectedMatches.clear(); selectedPhotos.clear(); renderSelected(); $("eventSave").textContent="新增歷史事件"; $("eventCancel").classList.add("hidden"); }
+        function editEvent(row) { $("eventId").value=row.id; $("eventRevision").value=row.revision; $("eventYear").value=row.academic_year_start; $("eventDate").value=String(row.event_date || "").slice(0,10); $("eventTitle").value=row.title; $("eventDescription").value=row.description; selectedMatches = new Map(row.links.matches.map((item) => [String(item.match_id), item])); selectedPhotos = new Map(row.links.photos.map((item) => [String(item.id), item])); renderSelected(); $("eventSave").textContent="儲存事件"; $("eventCancel").classList.remove("hidden"); $("eventManager").scrollIntoView({behavior:"smooth"}); }
+        function resetMember() { $("memberForm").reset(); $("memberId").value=""; $("memberRevision").value=""; $("exitType").value="current"; toggleEnded(); $("memberSave").textContent="新增任期"; $("memberCancel").classList.add("hidden"); }
+        function toggleEnded() { const active=$("exitType").value !== "current"; $("endedWrap").classList.toggle("hidden", !active); $("endedYear").required=active; if (!active) $("endedYear").value=""; }
+        function editMember(row) { $("memberId").value=row.id; $("memberRevision").value=row.revision; $("memberUser").value=row.member_user_id || ""; $("memberName").value=row.display_name; $("joinedYear").value=row.joined_academic_year; $("exitType").value=row.exit_type; toggleEnded(); $("endedYear").value=row.ended_academic_year || ""; $("memberSave").textContent="儲存任期"; $("memberCancel").classList.remove("hidden"); $("memberManager").scrollIntoView({behavior:"smooth"}); }
+        async function mutate(path, options, message) { VoteUI.setBusy($("busy"), true); try { await api(path, options); VoteUI.toast($("toast"), `✅ ${message}`); await loadCollections(); return true; } catch (error) { VoteUI.toast($("toast"), `⚠️ ${error.message}`); return false; } finally { VoteUI.setBusy($("busy"), false); } }
+
+        document.querySelectorAll("#mainTabs button").forEach((button) => button.addEventListener("click", () => switchPane(button.dataset.pane)));
+        $("loginForm").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/api/committee/login", {method:"POST",body:JSON.stringify({user_id:$("loginUser").value,password:$("loginPassword").value})}); $("loginPassword").value=""; await load(); } catch(error) { $("loginMessage").textContent=error.message; } });
+        $("eventResourceButton").addEventListener("click", () => searchResources(1).catch((e)=>VoteUI.toast($("toast"),`⚠️ ${e.message}`)));
+        $("eventResourceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchResources(1).catch((error)=>VoteUI.toast($("toast"),`⚠️ ${error.message}`)); } });
+        $("eventResourceTabs").addEventListener("click", (event) => { const kind = event.target.closest("[data-resource-kind]")?.dataset.resourceKind; if (kind && kind !== resourceKind) selectResourceKind(kind); });
+        $("eventResourcePager").addEventListener("click", (event) => { const page = Number(event.target.closest("[data-resource-page]")?.dataset.resourcePage); if (page > 0) searchResources(page).catch((error)=>VoteUI.toast($("toast"),`⚠️ ${error.message}`)); });
+        $("eventResourceResults").addEventListener("click", (event) => { const m=event.target.closest("[data-add-match]")?.dataset.addMatch, p=event.target.closest("[data-add-photo]")?.dataset.addPhoto; if (m) selectedMatches.set(m,resources.matches.find((row)=>String(row.match_id)===m)); if (p) selectedPhotos.set(p,resources.photos.find((row)=>String(row.id)===p)); renderSelected(); });
+        $("eventSelected").addEventListener("click", (event) => { const m=event.target.closest("[data-remove-match]")?.dataset.removeMatch, p=event.target.closest("[data-remove-photo]")?.dataset.removePhoto; if (m) selectedMatches.delete(m); if (p) selectedPhotos.delete(p); renderSelected(); });
+        $("eventForm").addEventListener("submit", async (event) => { event.preventDefault(); const id=$("eventId").value; const body={academic_year_start:Number($("eventYear").value),event_date:$("eventDate").value,title:$("eventTitle").value,description:$("eventDescription").value,match_ids:[...selectedMatches.keys()],photo_ids:[...selectedPhotos.keys()].map(Number)}; if(id) body.revision=Number($("eventRevision").value); if(await mutate(`/history/events${id?`/${id}`:""}`,{method:id?"PATCH":"POST",body:JSON.stringify(body)},"歷史事件已儲存。")) resetEvent(); });
+        $("eventManagementList").addEventListener("click", async (event) => { const edit=event.target.closest("[data-event-edit]")?.dataset.eventEdit, del=event.target.closest("[data-event-delete]")?.dataset.eventDelete; if(edit) editEvent(eventRows[edit]); if(del && confirm("確定永久刪除此歷史事件？")) await mutate(`/history/events/${del}?revision=${eventRows[del].revision}`,{method:"DELETE"},"歷史事件已刪除。"); });
+        $("eventCancel").addEventListener("click", resetEvent); $("exitType").addEventListener("change",toggleEnded); $("memberCancel").addEventListener("click",resetMember);
+        $("memberForm").addEventListener("submit", async (event) => { event.preventDefault(); const id=$("memberId").value; const body={member_user_id:$("memberUser").value,display_name:$("memberName").value,joined_academic_year:Number($("joinedYear").value),ended_academic_year:$("endedYear").value?Number($("endedYear").value):null,exit_type:$("exitType").value}; if(id) body.revision=Number($("memberRevision").value); if(await mutate(`/history/memberships${id?`/${id}`:""}`,{method:id?"PATCH":"POST",body:JSON.stringify(body)},"委員任期已儲存。")) resetMember(); });
+        $("memberManagementList").addEventListener("click", async (event) => { const edit=event.target.closest("[data-member-edit]")?.dataset.memberEdit, del=event.target.closest("[data-member-delete]")?.dataset.memberDelete; if(edit) editMember(memberRows[edit]); if(del && confirm("刪除任期資料會即時影響老鬼及高級委員資格，確定繼續？")) await mutate(`/history/memberships/${del}?revision=${memberRows[del].revision}`,{method:"DELETE"},"委員任期已刪除。"); });
+        renderSelected(); toggleEnded(); load();
+      })();
+    </script>
+  </body>
+</html>

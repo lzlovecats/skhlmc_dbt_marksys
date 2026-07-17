@@ -109,12 +109,14 @@ window.VoteUI = Object.freeze({
 
 document.addEventListener("DOMContentLoaded", () => {
     const guideCopy = {
-        "/ai-fund": ["查看基金結餘、個人入數紀錄及 AI 用量估算。", "AI基金管理員可在管理員分頁確認入數及更新設定。"],
+        "/ai-fund": ["查看基金結餘、個人入數紀錄及 AI 用量估算。", "AI管理員可在管理員分頁確認入數及更新設定。"],
         "/lateness-fund": ["先選擇學年，再查看結餘、成員統計及紀錄。", "新增或刪除紀錄後，罰款次數及應繳金額會重新計算。"],
-        "/db-mgmt": ["此頁可直接操作正式資料庫，只供獲授權人員使用。", "執行修改或刪除前請核對 SQL；危險操作需要再次確認。"],
         "/dev-settings": ["此頁只供 Developer 管理帳戶、密碼、AI 設定及系統狀態。", "更改 production 設定前請確認影響範圍。"],
         "/bug-report": ["請填寫可重現步驟、預期結果及實際結果。", "如可行，附上裝置、瀏覽器及截圖，方便跟進。"],
         "/open-db": ["可搜尋及篩選公開辯題庫；表格每頁顯示 20 筆。", "分類及難度資料只供參考。"],
+        "/recent-matches": ["所有內部委員可查閱；只有高級委員可新增及更新。", "新增比賽及首次確認賽果會向已訂閱委員發出 push。"],
+        "/team-history": ["Timeline 及任期均以 9 月至翌年 8 月為一個學年。", "只有畢業會自動成為老鬼及高級委員；離隊不會。"],
+        "/ghost-forum": ["只限任期標示為畢業的委員帳戶。", "主題可連結既有比賽及圖片；此區沒有分區或版主。"],
     };
     if (!document.querySelector("details.guide") && guideCopy[location.pathname]) {
         const guide = document.createElement("details");

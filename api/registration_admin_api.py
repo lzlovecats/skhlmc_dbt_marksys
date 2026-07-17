@@ -2,8 +2,10 @@
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
+from api.access import require_competition_staff
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_ROWS, csv_response, require_row_limit
+from system_limits import REGISTRATION_ADMIN_SESSION_TTL_SECONDS
 
 router = APIRouter(prefix="/api/registration-admin", tags=["registration-admin"])
 COOKIE_NAME = "registration_admin"
@@ -30,9 +32,7 @@ def _db():
 
 
 def _require_admin(request: Request):
-    from deploy.proxy import _verify_registration_admin_token
-    if not _verify_registration_admin_token(request.cookies.get(COOKIE_NAME) or ""):
-        raise HTTPException(401, "未登入")
+    return require_competition_staff(request)
 
 
 def _record_filters(edition: int, status: str, search: str = ""):
@@ -56,26 +56,43 @@ def _record_filters(edition: int, status: str, search: str = ""):
 
 
 @router.post("/login")
-def login(body: LoginBody, response: Response):
+def login(body: LoginBody, request: Request, response: Response):
     from core import registration_logic as logic
+    from core.auth_logic import login_rate_limit_retry_after
     from deploy.proxy import _sign_registration_admin_token
+    retry_after = login_rate_limit_retry_after(request, "registration_admin")
+    if retry_after is not None:
+        raise HTTPException(
+            429,
+            "登入嘗試次數過多，請稍後再試。",
+            headers={"Retry-After": str(retry_after)},
+        )
     try:
         result = logic.check_admin_password(body.password, db=_db())
     except Exception as exc:
-        raise HTTPException(503, f"登入失敗：{exc}") from exc
+        raise HTTPException(503, "登入服務暫時未能使用。") from exc
     if not result["ok"]:
         raise HTTPException(401, result["message"])
     token = _sign_registration_admin_token()
     if not token:
         raise HTTPException(503, "登入服務暫時未能使用")
-    # The organiser gate is browser-session scoped, so it deliberately has no max_age.
-    response.set_cookie(COOKIE_NAME, token, path="/", samesite="lax", httponly=True)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=REGISTRATION_ADMIN_SESSION_TTL_SECONDS,
+        path="/",
+        samesite="lax",
+        httponly=True,
+        secure=True,
+    )
     return {"ok": True}
 
 
 @router.post("/logout")
 def logout(response: Response):
-    response.delete_cookie(COOKIE_NAME, path="/")
+    response.delete_cookie(
+        COOKIE_NAME, path="/", samesite="lax", httponly=True, secure=True,
+    )
     return {"ok": True}
 
 

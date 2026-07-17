@@ -11,7 +11,7 @@ import pandas as pd
 from fastapi import HTTPException, Request, Response
 
 from account_access import KIOSK_ACCOUNT_ID, account_can_access
-from api import kiosk_api
+from api import kiosk_api, projector_ai_api
 from core import ai_provider, auth_logic, r2_storage
 import ai_model_config
 import deploy.proxy as proxy
@@ -93,6 +93,11 @@ def test_practice_shell_keeps_millisecond_timers_and_moves_review_to_competition
     assert 'id="free-pro-display">0:00.000' in source
     assert 'id="free-con-display">0:00.000' in source
     assert "String(ms).padStart(3" in source
+    assert "reviewLimits" not in source
+    assert "matchRecorder" not in source
+    assert "configRequestEpoch" in source
+    assert "AbortController" in source
+    assert "timerConfigLocked" in source
     contest = (ROOT / "templates" / "projector_display.html").read_text(
         encoding="utf-8"
     )
@@ -106,10 +111,31 @@ def test_practice_shell_keeps_millisecond_timers_and_moves_review_to_competition
     assert "marksys-kiosk-recordings-v1" in contest
     assert "persistRecordingChunk" in contest
     assert "downloadPersistedRecording" in contest
+    assert "cleanupExpiredPersistedRecordings" in contest
+    assert "renderRecordingBackups" in contest
+    assert 'id="kioskBackupDialog"' in contest
     assert "uploadBlobWithRetry" in contest
     assert "/api/kiosk/match-review/upload-probe-intent" in contest
     assert "獨立硬件錄音機" in control
     assert "90:00.000" in control
+
+
+def test_kiosk_local_recording_retention_is_server_authoritative_and_seven_days(
+    monkeypatch,
+):
+    assert system_limits.KIOSK_LOCAL_RECORDING_RETENTION_DAYS == 7
+    monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
+    session_payload = kiosk_api.session(_request())
+    payload = json.loads(session_payload.body)
+    assert payload["match_review_limits"]["local_recording_retention_days"] == 7
+
+    source = (ROOT / "templates" / "projector_display.html").read_text(
+        encoding="utf-8"
+    )
+    assert "local_recording_retention_days" in source
+    assert "local_recording_retention_days: 7" not in source
+    assert "7 * 24 * 60 * 60 * 1000" not in source
+    assert "永久刪除" in source
 
 
 def test_match_review_upload_is_direct_to_private_r2_and_bounded(monkeypatch):
@@ -214,6 +240,11 @@ def test_hardware_probe_exercises_browser_to_r2_and_deletes_object(monkeypatch):
     key = "pending/probe/kiosk/probe-1.bin"
     captured = {}
     monkeypatch.setattr(kiosk_api, "require_kiosk_user", lambda _request: "kiosk")
+    monkeypatch.setattr(
+        projector_ai_api,
+        "validate_kiosk_display_lease",
+        lambda _request, *, display: {"display": display},
+    )
     monkeypatch.setattr(proxy, "get_vote_db", lambda: db)
     monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: "secret")
     monkeypatch.setattr(r2_storage, "configured", lambda: True)
@@ -422,8 +453,20 @@ def test_preflight_is_read_only_and_reports_system_resource_gates(monkeypatch):
     assert payload["checks"]["privacy"]["ok"] is True
     assert payload["checks"]["privacy"]["paid_tier_confirmed"] is False
     assert payload["checks"]["privacy"]["free_tier_test_allowed"] is True
-    assert "允許 Free Tier" in payload["checks"]["privacy"]["detail"]
+    assert payload["checks"]["privacy"]["detail"] == (
+        "⚠️ 尚未確認 Paid Gemini Tier，你仍可繼續下一步。本次錄音、逐字稿及"
+        "相關提示內容可能被用於改善 Google 產品。"
+    )
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_paid_tier_privacy_notice_uses_approved_non_blocking_wording(monkeypatch):
+    monkeypatch.setattr(kiosk_api, "_paid_gemini_project_confirmed", lambda: True)
+    source = (ROOT / "api" / "kiosk_api.py").read_text(encoding="utf-8")
+    assert (
+        "✓ AI 私隱設定：已確認使用 Paid Gemini project，所提交的內容不會被用作產品訓練。"
+        in source
+    )
 
 
 def test_marker_validation_rejects_reverse_or_out_of_recording_order():
@@ -594,6 +637,12 @@ def _install_analysis_path(monkeypatch, *, cleanup=True, claim_once=True):
         "_log_review_usage",
         lambda *args, **kwargs: usage_logs.append((args, kwargs)),
     )
+    monkeypatch.setattr(
+        projector_ai_api,
+        "persist_completed_review_for_projector",
+        lambda **kwargs: events.append(("persist_projector", kwargs))
+        or {"revision": 7},
+    )
     return audio, digest, events, usage_logs
 
 
@@ -638,6 +687,7 @@ def test_raw_recording_is_deleted_and_both_provider_passes_receive_audio(monkeyp
     assert event_names.index("claim") < event_names.index("download")
     assert event_names.index("download") < event_names.index("transcode")
     assert event_names.index("delete") < event_names.index("provider")
+    assert event_names.index("provider") < event_names.index("persist_projector")
     assert event_names.count("delete") == 1
     providers = [event for event in events if event[0] == "provider"]
     assert len(providers) == 2
@@ -662,6 +712,8 @@ def test_raw_recording_is_deleted_and_both_provider_passes_receive_audio(monkeyp
     assert payload["speaker_marker_count"] == 2
     assert "S01" in payload["transcript"]
     assert payload["judgement_evidence_mode"] == "audio_and_transcript"
+    assert payload["projector_persisted"] is True
+    assert payload["projector_revision"] == 7
     assert response.headers["cache-control"] == "no-store"
     assert len(usage_logs) == 2
     assert all(item[0][3] is True for item in usage_logs)

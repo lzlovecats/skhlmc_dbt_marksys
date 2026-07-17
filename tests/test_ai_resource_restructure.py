@@ -58,10 +58,10 @@ def test_budget_save_snapshots_donations_and_applies_google_ten_percent_buffer(m
         def transaction(self):
             yield Session()
 
-    monkeypatch.setattr(funds_logic, "is_ai_treasurer", lambda *_a, **_k: True)
+    monkeypatch.setattr(funds_logic, "is_ai_manager", lambda *_a, **_k: True)
     monkeypatch.setattr(funds_logic, "ai_budget_data", lambda *_a, **_k: {"saved": True})
     now = dt.datetime(2026, 7, 25, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
-    result = funds_logic.save_ai_budget("treasurer", {
+    result = funds_logic.save_ai_budget("manager", {
         "budget_month": "2026-08-01", "fx_hkd_per_usd": 7.8,
         "allocations": {
             "google": {"allocated_hkd": 78, "external_cap_confirmed": True},
@@ -83,9 +83,9 @@ def test_budget_save_snapshots_donations_and_applies_google_ten_percent_buffer(m
 
 
 def test_positive_provider_allocation_requires_external_cap_confirmation(monkeypatch):
-    monkeypatch.setattr(funds_logic, "is_ai_treasurer", lambda *_a, **_k: True)
+    monkeypatch.setattr(funds_logic, "is_ai_manager", lambda *_a, **_k: True)
     with pytest.raises(ValueError, match="Google|google"):
-        funds_logic.save_ai_budget("treasurer", {
+        funds_logic.save_ai_budget("manager", {
             "budget_month": "2026-08-01", "fx_hkd_per_usd": 7.8,
             "allocations": {
                 "google": {"allocated_hkd": 1, "external_cap_confirmed": False},
@@ -114,9 +114,9 @@ def test_budget_permissions_and_allocation_total_are_enforced(monkeypatch):
         def transaction(self):
             yield Session()
 
-    monkeypatch.setattr(funds_logic, "is_ai_treasurer", lambda *_a, **_k: True)
+    monkeypatch.setattr(funds_logic, "is_ai_manager", lambda *_a, **_k: True)
     with pytest.raises(ValueError, match="不能高於"):
-        funds_logic.save_ai_budget("treasurer", {
+        funds_logic.save_ai_budget("manager", {
             "budget_month": "2026-08-01", "fx_hkd_per_usd": 7.8,
             "allocations": {
                 "google": {"allocated_hkd": 101, "external_cap_confirmed": True},
@@ -170,12 +170,12 @@ def test_zero_push_delivery_remains_retryable_but_creates_login_announcement(mon
 
     from core import push
 
-    monkeypatch.setattr(funds_logic, "is_ai_treasurer", lambda *_a, **_k: True)
+    monkeypatch.setattr(funds_logic, "is_ai_manager", lambda *_a, **_k: True)
     monkeypatch.setattr(push, "notify_committee", lambda *_a, **_k: 0)
     db = Db()
     with pytest.raises(RuntimeError, match="安全重試"):
         funds_logic.notify_ai_budget(
-            "treasurer", db, {"private_key": "x"},
+            "manager", db, {"private_key": "x"},
             now=dt.datetime(2026, 7, 25, 0, 1, tzinfo=dt.timezone(dt.timedelta(hours=8))),
         )
     retryable = audit_updates[-1]
@@ -221,14 +221,14 @@ def test_partial_push_success_finalizes_exactly_once(monkeypatch):
 
     from core import push
 
-    monkeypatch.setattr(funds_logic, "is_ai_treasurer", lambda *_a, **_k: True)
+    monkeypatch.setattr(funds_logic, "is_ai_manager", lambda *_a, **_k: True)
     monkeypatch.setattr(funds_logic, "ai_budget_data", lambda *_a, **_k: {"ok": True})
     monkeypatch.setattr(push, "notify_committee", lambda *_a, **_k: 1)
     now = dt.datetime(2026, 7, 25, 0, 1, tzinfo=dt.timezone(dt.timedelta(hours=8)))
-    result = funds_logic.notify_ai_budget("treasurer", Db(), {"key": "x"}, now=now)
+    result = funds_logic.notify_ai_budget("manager", Db(), {"key": "x"}, now=now)
     assert result == {"sent": 1, "budget": {"ok": True}}
     with pytest.raises(ValueError, match="已經通知"):
-        funds_logic.notify_ai_budget("treasurer", Db(), {"key": "x"}, now=now)
+        funds_logic.notify_ai_budget("manager", Db(), {"key": "x"}, now=now)
 
 
 def test_render_bucket_parser_is_category_hour_idempotent():

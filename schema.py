@@ -32,6 +32,17 @@ TABLE_VIDEO_CHAPTERS = "video_chapters"
 TABLE_VIDEO_ROSTER = "video_roster"
 TABLE_VIDEO_PROGRESS = "video_progress"
 TABLE_MATCH_PHOTOS = "match_photos"
+TABLE_RECENT_MATCHES = "recent_matches"
+TABLE_RECENT_MATCH_NOTIFICATIONS = "recent_match_notifications"
+TABLE_COMMITTEE_MEMBERSHIPS = "committee_memberships"
+TABLE_HISTORY_EVENTS = "history_events"
+TABLE_HISTORY_EVENT_MATCHES = "history_event_matches"
+TABLE_HISTORY_EVENT_PHOTOS = "history_event_photos"
+TABLE_GHOST_FORUM_THREADS = "ghost_forum_threads"
+TABLE_GHOST_FORUM_POSTS = "ghost_forum_posts"
+TABLE_GHOST_FORUM_REACTIONS = "ghost_forum_reactions"
+TABLE_GHOST_FORUM_THREAD_MATCHES = "ghost_forum_thread_matches"
+TABLE_GHOST_FORUM_THREAD_PHOTOS = "ghost_forum_thread_photos"
 TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
 TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
 TABLE_TTS_SCRIPTS = "tts_scripts"
@@ -61,6 +72,7 @@ TABLE_PROJECTOR_STATE = "projector_state"
 TABLE_PROJECTOR_AI_SESSIONS = "projector_ai_sessions"
 TABLE_PROJECTOR_AI_CONTROLS = "projector_ai_controls"
 TABLE_PROJECTOR_AI_MARKERS = "projector_ai_markers"
+TABLE_PROJECTOR_KIOSK_DEVICES = "projector_kiosk_devices"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
@@ -570,6 +582,238 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_PHOTOS} (
 );
 """
 
+# Committee-only match announcements, history and graduate discussion forum.
+CREATE_RECENT_MATCHES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_RECENT_MATCHES} (
+    id               BIGSERIAL PRIMARY KEY,
+    competition_name TEXT NOT NULL,
+    opponent          TEXT NOT NULL,
+    match_date        DATE NOT NULL,
+    match_time        TIME NOT NULL,
+    topic_text        TEXT NOT NULL,
+    our_side          TEXT NOT NULL CHECK (our_side IN ('pro','con','unconfirmed')),
+    result            TEXT NOT NULL DEFAULT 'unconfirmed'
+        CHECK (result IN ('win','loss','draw','unconfirmed')),
+    score_text        TEXT NOT NULL DEFAULT '',
+    best_debater      TEXT NOT NULL DEFAULT '',
+    notes             TEXT NOT NULL DEFAULT '',
+    revision          INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by        TEXT NOT NULL,
+    updated_by        TEXT NOT NULL,
+    created_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMP NOT NULL DEFAULT NOW()
+);
+"""
+
+CREATE_RECENT_MATCH_NOTIFICATIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_RECENT_MATCH_NOTIFICATIONS} (
+    id              BIGSERIAL PRIMARY KEY,
+    recent_match_id BIGINT NOT NULL,
+    event_kind      TEXT NOT NULL CHECK (event_kind IN ('new_match','result')),
+    state           TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','sending','retryable','sent')),
+    claim_token     TEXT,
+    attempted_at    TIMESTAMP,
+    sent_at         TIMESTAMP,
+    sent_count      INTEGER NOT NULL DEFAULT 0 CHECK (sent_count >= 0),
+    last_error      TEXT NOT NULL DEFAULT '',
+    UNIQUE (recent_match_id, event_kind),
+    CONSTRAINT fk_recent_match_notification_match
+        FOREIGN KEY (recent_match_id) REFERENCES {TABLE_RECENT_MATCHES}(id)
+        ON DELETE CASCADE
+);
+"""
+
+CREATE_COMMITTEE_MEMBERSHIPS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_COMMITTEE_MEMBERSHIPS} (
+    id                     BIGSERIAL PRIMARY KEY,
+    member_user_id         TEXT,
+    display_name           TEXT NOT NULL,
+    joined_academic_year   INTEGER NOT NULL
+        CHECK (joined_academic_year BETWEEN 1900 AND 2200),
+    ended_academic_year    INTEGER
+        CHECK (ended_academic_year IS NULL OR ended_academic_year BETWEEN 1900 AND 2200),
+    exit_type              TEXT NOT NULL DEFAULT 'current'
+        CHECK (exit_type IN ('current','left','graduated')),
+    revision               INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by             TEXT NOT NULL,
+    updated_by             TEXT NOT NULL,
+    created_at             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT committee_membership_exit_consistency CHECK (
+        (exit_type='current' AND ended_academic_year IS NULL)
+        OR
+        (exit_type IN ('left','graduated') AND ended_academic_year IS NOT NULL
+         AND ended_academic_year >= joined_academic_year)
+    ),
+    CONSTRAINT fk_committee_membership_account
+        FOREIGN KEY (member_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE SET NULL
+);
+"""
+
+CREATE_HISTORY_EVENTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_HISTORY_EVENTS} (
+    id                    BIGSERIAL PRIMARY KEY,
+    academic_year_start   INTEGER NOT NULL
+        CHECK (academic_year_start BETWEEN 1900 AND 2200),
+    event_date            DATE,
+    title                 TEXT NOT NULL,
+    description           TEXT NOT NULL DEFAULT '',
+    revision              INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by            TEXT NOT NULL,
+    updated_by            TEXT NOT NULL,
+    created_at            TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT history_event_date_in_academic_year CHECK (
+        event_date IS NULL OR event_date BETWEEN
+            make_date(academic_year_start, 9, 1)
+            AND make_date(academic_year_start + 1, 8, 31)
+    )
+);
+"""
+
+CREATE_HISTORY_EVENT_MATCHES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_HISTORY_EVENT_MATCHES} (
+    event_id BIGINT NOT NULL,
+    match_id TEXT NOT NULL,
+    PRIMARY KEY (event_id, match_id),
+    CONSTRAINT fk_history_event_match_event
+        FOREIGN KEY (event_id) REFERENCES {TABLE_HISTORY_EVENTS}(id) ON DELETE CASCADE,
+    CONSTRAINT fk_history_event_match_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id) ON DELETE CASCADE
+);
+"""
+
+CREATE_HISTORY_EVENT_PHOTOS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_HISTORY_EVENT_PHOTOS} (
+    event_id BIGINT NOT NULL,
+    photo_id INTEGER NOT NULL,
+    PRIMARY KEY (event_id, photo_id),
+    CONSTRAINT fk_history_event_photo_event
+        FOREIGN KEY (event_id) REFERENCES {TABLE_HISTORY_EVENTS}(id) ON DELETE CASCADE,
+    CONSTRAINT fk_history_event_photo_photo
+        FOREIGN KEY (photo_id) REFERENCES {TABLE_MATCH_PHOTOS}(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_GHOST_FORUM_THREADS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_THREADS} (
+    id               BIGSERIAL PRIMARY KEY,
+    title            TEXT NOT NULL,
+    author_user_id   TEXT NOT NULL,
+    revision         INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_activity_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    deleted_at       TIMESTAMP,
+    CONSTRAINT fk_ghost_forum_thread_author
+        FOREIGN KEY (author_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE RESTRICT
+);
+"""
+
+CREATE_GHOST_FORUM_POSTS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_POSTS} (
+    id               BIGSERIAL PRIMARY KEY,
+    thread_id        BIGINT NOT NULL,
+    author_user_id   TEXT NOT NULL,
+    body             TEXT NOT NULL,
+    quoted_post_id   BIGINT,
+    is_first_post    BOOLEAN NOT NULL DEFAULT FALSE,
+    revision         INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    deleted_at       TIMESTAMP,
+    CONSTRAINT fk_ghost_forum_post_thread
+        FOREIGN KEY (thread_id) REFERENCES {TABLE_GHOST_FORUM_THREADS}(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_ghost_forum_post_author
+        FOREIGN KEY (author_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_ghost_forum_post_quote
+        FOREIGN KEY (quoted_post_id) REFERENCES {TABLE_GHOST_FORUM_POSTS}(id)
+        ON DELETE SET NULL
+);
+"""
+
+CREATE_GHOST_FORUM_REACTIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_REACTIONS} (
+    post_id    BIGINT NOT NULL,
+    user_id    TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (post_id, user_id),
+    CONSTRAINT fk_ghost_forum_reaction_post
+        FOREIGN KEY (post_id) REFERENCES {TABLE_GHOST_FORUM_POSTS}(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ghost_forum_reaction_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE CASCADE
+);
+"""
+
+CREATE_GHOST_FORUM_THREAD_MATCHES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_THREAD_MATCHES} (
+    thread_id BIGINT NOT NULL,
+    match_id  TEXT NOT NULL,
+    PRIMARY KEY (thread_id, match_id),
+    CONSTRAINT fk_ghost_thread_match_thread
+        FOREIGN KEY (thread_id) REFERENCES {TABLE_GHOST_FORUM_THREADS}(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ghost_thread_match_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id) ON DELETE CASCADE
+);
+"""
+
+CREATE_GHOST_FORUM_THREAD_PHOTOS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_THREAD_PHOTOS} (
+    thread_id BIGINT NOT NULL,
+    photo_id  INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, photo_id),
+    CONSTRAINT fk_ghost_thread_photo_thread
+        FOREIGN KEY (thread_id) REFERENCES {TABLE_GHOST_FORUM_THREADS}(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ghost_thread_photo_photo
+        FOREIGN KEY (photo_id) REFERENCES {TABLE_MATCH_PHOTOS}(id) ON DELETE CASCADE
+);
+"""
+
+LOCK_COMMUNITY_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE
+    {TABLE_RECENT_MATCHES}, {TABLE_RECENT_MATCH_NOTIFICATIONS},
+    {TABLE_COMMITTEE_MEMBERSHIPS}, {TABLE_HISTORY_EVENTS},
+    {TABLE_HISTORY_EVENT_MATCHES}, {TABLE_HISTORY_EVENT_PHOTOS},
+    {TABLE_GHOST_FORUM_THREADS}, {TABLE_GHOST_FORUM_POSTS},
+    {TABLE_GHOST_FORUM_REACTIONS}, {TABLE_GHOST_FORUM_THREAD_MATCHES},
+    {TABLE_GHOST_FORUM_THREAD_PHOTOS}
+FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE
+    {TABLE_RECENT_MATCHES}_id_seq, {TABLE_RECENT_MATCH_NOTIFICATIONS}_id_seq,
+    {TABLE_COMMITTEE_MEMBERSHIPS}_id_seq, {TABLE_HISTORY_EVENTS}_id_seq,
+    {TABLE_GHOST_FORUM_THREADS}_id_seq, {TABLE_GHOST_FORUM_POSTS}_id_seq
+FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE '
+            '{TABLE_RECENT_MATCHES}, {TABLE_RECENT_MATCH_NOTIFICATIONS}, '
+            '{TABLE_COMMITTEE_MEMBERSHIPS}, {TABLE_HISTORY_EVENTS}, '
+            '{TABLE_HISTORY_EVENT_MATCHES}, {TABLE_HISTORY_EVENT_PHOTOS}, '
+            '{TABLE_GHOST_FORUM_THREADS}, {TABLE_GHOST_FORUM_POSTS}, '
+            '{TABLE_GHOST_FORUM_REACTIONS}, {TABLE_GHOST_FORUM_THREAD_MATCHES}, '
+            '{TABLE_GHOST_FORUM_THREAD_PHOTOS} FROM %I', role_name
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SEQUENCE '
+            '{TABLE_RECENT_MATCHES}_id_seq, {TABLE_RECENT_MATCH_NOTIFICATIONS}_id_seq, '
+            '{TABLE_COMMITTEE_MEMBERSHIPS}_id_seq, {TABLE_HISTORY_EVENTS}_id_seq, '
+            '{TABLE_GHOST_FORUM_THREADS}_id_seq, {TABLE_GHOST_FORUM_POSTS}_id_seq '
+            'FROM %I', role_name
+        );
+    END LOOP;
+END $$;
+"""
+
 # Tables: TTS voice recording dataset
 CREATE_TTS_VOICE_CONSENTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TTS_VOICE_CONSENTS} (
@@ -739,6 +983,20 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_STATE} (
 );
 """
 
+CREATE_PROJECTOR_KIOSK_DEVICES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_KIOSK_DEVICES} (
+    device_id             TEXT PRIMARY KEY,
+    label                 TEXT NOT NULL,
+    enabled               BOOLEAN NOT NULL DEFAULT TRUE,
+    credential_generation BIGINT NOT NULL DEFAULT 1 CHECK (credential_generation >= 1),
+    created_at            TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_seen_at          TIMESTAMP,
+    revoked_at            TIMESTAMP,
+    CHECK (CHAR_LENGTH(device_id) BETWEEN 20 AND 80),
+    CHECK (CHAR_LENGTH(label) BETWEEN 1 AND 120)
+);
+"""
+
 CREATE_PROJECTOR_AI_SESSIONS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_SESSIONS} (
     session_id             TEXT PRIMARY KEY,
@@ -746,7 +1004,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_SESSIONS} (
     match_id               TEXT NOT NULL,
     status                 TEXT NOT NULL DEFAULT 'start_requested'
         CHECK (status IN ('start_requested','recording','stop_requested','processing',
-                          'ready','published','error','cleared','expired')),
+                          'ready','published','error','cancelled','interrupted','cleared','expired')),
     status_detail          TEXT NOT NULL DEFAULT '',
     recording_started_at   TIMESTAMP,
     recording_duration_seconds DOUBLE PRECISION,
@@ -761,11 +1019,16 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_SESSIONS} (
     published              BOOLEAN NOT NULL DEFAULT FALSE,
     publish_revision       BIGINT NOT NULL DEFAULT 0 CHECK (publish_revision >= 0),
     result_expires_at      TIMESTAMP,
+    kiosk_device_id       TEXT,
+    kiosk_lease_generation BIGINT CHECK (kiosk_lease_generation IS NULL OR kiosk_lease_generation >= 1),
     created_at             TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at             TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_projector_ai_session_match
         FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
-        ON DELETE RESTRICT
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_projector_ai_session_kiosk_device
+        FOREIGN KEY (kiosk_device_id) REFERENCES {TABLE_PROJECTOR_KIOSK_DEVICES}(device_id)
+        ON DELETE SET NULL
 );
 """
 
@@ -782,10 +1045,20 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_CONTROLS} (
     hardware_status    JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     capabilities       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     kiosk_last_seen_at TIMESTAMP,
+    lease_device_id    TEXT,
+    lease_client_id    TEXT,
+    lease_token_hash   TEXT,
+    lease_generation   BIGINT NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+    lease_expires_at   TIMESTAMP,
+    lease_last_seen_at TIMESTAMP,
+    command_lease_generation BIGINT NOT NULL DEFAULT 0 CHECK (command_lease_generation >= 0),
     created_at         TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_projector_ai_control_session
         FOREIGN KEY (current_session_id) REFERENCES {TABLE_PROJECTOR_AI_SESSIONS}(session_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_projector_ai_control_lease_device
+        FOREIGN KEY (lease_device_id) REFERENCES {TABLE_PROJECTOR_KIOSK_DEVICES}(device_id)
         ON DELETE SET NULL
 );
 """
@@ -809,7 +1082,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_MARKERS} (
 # though the payload columns are authenticated-encrypted at rest.
 LOCK_PROJECTOR_AI_PRIVILEGES = f"""
 REVOKE ALL PRIVILEGES ON TABLE
-    {TABLE_PROJECTOR_AI_SESSIONS}, {TABLE_PROJECTOR_AI_CONTROLS},
+    {TABLE_PROJECTOR_KIOSK_DEVICES}, {TABLE_PROJECTOR_AI_SESSIONS}, {TABLE_PROJECTOR_AI_CONTROLS},
     {TABLE_PROJECTOR_AI_MARKERS}
     FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_PROJECTOR_AI_MARKERS}_id_seq
@@ -822,7 +1095,7 @@ BEGIN
         WHERE rolname IN ('anon', 'authenticated')
     LOOP
         EXECUTE
-            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_PROJECTOR_AI_SESSIONS}, {TABLE_PROJECTOR_AI_CONTROLS}, {TABLE_PROJECTOR_AI_MARKERS} FROM '
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_PROJECTOR_KIOSK_DEVICES}, {TABLE_PROJECTOR_AI_SESSIONS}, {TABLE_PROJECTOR_AI_CONTROLS}, {TABLE_PROJECTOR_AI_MARKERS} FROM '
             || quote_ident(role_name);
         EXECUTE
             'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_PROJECTOR_AI_MARKERS}_id_seq FROM '
@@ -1319,6 +1592,23 @@ CREATE INDEX IF NOT EXISTS idx_match_photos_date_created
     ON {TABLE_MATCH_PHOTOS}(photo_date DESC, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_match_photos_r2_key
     ON {TABLE_MATCH_PHOTOS}(r2_key) WHERE r2_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_recent_matches_date
+    ON {TABLE_RECENT_MATCHES}(match_date DESC, match_time DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_recent_match_notifications_state
+    ON {TABLE_RECENT_MATCH_NOTIFICATIONS}(state, attempted_at);
+CREATE INDEX IF NOT EXISTS idx_committee_memberships_user_exit
+    ON {TABLE_COMMITTEE_MEMBERSHIPS}(member_user_id, exit_type);
+CREATE INDEX IF NOT EXISTS idx_committee_memberships_year
+    ON {TABLE_COMMITTEE_MEMBERSHIPS}(joined_academic_year DESC, ended_academic_year DESC);
+CREATE INDEX IF NOT EXISTS idx_history_events_timeline
+    ON {TABLE_HISTORY_EVENTS}(academic_year_start DESC, event_date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_ghost_forum_threads_activity
+    ON {TABLE_GHOST_FORUM_THREADS}(last_activity_at DESC, id DESC)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ghost_forum_posts_thread_created
+    ON {TABLE_GHOST_FORUM_POSTS}(thread_id, created_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ghost_forum_first_post
+    ON {TABLE_GHOST_FORUM_POSTS}(thread_id) WHERE is_first_post=TRUE;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tts_voice_recordings_r2_key
     ON {TABLE_TTS_VOICE_RECORDINGS}(r2_key) WHERE r2_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
@@ -1339,6 +1629,8 @@ CREATE INDEX IF NOT EXISTS idx_projector_ai_sessions_expiry
     WHERE result_ciphertext IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_projector_ai_markers_session_time
     ON {TABLE_PROJECTOR_AI_MARKERS}(session_id, offset_seconds, id);
+CREATE INDEX IF NOT EXISTS idx_projector_kiosk_devices_last_seen
+    ON {TABLE_PROJECTOR_KIOSK_DEVICES}(last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_scripts_active_category
     ON {TABLE_TTS_SCRIPTS}(is_active, category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_tts_lexicon_active
@@ -1384,8 +1676,7 @@ CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created
 
 # Typed, namespaced application configuration.  ``value`` retains its native
 # JSON type and ``is_secret`` lets future RLS/column policies distinguish
-# credentials from ordinary settings.  The old system_config table remains for
-# one rollback window only; active code writes app_config.
+# credentials from ordinary settings.
 CREATE_APP_CONFIG = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_APP_CONFIG} (
     key         TEXT        PRIMARY KEY,
@@ -1399,15 +1690,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_APP_CONFIG} (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT app_config_json_type_matches
         CHECK (jsonb_typeof(value) = value_type)
-);
-"""
-
-# Legacy rollback bridge.  New code must not write this table.
-CREATE_SYSTEM_CONFIG = """
-CREATE TABLE IF NOT EXISTS system_config (
-    key        TEXT PRIMARY KEY,
-    value      TEXT NOT NULL,
-    updated_at TEXT
 );
 """
 
@@ -1440,6 +1722,18 @@ ALL_SCHEMAS = [
     LOCK_VIDEO_ROSTER_PRIVILEGES,
     CREATE_VIDEO_PROGRESS,            # → match_videos, accounts
     CREATE_MATCH_PHOTOS,              # → match_videos, accounts
+    CREATE_RECENT_MATCHES,
+    CREATE_RECENT_MATCH_NOTIFICATIONS,  # → recent_matches
+    CREATE_COMMITTEE_MEMBERSHIPS,     # → accounts
+    CREATE_HISTORY_EVENTS,
+    CREATE_HISTORY_EVENT_MATCHES,     # → history_events, matches
+    CREATE_HISTORY_EVENT_PHOTOS,      # → history_events, match_photos
+    CREATE_GHOST_FORUM_THREADS,       # → accounts
+    CREATE_GHOST_FORUM_POSTS,         # → threads, accounts
+    CREATE_GHOST_FORUM_REACTIONS,     # → posts, accounts
+    CREATE_GHOST_FORUM_THREAD_MATCHES,  # → threads, matches
+    CREATE_GHOST_FORUM_THREAD_PHOTOS,   # → threads, match_photos
+    LOCK_COMMUNITY_PRIVILEGES,
     CREATE_TTS_VOICE_CONSENTS,        # → accounts
     CREATE_TTS_VOICE_RECORDINGS,      # → accounts
     CREATE_TTS_SCRIPTS,               # → (standalone)
@@ -1460,13 +1754,13 @@ ALL_SCHEMAS = [
     CREATE_MONTHLY_RESOURCE_LIMITS,      # → accounts
     LOCK_MONTHLY_RESOURCE_LIMITS_PRIVILEGES,
     CREATE_PROJECTOR_STATE,             # short-lived projector state
+    CREATE_PROJECTOR_KIOSK_DEVICES,     # stable signed Kiosk device identity
     CREATE_PROJECTOR_AI_SESSIONS,        # encrypted two-hour AI評判易 result
     CREATE_PROJECTOR_AI_CONTROLS,        # cross-device command + ACK state
     CREATE_PROJECTOR_AI_MARKERS,         # server-time projector segment events
     LOCK_PROJECTOR_AI_PRIVILEGES,
     CREATE_AI_COACH_LIVE_BRIEFS,        # short-lived AI coach state
     CREATE_APP_CONFIG,                  # typed runtime configuration
-    CREATE_SYSTEM_CONFIG,                # no deps
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
 ]

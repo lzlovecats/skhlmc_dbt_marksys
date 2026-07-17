@@ -16,6 +16,22 @@ def require_page_user(request: Request, page: str) -> str:
     return user_id
 
 
+def has_developer_session(request: Request) -> bool:
+    """Whether this request carries a live Developer settings session."""
+    if not getattr(request, "cookies", None):
+        return False
+    from api.admin_console_api import developer_session_active
+
+    return developer_session_active(request)
+
+
+def require_page_user_or_developer(request: Request, page: str) -> str:
+    """Allow the Developer management identity or a normal page member."""
+    if has_developer_session(request):
+        return "developer"
+    return require_page_user(request, page)
+
+
 def require_competition_staff(request: Request) -> str:
     """Require the same organiser session used by 主席主持易.
 
@@ -25,6 +41,9 @@ def require_competition_staff(request: Request) -> str:
     Keeping this check here prevents projector/recording endpoints from each
     growing a subtly different authentication rule.
     """
+    if has_developer_session(request):
+        return "developer"
+
     from deploy.proxy import _verify_registration_admin_token
 
     cookies = getattr(request, "cookies", {}) or {}

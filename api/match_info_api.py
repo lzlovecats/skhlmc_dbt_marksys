@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
+from api.access import require_competition_staff
 
 from debate_timing import DEBATE_FORMATS
 
@@ -69,12 +70,7 @@ def _db():
 
 
 def _admin(request: Request):
-    from deploy.proxy import _verify_registration_admin_token
-
-    if not _verify_registration_admin_token(
-        request.cookies.get("registration_admin") or ""
-    ):
-        raise HTTPException(401, "未登入")
+    return require_competition_staff(request)
 
 
 @router.get("/data")

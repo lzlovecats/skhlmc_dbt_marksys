@@ -40,7 +40,6 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     # Authentication material.  Values are never returned by public APIs.
     "admin_password": ConfigSpec("auth", _STRING, True),
     "developer_password": ConfigSpec("auth", _STRING, True),
-    "sql_password": ConfigSpec("auth", _STRING, True),
     "cookie_secret": ConfigSpec("auth", _STRING, True),
     # Runtime settings.
     "maintenance_mode": ConfigSpec("runtime", _BOOLEAN),
@@ -51,9 +50,8 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "login_disabled_accounts": ConfigSpec("access", _ARRAY),
     "bypass_active_check_until": ConfigSpec("access", _OBJECT),
     "tts_recording_allowed_users": ConfigSpec("access", _ARRAY),
-    "tts_recording_reviewers": ConfigSpec("access", _ARRAY),
-    "ai_fund_treasurers": ConfigSpec("access", _ARRAY),
-    "lateness_fund_managers": ConfigSpec("access", _ARRAY),
+    "ai_managers": ConfigSpec("access", _ARRAY),
+    "senior_committee_members": ConfigSpec("access", _ARRAY),
     # AI fund settings and provider balance snapshot.
     "ai_fund_target_hkd": ConfigSpec("finance", _NUMBER),
     "ai_fund_low_balance_hkd": ConfigSpec("finance", _NUMBER),

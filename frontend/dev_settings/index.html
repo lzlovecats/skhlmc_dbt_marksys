@@ -131,7 +131,7 @@
         <section id="training" class="pane">
           <div class="split">
             <form id="trainingForm" class="card">
-              <h2>AI 訓練設定</h2>
+              <h2>委派管理角色</h2>
               <fieldset class="account-picker">
                 <legend>TTS 錄音委員</legend>
                 <label
@@ -145,29 +145,30 @@
                 <p id="ttsAllowedSummary" class="caption"></p>
               </fieldset>
               <fieldset class="account-picker">
-                <legend>AI 訓練管理員</legend>
+                <legend>AI管理員</legend>
                 <label
                   >搜尋帳戶<input
-                    id="ttsReviewersSearch"
+                    id="aiManagersSearch"
                     type="search"
                     placeholder="輸入帳戶名稱"
                     autocomplete="off"
                 /></label>
-                <div id="ttsReviewersOptions" class="account-options"></div>
-                <p id="ttsReviewersSummary" class="caption"></p>
-                <p class="caption">必須至少保留一個帳戶。</p>
+                <div id="aiManagersOptions" class="account-options"></div>
+                <p id="aiManagersSummary" class="caption"></p>
+                <p class="caption">可管理 AI 訓練及 AI基金；Developer 永遠保留管理權。</p>
               </fieldset>
               <fieldset class="account-picker">
-                <legend>AI基金管理員</legend>
+                <legend>高級委員</legend>
                 <label
                   >搜尋帳戶<input
-                    id="treasurersSearch"
+                    id="seniorMembersSearch"
                     type="search"
                     placeholder="輸入帳戶名稱"
                     autocomplete="off"
                 /></label>
-                <div id="treasurersOptions" class="account-options"></div>
-                <p id="treasurersSummary" class="caption"></p>
+                <div id="seniorMembersOptions" class="account-options"></div>
+                <p id="seniorMembersSummary" class="caption"></p>
+                <p class="caption">可管理遲到基金、歷史及近期比賽；畢業帳戶會自動取得此角色。</p>
               </fieldset>
               <button class="primary">更新名單</button>
             </form>
@@ -233,18 +234,6 @@
             </form>
             <form class="card passwordForm" data-key="developer_password">
               <h2>更改開發者密碼</h2>
-              <label
-                >目前密碼<input
-                  class="current"
-                  type="password"
-                  required /></label
-              ><label
-                >新密碼<input class="new" type="password" required /></label
-              ><label>確認新密碼<input class="confirm" type="password" required /></label
-              ><button class="primary">更新</button>
-            </form>
-            <form class="card passwordForm" data-key="sql_password">
-              <h2>更改 SQL 存取密碼</h2>
               <label
                 >目前密碼<input
                   class="current"
@@ -434,13 +423,10 @@
             "ttsAllowed",
             jsonList(c.tts_recording_allowed_users),
           );
+          renderAccountPicker("aiManagers", jsonList(c.ai_managers));
           renderAccountPicker(
-            "ttsReviewers",
-            jsonList(c.tts_recording_reviewers),
-          );
-          renderAccountPicker(
-            "treasurers",
-            jsonList(c.ai_fund_treasurers),
+            "seniorMembers",
+            jsonList(c.senior_committee_members),
           );
           const enabledProviders = new Set(jsonList(c.ai_enabled_providers));
           $("providerOptions").innerHTML = (data.ai_options?.providers || [])
@@ -549,11 +535,6 @@
         };
         $("trainingForm").onsubmit = (e) => {
           e.preventDefault();
-          const reviewers = selectedAccounts("ttsReviewers");
-          if (!reviewers.length) {
-            toast("⚠️ 至少保留一位 AI 訓練管理員。");
-            return;
-          }
           mutate(
             "/api/developer/settings",
             {
@@ -561,12 +542,12 @@
               body: JSON.stringify({
                 values: {
                   tts_recording_allowed_users: selectedAccounts("ttsAllowed"),
-                  tts_recording_reviewers: reviewers,
-                  ai_fund_treasurers: selectedAccounts("treasurers"),
+                  ai_managers: selectedAccounts("aiManagers"),
+                  senior_committee_members: selectedAccounts("seniorMembers"),
                 },
               }),
             },
-            "AI 訓練與基金管理員設定已更新。",
+            "管理角色設定已更新。",
           );
         };
         $("modelsForm").onsubmit = (e) => {
@@ -765,7 +746,6 @@
         load();
       })();
     </script>
-    <script src="/dev-settings/lateness-managers.js?v=__APP_VERSION__"></script>
     <script src="/shared/server-tables.js"></script>
   </body>
 </html>

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from api.access import require_page_user
+from api.access import require_page_user_or_developer
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from system_limits import (
     PHOTO_BATCH_MAX_ITEMS, PHOTO_MAX_BYTES, PHOTO_MAX_DIMENSION,
@@ -51,7 +51,7 @@ class PhotoMetadataBody(BaseModel):
 
 def _context(request: Request):
     from deploy.proxy import get_vote_db
-    return require_page_user(request, "match_photos"), get_vote_db()
+    return require_page_user_or_developer(request, "match_photos"), get_vote_db()
 
 
 @router.get("/data")
@@ -77,13 +77,22 @@ def data(request: Request):
     return result
 
 @router.get("/photos")
-def photos(request: Request, page: int = 1, album: str = "全部", search: str = "", sort: str = "date_desc"):
+def photos(
+    request: Request,
+    page: int = 1,
+    album: str = "全部",
+    search: str = "",
+    sort: str = "date_desc",
+    photo_id: int | None = None,
+):
     from core import media_logic as logic
     from schema import TABLE_MATCH_PHOTOS
     user_id, db = _context(request); page,_,offset=bounds(page)
     album = str(album or "")[:200]
     search = str(search or "")[:100]
     clauses=[];params={}
+    if photo_id is not None:
+        clauses.append("id=:photo_id");params["photo_id"]=photo_id
     if album!="全部": clauses.append("album_label=:album");params["album"]=album
     if search.strip(): clauses.append("LOWER(COALESCE(album_label,'')||' '||COALESCE(photo_title,'')||' '||COALESCE(caption,'')||' '||COALESCE(uploaded_by,'')||' '||COALESCE(file_name,'')) LIKE :search");params["search"]="%"+search.strip().lower()+"%"
     where="WHERE "+" AND ".join(clauses) if clauses else ""

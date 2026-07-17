@@ -195,15 +195,15 @@
         </div>
       </div>
       <p class="caption">
-        正式現金帳以 AI基金管理員確認的入數及 AI provider 付款紀錄為準；AI
+        正式現金帳以 AI管理員確認的入數及 AI provider 付款紀錄為準；AI
         用量成本只作估算。
       </p>
       <details class="guide">
         <summary>ℹ️ AI基金使用指南</summary>
         <div class="sub">
-          • 在「入數 / 交易」提交入數紀錄，待 AI基金管理員確認後會計入
+          • 在「入數 / 交易」提交入數紀錄，待 AI管理員確認後會計入
           AI基金。<br />• 「AI 用量」顯示 AI
-          辯論易各功能的估算成本，只作參考。<br />• AI基金管理員可確認入數、記錄
+          辯論易各功能的估算成本，只作參考。<br />• AI管理員可確認入數、記錄
           provider 支出及更新基金設定。
         </div>
       </details>
@@ -371,7 +371,7 @@
             <div class="card">
               <h2>更新 Google AI Studio 餘額</h2>
               <p class="caption">
-                由 AI基金管理員從 AI Studio Billing 手動更新，並非 Google API
+                由 AI管理員從 AI Studio Billing 手動更新，並非 Google API
                 即時回傳。
               </p>
               <form id="googleForm">
@@ -685,7 +685,7 @@
               },
             ),
           ];
-          if (data.is_treasurer)
+          if (data.is_ai_manager)
             jobs.push(
               serverPage(
                 $("pending"),
@@ -721,12 +721,12 @@
           $("login").classList.add("hidden");
           $("app").classList.remove("hidden");
           $("logout").classList.remove("hidden");
-          $("adminTab").classList.toggle("hidden", !data.is_treasurer);
-          $("providerAdminHint").classList.toggle("hidden", !data.is_treasurer);
-          $("notice").innerHTML = !st.treasurers.length
-            ? '<div class="card warning">尚未設定 AI基金管理員。請先到開發者設定指定 AI基金管理員。</div>'
-            : data.is_treasurer
-              ? '<div class="card">你是 AI基金管理員，可確認入數、記錄支出及更新 AI基金設定。</div>'
+          $("adminTab").classList.toggle("hidden", !data.is_ai_manager);
+          $("providerAdminHint").classList.toggle("hidden", !data.is_ai_manager);
+          $("notice").innerHTML = !st.ai_managers.length
+            ? '<div class="card warning">尚未指定委員帳戶為 AI管理員；Developer 仍保留管理權。</div>'
+            : data.is_ai_manager
+              ? '<div class="card">你是 AI管理員，可管理 AI 訓練、確認入數、記錄支出及更新 AI基金設定。</div>'
               : "";
           $("metrics").innerHTML =
             [
@@ -768,13 +768,13 @@
               <p class="caption">
                 ${
                   data.google_balance.balance_usd === null
-                    ? "由 AI基金管理員從 AI Studio Billing 手動更新。"
+                    ? "由 AI管理員從 AI Studio Billing 手動更新。"
                     : `約 ${money(data.google_balance.balance_usd * 7.8)}｜更新：${esc(data.google_balance.updated_at || "—")}｜${esc(data.google_balance.updated_by || "—")}`
                 }
               </p>
             </div>`;
           $("instruction").textContent = st.payment_instruction;
-          $("transactionTitle").textContent = data.is_treasurer
+          $("transactionTitle").textContent = data.is_ai_manager
             ? "交易紀錄"
             : "我的入數紀錄";
           $("googleBalance").value = data.google_balance.balance_usd ?? 0;
@@ -807,8 +807,8 @@
             : budget.needs_external_cap_update
               ? "待更新並確認外部 provider cap。"
               : "預算已可手動通知；系統不會自動發送。";
-          $("budgetSave").disabled = !!budget.notified_at || !budget.can_settle || !data.is_treasurer;
-          $("budgetNotify").disabled = !!budget.notified_at || !budget.configured || !budget.can_settle || budget.needs_external_cap_update || !data.is_treasurer;
+          $("budgetSave").disabled = !!budget.notified_at || !budget.can_settle || !data.is_ai_manager;
+          $("budgetNotify").disabled = !!budget.notified_at || !budget.configured || !budget.can_settle || budget.needs_external_cap_update || !data.is_ai_manager;
           const updateBudgetPreview = (markDirty) => {
             const fx = Number($("budgetFx").value || 0);
             let total = 0;
@@ -890,7 +890,7 @@
                 note: $("depositNote").value,
               }),
             },
-            "入數紀錄已提交，待 AI基金管理員確認後會計入 AI基金。",
+            "入數紀錄已提交，待 AI管理員確認後會計入 AI基金。",
             () => e.target.reset(),
           );
         };

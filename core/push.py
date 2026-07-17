@@ -12,7 +12,13 @@ import re
 import threading
 
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
-from schema import TABLE_ACCOUNTS, TABLE_PUSH_SUBSCRIPTIONS
+from core.roles import SENIOR_COMMITTEE_MEMBERS_KEY
+from schema import (
+    TABLE_ACCOUNTS,
+    TABLE_APP_CONFIG,
+    TABLE_COMMITTEE_MEMBERSHIPS,
+    TABLE_PUSH_SUBSCRIPTIONS,
+)
 from system_limits import PUSH_RECIPIENT_LIMIT, PUSH_SEND_CONCURRENCY
 
 
@@ -47,6 +53,9 @@ def push_title_with_emoji(title):
         return title
     emoji_map = [
         ("新留言", "💬"),
+        ("老鬼專區", "👻"),
+        ("新比賽", "ℹ️"),
+        ("賽果", "🏁"),
         ("新辯題", "📝"),
         ("辯題投票通過", "✅"),
         ("辯題投票否決", "❌"),
@@ -95,7 +104,7 @@ def send_web_push(subscription, title, body, vapid, url="/vote", tag=None):
 
 def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None,
                      tag=None, url="/vote", send_fn=None,
-                     committee_only=False):
+                     committee_only=False, senior_only=False):
     """Send ``title``/``body`` to matching active push subscriptions.
 
     Prunes subscriptions that return 404/410 (gone). Returns the number sent.
@@ -109,7 +118,7 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
     subscription_table = f"{TABLE_PUSH_SUBSCRIPTIONS} p"
     select_columns = "p.endpoint,p.user_id,p.subscription_json"
     where = "WHERE p.is_active = TRUE"
-    if committee_only:
+    if committee_only or senior_only:
         excluded = sql_account_id_literals((*NON_MEMBER_ACCOUNT_DB_KEYS, ""))
         subscription_table += f" JOIN {TABLE_ACCOUNTS} a ON a.user_id=p.user_id"
         where += (
@@ -117,6 +126,16 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
             " AND a.account_status IN ('active','admin')"
             f" AND LOWER(a.user_id) NOT IN ({excluded})"
         )
+    if senior_only:
+        where += (
+            " AND ("
+            f"EXISTS (SELECT 1 FROM {TABLE_COMMITTEE_MEMBERSHIPS} cm"
+            " WHERE cm.member_user_id=p.user_id AND cm.exit_type='graduated')"
+            f" OR EXISTS (SELECT 1 FROM {TABLE_APP_CONFIG} c"
+            " WHERE c.key=:senior_key AND jsonb_typeof(c.value)='array'"
+            " AND c.value ? p.user_id))"
+        )
+        params["senior_key"] = SENIOR_COMMITTEE_MEMBERS_KEY
     if exclude_user:
         where += " AND p.user_id != :exclude_user"
         params["exclude_user"] = exclude_user
