@@ -29,6 +29,14 @@ def test_video_replay_html_versions_shared_return_navigation_script():
     assert "__APP_VERSION__" not in html
 
 
+def test_team_history_html_versions_shared_return_navigation_script():
+    response = asyncio.run(proxy.team_history_page())
+    html = response.body.decode("utf-8")
+
+    assert f'src="/shared/server-tables.js?v={proxy.APP_VERSION}"' in html
+    assert "__APP_VERSION__" not in html
+
+
 def test_judging_html_versions_shared_judging_script():
     response = asyncio.run(proxy.judging_page())
     html = response.body.decode("utf-8")
