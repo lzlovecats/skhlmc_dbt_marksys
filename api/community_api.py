@@ -36,6 +36,7 @@ from schema import (
     TABLE_HISTORY_EVENTS,
     TABLE_MATCHES,
     TABLE_MATCH_PHOTOS,
+    TABLE_MATCH_VIDEOS,
     TABLE_RECENT_MATCH_NOTIFICATIONS,
     TABLE_RECENT_MATCHES,
 )
@@ -253,8 +254,18 @@ def _resource_links(db, owner_ids, *, forum=False):
     params = {"ids": list(links)}
     matches = db.query(
         f"""SELECT l.{owner_column} owner_id,m.match_id,m.match_date,m.match_time,
-                   m.topic_text,m.pro_team,m.con_team,m.debate_format
+                   m.topic_text,m.pro_team,m.con_team,m.debate_format,
+                   selected_video.video_id
             FROM {match_table} l JOIN {TABLE_MATCHES} m ON m.match_id=l.match_id
+            LEFT JOIN LATERAL (
+                SELECT video.id AS video_id
+                FROM {TABLE_MATCH_VIDEOS} AS video
+                WHERE video.match_id=m.match_id
+                  AND COALESCE(video.is_visible,TRUE)=TRUE
+                ORDER BY video.display_order ASC NULLS LAST,
+                         video.created_at DESC,video.id DESC
+                LIMIT 1
+            ) AS selected_video ON TRUE
             WHERE l.{owner_column}=ANY(CAST(:ids AS bigint[]))
             ORDER BY m.match_date DESC NULLS LAST,m.match_id""",
         params,
@@ -789,7 +800,8 @@ def forum_threads(request: Request, page: int = 1, search: str = "", sort: str =
         f"""SELECT t.id,t.title,t.author_user_id,t.revision,t.created_at,t.updated_at,
                    t.last_activity_at,(t.author_user_id=:user) can_edit,
                    (SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_POSTS} p
-                    WHERE p.thread_id=t.id AND p.deleted_at IS NULL) post_count,
+                    WHERE p.thread_id=t.id AND p.deleted_at IS NULL
+                      AND p.is_first_post=FALSE) post_count,
                    (SELECT LEFT(p.body,300) FROM {TABLE_GHOST_FORUM_POSTS} p
                     WHERE p.thread_id=t.id AND p.is_first_post=TRUE) excerpt
             FROM {TABLE_GHOST_FORUM_THREADS} t WHERE {where}
@@ -809,7 +821,7 @@ def create_forum_thread(body: ForumThreadBody, request: Request):
         thread_count = connection.execute(text(f"SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_THREADS}")).scalar()
         post_count = connection.execute(text(f"SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_POSTS}")).scalar()
         if int(thread_count or 0) >= GHOST_FORUM_THREAD_LIMIT:
-            raise HTTPException(409, "老鬼專區主題已達系統上限。")
+            raise HTTPException(409, "老鬼專區帖文已達系統上限。")
         if int(post_count or 0) >= GHOST_FORUM_POST_LIMIT:
             raise HTTPException(409, "老鬼專區留言已達系統上限。")
         _check_links(connection, values["match_ids"], values["photo_ids"])
@@ -843,7 +855,7 @@ def create_forum_thread(body: ForumThreadBody, request: Request):
 
 
 @router.get("/forum/threads/{thread_id}")
-def forum_thread(thread_id: int, request: Request, page: int = 1):
+def forum_thread(thread_id: int, request: Request, page: int = 1, latest: bool = False):
     user, db = _ghost_context(request)
     thread_frame = db.query(
         f"""SELECT id,title,author_user_id,revision,created_at,updated_at,last_activity_at,
@@ -853,13 +865,15 @@ def forum_thread(thread_id: int, request: Request, page: int = 1):
         {"id": thread_id, "user": user},
     )
     if thread_frame.empty:
-        raise HTTPException(404, "找不到討論主題。")
-    page, _, offset = bounds(page)
+        raise HTTPException(404, "找不到帖文。")
     total = scalar_count(
         db,
         f"SELECT COUNT(*) total FROM {TABLE_GHOST_FORUM_POSTS} WHERE thread_id=:id",
         {"id": thread_id},
     )
+    if latest:
+        page = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page, _, offset = bounds(page)
     posts = db.query(
         f"""SELECT p.id,p.author_user_id,
                    CASE WHEN p.deleted_at IS NULL THEN p.body ELSE '' END body,
@@ -901,7 +915,7 @@ def update_forum_thread(thread_id: int, body: ForumThreadUpdateBody, request: Re
             {"title": values["title"], "now": now, "id": thread_id, "user": user, "revision": body.revision},
         ).mappings().one_or_none()
         if row is None:
-            raise HTTPException(409, "主題已更新、不存在或不屬於你。")
+            raise HTTPException(409, "標題已更新、不存在或不屬於你。")
         _replace_links(connection, thread_id, values["match_ids"], values["photo_ids"], forum=True)
     return {"ok": True, "revision": int(row["revision"])}
 
@@ -915,7 +929,7 @@ def delete_forum_thread(thread_id: int, revision: int, request: Request):
         {"id": thread_id, "user": user, "revision": revision, "now": _now()},
     )
     if not changed:
-        raise HTTPException(409, "主題已更新、不存在或不屬於你。")
+        raise HTTPException(409, "帖文已更新、不存在或不屬於你。")
     return {"ok": True}
 
 
@@ -931,7 +945,7 @@ def create_forum_post(thread_id: int, body: ForumPostBody, request: Request):
             {"id": thread_id},
         ).mappings().one_or_none()
         if thread is None:
-            raise HTTPException(404, "找不到討論主題。")
+            raise HTTPException(404, "找不到帖文。")
         count = connection.execute(text(f"SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_POSTS}")).scalar()
         if int(count or 0) >= GHOST_FORUM_POST_LIMIT:
             raise HTTPException(409, "老鬼專區留言已達系統上限。")
@@ -944,7 +958,7 @@ def create_forum_post(thread_id: int, body: ForumPostBody, request: Request):
                 {"post": body.quoted_post_id, "thread": thread_id},
             ).scalar()
             if not quote:
-                raise HTTPException(400, "引用留言不屬於此主題。")
+                raise HTTPException(400, "引用留言不屬於此帖文。")
         row = connection.execute(
             text(
                 f"""INSERT INTO {TABLE_GHOST_FORUM_POSTS}
@@ -994,7 +1008,7 @@ def delete_forum_post(post_id: int, revision: int, request: Request):
         {"now": _now(), "id": post_id, "user": user, "revision": revision},
     )
     if not changed:
-        raise HTTPException(409, "首篇須刪除整個主題；其餘留言必須屬於你及未被更新。")
+        raise HTTPException(409, "首篇須刪除整篇帖文；其餘留言必須屬於你及未被更新。")
     return {"ok": True}
 
 

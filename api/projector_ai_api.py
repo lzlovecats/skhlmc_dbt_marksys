@@ -30,6 +30,7 @@ from sqlalchemy import text
 
 from account_access import KIOSK_ACCOUNT_ID
 from api.access import require_competition_staff, require_page_user
+from schema import TABLE_MATCHES
 from system_limits import (
     KIOSK_MATCH_REVIEW_MARKER_LIMIT,
     KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
@@ -691,6 +692,37 @@ def _official_match(db, match_id: str) -> dict | None:
     from api.kiosk_api import _official_match as load_match
 
     return load_match(db, str(match_id or ""))
+
+
+def _match_timing_on_connection(conn, match_id: str) -> dict | None:
+    """Load only marker timing fields without leaving the caller transaction."""
+    from debate_timing import DEBATE_FORMATS
+
+    row = conn.execute(
+        text(
+            f"""SELECT match_id,debate_format,free_debate_minutes
+                FROM {TABLE_MATCHES} WHERE match_id=:match_id"""
+        ),
+        {"match_id": str(match_id or "")},
+    ).fetchone()
+    if row is None:
+        return None
+    values = row._mapping
+    debate_format = str(values.get("debate_format") or "").strip()
+    if debate_format not in DEBATE_FORMATS:
+        debate_format = DEBATE_FORMATS[0]
+    free_minutes = None
+    try:
+        raw_free = values.get("free_debate_minutes")
+        if raw_free is not None and str(raw_free).strip():
+            free_minutes = max(2.0, min(10.0, float(raw_free)))
+    except (TypeError, ValueError, OverflowError):
+        free_minutes = None
+    return {
+        "match_id": str(values.get("match_id") or "").strip(),
+        "debate_format": debate_format,
+        "free_debate_minutes": free_minutes,
+    }
 
 
 def _match_sequence(match: dict) -> list[dict]:
@@ -1816,13 +1848,11 @@ def takeover_kiosk_lease(body: LeaseTakeoverBody, request: Request):
             return {"ok": True, "released": False, "generation": generation}
         session_id = str(values.get("current_session_id") or "")
         session_status = str(values.get("current_session_status") or "")
-        if session_status == "processing":
-            raise HTTPException(409, "AI 分析已開始，為免重複付費，現階段不可接管 Kiosk。")
         if (
-            session_status in {"start_requested", "recording", "stop_requested"}
+            session_status in ACTIVE_RECORDING_STATES
             and not body.confirm_interrupt_active_session
         ):
-            raise HTTPException(409, "接管會中斷目前錄音場次；必須明確確認後再執行。")
+            raise HTTPException(409, "接管會中斷或取消目前場次；必須明確確認後再執行。")
         if session_id and session_status == "start_requested":
             conn.execute(
                 text(
@@ -1838,6 +1868,17 @@ def takeover_kiosk_lease(body: LeaseTakeoverBody, request: Request):
                     f"""UPDATE {TABLE_SESSIONS}
                         SET status='interrupted',status_detail='賽會人員接管 Kiosk；本場錄音已中斷',
                             updated_at=:now WHERE session_id=:session"""
+                ),
+                {"session": session_id, "now": now},
+            )
+        elif session_id and session_status == "processing":
+            conn.execute(
+                text(
+                    f"""UPDATE {TABLE_SESSIONS}
+                        SET status='cancelled',
+                            status_detail='賽會人員強制接管 Kiosk；AI 分析已取消，其後完成的 AI 結果不會寫入',
+                            updated_at=:now WHERE session_id=:session
+                              AND status='processing'"""
                 ),
                 {"session": session_id, "now": now},
             )
@@ -1873,6 +1914,7 @@ def kiosk_command(request: Request, display: str = "main"):
     key = _display(display)
     db = _db()
     now = _now()
+    expires = now + dt.timedelta(seconds=PROJECTOR_KIOSK_LEASE_TTL_SECONDS)
     with db.transaction() as conn:
         _ensure_control(conn, key, now)
         control = _locked_lease_control(conn, key)
@@ -1883,17 +1925,19 @@ def kiosk_command(request: Request, display: str = "main"):
             request,
             now=now,
             require_command_generation=True,
+            allow_expired=True,
         )
         conn.execute(
             text(
                 f"""UPDATE {TABLE_CONTROLS}
                     SET kiosk_last_seen_at=:now,
-                        lease_last_seen_at=:now,updated_at=:now
+                        lease_last_seen_at=:now,lease_expires_at=:expires,updated_at=:now
                     WHERE display_key=:display AND lease_generation=:generation"""
             ),
             {
                 "display": key,
                 "generation": lease["lease_generation"],
+                "expires": expires,
                 "now": now,
             },
         )
@@ -2097,7 +2141,9 @@ def kiosk_ack(body: KioskAckBody, request: Request):
                         {"display": display},
                     ).fetchone()
                     if projector is not None:
-                        match = _official_match(db, str(projector._mapping.get("match_id") or ""))
+                        match = _match_timing_on_connection(
+                            conn, str(projector._mapping.get("match_id") or "")
+                        )
                         if match:
                             record_projector_segment_change(
                                 conn,

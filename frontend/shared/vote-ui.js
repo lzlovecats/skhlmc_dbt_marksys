@@ -116,7 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
         "/open-db": ["可搜尋及篩選公開辯題庫；表格每頁顯示 20 筆。", "分類及難度資料只供參考。"],
         "/recent-matches": ["所有內部委員可查閱；只有高級委員可新增及更新。", "新增比賽及首次確認賽果會向已訂閱委員發出 push。"],
         "/team-history": ["Timeline 及任期均以 9 月至翌年 8 月為一個學年。", "只有畢業會自動成為老鬼及高級委員；離隊不會。"],
-        "/ghost-forum": ["只限任期標示為畢業的委員帳戶。", "主題可連結既有比賽及圖片；此區沒有分區或版主。"],
+        "/ghost-forum": ["只限任期標示為畢業的委員帳戶。", "帖文可分別連結既有影片及圖片；此區沒有分區或版主。"],
     };
     if (!document.querySelector("details.guide") && guideCopy[location.pathname]) {
         const guide = document.createElement("details");
