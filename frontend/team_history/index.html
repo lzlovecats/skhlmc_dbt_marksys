@@ -34,7 +34,10 @@
   </head>
   <body>
     <main>
-      <a class="back-link" href="/">← 返回主頁</a>
+      <nav class="back-nav" aria-label="返回連結">
+        <a class="back-link" href="/">← 返回主頁</a>
+        <a id="sourceReturn" class="back-link hidden" href="#"></a>
+      </nav>
       <h1>🎥 聖呂中辯歷史</h1>
       <p class="intro">以 9 月至翌年 8 月為一個學年，記錄隊史、委員任期，以及相關比賽和圖片。已畢業委員會自動成為高級委員。</p>
       <section id="login" class="card hidden">
@@ -153,5 +156,6 @@
         renderSelected(); toggleEnded(); load();
       })();
     </script>
+    <script src="/shared/server-tables.js?v=__APP_VERSION__"></script>
   </body>
 </html>

@@ -388,13 +388,23 @@
         true,
       );
     });
-  if (["/video-replay", "/match-photos"].includes(location.pathname)) {
+  const sourceReturnLabels = {
+    "/video-replay": {
+      "/ghost-forum": "← 返回剛才帖文",
+      "/team-history": "← 返回隊史 Timeline",
+    },
+    "/match-photos": {
+      "/ghost-forum": "← 返回剛才帖文",
+      "/team-history": "← 返回隊史 Timeline",
+    },
+    "/team-history": {
+      "/ghost-forum": "← 返回剛才帖文",
+    },
+  };
+  if (sourceReturnLabels[location.pathname]) {
     const sourceReturn = document.getElementById("sourceReturn"),
       returnTo = new URLSearchParams(location.search).get("return_to"),
-      labels = {
-        "/ghost-forum": "← 返回剛才帖文",
-        "/team-history": "← 返回隊史 Timeline",
-      };
+      labels = sourceReturnLabels[location.pathname];
     if (sourceReturn && returnTo) {
       try {
         const target = new URL(returnTo, location.origin);

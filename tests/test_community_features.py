@@ -379,6 +379,29 @@ def test_linked_media_pages_offer_only_validated_source_return_links():
     assert 'shareUrl.searchParams.delete("return_to")' in replay
 
 
+def test_linked_history_event_returns_to_the_exact_forum_thread():
+    ghost = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    shared = (ROOT / "frontend" / "shared" / "server-tables.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "linkedHistoryEventHtml(row,returnTo)" in ghost
+    assert (
+        "mediaHref(`/team-history?event_id=${encodeURIComponent(row.id)}`,returnTo)"
+        in ghost
+    )
+    assert 'id="sourceReturn"' in history
+    assert 'src="/shared/server-tables.js?v=__APP_VERSION__"' in history
+    assert '"/team-history": {' in shared
+    assert '"/ghost-forum": "← 返回剛才帖文"' in shared
+    assert "target.origin === location.origin && labels[target.pathname]" in shared
+
+
 def test_history_membership_sort_controls_share_url_backed_server_order():
     history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
         encoding="utf-8"
