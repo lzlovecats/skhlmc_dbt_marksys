@@ -21,7 +21,8 @@ from ai_model_config import (
     RAG_EMBEDDING_MODEL, RAG_EMBEDDING_VERSION, get_feature_model,
 )
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
-from api.access import require_page_user
+from api.access import require_page_user_or_developer
+from core.roles import is_ai_manager
 from api.resource_limits import EXPORT_MAX_BYTES, EXPORT_MAX_ROWS, jsonl_response, require_row_limit
 from core.ai_provider import post_json_bounded
 from core.media_probe import (
@@ -63,7 +64,7 @@ from system_limits import (
 router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
 CONSENT_VERSION = "tts_voice_v4_2026_07"
 CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 TTS、讀音檢查及建立可生成近似本人聲音的語音模型；資料可交由受控雲端 GPU／AI 服務處理，但不會公開原始錄音或 checkpoint。我可撤回未來使用；撤回後錄音不再納入新資料集，使用過該錄音的 checkpoint會被停止部署並安排排除資料重訓。"
-ALLOWED_KEY, REVIEWERS_KEY = "tts_recording_allowed_users", "tts_recording_reviewers"
+ALLOWED_KEY = "tts_recording_allowed_users"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
 ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE
 MAX_AUDIO_MB = max(1, MAX_AUDIO_BYTES // (1024 * 1024))
@@ -227,7 +228,7 @@ def _segments(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
 
 def _ctx(request):
     from deploy.proxy import get_vote_db
-    return require_page_user(request, "ai_training"), get_vote_db()
+    return require_page_user_or_developer(request, "ai_training"), get_vote_db()
 
 
 def _feature_schema_state(db, feature: str) -> bool:
@@ -271,7 +272,7 @@ def _users(db, key):
     return [str(value).strip() for value in values if str(value).strip()]
 
 
-def _is_admin(db, user): return user in _users(db, REVIEWERS_KEY)
+def _is_admin(db, user): return is_ai_manager(user, db=db)
 
 
 def _consent_lock_key(user) -> str:
@@ -567,7 +568,7 @@ def admin_stats(request: Request):
 
 @router.get("/recordings/{record_id}/audio")
 def recording_audio(record_id: int, request: Request):
-    """Stream a recording to its submitter or an authenticated reviewer."""
+    """Stream a recording to its submitter or an authenticated AI manager."""
     user, db = _ctx(request)
     row = db.query(
         f"SELECT speaker_user_id,r2_key,mime_type,file_ext FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE id=:id",

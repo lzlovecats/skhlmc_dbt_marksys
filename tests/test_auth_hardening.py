@@ -6,12 +6,13 @@ import pytest
 from fastapi import HTTPException, Response
 from sqlalchemy import create_engine, text
 
-from api import auth_api, judging_api, kiosk_api
+from api import auth_api, judging_api, kiosk_api, registration_admin_api
 from core import auth_logic, judging_logic
 from deploy import proxy
 from system_limits import (
     COMMITTEE_SESSION_MAX_AGE_SECONDS,
     JUDGING_SESSION_TTL_SECONDS,
+    REGISTRATION_ADMIN_SESSION_TTL_SECONDS,
 )
 
 
@@ -167,6 +168,20 @@ def _judging_engine(access_code_hash="judge-hash-v1"):
     return engine
 
 
+def _registration_admin_engine(password_hash="admin-hash-v1"):
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT)"))
+        conn.execute(
+            text(
+                "INSERT INTO app_config(key,value) VALUES "
+                "('cookie_secret','secret'),('admin_password',:password_hash)"
+            ),
+            {"password_hash": password_hash},
+        )
+    return engine
+
+
 def test_versioned_session_expires_and_password_rotation_revokes(monkeypatch):
     engine = _auth_engine()
     monkeypatch.setattr(proxy, "_get_db_engine", lambda: engine)
@@ -284,6 +299,78 @@ def test_judging_session_expires_and_access_code_changes_revoke(monkeypatch):
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM matches WHERE match_id='M1'"))
     assert proxy._verify_judging_token(current) is None
+
+
+def test_registration_admin_session_expires_and_password_rotation_revokes(monkeypatch):
+    engine = _registration_admin_engine()
+    monkeypatch.setattr(proxy, "_get_db_engine", lambda: engine)
+    monkeypatch.setattr(proxy.time, "time", lambda: 1_000)
+
+    token = proxy._sign_registration_admin_token()
+    assert token.startswith("ra1.")
+    assert proxy._verify_registration_admin_token(token) is True
+    assert proxy._verify_registration_admin_token("registration_admin:legacy") is False
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE app_config SET value='admin-hash-v2' WHERE key='admin_password'")
+        )
+    assert proxy._verify_registration_admin_token(token) is False
+
+    replacement = proxy._sign_registration_admin_token()
+    assert proxy._verify_registration_admin_token(replacement) is True
+    monkeypatch.setattr(
+        proxy.time,
+        "time",
+        lambda: 1_000 + REGISTRATION_ADMIN_SESSION_TTL_SECONDS,
+    )
+    assert proxy._verify_registration_admin_token(replacement) is False
+
+
+def test_registration_admin_limiter_runs_before_password_check(monkeypatch):
+    monkeypatch.setattr(auth_logic, "login_rate_limit_retry_after", lambda *_args: 42)
+    monkeypatch.setattr(
+        "core.registration_logic.check_admin_password",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("rate-limited request must not reach password verification")
+        ),
+    )
+    with pytest.raises(HTTPException) as limited:
+        registration_admin_api.login(
+            registration_admin_api.LoginBody(password="guess"),
+            _request(),
+            Response(),
+        )
+    assert limited.value.status_code == 429
+    assert limited.value.headers == {"Retry-After": "42"}
+
+
+def test_registration_admin_cookie_and_delete_are_secure(monkeypatch):
+    monkeypatch.setattr(
+        "core.registration_logic.check_admin_password",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(registration_admin_api, "_db", lambda: object())
+    monkeypatch.setattr(
+        proxy,
+        "_sign_registration_admin_token",
+        lambda: "ra1.payload.signature",
+    )
+
+    response = Response()
+    registration_admin_api.login(
+        registration_admin_api.LoginBody(password="secret"),
+        _request(),
+        response,
+    )
+    cookie = response.headers["set-cookie"]
+    assert "Secure" in cookie and "HttpOnly" in cookie and "SameSite=lax" in cookie
+    assert f"Max-Age={REGISTRATION_ADMIN_SESSION_TTL_SECONDS}" in cookie
+
+    logout = Response()
+    registration_admin_api.logout(logout)
+    deletion = logout.headers["set-cookie"]
+    assert "Secure" in deletion and "HttpOnly" in deletion and "SameSite=lax" in deletion
 
 
 def test_judging_cookie_and_delete_are_secure(monkeypatch):

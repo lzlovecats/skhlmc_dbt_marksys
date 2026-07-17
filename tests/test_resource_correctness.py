@@ -281,16 +281,14 @@ def test_overlapping_pushes_share_one_process_bounded_executor():
     assert maximum == system_limits.PUSH_SEND_CONCURRENCY
 
 
-def test_html_and_lateness_manager_cache_contract(monkeypatch):
+def test_developer_settings_and_room_cache_contract(monkeypatch):
     response = asyncio.run(proxy.developer_settings_page())
     html = response.body.decode("utf-8")
     assert response.headers["cache-control"].startswith("private,")
-    assert f"/dev-settings/lateness-managers.js?v={proxy.APP_VERSION}" in html
+    assert "lateness-managers.js" not in html
+    assert 'id="aiManagersOptions"' in html
+    assert 'id="seniorMembersOptions"' in html
     assert "__APP_VERSION__" not in html
-
-    script = asyncio.run(proxy.developer_lateness_managers_script())
-    assert script.headers["cache-control"] == "no-cache"
-    assert "immutable" not in script.headers["cache-control"]
 
     monkeypatch.setattr(proxy, "_require_committee_user", lambda _request: "u")
     monkeypatch.setitem(

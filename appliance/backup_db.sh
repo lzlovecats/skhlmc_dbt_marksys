@@ -13,6 +13,7 @@
 # Exit codes: 0 ok, 2 config error, 3 missing DB credentials, 4 dump failed.
 
 set -euo pipefail
+umask 077
 
 # ---- config (override via /etc/marksys/appliance.env) ----------------------
 ENV_FILE="${MARKSYS_ENV_FILE:-/etc/marksys/appliance.env}"
@@ -33,12 +34,14 @@ fail() { log "ERROR: $*"; exit "${2:-1}"; }
 
 # ---- preflight -------------------------------------------------------------
 command -v pg_dump >/dev/null 2>&1 || fail "pg_dump not found — install postgresql-client (matching the Supabase major version)" 2
+command -v pg_restore >/dev/null 2>&1 || fail "pg_restore not found — install postgresql-client (matching the Supabase major version)" 2
 command -v python3 >/dev/null 2>&1 || fail "python3 not found" 2
 python3 -c 'import tomllib' 2>/dev/null || python3 -c 'import tomli' 2>/dev/null \
     || fail "no TOML parser — need Python 3.11+ (stdlib tomllib) or the 'python3-tomli' package (Ubuntu 22.04)" 2
 [ -f "$SECRETS_FILE" ] || fail "secrets file not found: $SECRETS_FILE" 2
 
 mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
 
 # ---- read the DB connection straight from secrets.toml ---------------------
 # Uses Python's tomllib (3.11+) so quoting/edge cases are handled correctly.
@@ -75,16 +78,26 @@ TMP_FILE="$BACKUP_DIR/.marksys-${STAMP}.dump.partial"
 FINAL_FILE="$BACKUP_DIR/marksys-${STAMP}.dump"
 STATUS_FILE="$BACKUP_DIR/last_backup.status"
 
+cleanup_partial() {
+    if [ -n "${TMP_FILE:-}" ] && [ -f "$TMP_FILE" ]; then
+        rm -f -- "$TMP_FILE"
+    fi
+}
+trap cleanup_partial EXIT HUP INT TERM
+
 log "Backing up ${PG_DB} @ ${PG_HOST}:${PG_PORT} -> ${FINAL_FILE}"
 
 write_status() {
     # Consumed by health_check.sh so the on-screen light can show backup age.
+    local status_tmp="${STATUS_FILE}.tmp.$$"
     {
         echo "timestamp=$(date -Is)"
         echo "result=$1"
         echo "file=${2:-}"
         echo "size_bytes=${3:-0}"
-    } > "$STATUS_FILE"
+    } > "$status_tmp"
+    chmod 600 "$status_tmp"
+    mv -f "$status_tmp" "$STATUS_FILE"
 }
 
 if ! PGPASSWORD="$PG_PASSWORD" PGSSLMODE="$PGSSLMODE" \
@@ -96,19 +109,29 @@ if ! PGPASSWORD="$PG_PASSWORD" PGSSLMODE="$PGSSLMODE" \
     fail "pg_dump failed" 4
 fi
 
-mv "$TMP_FILE" "$FINAL_FILE"
-SIZE="$(stat -c%s "$FINAL_FILE" 2>/dev/null || echo 0)"
+SIZE="$(stat -c%s "$TMP_FILE" 2>/dev/null || echo 0)"
 if [ "$SIZE" -lt 1024 ]; then
-    write_status "FAILED" "$FINAL_FILE" "$SIZE"
+    rm -f "$TMP_FILE"
+    write_status "FAILED" "" "$SIZE"
     fail "dump suspiciously small (${SIZE} bytes) — treating as failure" 4
 fi
+if ! pg_restore --list "$TMP_FILE" >/dev/null; then
+    rm -f "$TMP_FILE"
+    write_status "FAILED" "" "$SIZE"
+    fail "pg_restore could not read the dump archive — treating as failure" 4
+fi
 
-log "OK: wrote ${FINAL_FILE} (${SIZE} bytes)"
+chmod 600 "$TMP_FILE"
+mv "$TMP_FILE" "$FINAL_FILE"
+TMP_FILE=""
+
+log "OK: wrote and verified ${FINAL_FILE} (${SIZE} bytes)"
 write_status "OK" "$FINAL_FILE" "$SIZE"
 
 # ---- optional: mirror newest dump to a USB stick ---------------------------
 if [ -n "$USB_MOUNT" ] && mountpoint -q "$USB_MOUNT" 2>/dev/null; then
-    if cp "$FINAL_FILE" "$USB_MOUNT/"; then
+    USB_FILE="$USB_MOUNT/$(basename "$FINAL_FILE")"
+    if cp "$FINAL_FILE" "$USB_FILE" && chmod 600 "$USB_FILE"; then
         log "Mirrored to USB: $USB_MOUNT"
     else
         log "WARN: could not copy to USB at $USB_MOUNT"

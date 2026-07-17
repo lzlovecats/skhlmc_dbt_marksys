@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import binascii
 import datetime as dt
 import hashlib
+import hmac
 import json
 import re
+import secrets
+import time
 import uuid
 from typing import Literal
 
@@ -30,7 +34,9 @@ from system_limits import (
     KIOSK_MATCH_REVIEW_MARKER_LIMIT,
     KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
     KIOSK_MATCH_REVIEW_MAX_SECONDS,
-    KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS,
+    COMMITTEE_SESSION_MAX_AGE_SECONDS,
+    PROJECTOR_KIOSK_LEASE_TTL_SECONDS,
+    PROJECTOR_START_COMMAND_TTL_SECONDS,
     TTS_MAX_RESPONSE_BYTES,
     TTS_TEXT_MAX_CHARS,
 )
@@ -41,11 +47,17 @@ router = APIRouter(tags=["projector-ai"])
 TABLE_SESSIONS = "projector_ai_sessions"
 TABLE_CONTROLS = "projector_ai_controls"
 TABLE_MARKERS = "projector_ai_markers"
+TABLE_KIOSK_DEVICES = "projector_kiosk_devices"
 RESULT_TTL = dt.timedelta(hours=2)
 HARDWARE_TTL = dt.timedelta(minutes=30)
 KIOSK_ONLINE_TTL = dt.timedelta(seconds=12)
 TTS_CLAIM_TTL = dt.timedelta(minutes=10)
 DISPLAY_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
+CLIENT_ID_RE = re.compile(r"[A-Za-z0-9_-]{20,100}")
+DEVICE_COOKIE_NAME = "projector_kiosk_device"
+LEASE_TOKEN_HEADER = "X-Kiosk-Lease-Token"
+LEASE_CLIENT_HEADER = "X-Kiosk-Client-Id"
+LEASE_GENERATION_HEADER = "X-Kiosk-Lease-Generation"
 ACTIVE_RECORDING_STATES = {"start_requested", "recording", "stop_requested", "processing"}
 RESULT_STATES = {"ready", "published"}
 ADVISORY = "AI輔助第二意見，正式賽果以評判團為準。"
@@ -58,6 +70,7 @@ ACK_STATES_BY_COMMAND = {
     "play": {"speaking", "played", "error"},
     "stop_speech": {"stopped", "error"},
     "clear": {"cleared", "error"},
+    "cancel_start": {"cancelled", "error"},
 }
 ACK_PROGRESS = {
     "start": {"recording": 1, "processing": 2, "error": 3},
@@ -71,6 +84,7 @@ class DisplayBody(BaseModel):
 
 
 class HardwareConfirmBody(DisplayBody):
+    revision: int = Field(ge=0)
     screen_confirmed: bool = False
     audio_confirmed: bool = False
 
@@ -93,10 +107,14 @@ class SpeechBody(SessionBody):
 
 
 class HeartbeatBody(DisplayBody):
+    client_id: str = Field(default="", max_length=100)
+    lease_generation: int = Field(default=0, ge=0)
     capabilities: dict = Field(default_factory=dict)
 
 
 class KioskAckBody(DisplayBody):
+    client_id: str = Field(default="", max_length=100)
+    lease_generation: int = Field(default=0, ge=0)
     revision: int = Field(ge=0)
     session_id: str = Field(default="", max_length=80)
     state: Literal[
@@ -108,21 +126,22 @@ class KioskAckBody(DisplayBody):
         "played",
         "stopped",
         "cleared",
+        "cancelled",
         "error",
     ]
     detail: str = Field(default="", max_length=1000)
     payload: dict = Field(default_factory=dict)
 
 
-class KioskResultBody(DisplayBody):
-    session_id: str = Field(min_length=20, max_length=80)
-    revision: int = Field(ge=0)
-    markdown: str = Field(min_length=1, max_length=60_000)
-    transcript: str = Field(min_length=1, max_length=KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS)
-    projector_summary: str = Field(min_length=1, max_length=TTS_TEXT_MAX_CHARS)
-    model_label: str = Field(default="", max_length=200)
-    audio: dict = Field(default_factory=dict)
-    recording_deleted: bool = False
+class LeaseClaimBody(DisplayBody):
+    client_id: str = Field(min_length=20, max_length=100)
+    lease_generation: int = Field(default=0, ge=0)
+    capabilities: dict = Field(default_factory=dict)
+
+
+class LeaseTakeoverBody(DisplayBody):
+    expected_generation: int = Field(ge=0)
+    confirm_interrupt_active_session: bool = False
 
 
 def _now() -> dt.datetime:
@@ -133,6 +152,13 @@ def _display(value: str) -> str:
     cleaned = str(value or "main").strip()
     if not DISPLAY_RE.fullmatch(cleaned):
         raise HTTPException(400, "投影畫面代號格式不正確。")
+    return cleaned
+
+
+def _client_id(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not CLIENT_ID_RE.fullmatch(cleaned):
+        raise HTTPException(400, "Kiosk 分頁識別碼格式不正確。")
     return cleaned
 
 
@@ -160,6 +186,326 @@ def _json_object(value) -> dict:
 
 def _json_param(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    raw = value.encode("ascii")
+    return base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+
+
+def _device_cookie_secret() -> str:
+    from deploy.proxy import _get_relay_cookie_secret
+
+    secret = str(_get_relay_cookie_secret() or "")
+    if not secret:
+        raise HTTPException(503, "Kiosk 裝置識別服務未就緒。")
+    return secret
+
+
+def _sign_device_cookie(device_id: str, generation: int) -> str:
+    payload = {
+        "v": 1,
+        "device_id": str(device_id),
+        "generation": int(generation),
+        "exp": int(time.time()) + COMMITTEE_SESSION_MAX_AGE_SECONDS,
+    }
+    encoded = _b64url(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    signature = hmac.new(
+        _device_cookie_secret().encode("utf-8"),
+        encoded.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"{encoded}.{_b64url(signature)}"
+
+
+def _verify_device_cookie(token: str) -> dict | None:
+    if not token or len(str(token)) > 2048:
+        return None
+    try:
+        encoded, supplied = str(token).split(".", 1)
+        expected = hmac.new(
+            _device_cookie_secret().encode("utf-8"),
+            encoded.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(_b64url(expected), supplied):
+            return None
+        payload = json.loads(_b64url_decode(encoded))
+        if not isinstance(payload, dict) or int(payload.get("v") or 0) != 1:
+            return None
+        if int(payload.get("exp") or 0) < int(time.time()):
+            return None
+        if not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("device_id") or "")):
+            return None
+        if int(payload.get("generation") or 0) < 1:
+            return None
+        return payload
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeError, binascii.Error):
+        return None
+
+
+def _lease_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _as_naive_timestamp(value) -> dt.datetime | None:
+    if value is None:
+        return None
+    try:
+        result = value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(str(value))
+        if result.tzinfo is not None:
+            result = result.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return result
+    except (TypeError, ValueError):
+        return None
+
+
+def _lease_can_claim(
+    *,
+    owner_device_id: str,
+    owner_client_id: str,
+    requesting_device_id: str,
+    requesting_client_id: str,
+    lease_expires_at,
+    session_status: str,
+    now: dt.datetime,
+) -> bool:
+    """Return whether a claimant may become owner before credential checks."""
+    if not owner_device_id:
+        return True
+    if (
+        owner_device_id == requesting_device_id
+        and owner_client_id == requesting_client_id
+    ):
+        return True
+    expires = _as_naive_timestamp(lease_expires_at)
+    if expires is not None and expires > now:
+        return False
+    return str(session_status or "") not in ACTIVE_RECORDING_STATES
+
+
+def _safe_capabilities(value: dict) -> dict:
+    return {
+        str(key)[:80]: item
+        for key, item in list((value or {}).items())[:30]
+        if isinstance(item, (str, int, float, bool, type(None)))
+    }
+
+
+def _lease_credentials(
+    request: Request,
+    *,
+    client_id: str = "",
+    lease_generation: int = 0,
+) -> tuple[str, str, int]:
+    token = str(request.headers.get(LEASE_TOKEN_HEADER) or "").strip()
+    client = _client_id(
+        request.headers.get(LEASE_CLIENT_HEADER) or client_id
+    )
+    raw_generation = request.headers.get(LEASE_GENERATION_HEADER)
+    try:
+        generation = int(raw_generation if raw_generation is not None else lease_generation)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Kiosk lease generation 格式不正確。") from exc
+    if generation < 1 or not token:
+        raise HTTPException(423, "此 Kiosk 並非目前 Active 裝置。")
+    return token, client, generation
+
+
+def _locked_lease_control(conn, display: str):
+    return conn.execute(
+        text(
+            f"""SELECT c.*,s.status AS current_session_status,
+                       d.label AS lease_device_label,
+                       d.enabled AS lease_device_enabled,
+                       d.revoked_at AS lease_device_revoked_at,
+                       d.credential_generation AS lease_device_credential_generation
+                FROM {TABLE_CONTROLS} AS c
+                LEFT JOIN {TABLE_SESSIONS} AS s
+                  ON s.session_id=c.current_session_id
+                LEFT JOIN {TABLE_KIOSK_DEVICES} AS d
+                  ON d.device_id=c.lease_device_id
+                WHERE c.display_key=:display
+                FOR UPDATE OF c"""
+        ),
+        {"display": display},
+    ).fetchone()
+
+
+def _assert_lease_mapping(
+    mapping,
+    request: Request,
+    *,
+    client_id: str = "",
+    lease_generation: int = 0,
+    now: dt.datetime | None = None,
+    require_command_generation: bool = False,
+    allow_expired: bool = False,
+) -> dict:
+    current = now or _now()
+    token, client, generation = _lease_credentials(
+        request,
+        client_id=client_id,
+        lease_generation=lease_generation,
+    )
+    device_claim = _verify_device_cookie(
+        str(request.cookies.get(DEVICE_COOKIE_NAME) or "")
+    )
+    owner_device = str(mapping.get("lease_device_id") or "")
+    owner_generation = int(mapping.get("lease_generation") or 0)
+    owner_client = str(mapping.get("lease_client_id") or "")
+    credential_generation = int(
+        mapping.get("lease_device_credential_generation") or 0
+    )
+    expires = _as_naive_timestamp(mapping.get("lease_expires_at"))
+    if (
+        not owner_device
+        or owner_client != client
+        or owner_generation != generation
+        or not hmac.compare_digest(
+            str(mapping.get("lease_token_hash") or ""), _lease_token_hash(token)
+        )
+        or expires is None
+        or (expires <= current and not allow_expired)
+        or not bool(mapping.get("lease_device_enabled"))
+        or mapping.get("lease_device_revoked_at") is not None
+        or device_claim is None
+        or str(device_claim.get("device_id") or "") != owner_device
+        or int(device_claim.get("generation") or 0) != credential_generation
+    ):
+        raise HTTPException(423, "此 Kiosk lease 已失效；裝置已轉為 Standby。")
+    if require_command_generation and int(
+        mapping.get("command_lease_generation") or 0
+    ) != generation:
+        raise HTTPException(409, "控制指令屬於另一個 Kiosk lease generation。")
+    return {
+        "device_id": owner_device,
+        "client_id": client,
+        "lease_generation": generation,
+        "lease_expires_at": expires,
+    }
+
+
+def _device_for_claim(conn, request: Request, response: Response, now: dt.datetime) -> dict:
+    claim = _verify_device_cookie(
+        str(request.cookies.get(DEVICE_COOKIE_NAME) or "")
+    )
+    row = None
+    if claim is not None:
+        row = conn.execute(
+            text(
+                f"""SELECT device_id,label,enabled,credential_generation,revoked_at
+                    FROM {TABLE_KIOSK_DEVICES}
+                    WHERE device_id=:device FOR UPDATE"""
+            ),
+            {"device": str(claim.get("device_id") or "")},
+        ).fetchone()
+        if (
+            row is None
+            or not bool(row._mapping.get("enabled"))
+            or row._mapping.get("revoked_at") is not None
+            or int(row._mapping.get("credential_generation") or 0)
+            != int(claim.get("generation") or 0)
+        ):
+            raise HTTPException(403, "此 Kiosk 裝置識別已被停用。")
+    if row is None:
+        device_id = uuid.uuid4().hex
+        label = f"Kiosk {device_id[-6:].upper()}"
+        row = conn.execute(
+            text(
+                f"""INSERT INTO {TABLE_KIOSK_DEVICES}
+                    (device_id,label,enabled,credential_generation,created_at,last_seen_at)
+                    VALUES(:device,:label,TRUE,1,:now,:now)
+                    RETURNING device_id,label,enabled,credential_generation,revoked_at"""
+            ),
+            {"device": device_id, "label": label, "now": now},
+        ).fetchone()
+    values = dict(row._mapping)
+    conn.execute(
+        text(
+            f"""UPDATE {TABLE_KIOSK_DEVICES} SET last_seen_at=:now
+                WHERE device_id=:device"""
+        ),
+        {"device": values["device_id"], "now": now},
+    )
+    response.set_cookie(
+        DEVICE_COOKIE_NAME,
+        _sign_device_cookie(
+            str(values["device_id"]), int(values["credential_generation"])
+        ),
+        max_age=COMMITTEE_SESSION_MAX_AGE_SECONDS,
+        path="/",
+        samesite="lax",
+        httponly=True,
+        secure=True,
+    )
+    return values
+
+
+def validate_projector_lease(
+    request: Request,
+    *,
+    operation_id: str,
+    match_id: str = "",
+    required_statuses: set[str] | None = None,
+) -> dict:
+    """Validate an active projector owner before R2 or provider side effects."""
+    session_id = str(operation_id or "").strip()
+    if not session_id:
+        raise HTTPException(400, "缺少 Projector AI 任務識別碼。")
+    now = _now()
+    with _db().transaction() as conn:
+        row = conn.execute(
+            text(
+                f"""SELECT c.*,s.session_id,s.match_id,s.status AS current_session_status,
+                           s.kiosk_device_id,s.kiosk_lease_generation,
+                           d.enabled AS lease_device_enabled,
+                           d.revoked_at AS lease_device_revoked_at,
+                           d.credential_generation AS lease_device_credential_generation
+                    FROM {TABLE_CONTROLS} AS c
+                    JOIN {TABLE_SESSIONS} AS s
+                      ON s.session_id=c.current_session_id
+                    LEFT JOIN {TABLE_KIOSK_DEVICES} AS d
+                      ON d.device_id=c.lease_device_id
+                    WHERE s.session_id=:session
+                    FOR UPDATE OF c"""
+            ),
+            {"session": session_id},
+        ).fetchone()
+        if row is None:
+            raise HTTPException(409, "Projector AI 場次已不是目前控制場次。")
+        values = row._mapping
+        lease = _assert_lease_mapping(values, request, now=now)
+        if (
+            str(values.get("kiosk_device_id") or "") != lease["device_id"]
+            or int(values.get("kiosk_lease_generation") or 0)
+            != lease["lease_generation"]
+        ):
+            raise HTTPException(409, "錄音場次屬於另一個 Kiosk lease。")
+        if match_id and str(values.get("match_id") or "") != str(match_id):
+            raise HTTPException(409, "錄音場次與正式場次不一致。")
+        accepted_statuses = required_statuses or {"processing"}
+        if str(values.get("current_session_status") or "") not in accepted_statuses:
+            raise HTTPException(409, "Projector AI 場次並非等待上載及分析。")
+        return lease
+
+
+def validate_kiosk_display_lease(request: Request, *, display: str) -> dict:
+    """Validate the current owner for a display-level hardware side effect."""
+    key = _display(display)
+    now = _now()
+    with _db().transaction() as conn:
+        _ensure_control(conn, key, now)
+        row = _locked_lease_control(conn, key)
+        if row is None:
+            raise HTTPException(423, "此 Kiosk 並非目前 Active 裝置。")
+        return _assert_lease_mapping(row._mapping, request, now=now)
 
 
 def _fernet() -> Fernet:
@@ -215,6 +561,60 @@ def _prune_expired(db, now: dt.datetime | None = None) -> None:
                    OR published=TRUE)""",
         {"now": current},
     )
+    db.execute(
+        f"""WITH expired_controls AS (
+            UPDATE {TABLE_CONTROLS} AS control
+            SET command='cancel_start',
+                command_revision=control.command_revision+1,
+                command_lease_generation=control.lease_generation,
+                kiosk_status='cancelled',
+                status_detail='開始錄音指令已逾時取消',
+                command_payload=jsonb_build_object(
+                    'reason','start_command_expired','expired_at',:now
+                ),
+                updated_at=:now
+            FROM {TABLE_SESSIONS} AS session
+            WHERE control.current_session_id=session.session_id
+              AND session.status='start_requested'
+              AND session.updated_at<=:cutoff
+              AND control.command='start'
+              AND control.ack_revision<control.command_revision
+            RETURNING control.current_session_id AS session_id
+        )
+        UPDATE {TABLE_SESSIONS} AS session
+        SET status='cancelled',
+            status_detail='Kiosk 未在限時內確認開始錄音；指令已自動取消',
+            updated_at=:now
+        FROM expired_controls
+        WHERE session.session_id=expired_controls.session_id
+          AND session.status='start_requested'""",
+        {
+            "now": current,
+            "cutoff": current - dt.timedelta(
+                seconds=PROJECTOR_START_COMMAND_TTL_SECONDS,
+            ),
+        },
+    )
+    db.execute(
+        f"""UPDATE {TABLE_SESSIONS} AS session
+            SET status='cancelled',
+                status_detail='已清理不再屬於目前控制指令的逾時開始要求',
+                updated_at=:now
+            WHERE session.status='start_requested'
+              AND session.updated_at<=:cutoff
+              AND NOT EXISTS (
+                  SELECT 1 FROM {TABLE_CONTROLS} AS control
+                  WHERE control.current_session_id=session.session_id
+                    AND control.command='start'
+                    AND control.ack_revision<control.command_revision
+              )""",
+        {
+            "now": current,
+            "cutoff": current - dt.timedelta(
+                seconds=PROJECTOR_START_COMMAND_TTL_SECONDS,
+            ),
+        },
+    )
 
 
 def _ensure_control(conn, display: str, now: dt.datetime) -> None:
@@ -254,6 +654,7 @@ def _issue_command(
     detail: str = "",
     payload: dict | None = None,
     now: dt.datetime | None = None,
+    allow_expired_lease: bool = False,
 ):
     current = now or _now()
     _ensure_control(conn, display, current)
@@ -262,9 +663,13 @@ def _issue_command(
             f"""UPDATE {TABLE_CONTROLS}
                 SET current_session_id=COALESCE(:session_id,current_session_id),
                     command=:command,command_revision=command_revision+1,
+                    command_lease_generation=lease_generation,
                     status_detail=:detail,command_payload=CAST(:payload AS JSONB),
                     updated_at=:now
                 WHERE display_key=:display
+                  AND lease_device_id IS NOT NULL
+                  AND lease_token_hash IS NOT NULL
+                  AND (lease_expires_at>:now OR :allow_expired_lease)
                 RETURNING command_revision"""
         ),
         {
@@ -274,8 +679,11 @@ def _issue_command(
             "detail": str(detail or "")[:1000],
             "payload": _json_param(payload or {}),
             "now": current,
+            "allow_expired_lease": bool(allow_expired_lease),
         },
     ).fetchone()
+    if row is None:
+        raise HTTPException(409, "此投影畫面未有可用的 Active Kiosk。")
     return int(row[0])
 
 
@@ -412,10 +820,15 @@ def _timestamp_is_fresh(value, now: dt.datetime, ttl: dt.timedelta) -> bool:
 def _control_status(db, display: str, *, include_private: bool) -> dict:
     _prune_expired(db)
     rows = db.query(
-        f"""SELECT display_key,current_session_id,command,command_revision,
+        f"""SELECT c.display_key,c.current_session_id,c.command,c.command_revision,
                    ack_revision,kiosk_status,status_detail,command_payload,
-                   hardware_status,capabilities,kiosk_last_seen_at,updated_at
-            FROM {TABLE_CONTROLS} WHERE display_key=:display""",
+                   hardware_status,capabilities,kiosk_last_seen_at,c.updated_at,
+                   lease_device_id,lease_client_id,lease_generation,
+                   lease_expires_at,lease_last_seen_at,command_lease_generation,
+                   d.label AS lease_device_label
+            FROM {TABLE_CONTROLS} AS c
+            LEFT JOIN {TABLE_KIOSK_DEVICES} AS d ON d.device_id=c.lease_device_id
+            WHERE c.display_key=:display""",
         {"display": display},
     )
     if rows.empty:
@@ -429,11 +842,21 @@ def _control_status(db, display: str, *, include_private: bool) -> dict:
             "hardware": {},
             "capabilities": {},
             "kiosk_online": False,
+            "lease": {
+                "claimed": False,
+                "active": False,
+                "generation": 0,
+            },
         }
         return {"control": control, "session": None}
     row = rows.iloc[0]
     last_seen = row.get("kiosk_last_seen_at")
-    online = _kiosk_seen_is_fresh(last_seen, _now())
+    current = _now()
+    lease_expires = _as_naive_timestamp(row.get("lease_expires_at"))
+    lease_active = bool(row.get("lease_device_id")) and bool(
+        lease_expires and lease_expires > current
+    )
+    online = lease_active and _kiosk_seen_is_fresh(last_seen, current)
     control = {
         "display_key": display,
         "command": str(row.get("command") or ""),
@@ -445,6 +868,15 @@ def _control_status(db, display: str, *, include_private: bool) -> dict:
         "capabilities": _json_object(row.get("capabilities")),
         "kiosk_last_seen_at": str(last_seen or ""),
         "kiosk_online": online,
+        "lease": {
+            "claimed": bool(row.get("lease_device_id")),
+            "active": lease_active,
+            "device_label": str(row.get("lease_device_label") or ""),
+            "generation": int(row.get("lease_generation") or 0),
+            "expires_at": str(row.get("lease_expires_at") or ""),
+            "last_seen_at": str(row.get("lease_last_seen_at") or ""),
+            "command_generation": int(row.get("command_lease_generation") or 0),
+        },
     }
     session_id = str(row.get("current_session_id") or "")
     if not session_id:
@@ -526,39 +958,48 @@ def persist_completed_review_for_projector(
     }
     if not payload["markdown"] or not payload["transcript"]:
         raise ValueError("incomplete projector review")
-    sealed = _seal_json(payload)
     db = _db()
     now = _now()
     expires = now + RESULT_TTL
     with db.transaction() as conn:
-        row = conn.execute(
+        control_row = conn.execute(
             text(
-                f"""SELECT s.display_key,s.match_id,s.status,s.result_ciphertext,
-                           s.result_expires_at,c.command_revision,c.current_session_id
-                    FROM {TABLE_SESSIONS} s
-                    JOIN {TABLE_CONTROLS} c ON c.display_key=s.display_key
-                    WHERE s.session_id=:session
-                    FOR UPDATE OF s,c"""
+                f"""SELECT display_key,command_revision,current_session_id
+                    FROM {TABLE_CONTROLS}
+                    WHERE current_session_id=:session
+                    FOR UPDATE"""
             ),
             {"session": sid},
         ).fetchone()
-        if row is None:
+        if control_row is None:
             return None
-        values = row._mapping
-        if str(values.get("match_id") or "") != str(match_id or ""):
+        control_values = control_row._mapping
+        display = str(control_values.get("display_key") or "main")
+        session_row = conn.execute(
+            text(
+                f"""SELECT match_id,status,result_ciphertext,result_expires_at
+                    FROM {TABLE_SESSIONS}
+                    WHERE session_id=:session AND display_key=:display
+                    FOR UPDATE"""
+            ),
+            {"session": sid, "display": display},
+        ).fetchone()
+        if session_row is None:
+            return None
+        session_values = session_row._mapping
+        if str(session_values.get("match_id") or "") != str(match_id or ""):
             raise ValueError("projector match mismatch")
-        if str(values.get("current_session_id") or "") != sid:
-            raise ValueError("projector session is no longer current")
-        status = str(values.get("status") or "")
-        if status in RESULT_STATES and values.get("result_ciphertext"):
+        status = str(session_values.get("status") or "")
+        if status in RESULT_STATES and session_values.get("result_ciphertext"):
             return {
-                "display": str(values.get("display_key") or "main"),
-                "revision": int(values.get("command_revision") or 0),
-                "expires_at": str(values.get("result_expires_at") or ""),
+                "display": display,
+                "revision": int(control_values.get("command_revision") or 0),
+                "expires_at": str(session_values.get("result_expires_at") or ""),
                 "idempotent": True,
             }
         if status not in {"start_requested", "recording", "stop_requested", "processing"}:
             raise ValueError("projector session cannot receive a completed review")
+        sealed = _seal_json(payload)
         conn.execute(
             text(
                 f"""UPDATE {TABLE_SESSIONS}
@@ -570,7 +1011,7 @@ def persist_completed_review_for_projector(
             ),
             {"session": sid, "result": sealed, "expires": expires, "now": now},
         )
-        revision = int(values.get("command_revision") or 0)
+        revision = int(control_values.get("command_revision") or 0)
         conn.execute(
             text(
                 f"""UPDATE {TABLE_CONTROLS}
@@ -580,13 +1021,13 @@ def persist_completed_review_for_projector(
                     WHERE display_key=:display"""
             ),
             {
-                "display": str(values.get("display_key") or "main"),
+                "display": display,
                 "revision": revision,
                 "now": now,
             },
         )
     return {
-        "display": str(values.get("display_key") or "main"),
+        "display": display,
         "revision": revision,
         "expires_at": expires.isoformat(),
         "idempotent": False,
@@ -606,6 +1047,8 @@ def operator_status(request: Request, display: str = "main"):
         "max_bytes": KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
         "tts_max_chars": TTS_TEXT_MAX_CHARS,
         "result_ttl_seconds": int(RESULT_TTL.total_seconds()),
+        "start_command_ttl_seconds": PROJECTOR_START_COMMAND_TTL_SECONDS,
+        "kiosk_lease_ttl_seconds": PROJECTOR_KIOSK_LEASE_TTL_SECONDS,
     }
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
@@ -640,24 +1083,44 @@ def confirm_hardware(body: HardwareConfirmBody, request: Request):
     require_competition_staff(request)
     display = _display(body.display)
     db = _db()
-    status = _control_status(db, display, include_private=False)
-    hardware = status["control"].get("hardware") or {}
-    if not hardware.get("passed"):
-        raise HTTPException(409, "Kiosk 尚未通過必要硬件測試。")
     if not body.screen_confirmed or not body.audio_confirmed:
         raise HTTPException(400, "請確認現場看見測試畫面並聽到測試聲。")
-    hardware.update(operator_confirmed=True, confirmed_at=_now().isoformat())
-    db.execute(
-        f"""UPDATE {TABLE_CONTROLS}
-            SET hardware_status=CAST(:hardware AS JSONB),status_detail=:detail,updated_at=:now
-            WHERE display_key=:display""",
-        {
-            "display": display,
-            "hardware": _json_param(hardware),
-            "detail": "賽會人員已確認投影、喇叭及 Kiosk 測試結果",
-            "now": _now(),
-        },
-    )
+    now = _now()
+    with db.transaction() as conn:
+        _ensure_control(conn, display, now)
+        control = conn.execute(
+            text(
+                f"""SELECT command,command_revision,hardware_status
+                    FROM {TABLE_CONTROLS}
+                    WHERE display_key=:display FOR UPDATE"""
+            ),
+            {"display": display},
+        ).fetchone()
+        if (
+            control is None
+            or str(control._mapping.get("command") or "") != "hardware_test"
+            or int(control._mapping.get("command_revision") or 0) != body.revision
+        ):
+            raise HTTPException(409, "硬件測試結果已更新，請重新載入後確認最新測試。")
+        hardware = _json_object(control._mapping.get("hardware_status"))
+        if not hardware.get("passed"):
+            raise HTTPException(409, "Kiosk 尚未通過必要硬件測試。")
+        hardware.update(operator_confirmed=True, confirmed_at=now.isoformat())
+        conn.execute(
+            text(
+                f"""UPDATE {TABLE_CONTROLS}
+                    SET hardware_status=CAST(:hardware AS JSONB),
+                        status_detail=:detail,updated_at=:now
+                    WHERE display_key=:display AND command_revision=:revision"""
+            ),
+            {
+                "display": display,
+                "revision": body.revision,
+                "hardware": _json_param(hardware),
+                "detail": "賽會人員已確認投影、喇叭及 Kiosk 測試結果",
+                "now": now,
+            },
+        )
     return {"ok": True, "hardware": hardware}
 
 
@@ -669,6 +1132,7 @@ def start_session(body: StartBody, request: Request):
     display = _display(body.display)
     db = _db()
     now = _now()
+    _prune_expired(db, now)
     match = _official_match(db, body.match_id)
     if not match:
         raise HTTPException(404, "找不到所選正式場次。")
@@ -685,7 +1149,9 @@ def start_session(body: StartBody, request: Request):
         _ensure_control(conn, display, now)
         control = conn.execute(
             text(
-                f"""SELECT kiosk_last_seen_at,hardware_status,capabilities
+                f"""SELECT kiosk_last_seen_at,hardware_status,capabilities,
+                           command_revision,ack_revision,lease_device_id,
+                           lease_generation,lease_expires_at
                     FROM {TABLE_CONTROLS}
                     WHERE display_key=:display FOR UPDATE"""
             ),
@@ -693,8 +1159,15 @@ def start_session(body: StartBody, request: Request):
         ).fetchone()
         if control is None or not _kiosk_seen_is_fresh(
             control._mapping.get("kiosk_last_seen_at"), now
+        ) or not (
+            _as_naive_timestamp(control._mapping.get("lease_expires_at"))
+            and _as_naive_timestamp(control._mapping.get("lease_expires_at")) > now
         ):
             raise HTTPException(409, "比賽日 Kiosk 未連線，不能開始錄音。")
+        if int(control._mapping.get("ack_revision") or 0) < int(
+            control._mapping.get("command_revision") or 0
+        ):
+            raise HTTPException(409, "Kiosk 尚未確認上一個控制指令，請稍候再開始。")
         if not _hardware_is_fresh(
             _json_object(control._mapping.get("hardware_status")), now
         ):
@@ -725,14 +1198,20 @@ def start_session(body: StartBody, request: Request):
         conn.execute(
             text(
                 f"""INSERT INTO {TABLE_SESSIONS}
-                    (session_id,display_key,match_id,status,status_detail,created_at,updated_at)
-                    VALUES(:session,:display,:match,'start_requested',:detail,:now,:now)"""
+                    (session_id,display_key,match_id,status,status_detail,
+                     kiosk_device_id,kiosk_lease_generation,created_at,updated_at)
+                    VALUES(:session,:display,:match,'start_requested',:detail,
+                           :device,:lease_generation,:now,:now)"""
             ),
             {
                 "session": session_id,
                 "display": display,
                 "match": match["match_id"],
                 "detail": "等待 Kiosk 開始全場錄音",
+                "device": str(control._mapping.get("lease_device_id") or ""),
+                "lease_generation": int(
+                    control._mapping.get("lease_generation") or 0
+                ),
                 "now": now,
             },
         )
@@ -742,7 +1221,13 @@ def start_session(body: StartBody, request: Request):
             "start",
             session_id=session_id,
             detail="等待 Kiosk 開始全場錄音",
-            payload={"session_id": session_id, "match_id": match["match_id"]},
+            payload={
+                "session_id": session_id,
+                "match_id": match["match_id"],
+                "expires_at": (
+                    now + dt.timedelta(seconds=PROJECTOR_START_COMMAND_TTL_SECONDS)
+                ).isoformat(),
+            },
             now=now,
         )
         conn.execute(
@@ -754,6 +1239,48 @@ def start_session(body: StartBody, request: Request):
             {"display": display, "now": now},
         )
     return {"ok": True, "session_id": session_id, "revision": revision, "match": match}
+
+
+@router.post("/api/projector/ai/cancel-start")
+def cancel_start_session(body: SessionBody, request: Request):
+    require_competition_staff(request)
+    display = _display(body.display)
+    db = _db()
+    now = _now()
+    with db.transaction() as conn:
+        _lock_current_session(conn, display, body.session_id)
+        cancelled = conn.execute(
+            text(
+                f"""UPDATE {TABLE_SESSIONS}
+                    SET status='cancelled',status_detail='賽會人員已取消等待開始錄音',
+                        updated_at=:now
+                    WHERE session_id=:session AND display_key=:display
+                      AND status='start_requested'
+                    RETURNING session_id"""
+            ),
+            {"session": body.session_id, "display": display, "now": now},
+        ).fetchone()
+        if cancelled is None:
+            raise HTTPException(409, "只有等待 Kiosk 開始的場次可以取消。")
+        revision = _issue_command(
+            conn,
+            display,
+            "cancel_start",
+            session_id=body.session_id,
+            detail="已取消等待開始錄音",
+            payload={"session_id": body.session_id, "reason": "operator_cancelled"},
+            now=now,
+            allow_expired_lease=True,
+        )
+        conn.execute(
+            text(
+                f"""UPDATE {TABLE_CONTROLS}
+                    SET kiosk_status='cancelled',updated_at=:now
+                    WHERE display_key=:display"""
+            ),
+            {"display": display, "now": now},
+        )
+    return {"ok": True, "revision": revision, "status": "cancelled"}
 
 
 @router.post("/api/projector/ai/stop")
@@ -797,6 +1324,7 @@ def stop_session(body: SessionBody, request: Request):
             detail="等待 Kiosk 封裝錄音、上載及分析",
             payload={"session_id": body.session_id},
             now=now,
+            allow_expired_lease=True,
         )
     return {"ok": True, "revision": revision}
 
@@ -1140,6 +1668,205 @@ def public_result(display: str = "main"):
     )
 
 
+@router.post("/api/kiosk/projector-ai/lease/claim")
+def claim_kiosk_lease(
+    body: LeaseClaimBody,
+    request: Request,
+    response: Response,
+):
+    _require_kiosk(request)
+    display = _display(body.display)
+    client = _client_id(body.client_id)
+    capabilities = _safe_capabilities(body.capabilities)
+    now = _now()
+    expires = now + dt.timedelta(seconds=PROJECTOR_KIOSK_LEASE_TTL_SECONDS)
+    db = _db()
+    with db.transaction() as conn:
+        _ensure_control(conn, display, now)
+        control = _locked_lease_control(conn, display)
+        if control is None:  # pragma: no cover - protected by _ensure_control
+            raise HTTPException(503, "未能建立 Projector Kiosk 控制狀態。")
+        device = _device_for_claim(conn, request, response, now)
+        values = control._mapping
+        owner_device = str(values.get("lease_device_id") or "")
+        owner_client = str(values.get("lease_client_id") or "")
+        same_owner = (
+            owner_device == str(device["device_id"])
+            and owner_client == client
+        )
+        can_claim = _lease_can_claim(
+            owner_device_id=owner_device,
+            owner_client_id=owner_client,
+            requesting_device_id=str(device["device_id"]),
+            requesting_client_id=client,
+            lease_expires_at=values.get("lease_expires_at"),
+            session_status=str(values.get("current_session_status") or ""),
+            now=now,
+        )
+        if same_owner:
+            _assert_lease_mapping(
+                values,
+                request,
+                client_id=client,
+                lease_generation=body.lease_generation,
+                now=now,
+                allow_expired=True,
+            )
+            generation = int(values.get("lease_generation") or 0)
+            token = str(request.headers.get(LEASE_TOKEN_HEADER) or "").strip()
+            conn.execute(
+                text(
+                    f"""UPDATE {TABLE_CONTROLS}
+                        SET lease_expires_at=:expires,lease_last_seen_at=:now,
+                            kiosk_last_seen_at=:now,capabilities=CAST(:capabilities AS JSONB),
+                            kiosk_status=CASE
+                                WHEN COALESCE(kiosk_status,'') IN ('','offline') THEN 'online'
+                                ELSE kiosk_status
+                            END,updated_at=:now
+                        WHERE display_key=:display AND lease_generation=:generation"""
+                ),
+                {
+                    "display": display,
+                    "generation": generation,
+                    "expires": expires,
+                    "capabilities": _json_param(capabilities),
+                    "now": now,
+                },
+            )
+        elif can_claim:
+            token = secrets.token_urlsafe(32)
+            generation = int(values.get("lease_generation") or 0) + 1
+            conn.execute(
+                text(
+                    f"""UPDATE {TABLE_CONTROLS}
+                        SET lease_device_id=:device,lease_client_id=:client,
+                            lease_token_hash=:token_hash,lease_generation=:generation,
+                            lease_expires_at=:expires,lease_last_seen_at=:now,
+                            command='',command_revision=command_revision+1,
+                            ack_revision=command_revision+1,
+                            command_lease_generation=:generation,
+                            command_payload='{{}}'::jsonb,hardware_status='{{}}'::jsonb,
+                            capabilities=CAST(:capabilities AS JSONB),
+                            kiosk_last_seen_at=:now,kiosk_status='online',
+                            status_detail='Active Kiosk 已連線；請重新完成硬件測試',
+                            updated_at=:now
+                        WHERE display_key=:display"""
+                ),
+                {
+                    "display": display,
+                    "device": str(device["device_id"]),
+                    "client": client,
+                    "token_hash": _lease_token_hash(token),
+                    "generation": generation,
+                    "expires": expires,
+                    "capabilities": _json_param(capabilities),
+                    "now": now,
+                },
+            )
+        else:
+            response.headers["Cache-Control"] = "no-store"
+            pinned = str(values.get("current_session_status") or "") in ACTIVE_RECORDING_STATES
+            return {
+                "ok": True,
+                "role": "standby",
+                "display": display,
+                "device": {
+                    "id": str(device["device_id"]),
+                    "label": str(device["label"]),
+                },
+                "owner": {
+                    "label": str(values.get("lease_device_label") or "Active Kiosk"),
+                    "generation": int(values.get("lease_generation") or 0),
+                    "expires_at": str(values.get("lease_expires_at") or ""),
+                },
+                "reason": "active_session_pinned" if pinned else "lease_held",
+                "lease_ttl_seconds": PROJECTOR_KIOSK_LEASE_TTL_SECONDS,
+            }
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "ok": True,
+        "role": "active",
+        "display": display,
+        "lease_token": token,
+        "lease_generation": generation,
+        "expires_at": expires.isoformat(),
+        "lease_ttl_seconds": PROJECTOR_KIOSK_LEASE_TTL_SECONDS,
+        "device": {
+            "id": str(device["device_id"]),
+            "label": str(device["label"]),
+        },
+    }
+
+
+@router.post("/api/projector/ai/lease/takeover")
+def takeover_kiosk_lease(body: LeaseTakeoverBody, request: Request):
+    require_competition_staff(request)
+    display = _display(body.display)
+    now = _now()
+    with _db().transaction() as conn:
+        _ensure_control(conn, display, now)
+        control = _locked_lease_control(conn, display)
+        if control is None:
+            raise HTTPException(409, "此投影畫面未有 Kiosk lease。")
+        values = control._mapping
+        generation = int(values.get("lease_generation") or 0)
+        if generation != body.expected_generation:
+            raise HTTPException(409, "Kiosk lease 已更新，請重新載入控制頁。")
+        if not values.get("lease_device_id"):
+            return {"ok": True, "released": False, "generation": generation}
+        session_id = str(values.get("current_session_id") or "")
+        session_status = str(values.get("current_session_status") or "")
+        if session_status == "processing":
+            raise HTTPException(409, "AI 分析已開始，為免重複付費，現階段不可接管 Kiosk。")
+        if (
+            session_status in {"start_requested", "recording", "stop_requested"}
+            and not body.confirm_interrupt_active_session
+        ):
+            raise HTTPException(409, "接管會中斷目前錄音場次；必須明確確認後再執行。")
+        if session_id and session_status == "start_requested":
+            conn.execute(
+                text(
+                    f"""UPDATE {TABLE_SESSIONS}
+                        SET status='cancelled',status_detail='賽會人員接管 Kiosk；開始要求已取消',
+                            updated_at=:now WHERE session_id=:session"""
+                ),
+                {"session": session_id, "now": now},
+            )
+        elif session_id and session_status in {"recording", "stop_requested"}:
+            conn.execute(
+                text(
+                    f"""UPDATE {TABLE_SESSIONS}
+                        SET status='interrupted',status_detail='賽會人員接管 Kiosk；本場錄音已中斷',
+                            updated_at=:now WHERE session_id=:session"""
+                ),
+                {"session": session_id, "now": now},
+            )
+        new_generation = generation + 1
+        conn.execute(
+            text(
+                f"""UPDATE {TABLE_CONTROLS}
+                    SET lease_device_id=NULL,lease_client_id=NULL,lease_token_hash=NULL,
+                        lease_generation=:generation,lease_expires_at=NULL,
+                        lease_last_seen_at=NULL,command='',
+                        command_revision=command_revision+1,
+                        ack_revision=command_revision+1,
+                        command_lease_generation=:generation,
+                        command_payload='{{}}'::jsonb,hardware_status='{{}}'::jsonb,
+                        capabilities='{{}}'::jsonb,kiosk_last_seen_at=NULL,
+                        kiosk_status='awaiting_kiosk',
+                        status_detail='舊 Kiosk lease 已撤銷；等待一部 Standby Kiosk 成為 Active',
+                        updated_at=:now WHERE display_key=:display"""
+            ),
+            {"display": display, "generation": new_generation, "now": now},
+        )
+    return {
+        "ok": True,
+        "released": True,
+        "generation": new_generation,
+        "interrupted_session": session_id if session_status in ACTIVE_RECORDING_STATES else "",
+    }
+
+
 @router.get("/api/kiosk/projector-ai/command")
 def kiosk_command(request: Request, display: str = "main"):
     _require_kiosk(request)
@@ -1148,14 +1875,27 @@ def kiosk_command(request: Request, display: str = "main"):
     now = _now()
     with db.transaction() as conn:
         _ensure_control(conn, key, now)
+        control = _locked_lease_control(conn, key)
+        if control is None:
+            raise HTTPException(423, "此 Kiosk 並非目前 Active 裝置。")
+        lease = _assert_lease_mapping(
+            control._mapping,
+            request,
+            now=now,
+            require_command_generation=True,
+        )
         conn.execute(
             text(
                 f"""UPDATE {TABLE_CONTROLS}
                     SET kiosk_last_seen_at=:now,
-                        kiosk_status=CASE WHEN kiosk_status='offline' THEN 'online' ELSE kiosk_status END,
-                        updated_at=:now WHERE display_key=:display"""
+                        lease_last_seen_at=:now,updated_at=:now
+                    WHERE display_key=:display AND lease_generation=:generation"""
             ),
-            {"display": key, "now": now},
+            {
+                "display": key,
+                "generation": lease["lease_generation"],
+                "now": now,
+            },
         )
     status = _control_status(db, key, include_private=False)
     session = status.get("session")
@@ -1180,6 +1920,7 @@ def kiosk_command(request: Request, display: str = "main"):
     return JSONResponse(
         {
             **status,
+            "lease_generation": lease["lease_generation"],
             "tts_available": bool(tts_provider_configured()),
             "limits": {
                 "max_seconds": KIOSK_MATCH_REVIEW_MAX_SECONDS,
@@ -1195,14 +1936,22 @@ def kiosk_command(request: Request, display: str = "main"):
 def kiosk_heartbeat(body: HeartbeatBody, request: Request):
     _require_kiosk(request)
     display = _display(body.display)
-    capabilities = {
-        str(key)[:80]: value
-        for key, value in list(body.capabilities.items())[:30]
-        if isinstance(value, (str, int, float, bool, type(None)))
-    }
+    capabilities = _safe_capabilities(body.capabilities)
     now = _now()
+    expires = now + dt.timedelta(seconds=PROJECTOR_KIOSK_LEASE_TTL_SECONDS)
     with _db().transaction() as conn:
         _ensure_control(conn, display, now)
+        control = _locked_lease_control(conn, display)
+        if control is None:
+            raise HTTPException(423, "此 Kiosk 並非目前 Active 裝置。")
+        lease = _assert_lease_mapping(
+            control._mapping,
+            request,
+            client_id=body.client_id,
+            lease_generation=body.lease_generation,
+            now=now,
+            allow_expired=True,
+        )
         conn.execute(
             text(
                 f"""UPDATE {TABLE_CONTROLS}
@@ -1211,16 +1960,25 @@ def kiosk_heartbeat(body: HeartbeatBody, request: Request):
                             WHEN COALESCE(kiosk_status,'') IN ('','offline') THEN 'online'
                             ELSE kiosk_status
                         END,
-                        capabilities=CAST(:capabilities AS JSONB),updated_at=:now
-                    WHERE display_key=:display"""
+                        capabilities=CAST(:capabilities AS JSONB),
+                        lease_last_seen_at=:now,lease_expires_at=:expires,
+                        updated_at=:now
+                    WHERE display_key=:display AND lease_generation=:generation"""
             ),
             {
                 "display": display,
                 "capabilities": _json_param(capabilities),
+                "generation": lease["lease_generation"],
+                "expires": expires,
                 "now": now,
             },
         )
-    return {"ok": True, "server_time": now.isoformat()}
+    return {
+        "ok": True,
+        "server_time": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "lease_generation": lease["lease_generation"],
+    }
 
 
 @router.post("/api/kiosk/projector-ai/ack")
@@ -1231,14 +1989,17 @@ def kiosk_ack(body: KioskAckBody, request: Request):
     now = _now()
     with db.transaction() as conn:
         _ensure_control(conn, display, now)
-        control = conn.execute(
-            text(
-                f"""SELECT command,command_revision,ack_revision,current_session_id,
-                           kiosk_status
-                    FROM {TABLE_CONTROLS} WHERE display_key=:display FOR UPDATE"""
-            ),
-            {"display": display},
-        ).fetchone()
+        control = _locked_lease_control(conn, display)
+        if control is None:
+            raise HTTPException(423, "此 Kiosk 並非目前 Active 裝置。")
+        lease = _assert_lease_mapping(
+            control._mapping,
+            request,
+            client_id=body.client_id,
+            lease_generation=body.lease_generation,
+            now=now,
+            require_command_generation=True,
+        )
         command_revision = int(control._mapping["command_revision"] or 0)
         ack_revision = int(control._mapping["ack_revision"] or 0)
         if body.revision > command_revision:
@@ -1292,6 +2053,8 @@ def kiosk_ack(body: KioskAckBody, request: Request):
                 passed=bool(body.payload.get("passed")),
                 tested_at=now.isoformat(),
                 operator_confirmed=False,
+                kiosk_device_id=lease["device_id"],
+                kiosk_lease_generation=lease["lease_generation"],
             )
             hardware_json = _json_param(safe_payload)
         session_id = body.session_id or current_session
@@ -1311,7 +2074,7 @@ def kiosk_ack(body: KioskAckBody, request: Request):
             )
         if (
             command in {"start", "stop"}
-            and session_status in {"ready", "published", "cleared", "expired", "error"}
+            and session_status in {"ready", "published", "cleared", "expired", "error", "cancelled"}
             and body.state in {"recording", "processing", "error"}
         ):
             return {"ok": True, "stale": True, "ack_revision": ack_revision}
@@ -1419,114 +2182,20 @@ def kiosk_ack(body: KioskAckBody, request: Request):
         if hardware_json is not None:
             query += ",hardware_status=CAST(:hardware AS JSONB)"
             params["hardware"] = hardware_json
-        query += " WHERE display_key=:display"
+        query += " WHERE display_key=:display AND lease_generation=:lease_generation"
+        params["lease_generation"] = lease["lease_generation"]
         conn.execute(text(query), params)
     return {"ok": True, "ack_revision": body.revision}
-
-
-@router.post("/api/kiosk/projector-ai/result")
-def kiosk_result(body: KioskResultBody, request: Request):
-    _require_kiosk(request)
-    display = _display(body.display)
-    if not body.recording_deleted:
-        raise HTTPException(409, "未確認私人 R2 錄音已刪除，拒絕保存 AI 結果。")
-    summary = str(body.projector_summary or "").strip()
-    if len(summary) > TTS_TEXT_MAX_CHARS:
-        raise HTTPException(400, "投影摘要超出 1,200 字。")
-    payload = {
-        "markdown": body.markdown,
-        "transcript": body.transcript,
-        "projector_summary": summary,
-        "model_label": body.model_label,
-        "audio": body.audio,
-        "recording_deleted": bool(body.recording_deleted),
-        "advisory": ADVISORY,
-    }
-    sealed = _seal_json(payload)
-    now = _now()
-    expires = now + RESULT_TTL
-    db = _db()
-    with db.transaction() as conn:
-        control = conn.execute(
-            text(
-                f"""SELECT current_session_id,command_revision
-                    FROM {TABLE_CONTROLS} WHERE display_key=:display FOR UPDATE"""
-            ),
-            {"display": display},
-        ).fetchone()
-        if control is None or str(control._mapping.get("current_session_id") or "") != body.session_id:
-            raise HTTPException(409, "分析結果與目前投影場次不一致。")
-        if int(control._mapping.get("command_revision") or 0) != body.revision:
-            raise HTTPException(409, "分析結果使用了過期的 Kiosk 指令。")
-        existing = conn.execute(
-            text(
-                f"""SELECT status,result_ciphertext,result_expires_at
-                    FROM {TABLE_SESSIONS}
-                    WHERE session_id=:session AND display_key=:display
-                    FOR UPDATE"""
-            ),
-            {"session": body.session_id, "display": display},
-        ).fetchone()
-        if existing is None:
-            raise HTTPException(409, "找不到可接收結果的 AI評判易場次。")
-        existing_values = existing._mapping
-        if (
-            str(existing_values.get("status") or "") in RESULT_STATES
-            and existing_values.get("result_ciphertext")
-        ):
-            saved = _open_json(existing_values.get("result_ciphertext"))
-            same_result = (
-                str(saved.get("markdown") or "") == body.markdown
-                and str(saved.get("transcript") or "") == body.transcript
-                and str(saved.get("projector_summary") or "") == summary
-                and str(saved.get("model_label") or "") == body.model_label
-                and (saved.get("audio") or {}) == body.audio
-                and bool(saved.get("recording_deleted"))
-            )
-            if same_result:
-                return {
-                    "ok": True,
-                    "idempotent": True,
-                    "expires_at": str(existing_values.get("result_expires_at") or ""),
-                }
-            raise HTTPException(409, "此場次已保存另一份 AI評判易結果。")
-        updated = conn.execute(
-            text(
-                f"""UPDATE {TABLE_SESSIONS}
-                    SET status='ready',status_detail='AI評判易完成；等待賽會人員私人預覽',
-                        result_ciphertext=:result,result_expires_at=:expires,
-                        published=FALSE,tts_audio_ciphertext=NULL,tts_mime=NULL,
-                        tts_status='not_requested',tts_claim_token=NULL,updated_at=:now
-                    WHERE session_id=:session AND display_key=:display
-                      AND status='processing'
-                    RETURNING session_id"""
-            ),
-            {
-                "session": body.session_id,
-                "display": display,
-                "result": sealed,
-                "expires": expires,
-                "now": now,
-            },
-        ).fetchone()
-        if updated is None:
-            raise HTTPException(409, "AI評判易場次不在可接收結果的狀態。")
-        conn.execute(
-            text(
-                f"""UPDATE {TABLE_CONTROLS}
-                    SET ack_revision=GREATEST(ack_revision,:revision),
-                        kiosk_status='ready',status_detail='AI評判易完成；等待私人預覽',
-                        kiosk_last_seen_at=:now,updated_at=:now
-                    WHERE display_key=:display"""
-            ),
-            {"display": display, "revision": body.revision, "now": now},
-        )
-    return {"ok": True, "expires_at": expires.isoformat()}
 
 
 @router.get("/api/kiosk/projector-ai/audio/{session_id}")
 async def kiosk_audio(session_id: str, request: Request, revision: int = 0):
     _require_kiosk(request)
+    validate_projector_lease(
+        request,
+        operation_id=str(session_id)[:80],
+        required_statuses={"published"},
+    )
     from deploy import proxy
 
     if proxy._bandwidth_live_gate_error():

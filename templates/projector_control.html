@@ -493,7 +493,9 @@
       </label>
       <div class="action-grid">
         <button class="primary" id="aiStart" disabled>● 開始全場錄音</button>
+        <button id="cancelStart" disabled>取消等待開始</button>
         <button class="danger" id="aiStop" disabled>■ 完場並停止</button>
+        <button class="danger" id="kioskTakeover" disabled>撤銷 Active Kiosk／接管</button>
       </div>
       <div class="ai-status" id="aiStatus" role="status">
         等待比賽日 Kiosk 回報狀態…
@@ -922,7 +924,7 @@
         }
 
         function isFailedStatus(value) {
-          return ["failed", "error", "offline", "expired"].includes(
+          return ["failed", "error", "offline", "expired", "interrupted"].includes(
             statusKey(value),
           );
         }
@@ -957,6 +959,8 @@
               failed: "處理失敗",
               error: "發生錯誤",
               expired: "結果已過期",
+              cancelled: "開始錄音已取消",
+              interrupted: "Kiosk 接管令錄音中斷",
               cleared: "已清除",
             }[statusKey(value)] || value || "等待狀態"
           );
@@ -1271,6 +1275,7 @@
         function renderAiStatus(payload) {
           payload = payload && typeof payload === "object" ? payload : {};
           var control = payload.control || {};
+          var lease = control.lease || {};
           var session = payload.session || null;
           var limits = payload.limits || {};
           aiPayload = { control: control, session: session, limits: limits };
@@ -1290,19 +1295,26 @@
             "played",
             "stopped",
             "cleared",
+            "cancelled",
           ].includes(controlState);
           var badge = el("kioskBadge");
-          if (!control.kiosk_online) {
-            badge.textContent = "比賽日 Kiosk 離線";
+          if (!lease.claimed) {
+            badge.textContent = "等待一部 Kiosk 成為 Active";
+            badge.className = "badge error";
+          } else if (!control.kiosk_online) {
+            badge.textContent =
+              (lease.device_label || "Active Kiosk") + " lease 已逾時／離線";
             badge.className = "badge error";
           } else if (isFailedStatus(controlStatus)) {
-            badge.textContent = "Kiosk 在線 · " + statusLabel(controlStatus);
+            badge.textContent =
+              "Active · " + (lease.device_label || "Kiosk") + " · " + statusLabel(controlStatus);
             badge.className = "badge error";
           } else if (controlCalm) {
-            badge.textContent = "比賽日 Kiosk 在線";
+            badge.textContent = "Active · " + (lease.device_label || "比賽日 Kiosk");
             badge.className = "badge online";
           } else {
-            badge.textContent = "Kiosk 在線 · " + statusLabel(controlStatus);
+            badge.textContent =
+              "Active · " + (lease.device_label || "Kiosk") + " · " + statusLabel(controlStatus);
             badge.className = "badge busy";
           }
 
@@ -1331,6 +1343,8 @@
               commandRevision +
               " · Kiosk 已確認 #" +
               ackRevision +
+              " · lease #" +
+              (Number(lease.generation) || 0) +
               (ackRevision < commandRevision ? "（等待 Kiosk 回應）" : "")
             : control.kiosk_online
               ? "Kiosk 控制連線正常。"
@@ -1371,6 +1385,7 @@
 
         function updateControlAvailability() {
           var control = aiPayload.control || {};
+          var lease = control.lease || {};
           var session = aiPayload.session || null;
           var browserOnline = navigator.onLine !== false;
           var projectorConnected = browserOnline && projectorFailures < 2;
@@ -1380,7 +1395,12 @@
           var sessionState = statusKey(sessionStatus);
           var recording = isRecordingStatus(sessionStatus);
           var processing = isProcessingStatus(sessionStatus);
-          var reusableSession = ["cleared", "expired"].includes(sessionState);
+          var commandPending =
+            (Number(control.ack_revision) || 0) <
+            (Number(control.command_revision) || 0);
+          var reusableSession = ["cancelled", "interrupted", "cleared", "expired"].includes(
+            sessionState,
+          ) && !commandPending;
           var sessionBlocksNew = !!sessionId && !reusableSession;
           var hasResult = !!(
             session &&
@@ -1460,6 +1480,19 @@
             !el("recordingNotice").checked;
           el("aiStop").disabled =
             !aiConnected || aiBusy || !sessionId || !recording;
+          el("cancelStart").disabled =
+            !aiConnected || aiBusy || !sessionId || sessionState !== "start_requested";
+          el("kioskTakeover").disabled =
+            !aiConnected ||
+            aiBusy ||
+            !lease.claimed ||
+            sessionState === "processing";
+          el("kioskTakeover").title =
+            sessionState === "processing"
+              ? "AI 分析期間不可接管，以免重複 provider 費用"
+              : lease.claimed
+                ? "撤銷目前 owner；下一部 Standby Kiosk 會原子取得 lease"
+                : "目前未有 Kiosk owner";
           el("publishResult").disabled =
             !aiConnected ||
             aiBusy ||
@@ -1574,6 +1607,7 @@
             "/api/projector/ai/hardware-confirm",
             {
               display: DISPLAY,
+              revision: Number((aiPayload.control || {}).command_revision) || 0,
               screen_confirmed: true,
               audio_confirmed: true,
             },
@@ -1618,6 +1652,40 @@
             "/api/projector/ai/stop",
             { display: DISPLAY, session_id: session.session_id },
             "正在停止錄音；Kiosk 之後會上載、製作逐字稿及評審，請勿關閉控制頁…",
+          );
+        };
+
+        el("cancelStart").onclick = async function () {
+          var session = aiPayload.session || {};
+          if (!session.session_id || statusKey(session.status) !== "start_requested") return;
+          await runAiCommand(
+            "/api/projector/ai/cancel-start",
+            { display: DISPLAY, session_id: session.session_id },
+            "正在取消等待 Kiosk 開始錄音…",
+          );
+        };
+
+        el("kioskTakeover").onclick = async function () {
+          var control = aiPayload.control || {};
+          var lease = control.lease || {};
+          var session = aiPayload.session || {};
+          var sessionState = statusKey(session.status);
+          if (!lease.claimed || sessionState === "processing") return;
+          var interrupts = ["start_requested", "recording", "stop_requested"].includes(
+            sessionState,
+          );
+          var warning = interrupts
+            ? "警告：接管會即時撤銷目前 Active Kiosk，停止同保留其本機錄音，呢一場會標記為中斷，而且唔會自動上載或交畀 AI。確定繼續？"
+            : "確定撤銷目前 Active Kiosk？下一部 Standby Kiosk 會取得控制權，並必須重新做硬件測試。";
+          if (!window.confirm(warning)) return;
+          await runAiCommand(
+            "/api/projector/ai/lease/takeover",
+            {
+              display: DISPLAY,
+              expected_generation: Number(lease.generation) || 0,
+              confirm_interrupt_active_session: interrupts,
+            },
+            "正在撤銷舊 Kiosk lease，等待 Standby Kiosk 接管…",
           );
         };
 

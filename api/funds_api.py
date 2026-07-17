@@ -4,7 +4,8 @@ import httpx
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from api.access import require_page_user
+from api.access import require_page_user_or_developer
+from core.roles import is_ai_manager, is_senior_committee
 from api.pagination import PAGE_SIZE, bounds, payload, scalar_count
 from api.resource_limits import EXPORT_MAX_ROWS, csv_response, require_row_limit
 from system_limits import OPENROUTER_CREDIT_TIMEOUT_SECONDS
@@ -29,14 +30,14 @@ def _csv_response(filename, headers, rows):
 
 def _context(request):
     from deploy.proxy import get_vote_db
-    return require_page_user(request, "funds"), get_vote_db()
+    return require_page_user_or_developer(request, "funds"), get_vote_db()
 
 
 def _lateness_context(request, manager=False):
     from core import funds_logic as logic
     user, db = _context(request)
-    if manager and not logic.is_lateness_manager(user, db=db):
-        raise HTTPException(403, "只有遲到基金管理員可執行此操作。")
+    if manager and not is_senior_committee(user, db=db):
+        raise HTTPException(403, "只有高級委員可執行此操作。")
     return user, db
 
 
@@ -170,8 +171,8 @@ def lateness_carry(year: int, request: Request):
 def lateness_record(body: LatenessRecord, request: Request):
     from core import funds_logic as logic
     user, db = _lateness_context(request)
-    if body.paid_amount != 0 and not logic.is_lateness_manager(user, db=db):
-        raise HTTPException(403, "只有遲到基金管理員可在新增紀錄時登記已繳金額。")
+    if body.paid_amount != 0 and not is_senior_committee(user, db=db):
+        raise HTTPException(403, "只有高級委員可在新增紀錄時登記已繳金額。")
     try: logic.add_lateness_record(user, body.late_date, body.member_user_id, body.late_minutes, body.paid_amount, body.note, db=db)
     except ValueError as exc: raise HTTPException(400, str(exc))
     return {"ok": True}
@@ -306,8 +307,8 @@ def ai_transactions(request: Request, page: int = 1, status: str | None = None, 
     from core import funds_logic as logic
     from schema import TABLE_AI_FUND_TRANSACTIONS
     user, db = _context(request)
-    treasurer = logic.is_ai_treasurer(user, db=db)
-    clauses, params = ([] if treasurer else ["created_by=:user"]), ({} if treasurer else {"user": user})
+    manager = is_ai_manager(user, db=db)
+    clauses, params = ([] if manager else ["created_by=:user"]), ({} if manager else {"user": user})
     if status: clauses.append("status=:status"); params["status"] = status
     if transaction_type: clauses.append("transaction_type=:transaction_type"); params["transaction_type"] = transaction_type
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
@@ -322,8 +323,8 @@ def ai_usage(request: Request, page: int = 1):
     from core import funds_logic as logic
     from schema import TABLE_AI_FUND_USAGE_LOGS
     user, db = _context(request)
-    treasurer = logic.is_ai_treasurer(user, db=db)
-    where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
+    manager = is_ai_manager(user, db=db)
+    where, params = ("", {}) if manager else ("WHERE user_id=:user", {"user": user})
     page, _, offset = bounds(page); params["limit"] = PAGE_SIZE; params["offset"] = offset
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_AI_FUND_USAGE_LOGS} {where}", params)
     rows = db.query(f"SELECT {AI_USAGE_COLUMNS} FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset", params)
@@ -334,24 +335,24 @@ def ai_usage(request: Request, page: int = 1):
 def ai_usage_summary(request: Request, page: int = 1):
     from core import funds_logic as logic
     user, db = _context(request)
-    treasurer = logic.is_ai_treasurer(user, db=db)
+    manager = is_ai_manager(user, db=db)
     page, _, offset = bounds(page)
-    total = logic.ai_usage_summary_count(user, treasurer, db=db)
-    rows = logic.ai_usage_summary(user, treasurer, db=db, limit=PAGE_SIZE, offset=offset)
+    total = logic.ai_usage_summary_count(user, manager, db=db)
+    rows = logic.ai_usage_summary(user, manager, db=db, limit=PAGE_SIZE, offset=offset)
     return payload(logic._rows(rows), page, total)
 
 
 def _ai_export_context(request):
     from core import funds_logic as logic
     user, db = _context(request)
-    return user, db, logic.is_ai_treasurer(user, db=db), logic
+    return user, db, is_ai_manager(user, db=db), logic
 
 
 @router.get("/ai-fund/export/transactions.csv")
 def ai_transactions_csv(request: Request):
     from schema import TABLE_AI_FUND_TRANSACTIONS
-    user, db, treasurer, logic = _ai_export_context(request)
-    where, params = ("", {}) if treasurer else ("WHERE created_by=:user", {"user": user})
+    user, db, manager, logic = _ai_export_context(request)
+    where, params = ("", {}) if manager else ("WHERE created_by=:user", {"user": user})
     params["export_limit"] = EXPORT_MAX_ROWS + 1
     rows = db.query(f"SELECT {AI_TX_COLUMNS} FROM {TABLE_AI_FUND_TRANSACTIONS} {where} ORDER BY created_at DESC,id DESC LIMIT :export_limit", params)
     require_row_limit(rows, label="AI基金交易匯出")
@@ -365,8 +366,8 @@ def ai_transactions_csv(request: Request):
 @router.get("/ai-fund/export/usage.csv")
 def ai_usage_csv(request: Request):
     from schema import TABLE_AI_FUND_USAGE_LOGS
-    user, db, treasurer, logic = _ai_export_context(request)
-    where, params = ("", {}) if treasurer else ("WHERE user_id=:user", {"user": user})
+    user, db, manager, logic = _ai_export_context(request)
+    where, params = ("", {}) if manager else ("WHERE user_id=:user", {"user": user})
     params["export_limit"] = EXPORT_MAX_ROWS + 1
     rows = db.query(f"SELECT {AI_USAGE_COLUMNS} FROM {TABLE_AI_FUND_USAGE_LOGS} {where} ORDER BY created_at DESC,id DESC LIMIT :export_limit", params)
     require_row_limit(rows, label="AI用量匯出")
@@ -378,8 +379,8 @@ def ai_usage_csv(request: Request):
 
 @router.get("/ai-fund/export/usage-summary.csv")
 def ai_usage_summary_csv(request: Request):
-    user, db, treasurer, logic = _ai_export_context(request)
-    rows = logic._rows(logic.ai_usage_summary(user, treasurer, db=db, limit=EXPORT_MAX_ROWS+1))
+    user, db, manager, logic = _ai_export_context(request)
+    rows = logic._rows(logic.ai_usage_summary(user, manager, db=db, limit=EXPORT_MAX_ROWS+1))
     require_row_limit(rows, label="AI用量統計匯出")
     return _csv_response("ai用量統計.csv", ["月份","用戶","Provider","功能","模型","任務數","成功呼叫","Provider呼叫","TTS計費字元","估算成本(HKD)"],
         [[r.get("month"),r.get("user_id"),logic.AI_PROVIDER_LABELS.get(r.get("provider"),r.get("provider")),logic.AI_FEATURE_LABELS.get(r.get("feature"),r.get("feature")),r.get("model_label"),r.get("tasks"),r.get("uses"),r.get("provider_calls"),r.get("billable_characters"),r.get("estimated_cost_hkd")] for r in rows])
@@ -417,8 +418,8 @@ def ai_deposit(body: AiTransaction, request: Request):
 def ai_admin_transaction(body: AiTransaction, request: Request):
     from core import funds_logic as logic
     user, db = _context(request)
-    if not logic.is_ai_treasurer(user, db=db):
-        raise HTTPException(403, "只有 AI基金管理員可新增已確認交易。")
+    if not is_ai_manager(user, db=db):
+        raise HTTPException(403, "只有 AI管理員可新增已確認交易。")
     if not body.note.strip(): raise HTTPException(400, "請填寫原因 / 備註。")
     try: logic.add_ai_transaction(user, body.transaction_type, body.amount, body.provider, body.payment_method, body.reference_no, body.note, True, db=db)
     except ValueError as exc: raise HTTPException(400, str(exc))
@@ -429,8 +430,8 @@ def ai_admin_transaction(body: AiTransaction, request: Request):
 def ai_status(transaction_id: int, body: StatusBody, request: Request):
     from core import funds_logic as logic
     user, db = _context(request)
-    if not logic.is_ai_treasurer(user, db=db):
-        raise HTTPException(403, "只有 AI基金管理員可處理入數。")
+    if not is_ai_manager(user, db=db):
+        raise HTTPException(403, "只有 AI管理員可處理入數。")
     try: updated = logic.set_ai_transaction_status(transaction_id, body.status, user, body.note, db=db)
     except ValueError as exc: raise HTTPException(400, str(exc))
     if not updated: raise HTTPException(409, "此入數已被處理。")

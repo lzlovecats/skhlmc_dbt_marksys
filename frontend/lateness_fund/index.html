@@ -232,50 +232,14 @@
         <nav class="tabs">
           <button class="active" data-pane="overview">總覽</button
           ><button data-pane="input">新增紀錄</button
-          ><button data-pane="history">紀錄管理</button>
+          ><button data-pane="history">紀錄</button
+          ><button id="seniorTab" class="hidden" data-pane="seniorManagement">🛠️ 高級委員管理</button>
         </nav>
         <section id="overview" class="pane active">
           <div id="metrics" class="grid metrics"></div>
-          <section id="openingCard" class="card hidden">
-            <h2>年度結餘設定</h2>
-            <p class="caption">
-              Bal c/d ＝ Bal b/d ＋ 本年度已收罰款 － 本年度支出。
-            </p>
-            <div class="form-grid">
-              <label
-                >Bal b/d（HKD）<input id="opening" type="number" step=".01"
-              /></label>
-              <div class="actions">
-                <button id="saveOpening" class="primary" type="button">
-                  儲存 Bal b/d</button
-                ><button id="carry" type="button">沿用上一年度結餘</button>
-              </div>
-            </div>
-          </section>
           <section class="card">
             <h2>成員統計</h2>
             <div id="summary"></div>
-          </section>
-          <section id="notifyCard" class="card hidden">
-            <h2>發送遲到罰款通知</h2>
-            <p id="outstanding" class="caption"></p>
-            <div class="form-grid">
-              <label
-                >發送對象<select id="notifyTarget">
-                  <option value="outstanding">只發送給有結欠的委員</option>
-                  <option value="all">發送給所有委員</option>
-                </select></label
-              ><label class="wide"
-                >通知內容（可留空使用預設）<input
-                  id="notifyMessage"
-                  placeholder="例：請盡快找數！"
-              /></label>
-            </div>
-            <div class="form-actions">
-              <button id="sendNotify" class="primary" type="button">
-                發送通知
-              </button>
-            </div>
           </section>
           <section class="card">
             <h2>搜尋帳戶</h2>
@@ -290,7 +254,7 @@
           </section>
         </section>
         <section id="input" class="pane">
-          <div id="inputGrid" class="grid split">
+          <div id="inputGrid" class="grid split single">
             <form id="recordForm" class="card">
               <h2>新增遲到紀錄</h2>
               <div class="form-grid">
@@ -303,35 +267,11 @@
                     min="1"
                     value="1"
                     required /></label
-                ><label id="paidWrap"
-                  >已繳金額（HKD）<input
-                    id="paid"
-                    type="number"
-                    min="0"
-                    step=".01"
-                    value="0"
-                    required /></label
                 ><label class="wide">備註（如有）<input id="lateNote" /></label>
               </div>
               <p id="preview" class="caption" aria-live="polite"></p>
               <div class="form-actions">
                 <button id="recordSubmit" class="primary">新增遲到紀錄</button>
-              </div>
-            </form>
-            <form id="expenseForm" class="card hidden">
-              <h2>新增基金支出</h2>
-              <label
-                >支出日期<input id="expenseDate" type="date" required /></label
-              ><label
-                >支出金額（HKD）<input
-                  id="expenseAmount"
-                  type="number"
-                  min=".01"
-                  step=".01"
-                  required /></label
-              ><label>支出用途 / 備註<input id="expenseNote" /></label>
-              <div class="form-actions">
-                <button class="primary">新增支出紀錄</button>
               </div>
             </form>
           </div>
@@ -355,6 +295,36 @@
             </div>
             <div id="expenses"></div>
           </section>
+        </section>
+        <section id="seniorManagement" class="pane">
+          <section id="openingCard" class="card">
+            <h2>年度結餘設定</h2>
+            <p class="caption">Bal c/d ＝ Bal b/d ＋ 本年度已收罰款 － 本年度支出。</p>
+            <div class="form-grid">
+              <label>Bal b/d（HKD）<input id="opening" type="number" step=".01" /></label>
+              <div class="actions"><button id="saveOpening" class="primary" type="button">儲存 Bal b/d</button><button id="carry" type="button">沿用上一年度結餘</button></div>
+            </div>
+          </section>
+          <section id="notifyCard" class="card">
+            <h2>發送遲到罰款通知</h2>
+            <p id="outstanding" class="caption"></p>
+            <div class="form-grid">
+              <label>發送對象<select id="notifyTarget"><option value="outstanding">只發送給有結欠的委員</option><option value="all">發送給所有委員</option></select></label>
+              <label class="wide">通知內容（可留空使用預設）<input id="notifyMessage" placeholder="例：請盡快找數！" /></label>
+            </div>
+            <div class="form-actions"><button id="sendNotify" class="primary" type="button">發送通知</button></div>
+          </section>
+          <form id="expenseForm" class="card">
+            <h2>新增基金支出</h2>
+            <div class="form-grid">
+              <label>支出日期<input id="expenseDate" type="date" required /></label>
+              <label>支出金額（HKD）<input id="expenseAmount" type="number" min=".01" step=".01" required /></label>
+              <label class="wide">支出用途 / 備註<input id="expenseNote" /></label>
+            </div>
+            <div class="form-actions"><button class="primary">新增支出紀錄</button></div>
+          </form>
+          <section class="card"><h2>遲到紀錄管理</h2><div id="managerRecords"></div></section>
+          <section class="card"><h2>支出紀錄管理</h2><div id="managerExpenses"></div></section>
         </section>
       </section>
     </main>
@@ -465,7 +435,7 @@
 
         async function loadCollections() {
           const year = data.year;
-          await Promise.all([
+          const loads = [
             VoteUI.serverPaged(
               $("summary"),
               `/api/lateness-fund/summary?year=${year}`,
@@ -488,38 +458,35 @@
             VoteUI.serverPaged(
               $("records"),
               `/api/lateness-fund/records?year=${year}`,
-              (rows) => {
-                recordRows = Object.fromEntries(
-                  rows.map((row) => [String(row.id), row]),
-                );
-                return table(
-                  rows,
-                  recordColumns,
-                  data.is_manager
-                    ? (row) =>
-                        `<button data-paid="${row.id}">更新已繳</button> <button class="danger" data-delete-record="${row.id}">刪除</button>`
-                    : null,
-                );
-              },
+              (rows) => table(rows, recordColumns),
             ),
             VoteUI.serverPaged(
               $("expenses"),
               `/api/lateness-fund/expenses?year=${year}`,
-              (rows) => {
-                expenseRows = Object.fromEntries(
-                  rows.map((row) => [String(row.id), row]),
-                );
-                return table(
-                  rows,
-                  expenseColumns,
-                  data.is_manager
-                    ? (row) =>
-                        `<button class="danger" data-delete-expense="${row.id}">刪除</button>`
-                    : null,
-                );
-              },
+              (rows) => table(rows, expenseColumns),
             ),
-          ]);
+          ];
+          if (data.is_senior_committee) {
+            loads.push(
+              VoteUI.serverPaged(
+                $("managerRecords"),
+                `/api/lateness-fund/records?year=${year}`,
+                (rows) => {
+                  recordRows = Object.fromEntries(rows.map((row) => [String(row.id), row]));
+                  return table(rows, recordColumns, (row) => `<button data-paid="${row.id}">更新已繳</button> <button class="danger" data-delete-record="${row.id}">刪除</button>`);
+                },
+              ),
+              VoteUI.serverPaged(
+                $("managerExpenses"),
+                `/api/lateness-fund/expenses?year=${year}`,
+                (rows) => {
+                  expenseRows = Object.fromEntries(rows.map((row) => [String(row.id), row]));
+                  return table(rows, expenseColumns, (row) => `<button class="danger" data-delete-expense="${row.id}">刪除</button>`);
+                },
+              ),
+            );
+          }
+          await Promise.all(loads);
         }
 
         async function loadMember() {
@@ -557,8 +524,8 @@
         async function render() {
           $("login").classList.add("hidden");
           $("app").classList.remove("hidden");
-          $("role").innerHTML = data.is_manager
-            ? '<span class="manager-badge">遲到基金管理員</span>'
+          $("role").innerHTML = data.is_senior_committee
+            ? '<span class="manager-badge">高級委員</span>'
             : "委員檢視／新增模式";
           $("year").innerHTML = data.years
             .map(
@@ -583,10 +550,8 @@
                 `<div class="card metric"><span class="caption">${item[0]}</span><b>${typeof item[1] === "number" && item[0] !== "本年度罰款次數" ? money(item[1]) : item[1]}</b></div>`,
             )
             .join("");
-          ["openingCard", "notifyCard", "expenseForm", "paidWrap"].forEach(
-            (id) => $(id).classList.toggle("hidden", !data.is_manager),
-          );
-          $("inputGrid").classList.toggle("single", !data.is_manager);
+          $("seniorTab").classList.toggle("hidden", !data.is_senior_committee);
+          if (!data.is_senior_committee && $("seniorManagement").classList.contains("active")) switchPane("overview");
           const previous = data.year - 1;
           $("carry").textContent =
             `沿用上一年度（${previous}-${String((previous + 1) % 100).padStart(2, "0")}）結餘`;
@@ -682,14 +647,16 @@
           $("actionDialog").classList.remove("show");
         }
 
+        function switchPane(paneId) {
+          document.querySelectorAll(".tabs button").forEach((button) =>
+            button.classList.toggle("active", button.dataset.pane === paneId),
+          );
+          document.querySelectorAll(".pane").forEach((pane) =>
+            pane.classList.toggle("active", pane.id === paneId),
+          );
+        }
         document.querySelectorAll(".tabs button").forEach((button) =>
-          button.addEventListener("click", () => {
-            document
-              .querySelectorAll(".tabs button,.pane")
-              .forEach((item) => item.classList.remove("active"));
-            button.classList.add("active");
-            $(button.dataset.pane).classList.add("active");
-          }),
+          button.addEventListener("click", () => switchPane(button.dataset.pane)),
         );
         $("year").addEventListener("change", load);
         $("memberSearch").addEventListener("change", loadMember);
@@ -724,7 +691,7 @@
                 late_date: $("lateDate").value,
                 member_user_id: $("member").value,
                 late_minutes: Number($("minutes").value),
-                paid_amount: data.is_manager ? Number($("paid").value) : 0,
+                paid_amount: 0,
                 note: $("lateNote").value,
               }),
             },
@@ -732,7 +699,6 @@
             () => {
               $("lateDate").value = todayHK();
               $("minutes").value = 1;
-              $("paid").value = 0;
               $("lateNote").value = "";
             },
           );

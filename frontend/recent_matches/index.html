@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <title>近期比賽資訊</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
+    <style>
+      .match-list { display: grid; gap: 1rem; }
+      .match-card { border-left: 4px solid var(--accent); }
+      .match-head, .actions { display: flex; gap: .7rem; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
+      .match-head h2 { margin: 0; }
+      .result { border: 1px solid var(--border); border-radius: 999px; padding: .2rem .65rem; white-space: nowrap; }
+      .facts { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .65rem; margin: .8rem 0; }
+      .fact { background: var(--surface); border-radius: 8px; padding: .65rem; }
+      .fact b { display: block; margin-top: .2rem; }
+      .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .manage { border-color: #665424; }
+      .manage-title { color: var(--warn); }
+      .pane { display: none; }
+      .pane.active { display: block; }
+      @media (max-width: 700px) { .facts { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back-link" href="/">← 返回主頁</a>
+      <h1>ℹ️ 近期比賽資訊</h1>
+      <p class="intro">只供內部委員查閱。高級委員可新增及更新比賽；新增比賽及首次確認賽果會通知所有已訂閱委員。</p>
+
+      <section id="login" class="card hidden">
+        <h2>內部委員會成員登入</h2>
+        <form id="loginForm">
+          <label>用戶名稱<input id="loginUser" autocomplete="username" required /></label>
+          <label>密碼<input id="loginPassword" type="password" autocomplete="current-password" required /></label>
+          <button class="primary" type="submit">登入</button>
+        </form>
+        <p id="loginMessage" class="error"></p>
+      </section>
+
+      <section id="app" class="hidden">
+        <nav id="mainTabs" class="tabs">
+          <button class="active" data-pane="matchesPane">比賽資訊</button>
+          <button id="manageTab" class="hidden" data-pane="managePane">🛠️ 高級委員管理</button>
+        </nav>
+        <section id="matchesPane" class="pane active">
+          <div id="matches" class="match-list"></div>
+        </section>
+        <section id="managePane" class="pane">
+        <section id="manageCard" class="card manage">
+          <div class="match-head">
+            <div><h2 class="manage-title">高級委員管理</h2><p class="caption">比分前者代表正方，例如 3:0。</p></div>
+            <button id="retryNotify" type="button">重試未送達通知</button>
+          </div>
+          <form id="matchForm">
+            <input id="matchId" type="hidden" /><input id="revision" type="hidden" />
+            <div class="grid2">
+              <label>比賽<input id="competition" maxlength="300" placeholder="例如：聯中第一回合" required /></label>
+              <label>對手<input id="opponent" maxlength="300" required /></label>
+              <label>日期<input id="matchDate" type="date" required /></label>
+              <label>時間<input id="matchTime" type="time" required /></label>
+              <label>我方站方<select id="ourSide"><option value="unconfirmed">未能確認</option><option value="pro">正方</option><option value="con">反方</option></select></label>
+              <label>賽果<select id="result"><option value="unconfirmed">未能確認</option><option value="win">勝</option><option value="loss">負</option><option value="draw">和</option></select></label>
+              <label>比分<input id="score" maxlength="40" placeholder="例如：3:0（前者為正方）" /></label>
+              <label>最佳辯論員<input id="best" maxlength="300" /></label>
+            </div>
+            <label>辯題<textarea id="topic" rows="3" maxlength="1000" required></textarea></label>
+            <label>備註<textarea id="notes" rows="3" maxlength="3000"></textarea></label>
+            <div class="actions"><button class="primary" id="save" type="submit">新增比賽</button><button id="cancelEdit" class="hidden" type="button">取消編輯</button></div>
+          </form>
+        </section>
+        <h2>現有比賽管理</h2>
+        <div id="manageMatches" class="match-list"></div>
+        </section>
+      </section>
+    </main>
+    <div id="busy" class="busy"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
+    <div id="toast" class="toast"></div>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
+    <script>
+      (() => {
+        "use strict";
+        const $ = (id) => document.getElementById(id);
+        const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+        const sideLabels = {pro:"正方",con:"反方",unconfirmed:"未能確認"};
+        const resultLabels = {win:"勝",loss:"負",draw:"和",unconfirmed:"未能確認"};
+        let context = null;
+        let rows = {};
+
+        async function api(path, options = {}) {
+          const response = await fetch(path.startsWith("/api/") ? path : `/api/community${path}`, {
+            credentials: "same-origin",
+            headers: {"Content-Type":"application/json", ...(options.headers || {})},
+            ...options,
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) { const error = new Error(data.detail || `HTTP ${response.status}`); error.status = response.status; throw error; }
+          return data;
+        }
+
+        function resetForm() {
+          $("matchForm").reset(); $("matchId").value = ""; $("revision").value = "";
+          $("save").textContent = "新增比賽"; $("cancelEdit").classList.add("hidden");
+          $("ourSide").value = "unconfirmed"; $("result").value = "unconfirmed";
+        }
+
+        function edit(row) {
+          $("matchId").value = row.id; $("revision").value = row.revision;
+          $("competition").value = row.competition_name; $("opponent").value = row.opponent;
+          $("matchDate").value = String(row.match_date).slice(0,10); $("matchTime").value = String(row.match_time).slice(0,5);
+          $("topic").value = row.topic_text; $("ourSide").value = row.our_side; $("result").value = row.result;
+          $("score").value = row.score_text; $("best").value = row.best_debater; $("notes").value = row.notes;
+          $("save").textContent = "儲存更新"; $("cancelEdit").classList.remove("hidden");
+          $("manageCard").scrollIntoView({behavior:"smooth"});
+        }
+
+        function render(items, management = false) {
+          if (management) rows = Object.fromEntries(items.map((row) => [String(row.id), row]));
+          if (!items.length) return '<section class="card"><p class="caption">暫時未有近期比賽資訊。</p></section>';
+          return items.map((row) => `<article class="card match-card">
+            <div class="match-head"><div><h2>${esc(row.competition_name)}</h2><div class="caption">對手：${esc(row.opponent)}</div></div><span class="result">${esc(resultLabels[row.result] || row.result)}${row.score_text ? `・${esc(row.score_text)}` : ""}</span></div>
+            <div class="facts"><div class="fact"><span class="caption">日期及時間</span><b>${esc(String(row.match_date).slice(0,10))} ${esc(String(row.match_time).slice(0,5))}</b></div><div class="fact"><span class="caption">我方站方</span><b>${esc(sideLabels[row.our_side] || row.our_side)}</b></div><div class="fact"><span class="caption">最佳辯論員</span><b>${esc(row.best_debater || "未有資料")}</b></div></div>
+            <h3>辯題</h3><div class="pre">${esc(row.topic_text)}</div>${row.notes ? `<h3>備註</h3><div class="pre">${esc(row.notes)}</div>` : ""}
+            ${management ? `<div class="actions"><button type="button" data-edit="${row.id}">編輯</button></div>` : ""}
+          </article>`).join("");
+        }
+
+        function switchPane(paneId) {
+          document.querySelectorAll("#mainTabs button").forEach((button) => button.classList.toggle("active", button.dataset.pane === paneId));
+          document.querySelectorAll("#app > .pane").forEach((pane) => pane.classList.toggle("active", pane.id === paneId));
+        }
+
+        async function load() {
+          VoteUI.setBusy($("busy"), true);
+          try {
+            context = await api("/recent-matches/data");
+            $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+            $("manageTab").classList.toggle("hidden", !context.can_manage);
+            if (!context.can_manage && $("managePane").classList.contains("active")) switchPane("matchesPane");
+            const loads = [VoteUI.serverPaged($("matches"), "/api/community/recent-matches", (items) => render(items, false))];
+            if (context.can_manage) loads.push(VoteUI.serverPaged($("manageMatches"), "/api/community/recent-matches", (items) => render(items, true)));
+            await Promise.all(loads);
+          } catch (error) {
+            if (error.status === 401) { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); }
+            else VoteUI.toast($("toast"), `⚠️ ${error.message}`);
+          } finally { VoteUI.setBusy($("busy"), false); }
+        }
+
+        $("loginForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          try { await api("/api/committee/login", {method:"POST", body:JSON.stringify({user_id:$("loginUser").value,password:$("loginPassword").value})}); $("loginPassword").value=""; await load(); }
+          catch (error) { $("loginMessage").textContent = error.message; }
+        });
+        $("matchForm").addEventListener("submit", async (event) => {
+          event.preventDefault(); VoteUI.setBusy($("busy"), true);
+          const id = $("matchId").value;
+          const body = {competition_name:$("competition").value,opponent:$("opponent").value,match_date:$("matchDate").value,match_time:$("matchTime").value,topic_text:$("topic").value,our_side:$("ourSide").value,result:$("result").value,score_text:$("score").value,best_debater:$("best").value,notes:$("notes").value};
+          if (id) body.revision = Number($("revision").value);
+          try {
+            const data = await api(`/recent-matches${id ? `/${id}` : ""}`, {method:id ? "PATCH" : "POST", body:JSON.stringify(body)});
+            const notices = data.notifications || (data.notification ? [data.notification] : []);
+            const failed = notices.some((item) => item.state === "retryable");
+            VoteUI.toast($("toast"), failed ? "✅ 資料已儲存；⚠️ push 未送達，可按重試。" : "✅ 資料及通知已處理。");
+            resetForm(); await load();
+          } catch (error) { VoteUI.toast($("toast"), `⚠️ ${error.message}`); }
+          finally { VoteUI.setBusy($("busy"), false); }
+        });
+        $("matches").addEventListener("click", (event) => { const id = event.target.closest("[data-edit]")?.dataset.edit; if (id && rows[id]) edit(rows[id]); });
+        $("manageMatches").addEventListener("click", (event) => { const id = event.target.closest("[data-edit]")?.dataset.edit; if (id && rows[id]) edit(rows[id]); });
+        document.querySelectorAll("#mainTabs button").forEach((button) => button.addEventListener("click", () => switchPane(button.dataset.pane)));
+        $("cancelEdit").addEventListener("click", resetForm);
+        $("retryNotify").addEventListener("click", async () => { try { const data = await api("/recent-matches/notifications/retry", {method:"POST", body:"{}"}); VoteUI.toast($("toast"), data.state === "none" ? "沒有待重試通知。" : data.state === "sent" ? `✅ 已送達 ${data.sent_count} 部裝置。` : `⚠️ ${data.error}`); } catch (error) { VoteUI.toast($("toast"), `⚠️ ${error.message}`); } });
+        load();
+      })();
+    </script>
+  </body>
+</html>

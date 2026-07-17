@@ -256,6 +256,62 @@
         right: 1.4vw;
         border-color: var(--error);
       }
+      #kioskBackupDialog {
+        width: min(760px, 92vw);
+        max-height: 82vh;
+        border: 1px solid #44577e;
+        border-radius: 18px;
+        background: var(--panel);
+        color: var(--text);
+        padding: 1.4rem;
+      }
+      #kioskBackupDialog::backdrop {
+        background: rgba(3, 8, 18, 0.82);
+      }
+      .backup-dialog-head,
+      .backup-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.8rem;
+      }
+      .backup-dialog-head button,
+      .backup-actions button {
+        border: 1px solid #50658e;
+        border-radius: 9px;
+        background: #17233d;
+        color: var(--text);
+        font: inherit;
+        font-weight: 750;
+        padding: 0.55rem 0.8rem;
+        cursor: pointer;
+      }
+      .backup-actions .delete {
+        border-color: var(--error);
+        color: #ffc1bb;
+      }
+      #kioskBackupList {
+        display: grid;
+        gap: 0.8rem;
+        margin-top: 1rem;
+        overflow-y: auto;
+      }
+      .backup-item {
+        border: 1px solid #334362;
+        border-radius: 12px;
+        background: #111b30;
+        padding: 0.9rem;
+      }
+      .backup-item strong,
+      .backup-item span {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+      .backup-item span {
+        margin: 0.35rem 0 0.7rem;
+        color: var(--muted);
+        line-height: 1.45;
+      }
       #conn {
         position: fixed;
         z-index: 31;
@@ -431,8 +487,18 @@
       啟用收音咪及聲音
     </button>
     <button id="kioskBackupButton" type="button" style="display: none">
-      下載本機錄音備份
+      管理本機錄音備份
     </button>
+    <dialog id="kioskBackupDialog">
+      <div class="backup-dialog-head">
+        <div>
+          <h2>本機錄音備份</h2>
+          <p id="kioskBackupRetention"></p>
+        </div>
+        <button id="kioskBackupClose" type="button">關閉</button>
+      </div>
+      <div id="kioskBackupList"></div>
+    </dialog>
     <div id="conn"></div>
 
     <script>
@@ -466,8 +532,16 @@
           max_seconds: 90 * 60,
           min_seconds: 10,
           tts_max_chars: 1200,
+          local_recording_retention_days: 0,
         };
         let clientId = "";
+        let leaseRole = "standby";
+        let leaseToken = "";
+        let leaseGeneration = 0;
+        let leaseExpiresAt = "";
+        let leaseDeviceLabel = "";
+        let leaseRevoked = false;
+        let leaseLossBusy = false;
         let commandTimer = 0;
         let heartbeatTimer = 0;
         let commandPollBusy = false;
@@ -499,6 +573,7 @@
         let mediaPrimed = false;
         let recordingDbPromise = null;
         let recoverySessionId = "";
+        let recordingBackupManifests = [];
 
         function newClientId() {
           try {
@@ -510,6 +585,19 @@
               "-" +
               Math.random().toString(36).slice(2, 12)
             );
+          }
+        }
+
+        function stableTabClientId() {
+          const key = "projector-kiosk-client:" + DISPLAY;
+          try {
+            const saved = String(sessionStorage.getItem(key) || "");
+            if (/^[A-Za-z0-9_-]{20,100}$/.test(saved)) return saved;
+            const created = newClientId();
+            sessionStorage.setItem(key, created);
+            return created;
+          } catch (_) {
+            return newClientId();
           }
         }
 
@@ -628,36 +716,141 @@
         async function clearPersistedRecording(sessionId) {
           if (!sessionId) return;
           const db = await openRecordingDb();
+          const keyTransaction = db.transaction("chunks", "readonly");
+          const keysDone = recordingTransactionDone(keyTransaction);
+          const keys = await recordingRequestValue(
+            keyTransaction
+              .objectStore("chunks")
+              .index("session_id")
+              .getAllKeys(IDBKeyRange.only(sessionId)),
+          );
+          await keysDone;
           const transaction = db.transaction(["sessions", "chunks"], "readwrite");
           const done = recordingTransactionDone(transaction);
           transaction.objectStore("sessions").delete(sessionId);
           const chunkStore = transaction.objectStore("chunks");
-          const keys = await recordingRequestValue(
-            chunkStore.index("session_id").getAllKeys(IDBKeyRange.only(sessionId)),
-          );
           for (const key of keys || []) chunkStore.delete(key);
           await done;
+          recordingBackupManifests = recordingBackupManifests.filter(
+            (item) => String(item.session_id || "") !== sessionId,
+          );
           if (recoverySessionId === sessionId) recoverySessionId = "";
-          show($("kioskBackupButton"), Boolean(recoverySessionId), "block");
+          renderRecordingBackups();
+        }
+
+        function recordingRetentionMs() {
+          const days = finite(kioskLimits.local_recording_retention_days, 0);
+          return days > 0
+            ? days * 24 * 60 * 60 * 1000
+            : Number.POSITIVE_INFINITY;
+        }
+
+        async function storedRecordingManifests() {
+          const db = await openRecordingDb();
+          const transaction = db.transaction("sessions", "readonly");
+          const done = recordingTransactionDone(transaction);
+          const sessions = await recordingRequestValue(
+            transaction.objectStore("sessions").getAll(),
+          );
+          await done;
+          return sessions || [];
+        }
+
+        async function cleanupExpiredPersistedRecordings() {
+          const cutoff = Date.now() - recordingRetentionMs();
+          const sessions = await storedRecordingManifests();
+          const expired = sessions.filter((item) => {
+            const updatedAt = Date.parse(String(item.updated_at || ""));
+            return Number.isFinite(updatedAt) && updatedAt <= cutoff;
+          });
+          for (const item of expired) {
+            await clearPersistedRecording(String(item.session_id || ""));
+          }
+          return expired.length;
+        }
+
+        function backupStatusLabel(value) {
+          return {
+            recording: "錄音中斷後保留",
+            retained_after_failure: "處理失敗後保留",
+            cancelled: "開始取消後保留",
+            lease_lost: "Kiosk lease 中斷後保留",
+          }[String(value || "")] || "可復原備份";
+        }
+
+        function renderRecordingBackups() {
+          const list = $("kioskBackupList");
+          list.replaceChildren();
+          $("kioskBackupRetention").textContent =
+            "失敗或取消後保留 " +
+            kioskLimits.local_recording_retention_days +
+            " 日；到期會在 Kiosk 下次開啟時自動永久刪除。";
+          for (const manifest of recordingBackupManifests) {
+            const sessionId = String(manifest.session_id || "");
+            const item = document.createElement("div");
+            item.className = "backup-item";
+            const title = document.createElement("strong");
+            title.textContent =
+              (String(manifest.match_id || "未知場次") + " · " + backupStatusLabel(manifest.status));
+            const meta = document.createElement("span");
+            const updatedAt = Date.parse(String(manifest.updated_at || ""));
+            const expiresAt = Number.isFinite(updatedAt)
+              ? new Date(updatedAt + recordingRetentionMs()).toLocaleString("zh-HK", {
+                  hour12: false,
+                })
+              : "未能計算";
+            meta.textContent =
+              "更新：" +
+              (Number.isFinite(updatedAt)
+                ? new Date(updatedAt).toLocaleString("zh-HK", { hour12: false })
+                : "未知") +
+              " · 大小：" +
+              humanBytes(manifest.bytes) +
+              " · 自動刪除：" +
+              expiresAt;
+            const actions = document.createElement("div");
+            actions.className = "backup-actions";
+            const download = document.createElement("button");
+            download.type = "button";
+            download.textContent = "下載備份";
+            download.dataset.backupDownload = sessionId;
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "delete";
+            remove.textContent = "永久刪除";
+            remove.dataset.backupDelete = sessionId;
+            const active = Boolean(recording && recording.session_id === sessionId);
+            remove.disabled = active;
+            if (active) remove.title = "錄音進行中，不能刪除";
+            actions.append(download, remove);
+            item.append(title, meta, actions);
+            list.appendChild(item);
+          }
+          if (!recordingBackupManifests.length) {
+            const empty = document.createElement("p");
+            empty.textContent = "目前沒有保留中的本機錄音備份。";
+            list.appendChild(empty);
+          }
+          recoverySessionId = String(recordingBackupManifests[0]?.session_id || "");
+          $("kioskBackupButton").textContent = recordingBackupManifests.length
+            ? "管理本機錄音備份（" + recordingBackupManifests.length + "）"
+            : "管理本機錄音備份";
+          show($("kioskBackupButton"), Boolean(recordingBackupManifests.length), "block");
         }
 
         async function refreshRecordingRecovery() {
           if (!KIOSK_MODE) return;
           try {
-            const db = await openRecordingDb();
-            const transaction = db.transaction("sessions", "readonly");
-            const done = recordingTransactionDone(transaction);
-            const sessions = await recordingRequestValue(
-              transaction.objectStore("sessions").getAll(),
-            );
-            await done;
-            const recoverable = (sessions || [])
+            await cleanupExpiredPersistedRecordings();
+            recordingBackupManifests = (await storedRecordingManifests())
               .filter((item) => finite(item.bytes) > 0)
-              .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-            recoverySessionId = String(recoverable[0]?.session_id || "");
-            show($("kioskBackupButton"), Boolean(recoverySessionId), "block");
+              .sort((a, b) =>
+                String(b.updated_at).localeCompare(String(a.updated_at)),
+              );
+            renderRecordingBackups();
           } catch (_) {
             recoverySessionId = "";
+            recordingBackupManifests = [];
             show($("kioskBackupButton"), false);
           }
         }
@@ -738,6 +931,7 @@
           const digest = await sha256Hex(blob);
           const intent = await fetchJson("/api/kiosk/match-review/upload-probe-intent", {
             method: "POST",
+            lease: true,
             body: { byte_size: blob.size, sha256: digest },
           });
           await uploadBlobWithRetry(intent.url, intent.headers, blob, "瀏覽器至 R2 測試檔");
@@ -765,8 +959,9 @@
           const elapsed = recording ? formatDuration(recordingElapsed()) : "";
           const bytes = recording ? " · " + humanBytes(recording.bytes) : "";
           const prefix = phase === "recording" ? "錄音中 " + elapsed + bytes : detail;
+          const roleLabel = leaseRole === "active" ? "Active" : "Standby";
           setKioskBadge(
-            "AI評判易 · " + (prefix || phase),
+            "AI評判易 · " + roleLabel + " · " + (prefix || phase),
             error ? "error" : phase === "ready" || phase === "idle" ? "ok" : "",
           );
         }
@@ -868,11 +1063,24 @@
         }
 
         async function fetchJson(url, options = {}) {
+          const leaseRequired = options.lease === true;
           const request = {
             credentials: "same-origin",
             cache: "no-store",
             ...options,
           };
+          delete request.lease;
+          if (leaseRequired) {
+            if (leaseRole !== "active" || !leaseToken || leaseGeneration < 1) {
+              const error = new Error("此 Kiosk 並非目前 Active 裝置");
+              error.status = 423;
+              throw error;
+            }
+            request.headers = {
+              ...leaseHeaders(),
+              ...(request.headers || {}),
+            };
+          }
           if (request.body && typeof request.body !== "string") {
             request.headers = {
               "Content-Type": "application/json",
@@ -889,6 +1097,15 @@
             throw error;
           }
           return data;
+        }
+
+        function leaseHeaders() {
+          return {
+            "X-Kiosk-Lease-Token": leaseToken,
+            "X-Kiosk-Client-Id": clientId,
+            "X-Kiosk-Lease-Generation": String(leaseGeneration),
+            "X-Kiosk-Display": DISPLAY,
+          };
         }
 
         async function pollPublic() {
@@ -929,25 +1146,123 @@
           const maxSeconds = finite(source.max_seconds, kioskLimits.max_seconds);
           const minSeconds = finite(source.min_seconds, kioskLimits.min_seconds);
           const ttsMaxChars = finite(source.tts_max_chars, kioskLimits.tts_max_chars);
+          const retentionDays = finite(
+            source.local_recording_retention_days,
+            kioskLimits.local_recording_retention_days,
+          );
           if (maxBytes > 0) kioskLimits.max_bytes = maxBytes;
           if (maxSeconds > 0) kioskLimits.max_seconds = maxSeconds;
           if (minSeconds >= 0) kioskLimits.min_seconds = minSeconds;
           if (ttsMaxChars > 0) kioskLimits.tts_max_chars = ttsMaxChars;
+          if (retentionDays > 0) kioskLimits.local_recording_retention_days = retentionDays;
+        }
+
+        async function claimLease() {
+          if (!kioskAuthenticated || leaseRevoked) return false;
+          const renewing = leaseRole === "active" && Boolean(leaseToken);
+          const payload = await fetchJson("/api/kiosk/projector-ai/lease/claim", {
+            method: "POST",
+            lease: renewing,
+            body: {
+              display: DISPLAY,
+              client_id: clientId,
+              lease_generation: renewing ? leaseGeneration : 0,
+              capabilities: heartbeatPayload().capabilities,
+            },
+          });
+          mergeLimits(payload);
+          leaseDeviceLabel = String(payload.device?.label || leaseDeviceLabel || "Kiosk");
+          if (payload.role !== "active") {
+            leaseRole = "standby";
+            leaseToken = "";
+            leaseGeneration = 0;
+            leaseExpiresAt = "";
+            hardware.passed = false;
+            show($("kioskPrimeButton"), false);
+            const owner = String(payload.owner?.label || "另一部 Kiosk");
+            setEngine(
+              "standby",
+              payload.reason === "active_session_pinned"
+                ? owner + " 正處理場次；本機不會接收指令或啟用收音咪"
+                : owner + " 目前為 Active；本機正候命",
+            );
+            return false;
+          }
+          const changed =
+            leaseRole !== "active" ||
+            leaseGeneration !== finite(payload.lease_generation, 0);
+          leaseRole = "active";
+          leaseToken = String(payload.lease_token || "");
+          leaseGeneration = finite(payload.lease_generation, 0);
+          leaseExpiresAt = String(payload.expires_at || "");
+          leaseRevoked = false;
+          if (changed) {
+            hardware.passed = false;
+            privateStateInitialized = false;
+            lastRevision = -1;
+            ackCache.clear();
+          }
+          show($("kioskPrimeButton"), !mediaPrimed, "block");
+          setEngine(
+            "idle",
+            leaseDeviceLabel + " 已成為 Active；等待 Projector Control 指令",
+          );
+          return true;
+        }
+
+        async function handleLeaseLoss(detail = "Kiosk lease 已被撤銷") {
+          if (leaseLossBusy || (leaseRole !== "active" && leaseRevoked)) return;
+          leaseLossBusy = true;
+          leaseRole = "standby";
+          leaseToken = "";
+          leaseGeneration = 0;
+          leaseExpiresAt = "";
+          leaseRevoked = true;
+          hardware.passed = false;
+          show($("kioskPrimeButton"), false);
+          stopSpeech();
+          const state = recording;
+          try {
+            if (state) {
+              clearTimeout(state.hard_stop);
+              try {
+                const blob = await stopRecorder(state);
+                state.bytes = Math.max(state.bytes || 0, blob.size || 0);
+                state.duration_seconds = recordingElapsed();
+              } catch (_) {}
+              try {
+                state.stream.getTracks().forEach((track) => track.stop());
+              } catch (_) {}
+              try {
+                await saveRecordingManifest(state, "lease_lost");
+              } catch (_) {}
+              recoverySessionId = state.session_id;
+            }
+            recording = null;
+            processing = null;
+            await releaseWakeLock();
+            await refreshRecordingRecovery();
+          } finally {
+            setEngine(
+              "standby",
+              "lease 已失效；錄音已停止並只保留本機備份，唔會上載或呼叫 AI",
+              String(detail || "Kiosk lease 已失效"),
+            );
+            leaseLossBusy = false;
+          }
         }
 
         async function bootstrapKiosk() {
           if (!KIOSK_MODE) return;
-          clientId = newClientId();
+          clientId = stableTabClientId();
           try {
             const session = await fetchJson("/api/kiosk/session");
             mergeLimits(session);
             kioskAuthenticated = true;
             hideLogin();
-            show($("kioskPrimeButton"), !mediaPrimed, "block");
-            startPrivateLoops();
-            setEngine("idle", "已連接，等待 Projector Control 指令");
             await refreshRecordingRecovery();
-            await sendHeartbeat();
+            await claimLease();
+            startPrivateLoops();
           } catch (error) {
             showLogin(error.status === 403 ? "此頁面只限 kiosk account。" : "請登入 kiosk。 ");
           }
@@ -959,7 +1274,6 @@
           const button = $("kioskLoginButton");
           button.disabled = true;
           $("loginError").textContent = "正在登入…";
-          const mediaActivation = primeKioskMedia().catch(() => false);
           try {
             await fetchJson("/api/kiosk/login", {
               method: "POST",
@@ -969,13 +1283,9 @@
             mergeLimits(session);
             kioskAuthenticated = true;
             hideLogin();
-            show($("kioskPrimeButton"), !mediaPrimed, "block");
-            startPrivateLoops();
-            setEngine("idle", "登入成功，等待 Projector Control 指令");
-            await mediaActivation;
-            show($("kioskPrimeButton"), !mediaPrimed, "block");
             await refreshRecordingRecovery();
-            await sendHeartbeat();
+            await claimLease();
+            startPrivateLoops();
           } catch (error) {
             $("loginError").textContent = error.message || "kiosk 登入失敗";
           } finally {
@@ -985,6 +1295,9 @@
 
         async function primeKioskMedia() {
           if (!KIOSK_MODE) return false;
+          if (leaseRole !== "active") {
+            throw new Error("只有 Active Kiosk 可以啟用收音咪及聲音");
+          }
           const audioReady = getBellContext();
           const microphoneReady = navigator.mediaDevices?.getUserMedia
             ? navigator.mediaDevices.getUserMedia(audioConstraints())
@@ -992,7 +1305,7 @@
           const [context, stream] = await Promise.all([audioReady, microphoneReady]);
           stream.getTracks().forEach((track) => track.stop());
           mediaPrimed = Boolean(context);
-          show($("kioskPrimeButton"), !mediaPrimed, "block");
+          show($("kioskPrimeButton"), leaseRole === "active" && !mediaPrimed, "block");
           if (kioskAuthenticated) sendHeartbeat();
           return mediaPrimed;
         }
@@ -1008,13 +1321,27 @@
         });
 
         $("kioskBackupButton").addEventListener("click", async () => {
+          await refreshRecordingRecovery();
+          $("kioskBackupDialog").showModal();
+        });
+        $("kioskBackupClose").addEventListener("click", () =>
+          $("kioskBackupDialog").close(),
+        );
+        $("kioskBackupList").addEventListener("click", async (event) => {
+          const downloadId = event.target?.dataset?.backupDownload;
+          const deleteId = event.target?.dataset?.backupDelete;
           try {
-            if (!recoverySessionId) await refreshRecordingRecovery();
-            if (!recoverySessionId) throw new Error("未有保留中的本機錄音備份");
-            const bytes = await downloadPersistedRecording(recoverySessionId);
-            setEngine("error", "已下載本機錄音備份（" + humanBytes(bytes) + "）", "請保留備份，並由工作人員跟進；系統不會自動刪除。 ");
+            if (downloadId) {
+              const bytes = await downloadPersistedRecording(downloadId);
+              setEngine("idle", "已下載本機錄音備份（" + humanBytes(bytes) + "）");
+            }
+            if (deleteId) {
+              if (!window.confirm("確定永久刪除這份本機錄音備份？刪除後不能復原。")) return;
+              await clearPersistedRecording(deleteId);
+              await refreshRecordingRecovery();
+            }
           } catch (error) {
-            setEngine("error", "未能下載本機錄音備份", error.message);
+            setEngine("error", "本機錄音備份操作失敗", error.message);
           }
         });
 
@@ -1088,8 +1415,9 @@
           const command = commandSession(lastEnvelope);
           return {
             display: DISPLAY,
+            client_id: clientId,
+            lease_generation: leaseGeneration,
             capabilities: {
-              client_id: clientId,
               kiosk_mode: true,
               status: enginePhase,
               detail: engineDetail.slice(0, 1000),
@@ -1122,17 +1450,31 @@
 
         async function sendHeartbeat() {
           if (!KIOSK_MODE || !kioskAuthenticated) return;
+          if (leaseRole !== "active") {
+            if (!leaseRevoked) {
+              try {
+                await claimLease();
+              } catch (error) {
+                if (error.status === 423) await handleLeaseLoss(error.message);
+              }
+            }
+            return;
+          }
           try {
             const response = await fetchJson("/api/kiosk/projector-ai/heartbeat", {
               method: "POST",
+              lease: true,
               body: heartbeatPayload(),
             });
             mergeLimits(response);
+            leaseExpiresAt = String(response.expires_at || leaseExpiresAt);
             heartbeatFailures = 0;
           } catch (error) {
             heartbeatFailures += 1;
             if (error.status === 401 || error.status === 403) {
               showLogin("kiosk 登入已失效；本機錄音不會自動清除，請重新登入。 ");
+            } else if (error.status === 423) {
+              await handleLeaseLoss(error.message);
             } else if (heartbeatFailures > 2) {
               $("conn").textContent = "Kiosk 控制連線中斷，重試中…";
             }
@@ -1188,12 +1530,23 @@
         }
 
         async function pollCommand() {
-          if (!KIOSK_MODE || !kioskAuthenticated || commandPollBusy) return;
+          if (
+            !KIOSK_MODE ||
+            !kioskAuthenticated ||
+            leaseRole !== "active" ||
+            commandPollBusy
+          ) return;
           commandPollBusy = true;
           try {
             const envelope = await fetchJson(
               "/api/kiosk/projector-ai/command?display=" + encodeURIComponent(DISPLAY),
+              { lease: true },
             );
+            if (finite(envelope.lease_generation, 0) !== leaseGeneration) {
+              throw Object.assign(new Error("控制指令 lease generation 已更新"), {
+                status: 423,
+              });
+            }
             mergeLimits(envelope);
             lastEnvelope = envelope;
             hydrateHardware(envelope);
@@ -1258,6 +1611,8 @@
           } catch (error) {
             if (error.status === 401 || error.status === 403) {
               showLogin("kiosk 登入已失效，請重新登入。 ");
+            } else if (error.status === 423) {
+              await handleLeaseLoss(error.message);
             }
           } finally {
             commandPollBusy = false;
@@ -1267,6 +1622,8 @@
         function ackPayload(command, state, detail, payload = {}) {
           return {
             display: DISPLAY,
+            client_id: clientId,
+            lease_generation: leaseGeneration,
             revision: command.revision,
             session_id: command.session_id || currentSessionId(),
             state,
@@ -1278,6 +1635,7 @@
         async function postAckPayload(payload) {
           return fetchJson("/api/kiosk/projector-ai/ack", {
             method: "POST",
+            lease: true,
             body: payload,
           });
         }
@@ -1290,6 +1648,7 @@
             await postAckPayload(payload);
           } catch (error) {
             if (error.status === 401 || error.status === 403) showLogin("kiosk 登入已失效。 ");
+            if (error.status === 423) await handleLeaseLoss(error.message);
           }
           return payload;
         }
@@ -1300,6 +1659,8 @@
               return runHardwareTest(command);
             case "start":
               return startRecording(command);
+            case "cancel_start":
+              return cancelStartRecording(command);
             case "stop":
               return stopAndAnalyze(command, "control");
             case "publish":
@@ -1508,8 +1869,11 @@
             method: "POST",
             credentials: "same-origin",
             cache: "no-store",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: "AI評判易粵語語音測試，聲音播放正常。" }),
+            headers: { "Content-Type": "application/json", ...leaseHeaders() },
+            body: JSON.stringify({
+              text: "AI評判易粵語語音測試，聲音播放正常。",
+              display: DISPLAY,
+            }),
           });
           return playAudioResponse(response, 45000);
         }
@@ -1989,23 +2353,49 @@
           return new Blob(chunks, { type: state.mime_type });
         }
 
+        async function cancelStartRecording(command) {
+          const state = recording;
+          let retained = false;
+          if (state && (!command.session_id || command.session_id === state.session_id)) {
+            clearTimeout(state.hard_stop);
+            try {
+              const blob = await stopRecorder(state);
+              state.bytes = Math.max(state.bytes, blob.size);
+              state.duration_seconds = recordingElapsed();
+              if (blob.size > 0) {
+                await saveRecordingManifest(state, "cancelled");
+                retained = true;
+              } else {
+                await clearPersistedRecording(state.session_id);
+              }
+            } finally {
+              try {
+                state.stream.getTracks().forEach((track) => track.stop());
+              } catch (_) {}
+              recording = null;
+              processing = null;
+              await releaseWakeLock();
+              await refreshRecordingRecovery();
+            }
+          }
+          setEngine(
+            "idle",
+            retained
+              ? "開始錄音已取消；已錄片段會在本機保留 " +
+                  kioskLimits.local_recording_retention_days +
+                  " 日"
+              : "開始錄音已取消",
+          );
+          return acknowledge(command, "cancelled", "開始錄音已取消", {
+            local_recording_backup_retained: retained,
+          });
+        }
+
         async function sha256Hex(blob) {
           const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
           return Array.from(new Uint8Array(digest), (value) =>
             value.toString(16).padStart(2, "0"),
           ).join("");
-        }
-
-        function cleanProjectorSummary(markdown) {
-          return String(markdown || "")
-            .replace(/```[\s\S]*?```/g, "")
-            .replace(/^#{1,6}\s*/gm, "")
-            .replace(/^\s*[-*+]\s+/gm, "• ")
-            .replace(/\*\*([^*]+)\*\*/g, "$1")
-            .replace(/`([^`]+)`/g, "$1")
-            .replace(/\n{3,}/g, "\n\n")
-            .trim()
-            .slice(0, kioskLimits.tts_max_chars);
         }
 
         async function bestEffortDiscard(uploadToken) {
@@ -2016,53 +2406,6 @@
               body: { upload_token: uploadToken },
             });
           } catch (_) {}
-        }
-
-        async function postResult(command, state, analysis) {
-          const markdown = String(analysis.markdown || "").trim();
-          const transcript = String(analysis.transcript || "").trim();
-          if (!markdown) throw new Error("AI 分析未有回傳完整評語");
-          if (!transcript) throw new Error("AI 分析未有回傳逐字稿");
-          const projectorSummary = String(
-            analysis.projector_summary || cleanProjectorSummary(markdown),
-          )
-            .trim()
-            .slice(0, kioskLimits.tts_max_chars);
-          if (!projectorSummary) throw new Error("AI 分析未有回傳投影摘要");
-          const payload = {
-            display: DISPLAY,
-            revision:
-              finite(analysis.projector_revision, 0) > 0
-                ? finite(analysis.projector_revision, command.revision)
-                : command.revision,
-            session_id: state.session_id,
-            markdown,
-            transcript,
-            projector_summary: projectorSummary,
-            model_label: String(analysis.model_label || "").slice(0, 200),
-            audio:
-              analysis.audio && typeof analysis.audio === "object" ? analysis.audio : {},
-            recording_deleted: Boolean(analysis.recording_deleted),
-          };
-          let response;
-          let lastFailure;
-          for (let attempt = 0; attempt < 4; attempt += 1) {
-            try {
-              response = await fetchJson("/api/kiosk/projector-ai/result", {
-                method: "POST",
-                body: payload,
-              });
-              break;
-            } catch (error) {
-              lastFailure = error;
-              if (error.status && error.status < 500) throw error;
-              setEngine("processing", "結果回傳中斷，正在安全重試（" + (attempt + 1) + "／4）");
-              await sleep(1000 * Math.min(8, 2 ** attempt));
-            }
-          }
-          if (!response) throw lastFailure || new Error("未能保存 AI評判易結果");
-          latestResult = { ...payload, response };
-          return latestResult;
         }
 
         async function stopAndAnalyze(command, reason = "control") {
@@ -2132,6 +2475,7 @@
               processing.stage = "建立私人上載";
               const intent = await fetchJson("/api/kiosk/match-review/upload-intent", {
                 method: "POST",
+                lease: true,
                 body: {
                   match_id: state.match_id,
                   operation_id: state.session_id,
@@ -2149,6 +2493,7 @@
               setEngine("processing", "AI 正在整理全場逐字稿及評語，請勿關閉 Kiosk");
               const analysis = await fetchJson("/api/kiosk/match-review/analyze", {
                 method: "POST",
+                lease: true,
                 body: {
                   upload_token: uploadToken,
                   match_id: state.match_id,
@@ -2158,8 +2503,17 @@
                 },
               });
               uploadToken = "";
-              processing.stage = "傳送結果到 Projector Control";
-              const saved = await postResult(activeCommand(), state, analysis);
+              processing.stage = "確認 Projector Control 已保存結果";
+              if (
+                analysis.projector_persisted !== true ||
+                String(analysis.operation_id || "") !== state.session_id
+              ) {
+                throw new Error("Server 未能確認已保存 AI評判易結果");
+              }
+              latestResult = {
+                session_id: state.session_id,
+                response: analysis,
+              };
               try {
                 await clearPersistedRecording(state.session_id);
                 state.chunks = [];
@@ -2173,15 +2527,19 @@
               hardware.passed = false;
               setEngine("ready", "AI評語已完成，等待 Projector Control 發布");
               await pollPublic();
-              return saved;
+              return latestResult;
             } catch (error) {
               const failedStage = processing?.stage || "failed";
+              const leaseLost = error.status === 423 || leaseRole !== "active";
               await bestEffortDiscard(uploadToken);
               try {
                 state.stream.getTracks().forEach((track) => track.stop());
               } catch (_) {}
               try {
-                await saveRecordingManifest(state, "retained_after_failure");
+                await saveRecordingManifest(
+                  state,
+                  leaseLost ? "lease_lost" : "retained_after_failure",
+                );
               } catch (_) {}
               recoverySessionId = state.session_id;
               show($("kioskBackupButton"), true, "block");
@@ -2189,18 +2547,22 @@
               recording = null;
               hardware.passed = false;
               await releaseWakeLock();
-              setEngine(
-                "error",
-                "AI評判易未能完成；本機錄音備份已保留",
-                error.message,
-              );
-              await acknowledge(activeCommand(), "error", error.message, {
-                reason,
-                stage: failedStage,
-                error: error.message,
-                local_recording_backup_retained: true,
-                local_recording_backup_session_id: state.session_id,
-              });
+              if (leaseLost) {
+                await handleLeaseLoss(error.message);
+              } else {
+                setEngine(
+                  "error",
+                  "AI評判易未能完成；本機錄音備份已保留",
+                  error.message,
+                );
+                await acknowledge(activeCommand(), "error", error.message, {
+                  reason,
+                  stage: failedStage,
+                  error: error.message,
+                  local_recording_backup_retained: true,
+                  local_recording_backup_session_id: state.session_id,
+                });
+              }
               return null;
             } finally {
               sendHeartbeat();
@@ -2231,7 +2593,11 @@
               encodeURIComponent(command.session_id) +
               "?revision=" +
               encodeURIComponent(command.publish_revision),
-            { credentials: "same-origin", cache: "no-store" },
+            {
+              credentials: "same-origin",
+              cache: "no-store",
+              headers: leaseHeaders(),
+            },
           );
           if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
@@ -2279,7 +2645,7 @@
         setInterval(pollPublic, PUBLIC_POLL_MS);
         if (KIOSK_MODE) {
           $("kioskBadge").classList.remove("hidden");
-          show($("kioskPrimeButton"), true, "block");
+          show($("kioskPrimeButton"), false);
           setEngine("connecting", "正在連接 Projector Control");
           bootstrapKiosk();
         }

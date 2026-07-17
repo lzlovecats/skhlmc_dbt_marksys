@@ -41,6 +41,8 @@ from system_limits import (
     KIOSK_MATCH_REVIEW_MARKER_LIMIT,
     KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
     KIOSK_MATCH_REVIEW_MAX_SECONDS,
+    KIOSK_LOCAL_RECORDING_RETENTION_DAYS,
+    KIOSK_PROJECTOR_RESULT_PERSIST_ATTEMPTS,
     KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS,
     KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS,
     MATCH_INVENTORY_LIMIT,
@@ -282,6 +284,7 @@ def session(request: Request):
                 "max_bytes": KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES,
                 "max_seconds": KIOSK_MATCH_REVIEW_MAX_SECONDS,
                 "min_seconds": KIOSK_MATCH_REVIEW_MIN_SECONDS,
+                "local_recording_retention_days": KIOSK_LOCAL_RECORDING_RETENTION_DAYS,
             },
         },
         headers={"Cache-Control": "no-store"},
@@ -356,11 +359,11 @@ async def match_review_preflight(request: Request):
     checks["privacy"] = {
         "ok": True,
         "detail": (
-            "已確認使用付費 Gemini project（內容不作產品訓練）"
+            "✓ AI 私隱設定：已確認使用 Paid Gemini project，所提交的內容不會被用作產品訓練。"
             if paid_confirmed
             else (
-                "測試模式：允許 Free Tier；提交內容可能用於改善 Google 產品及由人手審閱，"
-                "正式學生比賽應改用已確認的 Paid Tier project"
+                "⚠️ 尚未確認 Paid Gemini Tier，你仍可繼續下一步。本次錄音、逐字稿及"
+                "相關提示內容可能被用於改善 Google 產品。"
             )
         ),
         "paid_tier_confirmed": paid_confirmed,
@@ -468,6 +471,12 @@ def match_review_upload_probe_intent(
     from deploy.proxy import _get_relay_cookie_secret, get_vote_db
 
     user_id = require_kiosk_user(request)
+    from api.projector_ai_api import validate_kiosk_display_lease
+
+    validate_kiosk_display_lease(
+        request,
+        display=str(request.headers.get("X-Kiosk-Display") or ""),
+    )
     if not r2_storage.configured():
         raise HTTPException(503, "Cloudflare R2 尚未完成設定。")
     digest = str(body.sha256 or "").lower()
@@ -581,6 +590,16 @@ def match_review_upload_intent(
 
     user_id = require_kiosk_user(request)
     db = get_vote_db()
+    requested_operation_id = str(body.operation_id or "").strip()
+    projector_lease = None
+    if requested_operation_id:
+        from api.projector_ai_api import validate_projector_lease
+
+        projector_lease = validate_projector_lease(
+            request,
+            operation_id=requested_operation_id,
+            match_id=body.match_id,
+        )
     official_match = _official_match(db, body.match_id)
     if not official_match:
         raise HTTPException(404, "找不到所選正式場次，請重新載入場次資料。")
@@ -615,7 +634,7 @@ def match_review_upload_intent(
         raise HTTPException(503, "系統簽署設定不可用。")
 
     intent_id = uuid.uuid4().hex
-    operation_id = str(body.operation_id or "").strip() or intent_id
+    operation_id = requested_operation_id or intent_id
     key = (
         "pending/audio/kiosk-match-review/"
         f"{datetime.datetime.now(datetime.timezone.utc):%Y/%m}/{intent_id}."
@@ -633,6 +652,11 @@ def match_review_upload_intent(
         "duration_seconds": round(float(body.duration_seconds), 3),
         "pending_r2_key": key,
     }
+    if projector_lease is not None:
+        claim.update(
+            projector_device_id=projector_lease["device_id"],
+            projector_lease_generation=projector_lease["lease_generation"],
+        )
     upload_token = r2_storage.sign_upload_claim(
         claim, secret, expires=R2_UPLOAD_CLAIM_TTL_SECONDS
     )
@@ -971,6 +995,26 @@ async def analyze_match_review(body: MatchReviewBody, request: Request):
     if body.operation_id and str(body.operation_id).strip() != accounting_operation_id:
         await asyncio.to_thread(cleanup)
         raise HTTPException(400, "錄音憑證與 AI評判易任務不相符。")
+    if claim.get("projector_lease_generation") is not None:
+        from api.projector_ai_api import validate_projector_lease
+
+        try:
+            projector_lease = validate_projector_lease(
+                request,
+                operation_id=accounting_operation_id,
+                match_id=body.match_id,
+            )
+        except HTTPException:
+            await asyncio.to_thread(cleanup)
+            raise
+        if (
+            str(claim.get("projector_device_id") or "")
+            != projector_lease["device_id"]
+            or int(claim.get("projector_lease_generation") or 0)
+            != projector_lease["lease_generation"]
+        ):
+            await asyncio.to_thread(cleanup)
+            raise HTTPException(409, "錄音上載憑證屬於另一個 Kiosk lease。")
     official_match = _official_match(db, body.match_id)
     if not official_match:
         await asyncio.to_thread(cleanup)
@@ -1212,26 +1256,32 @@ async def analyze_match_review(body: MatchReviewBody, request: Request):
         "sample_rate": probe["sample_rate"],
         "channels": probe["channels"],
     }
-    projector_saved = None
-    try:
-        from api.projector_ai_api import persist_completed_review_for_projector
+    from api.projector_ai_api import persist_completed_review_for_projector
 
-        projector_saved = await asyncio.to_thread(
-            persist_completed_review_for_projector,
-            session_id=accounting_operation_id,
-            match_id=official_match["match_id"],
-            markdown=full_result,
-            transcript=transcript,
-            projector_summary=projector_summary,
-            model_label=label,
-            audio=audio_metadata,
-            recording_deleted=cleaned,
-        )
-    except Exception:
-        # The authenticated browser still receives the complete response and
-        # retries the idempotent projector result endpoint. Standalone reviews
-        # intentionally have no projector session to persist into.
-        projector_saved = None
+    projector_saved = None
+    persistence_error = None
+    for _attempt in range(KIOSK_PROJECTOR_RESULT_PERSIST_ATTEMPTS):
+        try:
+            projector_saved = await asyncio.to_thread(
+                persist_completed_review_for_projector,
+                session_id=accounting_operation_id,
+                match_id=official_match["match_id"],
+                markdown=full_result,
+                transcript=transcript,
+                projector_summary=projector_summary,
+                model_label=label,
+                audio=audio_metadata,
+                recording_deleted=cleaned,
+            )
+            persistence_error = None
+            break
+        except Exception as exc:
+            persistence_error = exc
+    if persistence_error is not None:
+        raise HTTPException(
+            503,
+            "AI 評語已完成，但未能保存到 Projector Control；Kiosk 會保留本機錄音備份。",
+        ) from persistence_error
     return JSONResponse(
         {
             "ok": True,

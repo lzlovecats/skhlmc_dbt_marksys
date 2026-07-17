@@ -94,6 +94,7 @@ from api.ai_training_api import router as ai_training_router
 from api.admin_console_api import router as admin_console_router
 from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
+from api.community_api import router as community_router
 from api.access import require_competition_staff, require_page_user
 from version import APP_VERSION
 from system_limits import (
@@ -108,6 +109,7 @@ from system_limits import (
     JUDGING_SESSION_CLOCK_SKEW_SECONDS,
     JUDGING_SESSION_TOKEN_MAX_CHARS,
     JUDGING_SESSION_TTL_SECONDS,
+    REGISTRATION_ADMIN_SESSION_TTL_SECONDS,
     GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE,
     AI_PROVIDER_PROMPT_MAX_CHARS, AI_PROVIDER_RESPONSE_MAX_BYTES,
     LIVE_CONTEXT_COMPRESSION_TARGET_TOKENS,
@@ -359,6 +361,7 @@ app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 app.include_router(kiosk_router)
 app.include_router(projector_ai_router)
+app.include_router(community_router)
 logger = logging.getLogger("skh_proxy")
 
 
@@ -673,26 +676,99 @@ def _sign_committee_token(user_id: str, *, credential_hash: str | None = None):
 
 
 def _sign_registration_admin_token():
-    """Mint a dedicated session token for the organiser registration console."""
-    secret = _get_relay_cookie_secret()
-    if not secret:
+    """Mint an expiring organiser session bound to the current admin password."""
+    material = _registration_admin_auth_material()
+    if material is None:
         return None
-    subject = "registration_admin"
-    sig = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
-    return f"{subject}:{sig}"
+    secret, password_hash = material
+    issued_at = int(time.time())
+    payload = {
+        "v": 1,
+        "sub": "registration_admin",
+        "iat": issued_at,
+        "exp": issued_at + REGISTRATION_ADMIN_SESSION_TTL_SECONDS,
+        "cred": _registration_admin_credential_fingerprint(secret, password_hash),
+    }
+    encoded = _claim_b64(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    )
+    signature = _claim_b64(
+        hmac.new(
+            secret.encode(), f"ra1.{encoded}".encode("ascii"), hashlib.sha256,
+        ).digest()
+    )
+    token = f"ra1.{encoded}.{signature}"
+    return token if len(token) <= COMMITTEE_SESSION_TOKEN_MAX_CHARS else None
+
+
+def _registration_admin_auth_material() -> tuple[str, str] | None:
+    engine = _get_db_engine()
+    if engine is None:
+        return None
+    try:
+        with engine.begin() as conn:
+            configs = get_configs_from_connection(
+                conn, ("cookie_secret", "admin_password"),
+            )
+    except Exception:
+        return None
+    secret = str(configs.get("cookie_secret") or "")
+    password_hash = str(configs.get("admin_password") or "")
+    if not secret or not password_hash:
+        return None
+    return secret, password_hash
+
+
+def _registration_admin_credential_fingerprint(
+    secret: str, password_hash: str,
+) -> str:
+    material = f"registration-admin-credential-v1\0{password_hash}".encode()
+    return hmac.new(secret.encode(), material, hashlib.sha256).hexdigest()
 
 
 def _verify_registration_admin_token(token: str) -> bool:
-    if not token or ":" not in token:
+    value = str(token or "")
+    if not value or len(value) > COMMITTEE_SESSION_TOKEN_MAX_CHARS:
         return False
-    subject, sig = token.rsplit(":", 1)
-    if subject != "registration_admin":
+    try:
+        prefix, encoded, signature = value.split(".", 2)
+        if prefix != "ra1":
+            return False
+        payload = json.loads(_claim_b64decode(encoded))
+        if not isinstance(payload, dict) or payload.get("v") != 1:
+            return False
+        subject = str(payload.get("sub") or "")
+        issued_at = int(payload.get("iat"))
+        expires_at = int(payload.get("exp"))
+        credential = str(payload.get("cred") or "")
+    except (
+        OverflowError, TypeError, ValueError, UnicodeError, json.JSONDecodeError,
+    ):
         return False
-    secret = _get_relay_cookie_secret()
-    if not secret:
+    now = int(time.time())
+    if (
+        subject != "registration_admin"
+        or issued_at > now + COMMITTEE_SESSION_CLOCK_SKEW_SECONDS
+        or expires_at <= now
+        or expires_at <= issued_at
+        or expires_at - issued_at > REGISTRATION_ADMIN_SESSION_TTL_SECONDS
+    ):
         return False
-    expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
+    material = _registration_admin_auth_material()
+    if material is None:
+        return False
+    secret, password_hash = material
+    expected_signature = _claim_b64(
+        hmac.new(
+            secret.encode(), f"ra1.{encoded}".encode("ascii"), hashlib.sha256,
+        ).digest()
+    )
+    expected_credential = _registration_admin_credential_fingerprint(
+        secret, password_hash,
+    )
+    return hmac.compare_digest(signature, expected_signature) and hmac.compare_digest(
+        credential, expected_credential,
+    )
 
 
 def _judging_auth_material(match_id: str):
@@ -1480,6 +1556,14 @@ async def azure_tts(request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
+    if str(user_id) == KIOSK_ACCOUNT_ID:
+        from api.projector_ai_api import validate_kiosk_display_lease
+
+        validate_kiosk_display_lease(
+            request,
+            display=str(payload.get("display") or ""),
+        )
+
     tts_text = str(payload.get("text") or "").strip()
     if not tts_text:
         raise HTTPException(status_code=400, detail="Missing text")
@@ -2019,6 +2103,42 @@ async def match_photos_page():
     )
 
 
+@app.get("/recent-matches")
+async def recent_matches_page():
+    html = (BASE_DIR / "frontend" / "recent_matches" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
+
+
+@app.get("/ghost-forum")
+async def ghost_forum_page():
+    html = (BASE_DIR / "frontend" / "ghost_forum" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
+
+
+@app.get("/team-history")
+async def team_history_page():
+    html = (BASE_DIR / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
+
+
 @app.get("/team-roster")
 async def team_roster_page():
     return FileResponse(BASE_DIR / "frontend" / "team_roster" / "index.html",
@@ -2126,12 +2246,6 @@ async def ai_training_script():
     )
 
 
-@app.get("/db-mgmt")
-@app.get("/db_mgmt", include_in_schema=False)
-async def db_management_page():
-    return FileResponse(BASE_DIR / "frontend" / "db_mgmt" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
-
-
 @app.get("/dev-settings")
 @app.get("/dev_settings", include_in_schema=False)
 async def developer_settings_page():
@@ -2141,15 +2255,6 @@ async def developer_settings_page():
     html = html.replace("__APP_VERSION__", APP_VERSION)
     return Response(
         content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
-    )
-
-
-@app.get("/dev-settings/lateness-managers.js")
-async def developer_lateness_managers_script():
-    return FileResponse(
-        BASE_DIR / "frontend" / "dev_settings" / "lateness-managers.js",
-        media_type="application/javascript",
-        headers=_cache_headers(CACHE_NO_CACHE),
     )
 
 

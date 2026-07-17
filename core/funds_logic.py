@@ -29,11 +29,12 @@ from system_limits import (
     AI_USAGE_RETENTION_DAYS,
     MAINTENANCE_PRUNE_INTERVAL_SECONDS,
 )
+from core.roles import is_ai_manager, is_senior_committee
 
 HKD_PER_USD = 7.8
 AI_FUND_TARGET_DEFAULT = 500.0
 AI_FUND_LOW_BALANCE_DEFAULT = 100.0
-AI_FUND_PAYMENT_DEFAULT = "請按賽會指示付款，並提交交易編號供 AI基金管理員確認。"
+AI_FUND_PAYMENT_DEFAULT = "請按賽會指示付款，並提交交易編號供 AI管理員確認。"
 AI_TRANSACTION_TYPES = {"member_deposit", "provider_topup", "provider_refund", "member_refund", "adjustment"}
 AI_PROVIDERS = {
     "openrouter", "gemini", "openai", "azure", "custom", "general", "other",
@@ -67,7 +68,6 @@ AI_USAGE_FEATURES = (
     "kiosk_match_review", "tts", "kiosk_match_review_tts",
 )
 TTS_USAGE_FEATURES = frozenset(("tts", "kiosk_match_review_tts"))
-LATENESS_FUND_MANAGERS_DEFAULT = ("leungph",)
 _AI_PRUNE_LOCK = threading.Lock()
 _AI_LAST_PRUNE = None
 _NON_MEMBER_ACCOUNT_SQL = sql_account_id_literals((*NON_MEMBER_ACCOUNT_DB_KEYS, ""))
@@ -133,19 +133,6 @@ def _valid_date(value, label):
         return date.fromisoformat(str(value)[:10]).isoformat()
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label}無效。") from exc
-
-
-def lateness_managers(db=None):
-    db = _resolve_db(db)
-    values = _config(db, "lateness_fund_managers", [])
-    if not isinstance(values, list) or not values:
-        return list(LATENESS_FUND_MANAGERS_DEFAULT)
-    managers = [str(value).strip() for value in values if str(value).strip()]
-    return managers or list(LATENESS_FUND_MANAGERS_DEFAULT)
-
-
-def is_lateness_manager(user_id, db=None):
-    return str(user_id or "").strip() in lateness_managers(db)
 
 
 def _lateness_totals(year, db):
@@ -248,7 +235,7 @@ def lateness_data(selected_year=None, user_id=None, db=None):
         "records": [],
         "expenses": [],
         "members": [str(value).strip() for value in accounts.get("user_id", []) if str(value).strip()],
-        "is_manager": is_lateness_manager(user_id, db=db) if user_id else False,
+        "is_senior_committee": is_senior_committee(user_id, db=db) if user_id else False,
         "outstanding_members": outstanding,
     }
 
@@ -464,16 +451,6 @@ def _configs(db, keys):
     return get_configs(db, keys)
 
 
-def is_ai_treasurer(user_id, db=None):
-    """Check the role without loading balances, usage aggregates, and accounts."""
-    db = _resolve_db(db)
-    values = _config(db, "ai_fund_treasurers", [])
-    if not isinstance(values, list):
-        return False
-    user_id = str(user_id or "").strip()
-    return user_id in {str(value).strip() for value in values if str(value).strip()}
-
-
 def _month_shift(value: date, offset: int) -> date:
     index = value.year * 12 + value.month - 1 + int(offset)
     return date(index // 12, index % 12 + 1, 1)
@@ -574,8 +551,8 @@ def ai_budget_data(db, now=None) -> dict:
 
 def save_ai_budget(user_id, payload, db=None, now=None):
     db = _resolve_db(db)
-    if not is_ai_treasurer(user_id, db=db):
-        raise PermissionError("只有 AI基金管理員可分配 provider 預算。")
+    if not is_ai_manager(user_id, db=db):
+        raise PermissionError("只有 AI管理員可分配 provider 預算。")
     cycle = ai_budget_cycle(now)
     if not cycle["can_settle"]:
         raise ValueError("本期捐款窗口尚未結算。")
@@ -665,8 +642,8 @@ def save_ai_budget(user_id, payload, db=None, now=None):
 
 
 def notify_ai_budget(user_id, db, vapid, now=None):
-    if not is_ai_treasurer(user_id, db=db):
-        raise PermissionError("只有 AI基金管理員可發出預算通知。")
+    if not is_ai_manager(user_id, db=db):
+        raise PermissionError("只有 AI管理員可發出預算通知。")
     cycle = ai_budget_cycle(now)
     if not cycle["can_settle"]:
         raise ValueError("本期捐款窗口尚未結算。")
@@ -797,7 +774,7 @@ def notify_ai_budget(user_id, db, vapid, now=None):
 def ai_data(user_id, db=None):
     db = _resolve_db(db)
     config = _configs(db, (
-        "ai_fund_treasurers",
+        "ai_managers",
         "ai_fund_target_hkd",
         "ai_fund_low_balance_hkd",
         "ai_fund_payment_instruction",
@@ -805,14 +782,14 @@ def ai_data(user_id, db=None):
         "google_ai_studio_balance_updated_at",
         "google_ai_studio_balance_updated_by",
     ))
-    treasurer_values = config.get("ai_fund_treasurers") or []
-    treasurers = (
-        [str(value).strip() for value in treasurer_values if str(value).strip()]
-        if isinstance(treasurer_values, list) else []
+    manager_values = config.get("ai_managers") or []
+    managers = (
+        [str(value).strip() for value in manager_values if str(value).strip()]
+        if isinstance(manager_values, list) else []
     )
-    treasurer = str(user_id or "").strip() in treasurers
+    manager = is_ai_manager(user_id, db=db)
     settings = {
-        "treasurers": treasurers,
+        "ai_managers": managers,
         "target_hkd": _float(config.get("ai_fund_target_hkd"), AI_FUND_TARGET_DEFAULT),
         "low_balance_hkd": _float(config.get("ai_fund_low_balance_hkd"), AI_FUND_LOW_BALANCE_DEFAULT),
         "payment_instruction": config.get("ai_fund_payment_instruction") or AI_FUND_PAYMENT_DEFAULT,
@@ -853,7 +830,7 @@ def ai_data(user_id, db=None):
     google = config.get("google_ai_studio_balance_usd")
     result = {
         "user_id": user_id,
-        "is_treasurer": treasurer,
+        "is_ai_manager": manager,
         "settings": settings,
         "summary": {
             "balance_hkd": amount,
@@ -911,10 +888,10 @@ def set_ai_transaction_status(transaction_id, status, user_id, note="", db=None)
     )
 
 
-def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
+def ai_usage_summary(user_id, manager=False, db=None, limit=None, offset=0):
     db = _resolve_db(db)
-    where = "" if treasurer else "WHERE user_id=:user"
-    params = {} if treasurer else {"user": user_id}
+    where = "" if manager else "WHERE user_id=:user"
+    params = {} if manager else {"user": user_id}
     paging = " LIMIT :limit OFFSET :offset" if limit is not None else ""
     if limit is not None:
         params.update(limit=max(1, int(limit)), offset=max(0, int(offset)))
@@ -936,10 +913,10 @@ def ai_usage_summary(user_id, treasurer=False, db=None, limit=None, offset=0):
         ORDER BY "month" DESC,estimated_cost_hkd DESC{paging}""", params)
 
 
-def ai_usage_summary_count(user_id, treasurer=False, db=None):
+def ai_usage_summary_count(user_id, manager=False, db=None):
     db = _resolve_db(db)
-    where = "" if treasurer else "WHERE user_id=:user"
-    params = {} if treasurer else {"user": user_id}
+    where = "" if manager else "WHERE user_id=:user"
+    params = {} if manager else {"user": user_id}
     result = db.query(f"""SELECT COUNT(*) AS n FROM (
         SELECT 1 FROM {TABLE_AI_FUND_USAGE_LOGS} {where}
         GROUP BY TO_CHAR(created_at,'YYYY-MM'),user_id,COALESCE(provider,'other'),feature,model_label
@@ -949,8 +926,8 @@ def ai_usage_summary_count(user_id, treasurer=False, db=None):
 
 def save_ai_admin(user_id, payload, db=None):
     db = _resolve_db(db)
-    if not is_ai_treasurer(user_id, db=db):
-        raise PermissionError("只有 AI基金管理員可更改設定。")
+    if not is_ai_manager(user_id, db=db):
+        raise PermissionError("只有 AI管理員可更改設定。")
     kind = payload.get("kind")
     if kind == "settings":
         target = _float(payload.get("target_hkd")); low = _float(payload.get("low_balance_hkd"))

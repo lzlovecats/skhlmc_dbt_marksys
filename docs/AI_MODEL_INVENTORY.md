@@ -1,6 +1,6 @@
 # AI 使用位置與模型清單
 
-最後更新：4.5.5
+最後更新：4.6.0
 
 所有可執行程式的模型選擇集中在根目錄 `ai_model_config.py`。API、core
 logic 或 `deploy/proxy.py` 不應自行寫 provider model slug；顯示文字、測試假
