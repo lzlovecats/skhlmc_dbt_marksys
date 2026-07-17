@@ -267,6 +267,9 @@
         background: var(--accent);
         color: #fff;
       }
+      .role-tabs:empty {
+        display: none;
+      }
       .markdown {
         overflow-wrap: anywhere;
       }
@@ -329,6 +332,7 @@
     <main>
       <h1>聖呂中辯電子賽務系統</h1>
       <div class="caption">請根據你的身份選擇對應功能（系統版本：<span id="systemVersion">載入中</span>）</div>
+      <div class="caption">如需查閱賽規，請至最底「📚 支援資料」查閱。</div>
       <section id="installAssistant" class="card" hidden>
         <div class="install-kicker">手機版捷徑</div>
         <div class="install-title">將系統加到手機主畫面</div>
@@ -499,7 +503,7 @@
             "一般人員",
             "內部委員會成員",
           ],
-          rules: ["評判", "賽會人員", "參賽隊伍"],
+          rules: [],
         };
 
         if ("serviceWorker" in navigator)
@@ -575,6 +579,10 @@
         function inline(text) {
           return esc(text)
             .replace(/`([^`]+)`/g, "<code>$1</code>")
+            .replace(
+              /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+              '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+            )
             .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
         }
         function markdown(source) {
@@ -644,7 +652,7 @@
         }
         async function openDocument(kind, role) {
           activeDocument = kind;
-          activeRole = role || roles[kind][0];
+          activeRole = kind === "rules" ? "" : role || roles[kind][0];
           $("modalTitle").textContent =
             kind === "manual"
               ? "聖呂中辯電子賽務系統：用戶使用手冊"
@@ -658,9 +666,10 @@
           $("markdown").textContent = "載入中…";
           $("modalBackdrop").classList.add("show");
           $("modalBackdrop").setAttribute("aria-hidden", "false");
-          const response = await fetch(
-            `/api/home/${kind}?role=${encodeURIComponent(activeRole)}`,
-          );
+          const query = activeRole
+            ? `?role=${encodeURIComponent(activeRole)}`
+            : "";
+          const response = await fetch(`/api/home/${kind}${query}`);
           const data = await response.json();
           $("markdown").innerHTML = response.ok
             ? markdown(data.markdown)

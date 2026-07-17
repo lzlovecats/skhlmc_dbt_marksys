@@ -13,6 +13,7 @@ from scoring import (
     SPEECH_CRITERIA,
     derive_debater_ranks,
     free_debate_col,
+    is_valid_competition_ranking,
     speech_col,
 )
 
@@ -228,7 +229,7 @@ def _build_ranks(pro_data, con_data, rankings=None):
         if (
             len(pro_ranks) == 4
             and len(con_ranks) == 4
-            and sorted(submitted) == list(range(1, 9))
+            and is_valid_competition_ranking(submitted)
         ):
             return {"正方": submitted[:4], "反方": submitted[4:]}
 

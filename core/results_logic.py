@@ -5,7 +5,7 @@ import math
 import pandas as pd
 
 from core.vote_logic import _resolve_db
-from scoring import derive_debater_ranks
+from scoring import derive_debater_ranks, is_valid_competition_ranking
 from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORES
 from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
@@ -33,7 +33,7 @@ def _complete_ranking(rank_df, judge):
             (str(row["side"]).strip(), int(row["position"]))
             for _, row in judge_rows.iterrows()
         }
-        ranks = {int(value) for value in judge_rows["rank"].tolist()}
+        ranks = [int(value) for value in judge_rows["rank"].tolist()]
     except (KeyError, TypeError, ValueError):
         return False
     expected_slots = {
@@ -41,7 +41,7 @@ def _complete_ranking(rank_df, judge):
         for side in ("pro", "con")
         for position in range(1, 5)
     }
-    return slots == expected_slots and ranks == set(range(1, 9))
+    return slots == expected_slots and is_valid_competition_ranking(ranks)
 
 
 def _ranking_row(judge, numeric_scores, rank_df):

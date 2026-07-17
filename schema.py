@@ -195,7 +195,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_DEBATER_SCORES} (
 """
 
 # Table: BEST_DEBATER_RANKINGS
-# Explicit best-debater rankings given by each judge (1 = best, 8 = worst).
+# Explicit best-debater rankings given by each judge (1 = best), using
+# standard competition ranking for ties (for example 1, 1, 3).
 # Falls back to auto-derived rankings from debater_scores when absent.
 CREATE_BEST_DEBATER_RANKINGS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_BEST_DEBATER_RANKINGS} (

@@ -5,9 +5,10 @@ from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from pypdf import PdfReader
 
-from core.judging_logic import submit_final_scores
+from core.judging_logic import submit_best_debater_rankings, submit_final_scores
 from core.results_logic import RANK_COLUMNS, _best_debaters, judge_ranking
 from score_sheet_pdf import _build_ranks, build_score_sheet_pdf
 from scoring import COHERENCE_MAX, FREE_DEBATE_CRITERIA, SPEECH_CRITERIA, free_debate_col, speech_col
@@ -79,6 +80,18 @@ class _FinalDb:
         return _Transaction(self.session)
 
 
+class _RankSubmissionDb:
+    def __init__(self):
+        self.session = _FinalSession()
+
+    def query(self, sql, params=None):
+        assert "FROM scores" in sql
+        return pd.DataFrame([{"exists": 1}])
+
+    def transaction(self):
+        return _Transaction(self.session)
+
+
 def test_final_submission_writes_both_sides_totals_and_eight_speakers_in_one_transaction():
     db = _FinalDb()
     result = submit_final_scores("M1", " Judge ", _side_data(), _side_data(), db=db)
@@ -98,6 +111,38 @@ def test_duplicate_final_submission_stops_before_any_score_write():
     assert submit_final_scores("M1", "Judge", _side_data(), _side_data(), db=db) is False
     assert len(db.session.calls) == 2
     assert all("INSERT INTO" not in sql for sql, _ in db.session.calls)
+
+
+def test_best_debater_submission_accepts_standard_competition_ties():
+    slots = [
+        (side, position)
+        for side in ("pro", "con")
+        for position in range(1, 5)
+    ]
+    rankings = [
+        {"side": side, "position": position, "rank": rank}
+        for (side, position), rank in zip(slots, [1, 1, 3, 4, 5, 6, 7, 8])
+    ]
+    db = _RankSubmissionDb()
+
+    assert submit_best_debater_rankings("M1", "評判甲", rankings, db=db) is True
+    assert len(db.session.calls) == 1
+    assert [item["rank"] for item in db.session.calls[0][1]][:3] == [1, 1, 3]
+
+
+def test_best_debater_submission_rejects_dense_ranking_after_a_tie():
+    slots = [
+        (side, position)
+        for side in ("pro", "con")
+        for position in range(1, 5)
+    ]
+    rankings = [
+        {"side": side, "position": position, "rank": rank}
+        for (side, position), rank in zip(slots, [1, 1, 2, 4, 5, 6, 7, 8])
+    ]
+
+    with pytest.raises(ValueError, match="1、1、3"):
+        submit_best_debater_rankings("M1", "評判甲", rankings, db=_RankSubmissionDb())
 
 
 class _RankingDb:
@@ -133,6 +178,18 @@ def _reverse_ranking(judge="評判甲"):
     return [
         {"judge_name": judge, "side": side, "position": position, "rank": rank}
         for rank, (side, position) in enumerate(slots, 1)
+    ]
+
+
+def _competition_tie_ranking(judge="評判甲"):
+    slots = [
+        (side, position)
+        for side in ("pro", "con")
+        for position in range(1, 5)
+    ]
+    return [
+        {"judge_name": judge, "side": side, "position": position, "rank": rank}
+        for (side, position), rank in zip(slots, [1, 1, 3, 4, 5, 6, 7, 8])
     ]
 
 
@@ -217,6 +274,23 @@ def test_review_and_pdf_preserve_the_selected_judges_submitted_ranking():
     assert "反方測試隊" in (pages[1].extract_text() or "")
 
 
+def test_review_and_pdf_preserve_submitted_equal_ranks():
+    frame = _score_frame()
+    ranking = judge_ranking(
+        "M1", "評判甲", frame.iloc[0], _RankingDb(_competition_tie_ranking())
+    )
+
+    assert ranking == {
+        "正方": [1, 1, 3, 4],
+        "反方": [5, 6, 7, 8],
+        "source": "submitted",
+    }
+    assert _build_ranks(_side_data(), _side_data(), rankings=ranking) == {
+        "正方": [1, 1, 3, 4],
+        "反方": [5, 6, 7, 8],
+    }
+
+
 def test_judge_state_requests_have_a_stale_response_guard():
     html = Path(__file__).resolve().parents[1] / "frontend" / "judging" / "index.html"
     source = html.read_text(encoding="utf-8")
@@ -243,3 +317,14 @@ def test_judge_change_resets_dirty_state_and_old_draft_response_cannot_clear_new
     assert 'dirtySides.clear();\n        manualSaveSide = "";' in script
     assert 'requestJudge = String(payload.judge_name || "").trim();' in script
     assert "response.ok && requestJudge === currentJudge" in script
+
+
+def test_judging_ui_uses_standard_competition_ranking_for_ties():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "frontend" / "judging" / "index.html").read_text(encoding="utf-8")
+    ux = (root / "frontend" / "shared" / "judging-ux.js").read_text(encoding="utf-8")
+
+    assert "x.score === previousScore ? previousRank : i + 1" in html
+    assert "1、1、3" in html
+    assert "rank === sortedRanks[index - 1] || rank === index + 1" in ux
+    assert "1、1、3" in ux
