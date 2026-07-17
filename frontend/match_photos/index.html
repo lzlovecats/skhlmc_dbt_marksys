@@ -333,7 +333,7 @@
             上載時可選擇「比賽片段」已有的場次；未能歸類的圖片可放入「其他相片」。
           </li>
           <li>點按圖片可用全畫面查看原圖；手機可使用捏合手勢縮放。</li>
-          <li>每位委員可在圖片下方修改自己上載的場次、日期、標題及說明。</li>
+          <li>每位委員可在圖片下方修改資料，或永久刪除自己上載的圖片。</li>
         </ul>
       </details>
       <details>
@@ -464,6 +464,7 @@
         "use strict";
         const $ = (id) => document.getElementById(id);
         let state = null;
+        let uploadInFlight = false;
         const esc = (v) =>
           String(v ?? "").replace(
             /[&<>"']/g,
@@ -495,11 +496,11 @@
           const maxMb = Number(limits.photo_max_bytes || 0) / 1024 / 1024;
           const thumbKb = Number(limits.thumbnail_max_bytes || 0) / 1024;
           $("photoLimitSummary").textContent =
-            `每次最多上載 ${limits.batch_max_items} 張；沒有每日／每月次數限額，仍受全站 R2 儲存保護。`;
+            `可一次選擇多張圖片；系統會每 ${limits.batch_max_items} 張安全分批處理。沒有每日／每月次數限額，仍受全站 R2 儲存保護。`;
           $("photoSizeSummary").textContent =
             `每張原圖最多 ${fmtLimit(maxMb)}MB、最長邊 ${limits.photo_max_dimension}px；縮圖最多 ${fmtLimit(thumbKb)}KB、最長邊 ${limits.thumbnail_max_dimension}px。圖片會由瀏覽器直接上載至 Cloudflare R2。`;
           $("photoUploadCaption").textContent =
-            `每次最多 ${limits.batch_max_items} 張；每張原圖最多 ${fmtLimit(maxMb)}MB，系統會建立不超過 ${fmtLimit(thumbKb)}KB 的縮圖。`;
+            `可一次選擇多張；系統會每 ${limits.batch_max_items} 張分批上載並顯示進度。每張原圖最多 ${fmtLimit(maxMb)}MB，縮圖不超過 ${fmtLimit(thumbKb)}KB。`;
           $("album").innerHTML = state.albums
             .map(
               (a) =>
@@ -643,9 +644,21 @@
           });
           if (!r.ok) throw new Error(`R2 上載失敗（HTTP ${r.status}）。`);
         }
-        async function uploadR2Photos(files) {
+        async function uploadR2PhotoBatch(
+          files,
+          metadata,
+          completed,
+          total,
+          onProgress,
+        ) {
           const tokens = [];
-          for (const file of files) {
+          for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
+            onProgress(
+              completed + index + 1,
+              total,
+              `正在處理 ${file.name}`,
+            );
             const prepared = await prepareR2Photo(file);
             const intent = await api("/api/match-photos/upload-intent", {
               method: "POST",
@@ -674,20 +687,50 @@
             );
             tokens.push(intent.upload_token);
           }
-          const option = $("album").selectedOptions[0];
+          onProgress(
+            completed + files.length,
+            total,
+            "正在確認這批圖片",
+          );
           return api("/api/match-photos/upload-complete", {
             method: "POST",
             body: JSON.stringify({
-              album_label: $("album").value,
-              match_video_id: option.dataset.video
-                ? Number(option.dataset.video)
-                : null,
-              photo_date: $("photoDate").value,
-              photo_title: $("photoTitle").value,
-              caption: $("caption").value,
+              ...metadata,
               upload_tokens: tokens,
             }),
           });
+        }
+        async function uploadR2Photos(files, metadata, onProgress) {
+          const batchSize = Math.max(
+            1,
+            Number(state.limits.batch_max_items) || 1,
+          );
+          let completed = 0;
+          try {
+            for (
+              let start = 0;
+              start < files.length;
+              start += batchSize
+            ) {
+              const batch = files.slice(start, start + batchSize);
+              await uploadR2PhotoBatch(
+                batch,
+                metadata,
+                completed,
+                files.length,
+                onProgress,
+              );
+              completed += batch.length;
+              onProgress(completed, files.length, "已完成這批圖片");
+            }
+          } catch (error) {
+            error.completedItems = completed;
+            throw error;
+          }
+          return {
+            ok: true,
+            message: `${completed} 張圖片已成功上載。`,
+          };
         }
         $("retryLogin").addEventListener("click", load);
         $("loginForm").addEventListener("submit", async (e) => {
@@ -711,26 +754,64 @@
         });
         $("uploadForm").addEventListener("submit", async (e) => {
           e.preventDefault();
+          if (uploadInFlight) return;
           const files = [...$("files").files];
           if (!files.length) {
             notice("uploadMessage", "warn", "請先選擇圖片。");
             return;
           }
-          if (files.length > state.limits.batch_max_items) {
+          const form = e.currentTarget,
+            submitButton = form.querySelector('button[type="submit"]'),
+            controls = [...form.elements],
+            priorDisabled = controls.map((control) => control.disabled),
+            option = $("album").selectedOptions[0],
+            metadata = {
+              album_label: $("album").value,
+              match_video_id: option.dataset.video
+                ? Number(option.dataset.video)
+                : null,
+              photo_date: $("photoDate").value,
+              photo_title: $("photoTitle").value,
+              caption: $("caption").value,
+            };
+          uploadInFlight = true;
+          controls.forEach((control) => {
+            control.disabled = true;
+          });
+          submitButton.disabled = true;
+          notice("uploadMessage", "", `上載中 0/${files.length} 張…`);
+          try {
+            const result = await uploadR2Photos(
+              files,
+              metadata,
+              (current, total, detail) =>
+                notice(
+                  "uploadMessage",
+                  "",
+                  `上載中 ${Math.min(current, total)}/${total} 張：${detail}`,
+                ),
+            );
+            form.reset();
+            notice("uploadMessage", "ok", "☑️ " + result.message);
+            toast("☑️ " + result.message);
+            await load();
+            window.dispatchEvent(new Event("match-photos:uploaded"));
+          } catch (error) {
+            const completed = Number(error.completedItems || 0);
+            if (completed > 0) $("files").value = "";
             notice(
               "uploadMessage",
-              "warn",
-              `每次最多只可上載 ${state.limits.batch_max_items} 張圖片。`,
+              "err",
+              completed > 0
+                ? `已完成 ${completed}/${files.length} 張；為免重複上載，請重新選擇餘下圖片。${error.message}`
+                : error.message,
             );
-            return;
-          }
-          try {
-            const result = await uploadR2Photos(files);
-            e.target.reset();
-            toast("☑️ " + result.message);
-            setTimeout(() => location.reload(), 300);
-          } catch (error) {
-            notice("uploadMessage", "err", error.message);
+          } finally {
+            controls.forEach((control, index) => {
+              control.disabled = priorDisabled[index];
+            });
+            submitButton.disabled = false;
+            uploadInFlight = false;
           }
         });
         load();
