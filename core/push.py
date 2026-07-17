@@ -17,6 +17,7 @@ from schema import (
     TABLE_ACCOUNTS,
     TABLE_APP_CONFIG,
     TABLE_COMMITTEE_MEMBERSHIPS,
+    TABLE_GHOST_FORUM_THREAD_USER_STATE,
     TABLE_PUSH_SUBSCRIPTIONS,
 )
 from system_limits import PUSH_RECIPIENT_LIMIT, PUSH_SEND_CONCURRENCY
@@ -104,7 +105,8 @@ def send_web_push(subscription, title, body, vapid, url="/vote", tag=None):
 
 def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None,
                      tag=None, url="/vote", send_fn=None,
-                     committee_only=False, senior_only=False):
+                     committee_only=False, senior_only=False,
+                     forum_thread_id=None):
     """Send ``title``/``body`` to matching active push subscriptions.
 
     Prunes subscriptions that return 404/410 (gone). Returns the number sent.
@@ -142,6 +144,14 @@ def notify_committee(db, vapid, title, body, exclude_user=None, target_user=None
     if target_user:
         where += " AND p.user_id = :target_user"
         params["target_user"] = target_user
+    if forum_thread_id is not None:
+        where += (
+            " AND NOT EXISTS ("
+            f"SELECT 1 FROM {TABLE_GHOST_FORUM_THREAD_USER_STATE} state "
+            "WHERE state.thread_id=:forum_thread_id AND state.user_id=p.user_id "
+            "AND state.muted=TRUE)"
+        )
+        params["forum_thread_id"] = int(forum_thread_id)
 
     try:
         rows = db.query(

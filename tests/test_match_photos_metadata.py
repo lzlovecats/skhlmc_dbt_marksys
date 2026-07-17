@@ -326,3 +326,22 @@ def test_gallery_only_offers_server_authorized_metadata_editor():
     assert "原有：" in source
     assert "原有場次已不可選" not in source
     assert "await load(1)" in source
+
+
+def test_gallery_opens_original_photo_on_demand_in_accessible_lightbox():
+    html = (ROOT / "frontend" / "match_photos" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    source = (ROOT / "frontend/shared/server-tables.js").read_text(encoding="utf-8")
+
+    assert 'id="photoLightbox"' in html
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'id="photoLightboxClose"' in html
+    assert 'class="photo-preview"' in source
+    assert 'aria-haspopup="dialog"' in source
+    assert 'data-photo-src="${image}"' in source
+    assert "lightboxImage.src = trigger.dataset.photoSrc" in source
+    assert 'event.key === "Tab"' in source
+    assert 'event.key === "Escape"' in source
+    assert "lastPhotoTrigger?.focus()" in source

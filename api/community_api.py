@@ -27,10 +27,13 @@ from schema import (
     TABLE_ACCOUNTS,
     TABLE_COMMITTEE_MEMBERSHIPS,
     TABLE_GHOST_FORUM_POSTS,
+    TABLE_GHOST_FORUM_NOTIFICATIONS,
     TABLE_GHOST_FORUM_REACTIONS,
     TABLE_GHOST_FORUM_THREAD_MATCHES,
     TABLE_GHOST_FORUM_THREAD_PHOTOS,
+    TABLE_GHOST_FORUM_THREAD_USER_STATE,
     TABLE_GHOST_FORUM_THREADS,
+    TABLE_GHOST_FORUM_USER_PROFILES,
     TABLE_HISTORY_EVENT_MATCHES,
     TABLE_HISTORY_EVENT_PHOTOS,
     TABLE_HISTORY_EVENTS,
@@ -42,6 +45,7 @@ from schema import (
 )
 from system_limits import (
     COMMITTEE_MEMBERSHIP_INVENTORY_LIMIT,
+    GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS,
     GHOST_FORUM_POST_LIMIT,
     GHOST_FORUM_THREAD_LIMIT,
     HISTORY_EVENT_INVENTORY_LIMIT,
@@ -120,6 +124,14 @@ class ForumPostUpdateBody(BaseModel):
     revision: int = Field(ge=1)
 
 
+class ForumReadBody(BaseModel):
+    post_id: int | None = Field(default=None, ge=1)
+
+
+class ForumThreadStateBody(BaseModel):
+    muted: bool
+
+
 def _db():
     from deploy.proxy import get_vote_db
 
@@ -147,6 +159,19 @@ def _ghost_context(request: Request):
 
 def _now():
     return datetime.now(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
+
+
+def _ensure_forum_profile(connection, user_id, now):
+    """Start unread tracking without treating pre-existing posts as unread."""
+    connection.execute(
+        text(
+            f"""INSERT INTO {TABLE_GHOST_FORUM_USER_PROFILES}
+                (user_id,unread_since,created_at,updated_at)
+                VALUES(:user,:now,:now,:now)
+                ON CONFLICT (user_id) DO NOTHING"""
+        ),
+        {"user": user_id, "now": now},
+    )
 
 
 def _records(frame):
@@ -416,7 +441,6 @@ def _fire_forum_push(db, author_user_id, thread_id, thread_title, event_kind, po
         from core.push import notify_committee
         from deploy.proxy import _get_vapid
 
-        suffix = f"-post-{int(post_id)}" if post_id is not None else ""
         sent = notify_committee(
             db,
             _get_vapid(),
@@ -424,8 +448,9 @@ def _fire_forum_push(db, author_user_id, thread_id, thread_title, event_kind, po
             body,
             exclude_user=author_user_id,
             senior_only=True,
-            tag=f"ghost-forum-thread-{int(thread_id)}{suffix}",
-            url=f"/ghost-forum?thread={int(thread_id)}",
+            forum_thread_id=thread_id,
+            tag=f"ghost-forum-thread-{int(thread_id)}",
+            url=f"/ghost-forum?thread={int(thread_id)}&post={int(post_id)}",
         )
     except Exception:
         logger.exception(
@@ -435,6 +460,90 @@ def _fire_forum_push(db, author_user_id, thread_id, thread_title, event_kind, po
         )
         sent = 0
     return {"sent_count": int(sent)}
+
+
+def _queue_forum_notification(connection, post_id, event_kind):
+    row = connection.execute(
+        text(
+            f"""INSERT INTO {TABLE_GHOST_FORUM_NOTIFICATIONS}(post_id,event_kind)
+                VALUES(:post,:event)
+                ON CONFLICT (post_id) DO UPDATE SET post_id=EXCLUDED.post_id
+                RETURNING id"""
+        ),
+        {"post": post_id, "event": event_kind},
+    ).mappings().one_or_none()
+    return int(row["id"]) if row is not None else None
+
+
+def _dispatch_forum_notification(db, notification_id, *, author_user_id=None):
+    """Claim, deliver, and settle one durable forum notification."""
+    now = _now()
+    stale_before = now - timedelta(seconds=GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS)
+    claim = secrets.token_urlsafe(24)
+    params = {
+        "id": int(notification_id),
+        "now": now,
+        "stale": stale_before,
+        "claim": claim,
+    }
+    owner_sql = ""
+    if author_user_id is not None:
+        owner_sql = " AND p.author_user_id=:author"
+        params["author"] = author_user_id
+    with db.transaction() as connection:
+        row = connection.execute(
+            text(
+                f"""SELECT n.id,n.event_kind,p.id post_id,p.author_user_id,
+                           t.id thread_id,t.title
+                    FROM {TABLE_GHOST_FORUM_NOTIFICATIONS} n
+                    JOIN {TABLE_GHOST_FORUM_POSTS} p ON p.id=n.post_id
+                    JOIN {TABLE_GHOST_FORUM_THREADS} t ON t.id=p.thread_id
+                    WHERE n.id=:id AND t.deleted_at IS NULL
+                      AND (n.state IN ('pending','retryable') OR
+                           (n.state='sending' AND n.attempted_at<:stale))
+                      {owner_sql}
+                    FOR UPDATE OF n"""
+            ),
+            params,
+        ).mappings().one_or_none()
+        if row is None:
+            return {"id": int(notification_id), "state": "not_retryable", "sent_count": 0}
+        connection.execute(
+            text(
+                f"""UPDATE {TABLE_GHOST_FORUM_NOTIFICATIONS}
+                    SET state='sending',claim_token=:claim,attempted_at=:now,last_error=''
+                    WHERE id=:id"""
+            ),
+            params,
+        )
+
+    delivery = _fire_forum_push(
+        db,
+        str(row["author_user_id"]),
+        int(row["thread_id"]),
+        str(row["title"]),
+        str(row["event_kind"]),
+        post_id=int(row["post_id"]),
+    )
+    sent = int(delivery.get("sent_count") or 0)
+    state = "sent" if sent > 0 else "retryable"
+    error = "" if sent > 0 else "目前沒有成功送達的老鬼裝置。"
+    db.execute(
+        f"""UPDATE {TABLE_GHOST_FORUM_NOTIFICATIONS}
+            SET state=:state,sent_at=CASE WHEN :sent THEN :now ELSE NULL END,
+                sent_count=:count,last_error=:error,claim_token=NULL
+            WHERE id=:id AND claim_token=:claim""",
+        {
+            "state": state,
+            "sent": sent > 0,
+            "now": _now(),
+            "count": sent,
+            "error": error,
+            "id": int(notification_id),
+            "claim": claim,
+        },
+    )
+    return {"id": int(notification_id), "state": state, "sent_count": sent}
 
 
 @router.post("/recent-matches")
@@ -785,6 +894,37 @@ def forum_data(request: Request):
     return {"user_id": user, "can_post": True}
 
 
+@router.post("/forum/session")
+def forum_session(request: Request):
+    user, db = _ghost_context(request)
+    now = _now()
+    with db.transaction() as connection:
+        _ensure_forum_profile(connection, user, now)
+    retryable = db.query(
+        f"""SELECT n.id notification_id,n.event_kind,n.attempted_at,
+                   t.id thread_id,t.title
+            FROM {TABLE_GHOST_FORUM_NOTIFICATIONS} n
+            JOIN {TABLE_GHOST_FORUM_POSTS} p ON p.id=n.post_id
+            JOIN {TABLE_GHOST_FORUM_THREADS} t ON t.id=p.thread_id
+            WHERE p.author_user_id=:user
+              AND (n.state IN ('pending','retryable') OR
+                   (n.state='sending' AND n.attempted_at<:stale))
+              AND t.deleted_at IS NULL
+            ORDER BY n.attempted_at DESC NULLS LAST,n.id DESC LIMIT 20""",
+        {
+            "user": user,
+            "stale": now - timedelta(
+                seconds=GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS
+            ),
+        },
+    )
+    return {
+        "user_id": user,
+        "can_post": True,
+        "retryable_notifications": _records(retryable),
+    }
+
+
 @router.get("/forum/threads")
 def forum_threads(request: Request, page: int = 1, search: str = "", sort: str = "activity"):
     user, db = _ghost_context(request)
@@ -792,25 +932,49 @@ def forum_threads(request: Request, page: int = 1, search: str = "", sort: str =
     query = str(search or "").strip().lower()[:100]
     where = "t.deleted_at IS NULL"
     params = {"user": user}
+    search_join = ""
+    search_columns = "NULL::BIGINT matched_post_id,NULL::TEXT matched_excerpt"
     if query:
-        where += (
-            " AND (LOWER(t.title) LIKE :search OR EXISTS "
-            f"(SELECT 1 FROM {TABLE_GHOST_FORUM_POSTS} sp WHERE sp.thread_id=t.id "
-            "AND sp.deleted_at IS NULL AND LOWER(sp.body) LIKE :search))"
+        search_join = (
+            "LEFT JOIN LATERAL ("
+            f"SELECT sp.id,LEFT(sp.body,300) excerpt FROM {TABLE_GHOST_FORUM_POSTS} sp "
+            "WHERE sp.thread_id=t.id AND sp.deleted_at IS NULL "
+            "AND LOWER(sp.body) LIKE :search "
+            "ORDER BY sp.created_at DESC,sp.id DESC LIMIT 1"
+            ") hit ON TRUE"
         )
+        search_columns = "hit.id matched_post_id,hit.excerpt matched_excerpt"
+        where += " AND (LOWER(t.title) LIKE :search OR hit.id IS NOT NULL)"
         params["search"] = f"%{query}%"
-    total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_GHOST_FORUM_THREADS} t WHERE {where}", params)
+    base_join = f"""LEFT JOIN {TABLE_GHOST_FORUM_USER_PROFILES} profile
+                         ON profile.user_id=:user
+                     LEFT JOIN {TABLE_GHOST_FORUM_THREAD_USER_STATE} state
+                         ON state.thread_id=t.id AND state.user_id=:user
+                     {search_join}"""
+    total = scalar_count(
+        db,
+        f"SELECT COUNT(*) total FROM {TABLE_GHOST_FORUM_THREADS} t {base_join} WHERE {where}",
+        params,
+    )
     order = "t.created_at DESC,t.id DESC" if sort == "newest" else "t.last_activity_at DESC,t.id DESC"
     params.update(limit=PAGE_SIZE, offset=offset)
     frame = db.query(
         f"""SELECT t.id,t.title,t.author_user_id,t.revision,t.created_at,t.updated_at,
                    t.last_activity_at,(t.author_user_id=:user) can_edit,
+                   COALESCE(state.muted,FALSE) muted,
+                   (SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_POSTS} unread
+                    WHERE unread.thread_id=t.id AND unread.deleted_at IS NULL
+                      AND profile.user_id IS NOT NULL
+                      AND unread.created_at>profile.unread_since
+                      AND (state.last_read_post_id IS NULL
+                           OR unread.id>state.last_read_post_id)) unread_count,
                    (SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_POSTS} p
                     WHERE p.thread_id=t.id AND p.deleted_at IS NULL
                       AND p.is_first_post=FALSE) post_count,
                    (SELECT LEFT(p.body,300) FROM {TABLE_GHOST_FORUM_POSTS} p
-                    WHERE p.thread_id=t.id AND p.is_first_post=TRUE) excerpt
-            FROM {TABLE_GHOST_FORUM_THREADS} t WHERE {where}
+                    WHERE p.thread_id=t.id AND p.is_first_post=TRUE) excerpt,
+                   {search_columns}
+            FROM {TABLE_GHOST_FORUM_THREADS} t {base_join} WHERE {where}
             ORDER BY {order} LIMIT :limit OFFSET :offset""",
         params,
     )
@@ -840,34 +1004,56 @@ def create_forum_thread(body: ForumThreadBody, request: Request):
             {"title": values["title"], "user": user, "now": now},
         ).mappings().one()
         thread_id = int(row["id"])
-        connection.execute(
+        post_row = connection.execute(
             text(
                 f"""INSERT INTO {TABLE_GHOST_FORUM_POSTS}
                     (thread_id,author_user_id,body,is_first_post,created_at,updated_at)
-                    VALUES(:thread,:user,:body,TRUE,:now,:now)"""
+                    VALUES(:thread,:user,:body,TRUE,:now,:now) RETURNING id"""
             ),
             {"thread": thread_id, "user": user, "body": values["body"], "now": now},
-        )
+        ).mappings().one()
+        post_id = int(post_row["id"])
         _replace_links(connection, thread_id, values["match_ids"], values["photo_ids"], forum=True)
-    notification = _fire_forum_push(
-        db, user, thread_id, values["title"], "thread",
-    )
+        _ensure_forum_profile(connection, user, now)
+        connection.execute(
+            text(
+                f"""INSERT INTO {TABLE_GHOST_FORUM_THREAD_USER_STATE}
+                    (thread_id,user_id,last_read_post_id,muted,updated_at)
+                    VALUES(:thread,:user,:post,FALSE,:now)
+                    ON CONFLICT (thread_id,user_id) DO UPDATE SET
+                        last_read_post_id=EXCLUDED.last_read_post_id,updated_at=EXCLUDED.updated_at"""
+            ),
+            {"thread": thread_id, "user": user, "post": post_id, "now": now},
+        )
+        notification_id = _queue_forum_notification(connection, post_id, "thread")
+    notification = _dispatch_forum_notification(db, notification_id)
     return {
         "ok": True,
         "id": thread_id,
+        "post_id": post_id,
         "revision": int(row["revision"]),
         "notification": notification,
     }
 
 
 @router.get("/forum/threads/{thread_id}")
-def forum_thread(thread_id: int, request: Request, page: int = 1, latest: bool = False):
+def forum_thread(
+    thread_id: int,
+    request: Request,
+    page: int = 1,
+    latest: bool = False,
+    post: int | None = None,
+):
     user, db = _ghost_context(request)
     thread_frame = db.query(
-        f"""SELECT id,title,author_user_id,revision,created_at,updated_at,last_activity_at,
-                   (author_user_id=:user) can_edit
-            FROM {TABLE_GHOST_FORUM_THREADS}
-            WHERE id=:id AND deleted_at IS NULL""",
+        f"""SELECT thread.id,thread.title,thread.author_user_id,thread.revision,
+                   thread.created_at,thread.updated_at,thread.last_activity_at,
+                   (thread.author_user_id=:user) can_edit,
+                   COALESCE(state.muted,FALSE) muted
+            FROM {TABLE_GHOST_FORUM_THREADS} thread
+            LEFT JOIN {TABLE_GHOST_FORUM_THREAD_USER_STATE} state
+              ON state.thread_id=thread.id AND state.user_id=:user
+            WHERE thread.id=:id AND thread.deleted_at IS NULL""",
         {"id": thread_id, "user": user},
     )
     if thread_frame.empty:
@@ -877,7 +1063,30 @@ def forum_thread(thread_id: int, request: Request, page: int = 1, latest: bool =
         f"SELECT COUNT(*) total FROM {TABLE_GHOST_FORUM_POSTS} WHERE thread_id=:id",
         {"id": thread_id},
     )
-    if latest:
+    target_post_id = None
+    if post is not None:
+        target = db.query(
+            f"""SELECT id,created_at FROM {TABLE_GHOST_FORUM_POSTS}
+                WHERE id=:post AND thread_id=:thread""",
+            {"post": post, "thread": thread_id},
+        )
+        if target.empty:
+            raise HTTPException(404, "找不到指定留言。")
+        target_row = target.iloc[0]
+        position = scalar_count(
+            db,
+            f"""SELECT COUNT(*) total FROM {TABLE_GHOST_FORUM_POSTS}
+                WHERE thread_id=:thread
+                  AND (created_at<:created OR (created_at=:created AND id<=:post))""",
+            {
+                "thread": thread_id,
+                "created": target_row["created_at"],
+                "post": post,
+            },
+        )
+        page = max(1, (position + PAGE_SIZE - 1) // PAGE_SIZE)
+        target_post_id = int(post)
+    elif latest:
         page = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page, _, offset = bounds(page)
     posts = db.query(
@@ -898,7 +1107,104 @@ def forum_thread(thread_id: int, request: Request, page: int = 1, latest: bool =
     )
     thread_item = _records(thread_frame)[0]
     thread_item["links"] = _resource_links(db, [thread_id], forum=True)[thread_id]
-    return {"thread": thread_item, "posts": payload(_records(posts), page, total)}
+    return {
+        "thread": thread_item,
+        "posts": payload(_records(posts), page, total),
+        "target_post_id": target_post_id,
+    }
+
+
+@router.post("/forum/threads/{thread_id}/read")
+def mark_forum_thread_read(thread_id: int, body: ForumReadBody, request: Request):
+    user, db = _ghost_context(request)
+    now = _now()
+    with db.transaction() as connection:
+        thread_exists = connection.execute(
+            text(
+                f"SELECT 1 FROM {TABLE_GHOST_FORUM_THREADS} "
+                "WHERE id=:thread AND deleted_at IS NULL"
+            ),
+            {"thread": thread_id},
+        ).scalar()
+        if not thread_exists:
+            raise HTTPException(404, "找不到帖文。")
+        if body.post_id is None:
+            post_id = connection.execute(
+                text(
+                    f"SELECT MAX(id) FROM {TABLE_GHOST_FORUM_POSTS} "
+                    "WHERE thread_id=:thread"
+                ),
+                {"thread": thread_id},
+            ).scalar()
+        else:
+            post_id = connection.execute(
+                text(
+                    f"SELECT id FROM {TABLE_GHOST_FORUM_POSTS} "
+                    "WHERE id=:post AND thread_id=:thread"
+                ),
+                {"post": body.post_id, "thread": thread_id},
+            ).scalar()
+        if post_id is None:
+            raise HTTPException(404, "找不到指定留言。")
+        _ensure_forum_profile(connection, user, now)
+        connection.execute(
+            text(
+                f"""INSERT INTO {TABLE_GHOST_FORUM_THREAD_USER_STATE}
+                    (thread_id,user_id,last_read_post_id,muted,updated_at)
+                    VALUES(:thread,:user,:post,FALSE,:now)
+                    ON CONFLICT (thread_id,user_id) DO UPDATE SET
+                        last_read_post_id=CASE
+                            WHEN {TABLE_GHOST_FORUM_THREAD_USER_STATE}.last_read_post_id IS NULL
+                              OR EXCLUDED.last_read_post_id>{TABLE_GHOST_FORUM_THREAD_USER_STATE}.last_read_post_id
+                            THEN EXCLUDED.last_read_post_id
+                            ELSE {TABLE_GHOST_FORUM_THREAD_USER_STATE}.last_read_post_id
+                        END,
+                        updated_at=EXCLUDED.updated_at"""
+            ),
+            {"thread": thread_id, "user": user, "post": int(post_id), "now": now},
+        )
+    return {"ok": True, "last_read_post_id": int(post_id)}
+
+
+@router.patch("/forum/threads/{thread_id}/state")
+def update_forum_thread_state(
+    thread_id: int, body: ForumThreadStateBody, request: Request,
+):
+    user, db = _ghost_context(request)
+    now = _now()
+    with db.transaction() as connection:
+        thread_exists = connection.execute(
+            text(
+                f"SELECT 1 FROM {TABLE_GHOST_FORUM_THREADS} "
+                "WHERE id=:thread AND deleted_at IS NULL"
+            ),
+            {"thread": thread_id},
+        ).scalar()
+        if not thread_exists:
+            raise HTTPException(404, "找不到帖文。")
+        _ensure_forum_profile(connection, user, now)
+        connection.execute(
+            text(
+                f"""INSERT INTO {TABLE_GHOST_FORUM_THREAD_USER_STATE}
+                    (thread_id,user_id,last_read_post_id,muted,updated_at)
+                    VALUES(:thread,:user,NULL,:muted,:now)
+                    ON CONFLICT (thread_id,user_id) DO UPDATE SET
+                        muted=EXCLUDED.muted,updated_at=EXCLUDED.updated_at"""
+            ),
+            {"thread": thread_id, "user": user, "muted": body.muted, "now": now},
+        )
+    return {"ok": True, "muted": body.muted}
+
+
+@router.post("/forum/notifications/{notification_id}/retry")
+def retry_forum_notification(notification_id: int, request: Request):
+    user, db = _ghost_context(request)
+    result = _dispatch_forum_notification(
+        db, notification_id, author_user_id=user,
+    )
+    if result["state"] == "not_retryable":
+        raise HTTPException(409, "通知不存在、不屬於你或目前不可重試。")
+    return result
 
 
 @router.patch("/forum/threads/{thread_id}")
@@ -977,10 +1283,27 @@ def create_forum_post(thread_id: int, body: ForumPostBody, request: Request):
             text(f"UPDATE {TABLE_GHOST_FORUM_THREADS} SET last_activity_at=:now WHERE id=:id"),
             {"now": now, "id": thread_id},
         )
+        _ensure_forum_profile(connection, user, now)
+        connection.execute(
+            text(
+                f"""INSERT INTO {TABLE_GHOST_FORUM_THREAD_USER_STATE}
+                    (thread_id,user_id,last_read_post_id,muted,updated_at)
+                    VALUES(:thread,:user,:post,FALSE,:now)
+                    ON CONFLICT (thread_id,user_id) DO UPDATE SET
+                        last_read_post_id=EXCLUDED.last_read_post_id,updated_at=EXCLUDED.updated_at"""
+            ),
+            {
+                "thread": thread_id,
+                "user": user,
+                "post": int(row["id"]),
+                "now": now,
+            },
+        )
+        notification_id = _queue_forum_notification(
+            connection, int(row["id"]), "reply",
+        )
     post_id = int(row["id"])
-    notification = _fire_forum_push(
-        db, user, thread_id, str(thread["title"]), "reply", post_id=post_id,
-    )
+    notification = _dispatch_forum_notification(db, notification_id)
     return {
         "ok": True,
         "id": post_id,

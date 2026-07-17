@@ -43,6 +43,9 @@ TABLE_GHOST_FORUM_POSTS = "ghost_forum_posts"
 TABLE_GHOST_FORUM_REACTIONS = "ghost_forum_reactions"
 TABLE_GHOST_FORUM_THREAD_MATCHES = "ghost_forum_thread_matches"
 TABLE_GHOST_FORUM_THREAD_PHOTOS = "ghost_forum_thread_photos"
+TABLE_GHOST_FORUM_USER_PROFILES = "ghost_forum_user_profiles"
+TABLE_GHOST_FORUM_THREAD_USER_STATE = "ghost_forum_thread_user_state"
+TABLE_GHOST_FORUM_NOTIFICATIONS = "ghost_forum_notifications"
 TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
 TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
 TABLE_TTS_SCRIPTS = "tts_scripts"
@@ -582,6 +585,11 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCH_PHOTOS} (
 );
 """
 
+# Substring search for Cantonese forum content.  The extension is shared
+# database infrastructure, so rollback migrations remove only our indexes.
+CREATE_PG_TRGM_EXTENSION = "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+
 # Committee-only match announcements, history and graduate discussion forum.
 CREATE_RECENT_MATCHES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_RECENT_MATCHES} (
@@ -774,6 +782,52 @@ CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_THREAD_PHOTOS} (
 );
 """
 
+CREATE_GHOST_FORUM_USER_PROFILES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_USER_PROFILES} (
+    user_id      TEXT PRIMARY KEY,
+    unread_since TIMESTAMP NOT NULL,
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_ghost_forum_profile_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE CASCADE
+);
+"""
+
+CREATE_GHOST_FORUM_THREAD_USER_STATE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_THREAD_USER_STATE} (
+    thread_id         BIGINT NOT NULL,
+    user_id           TEXT NOT NULL,
+    last_read_post_id BIGINT,
+    muted             BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (thread_id, user_id),
+    CONSTRAINT fk_ghost_forum_state_thread
+        FOREIGN KEY (thread_id) REFERENCES {TABLE_GHOST_FORUM_THREADS}(id) ON DELETE CASCADE,
+    CONSTRAINT fk_ghost_forum_state_user
+        FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_ghost_forum_state_post
+        FOREIGN KEY (last_read_post_id) REFERENCES {TABLE_GHOST_FORUM_POSTS}(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_GHOST_FORUM_NOTIFICATIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_NOTIFICATIONS} (
+    id           BIGSERIAL PRIMARY KEY,
+    post_id      BIGINT NOT NULL UNIQUE,
+    event_kind   TEXT NOT NULL CHECK (event_kind IN ('thread','reply')),
+    state        TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','sending','retryable','sent')),
+    claim_token  TEXT,
+    attempted_at TIMESTAMP,
+    sent_at      TIMESTAMP,
+    sent_count   INTEGER NOT NULL DEFAULT 0 CHECK (sent_count >= 0),
+    last_error   TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_ghost_forum_notification_post
+        FOREIGN KEY (post_id) REFERENCES {TABLE_GHOST_FORUM_POSTS}(id) ON DELETE CASCADE
+);
+"""
+
 LOCK_COMMUNITY_PRIVILEGES = f"""
 REVOKE ALL PRIVILEGES ON TABLE
     {TABLE_RECENT_MATCHES}, {TABLE_RECENT_MATCH_NOTIFICATIONS},
@@ -781,12 +835,14 @@ REVOKE ALL PRIVILEGES ON TABLE
     {TABLE_HISTORY_EVENT_MATCHES}, {TABLE_HISTORY_EVENT_PHOTOS},
     {TABLE_GHOST_FORUM_THREADS}, {TABLE_GHOST_FORUM_POSTS},
     {TABLE_GHOST_FORUM_REACTIONS}, {TABLE_GHOST_FORUM_THREAD_MATCHES},
-    {TABLE_GHOST_FORUM_THREAD_PHOTOS}
+    {TABLE_GHOST_FORUM_THREAD_PHOTOS}, {TABLE_GHOST_FORUM_USER_PROFILES},
+    {TABLE_GHOST_FORUM_THREAD_USER_STATE}, {TABLE_GHOST_FORUM_NOTIFICATIONS}
 FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON SEQUENCE
     {TABLE_RECENT_MATCHES}_id_seq, {TABLE_RECENT_MATCH_NOTIFICATIONS}_id_seq,
     {TABLE_COMMITTEE_MEMBERSHIPS}_id_seq, {TABLE_HISTORY_EVENTS}_id_seq,
-    {TABLE_GHOST_FORUM_THREADS}_id_seq, {TABLE_GHOST_FORUM_POSTS}_id_seq
+    {TABLE_GHOST_FORUM_THREADS}_id_seq, {TABLE_GHOST_FORUM_POSTS}_id_seq,
+    {TABLE_GHOST_FORUM_NOTIFICATIONS}_id_seq
 FROM PUBLIC;
 DO $$
 DECLARE role_name TEXT;
@@ -801,13 +857,16 @@ BEGIN
             '{TABLE_HISTORY_EVENT_MATCHES}, {TABLE_HISTORY_EVENT_PHOTOS}, '
             '{TABLE_GHOST_FORUM_THREADS}, {TABLE_GHOST_FORUM_POSTS}, '
             '{TABLE_GHOST_FORUM_REACTIONS}, {TABLE_GHOST_FORUM_THREAD_MATCHES}, '
-            '{TABLE_GHOST_FORUM_THREAD_PHOTOS} FROM %I', role_name
+            '{TABLE_GHOST_FORUM_THREAD_PHOTOS}, {TABLE_GHOST_FORUM_USER_PROFILES}, '
+            '{TABLE_GHOST_FORUM_THREAD_USER_STATE}, {TABLE_GHOST_FORUM_NOTIFICATIONS} '
+            'FROM %I', role_name
         );
         EXECUTE format(
             'REVOKE ALL PRIVILEGES ON SEQUENCE '
             '{TABLE_RECENT_MATCHES}_id_seq, {TABLE_RECENT_MATCH_NOTIFICATIONS}_id_seq, '
             '{TABLE_COMMITTEE_MEMBERSHIPS}_id_seq, {TABLE_HISTORY_EVENTS}_id_seq, '
-            '{TABLE_GHOST_FORUM_THREADS}_id_seq, {TABLE_GHOST_FORUM_POSTS}_id_seq '
+            '{TABLE_GHOST_FORUM_THREADS}_id_seq, {TABLE_GHOST_FORUM_POSTS}_id_seq, '
+            '{TABLE_GHOST_FORUM_NOTIFICATIONS}_id_seq '
             'FROM %I', role_name
         );
     END LOOP;
@@ -1609,6 +1668,16 @@ CREATE INDEX IF NOT EXISTS idx_ghost_forum_posts_thread_created
     ON {TABLE_GHOST_FORUM_POSTS}(thread_id, created_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ghost_forum_first_post
     ON {TABLE_GHOST_FORUM_POSTS}(thread_id) WHERE is_first_post=TRUE;
+CREATE INDEX IF NOT EXISTS idx_ghost_forum_threads_title_trgm
+    ON {TABLE_GHOST_FORUM_THREADS} USING GIN (LOWER(title) gin_trgm_ops)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ghost_forum_posts_body_trgm
+    ON {TABLE_GHOST_FORUM_POSTS} USING GIN (LOWER(body) gin_trgm_ops)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ghost_forum_state_user
+    ON {TABLE_GHOST_FORUM_THREAD_USER_STATE}(user_id, muted, thread_id);
+CREATE INDEX IF NOT EXISTS idx_ghost_forum_notifications_state
+    ON {TABLE_GHOST_FORUM_NOTIFICATIONS}(state, attempted_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tts_voice_recordings_r2_key
     ON {TABLE_TTS_VOICE_RECORDINGS}(r2_key) WHERE r2_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tts_voice_recordings_speaker_created
@@ -1696,6 +1765,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_APP_CONFIG} (
 # Ordered list of all CREATE statements (dependency order).
 # Tables must be created before any table that references them via FK.
 ALL_SCHEMAS = [
+    CREATE_PG_TRGM_EXTENSION,  # shared extension used by bounded forum search
     CREATE_ACCOUNTS,            # no deps
     CREATE_MATCHES,             # no deps
     CREATE_TOPICS,              # no deps
@@ -1733,6 +1803,9 @@ ALL_SCHEMAS = [
     CREATE_GHOST_FORUM_REACTIONS,     # → posts, accounts
     CREATE_GHOST_FORUM_THREAD_MATCHES,  # → threads, matches
     CREATE_GHOST_FORUM_THREAD_PHOTOS,   # → threads, match_photos
+    CREATE_GHOST_FORUM_USER_PROFILES,   # → accounts
+    CREATE_GHOST_FORUM_THREAD_USER_STATE,  # → threads, posts, accounts
+    CREATE_GHOST_FORUM_NOTIFICATIONS,   # → posts
     LOCK_COMMUNITY_PRIVILEGES,
     CREATE_TTS_VOICE_CONSENTS,        # → accounts
     CREATE_TTS_VOICE_RECORDINGS,      # → accounts
