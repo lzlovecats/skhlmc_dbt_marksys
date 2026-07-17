@@ -102,6 +102,7 @@ HISTORY_EVENT_INVENTORY_LIMIT = _limit("HISTORY_EVENT_INVENTORY_LIMIT", 2_000, m
 COMMITTEE_MEMBERSHIP_INVENTORY_LIMIT = _limit("COMMITTEE_MEMBERSHIP_INVENTORY_LIMIT", 2_000, minimum=10, maximum=10_000, group="api", description="Committee membership tenure rows")
 GHOST_FORUM_THREAD_LIMIT = _limit("GHOST_FORUM_THREAD_LIMIT", 10_000, minimum=100, maximum=50_000, group="api", description="Senior committee forum thread rows")
 GHOST_FORUM_POST_LIMIT = _limit("GHOST_FORUM_POST_LIMIT", 100_000, minimum=1_000, maximum=500_000, group="api", description="Senior committee forum post rows")
+GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS = _limit("GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS", 15 * 60, minimum=60, maximum=60 * 60, group="api", description="Retry age for a claimed graduate-forum push")
 RECENT_MATCH_NOTIFICATION_CLAIM_TTL_SECONDS = _limit("RECENT_MATCH_NOTIFICATION_CLAIM_TTL_SECONDS", 15 * 60, minimum=60, maximum=60 * 60, group="api", description="Retry age for a claimed recent-match push")
 
 # Render monthly bandwidth and Live WebSocket protection.

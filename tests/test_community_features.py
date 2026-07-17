@@ -181,8 +181,9 @@ def test_forum_push_targets_senior_members_and_excludes_the_author(monkeypatch):
     assert captured["kwargs"] == {
         "exclude_user": "graduate01",
         "senior_only": True,
-        "tag": "ghost-forum-thread-42-post-99",
-        "url": "/ghost-forum?thread=42",
+        "forum_thread_id": 42,
+        "tag": "ghost-forum-thread-42",
+        "url": "/ghost-forum?thread=42&post=99",
     }
 
 
@@ -365,7 +366,7 @@ def test_ghost_forum_uses_post_language_split_resources_and_refreshes_latest_rep
         'data-resource-kind="matches"',
         'data-resource-kind="photos"',
         'id="resourcePager"',
-        "latest=true",
+        'params.set("latest","true")',
     ):
         assert expected in source
     for retired in ("新增主題", "最新主題", "編輯主題", "刪除主題"):
