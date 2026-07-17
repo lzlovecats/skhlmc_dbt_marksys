@@ -14,12 +14,12 @@
 
 | 範圍 | 2026-07-17 現況 |
 |---|---|
-| App | Render production 已運行 `4.5.5`；maintenance mode 關閉 |
+| App | Render production 已運行 `4.6.0`；maintenance mode 關閉 |
 | Database | Supabase PostgreSQL 17.6，Singapore pooler；未發現獨立 staging database |
-| Migration | Head `20260717_0003`；pending、gap、unknown version、name/checksum mismatch 全部為 0 |
+| Migration | Production head `20260717_0003`；repo head `20260717_0004` 待授權套用；既有 gap、unknown version、name/checksum mismatch 全部為 0 |
 | Catalog | 61 public tables（60 application + `schema_migrations`）、0 production-only tables；ledger及新增community tables均無browser角色權限 |
 | Canonical checksum | `91e2f363834ef7d5dfc9ac9cefad88e55d8fda20f02a1ffb19e168e92338536e`（2026-07-17）；reconciliation 0 drift、0 runtime DDL site（budget已收緊至0） |
-| Migration files | `baseline.json`加17對已freeze up/down；全部永久保留 |
+| Migration files | `baseline.json`加18對 up/down；已套用版本全部永久 freeze |
 | R2 media | 193 DB rows、238 objects、122,687,464 bytes 已經 HEAD size/hash/MIME/metadata 核對；新讀寫為 R2-only |
 | Legacy media | `20260714_0001`已永久移除`tts_voice_recordings.audio_data`及`match_photos.image_data`；rows及R2 objects post-check無損 |
 | Config | typed `app_config`為唯一runtime config；`system_config`、read bridge、SQL console及`sql_password`已退役；developer password已bcrypt |
@@ -28,7 +28,7 @@
 
 `tg_notification_queue`已於2026-07-14隨舊Telegram Cloudflare Worker一併移除（0 rows；table從不屬於repo schema或migration catalog，ledger不受影響）；reconcile確認0 production-only tables。Repo本身沒有需要再刪的「舊 migration 大堆檔案」。
 
-`4.5.5`已部署並由production public API確認版本；登入後完整workflow smoke仍屬持續release checklist。
+`4.6.0`已部署並由production public asset確認版本；repo release已升至`4.6.1`但未獲授權deploy，登入後完整workflow smoke仍屬持續release checklist。
 
 目前repo未deploy改動已移除AI／media每日、每週及每月使用次數quota，改以versioned
 `monthly_resource_limits`管理Render、R2及provider月度system-wide門檻；保留三秒重複mint、
@@ -47,7 +47,7 @@ P0聯機Live direct media、P3粵語讀音、P4自家TTS、P5自家辯論LLM及P
 | Phase | 未來能力／結果 | 類型 | 現況及下一個gate |
 |---|---|---|---|
 | **P0** | Mode A STUN-only P2P direct media | 使用者功能／成本 | Repo已實作；下一gate係browser自動回歸、真機／嚴格NAT矩陣及授權deploy後zero-audio-through-Render驗證 |
-| **P0** | `4.6.0`授權deploy後smoke及admin credential rotation | 運維／安全 | Repo已ready，production仍是`4.5.5`；本roadmap不授權deploy或secret變更 |
+| **P0** | `4.6.1` bugfix deploy後smoke及admin credential rotation | 運維／安全 | Production仍是`4.6.0`；下一gate係套用`20260717_0004`、部署`4.6.1`及登入後smoke，本roadmap不授權deploy、migration或secret變更 |
 | **P1** | 可重現staging／空DB、schema cleanup、不可變motion ID、時區及roster token收口 | 資料庫 | 先完成staging restore及migration replay |
 | **P2** | Supabase最小權限、trusted request context及全面RLS | 安全 | Runtime仍使用`BYPASSRLS`角色，需分批canary |
 | **P3** | 粵語讀音回歸集、字典、G2P及provider-neutral preprocessing | 使用者功能 | 未建固定eval corpus，以現有Azure path做baseline |
@@ -106,7 +106,7 @@ zero audio bytes、Render control bandwidth、Free／Mock timer／bells／roster
   無個人quota的Solo browser-direct Free／Mock、Mode A P2P／雙方逐字稿gate、AI Coach R2→Google
   Files錄音分析、AI基金月度通知及adult-only consent smoke。
 
-**Gate P0-A（`4.2.1`達成 2026-07-14）：**主要登入workflow已smoke，production無新增5xx、DB pool、WebSocket或quota異常。`4.5.5` public version／health已於2026-07-17核對；完整登入workflow及`4.6.0`授權deploy後smoke仍是open item。
+**Gate P0-A（`4.2.1`達成 2026-07-14）：**主要登入workflow已smoke，production無新增5xx、DB pool、WebSocket或quota異常。`4.6.0` public version／health已於2026-07-17核對；完整登入workflow及`4.6.1`授權deploy後smoke仍是open item。
 
 ### P0.3 Cloudflare R2及舊BYTEA
 

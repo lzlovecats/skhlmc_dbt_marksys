@@ -128,8 +128,8 @@ def validate_history_event(values):
 
 def validate_thread(values):
     return {
-        "title": _text(values.get("title"), "主題", 300, required=True),
-        "body": _text(values.get("body"), "內容", 8000, required=True),
+        "title": _text(values.get("title"), "標題", 300, required=True),
+        "body": _text(values.get("body"), "帖文內容", 8000, required=True),
         "match_ids": _identifier_list(values.get("match_ids"), 20, 200, "比賽"),
         "photo_ids": _integer_list(values.get("photo_ids"), 30, "圖片"),
     }
@@ -177,9 +177,9 @@ def recent_notification_copy(match, event_kind):
 
 def forum_notification_copy(author_user_id, thread_title, event_kind):
     author = _text(author_user_id, "作者", 200, required=True)
-    title = _text(thread_title, "主題", 300, required=True)
+    title = _text(thread_title, "標題", 300, required=True)
     if event_kind == "thread":
-        return "老鬼專區有新主題", f"{author} 發表「{title}」"
+        return "老鬼專區有新帖文", f"{author} 發表「{title}」"
     if event_kind == "reply":
         return "老鬼專區有新回覆", f"{author} 回覆「{title}」"
     raise ValueError("老鬼專區通知類型無效。")

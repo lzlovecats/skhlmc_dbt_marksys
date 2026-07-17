@@ -113,7 +113,7 @@ def test_forum_notification_copy_shows_author_and_title_but_not_post_body():
     title, body = community_logic.forum_notification_copy(
         "graduate01", "昔日聯中回憶", "thread",
     )
-    assert title == "老鬼專區有新主題"
+    assert title == "老鬼專區有新帖文"
     assert body == "graduate01 發表「昔日聯中回憶」"
 
     title, body = community_logic.forum_notification_copy(
@@ -168,8 +168,8 @@ def test_senior_only_push_uses_manual_role_or_graduated_membership_filter():
     sent = push.notify_committee(
         db,
         {"private_key": "test"},
-        "老鬼專區有新主題",
-        "graduate01 發表「主題」",
+        "老鬼專區有新帖文",
+        "graduate01 發表「標題」",
         exclude_user="graduate01",
         senior_only=True,
     )
@@ -270,6 +270,153 @@ def test_new_html_routes_replace_the_shared_asset_version_placeholder():
         html = response.body.decode("utf-8")
         assert "__APP_VERSION__" not in html
         assert f"/shared/vote-ui.js?v={proxy.APP_VERSION}" in html
+
+
+def test_linked_community_resources_open_their_actual_video_or_photo():
+    ghost = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    gallery = (ROOT / "frontend" / "shared" / "server-tables.js").read_text(
+        encoding="utf-8"
+    )
+
+    for page in (ghost, history):
+        assert 'href="/video-replay?video_id=${encodeURIComponent(row.video_id)}"' in page
+        assert 'href="/team-history?match_id=${encodeURIComponent(row.match_id)}"' not in page
+        assert "未有公開影片" in page
+        assert 'href="/match-photos?photo_id=${row.id}"' in page
+    assert "new URLSearchParams(location.search).get(\"photo_id\")" in gallery
+    assert "&photo_id=${encodeURIComponent(linkedPhotoId)}" in gallery
+
+
+def test_ghost_forum_uses_post_language_split_resources_and_refreshes_latest_replies():
+    source = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    api_source = (ROOT / "api" / "community_api.py").read_text(encoding="utf-8")
+
+    for expected in (
+        "發表帖文",
+        "最新帖文",
+        "編輯標題",
+        "刪除帖文",
+        "🔄 重整新留言",
+        'id="resourceTabs"',
+        'data-resource-kind="matches"',
+        'data-resource-kind="photos"',
+        'id="resourcePager"',
+        "latest=true",
+    ):
+        assert expected in source
+    for retired in ("新增主題", "最新主題", "編輯主題", "刪除主題"):
+        assert retired not in source
+    assert ".toolbar { margin-bottom:1rem; }" in source
+    assert "resourceRequest" in source
+    assert "AND p.is_first_post=FALSE) post_count" in api_source
+
+
+def test_refresh_new_replies_returns_the_latest_post_page(monkeypatch):
+    captured = {}
+
+    class ForumDb:
+        def query(self, sql, params):
+            if "FROM ghost_forum_threads" in sql:
+                return pd.DataFrame(
+                    [
+                        {
+                            "id": 7,
+                            "title": "最新帖文",
+                            "author_user_id": "graduate",
+                            "revision": 1,
+                            "can_edit": True,
+                        }
+                    ]
+                )
+            if "COUNT(*) total" in sql:
+                return pd.DataFrame([{"total": 41}])
+            if "FROM ghost_forum_posts" in sql:
+                captured.update(params)
+                return pd.DataFrame()
+            raise AssertionError(sql)
+
+    db = ForumDb()
+    monkeypatch.setattr(
+        community_api,
+        "_ghost_context",
+        lambda _request: ("graduate", db),
+    )
+    monkeypatch.setattr(
+        community_api,
+        "_resource_links",
+        lambda _db, owner_ids, forum=False: {
+            int(owner): {"matches": [], "photos": []} for owner in owner_ids
+        },
+    )
+
+    result = community_api.forum_thread(7, SimpleNamespace(), latest=True)
+
+    assert result["posts"]["page"] == 3
+    assert captured["offset"] == 40
+
+
+def test_linked_match_resolves_the_first_visible_video_by_display_order():
+    calls = []
+
+    class ResourceDb:
+        def query(self, sql, params):
+            calls.append(sql)
+            if "ghost_forum_thread_matches" in sql:
+                return pd.DataFrame(
+                    [
+                        {
+                            "owner_id": 4,
+                            "match_id": "M1",
+                            "video_id": 73,
+                            "match_date": "2026-07-17",
+                            "match_time": "14:00",
+                            "topic_text": "測試辯題",
+                            "pro_team": "甲隊",
+                            "con_team": "乙隊",
+                            "debate_format": "聯中",
+                        }
+                    ]
+                )
+            return pd.DataFrame()
+
+    links = community_api._resource_links(ResourceDb(), [4], forum=True)
+
+    assert links[4]["matches"][0]["video_id"] == 73
+    match_sql = calls[0]
+    assert "LEFT JOIN LATERAL" in match_sql
+    assert "match_videos" in match_sql
+    assert "COALESCE(video.is_visible,TRUE)=TRUE" in match_sql
+    assert "video.display_order ASC NULLS LAST" in match_sql
+    assert "LIMIT 1" in match_sql
+
+
+def test_forward_role_cleanup_removes_only_recreated_legacy_aliases():
+    up = (
+        ROOT / "migrations" / "20260717_0004_remove_recreated_legacy_roles.up.sql"
+    ).read_text(encoding="utf-8")
+    down = (
+        ROOT / "migrations" / "20260717_0004_remove_recreated_legacy_roles.down.sql"
+    ).read_text(encoding="utf-8")
+
+    for key in (
+        "tts_recording_reviewers",
+        "ai_fund_treasurers",
+        "lateness_fund_managers",
+    ):
+        assert f"'{key}'" in up
+        assert f"'{key}'" in down
+    assert "DELETE FROM public.app_config" in up
+    delete_block = up.split("DELETE FROM public.app_config", 1)[1]
+    assert "'ai_managers'" not in delete_block
+    assert "'senior_committee_members'" not in delete_block
+    assert "'sql_password'" not in down
 
 
 def test_senior_management_controls_are_on_separate_hidden_tabs():

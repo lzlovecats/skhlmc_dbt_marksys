@@ -1485,11 +1485,10 @@
           el("kioskTakeover").disabled =
             !aiConnected ||
             aiBusy ||
-            !lease.claimed ||
-            sessionState === "processing";
+            !lease.claimed;
           el("kioskTakeover").title =
             sessionState === "processing"
-              ? "AI 分析期間不可接管，以免重複 provider 費用"
+              ? "強制撤銷 Kiosk 並取消目前 AI 分析；其後完成結果不會寫入"
               : lease.claimed
                 ? "撤銷目前 owner；下一部 Standby Kiosk 會原子取得 lease"
                 : "目前未有 Kiosk owner";
@@ -1670,13 +1669,19 @@
           var lease = control.lease || {};
           var session = aiPayload.session || {};
           var sessionState = statusKey(session.status);
-          if (!lease.claimed || sessionState === "processing") return;
-          var interrupts = ["start_requested", "recording", "stop_requested"].includes(
-            sessionState,
-          );
-          var warning = interrupts
-            ? "警告：接管會即時撤銷目前 Active Kiosk，停止同保留其本機錄音，呢一場會標記為中斷，而且唔會自動上載或交畀 AI。確定繼續？"
-            : "確定撤銷目前 Active Kiosk？下一部 Standby Kiosk 會取得控制權，並必須重新做硬件測試。";
+          if (!lease.claimed) return;
+          var interrupts = [
+            "start_requested",
+            "recording",
+            "stop_requested",
+            "processing",
+          ].includes(sessionState);
+          var warning =
+            sessionState === "processing"
+              ? "警告：強制接管會撤銷目前 Active Kiosk 並取消今次 AI 分析。已開始的 provider call 可能仍會產生費用，但其後完成的結果不會寫入。確定繼續？"
+              : interrupts
+                ? "警告：接管會即時撤銷目前 Active Kiosk，停止同保留其本機錄音，呢一場會標記為中斷，而且唔會自動上載或交畀 AI。確定繼續？"
+                : "確定撤銷目前 Active Kiosk？下一部 Standby Kiosk 會取得控制權，並必須重新做硬件測試。";
           if (!window.confirm(warning)) return;
           await runAiCommand(
             "/api/projector/ai/lease/takeover",
