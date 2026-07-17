@@ -2077,9 +2077,14 @@ async def registration_admin_page():
 @app.get("/video-replay")
 async def video_replay_page():
     """Primary HTML committee replay page."""
-    return FileResponse(BASE_DIR / "frontend" / "video_replay" / "index.html",
-                        media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "video_replay" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
 
 
 @app.get("/video-admin")

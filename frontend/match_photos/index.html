@@ -63,6 +63,11 @@
       .back:hover {
         text-decoration: underline;
       }
+      .back-nav {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
       .caption {
         color: var(--muted);
         font-size: 0.9rem;
@@ -315,7 +320,10 @@
   </head>
   <body>
     <main>
-      <a class="back" href="/">← 返回主頁</a>
+      <nav class="back-nav" aria-label="返回連結">
+        <a class="back" href="/">← 返回主頁</a>
+        <a id="sourceReturn" class="back hidden" href="#"></a>
+      </nav>
       <h1>比賽圖片回顧</h1>
       <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>

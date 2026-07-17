@@ -130,8 +130,11 @@ def validate_thread(values):
     return {
         "title": _text(values.get("title"), "標題", 300, required=True),
         "body": _text(values.get("body"), "帖文內容", 8000, required=True),
-        "match_ids": _identifier_list(values.get("match_ids"), 20, 200, "比賽"),
+        "video_ids": _integer_list(values.get("video_ids"), 20, "影片", "條"),
         "photo_ids": _integer_list(values.get("photo_ids"), 30, "圖片"),
+        "history_event_ids": _integer_list(
+            values.get("history_event_ids"), 20, "隊史事件", "個",
+        ),
     }
 
 
@@ -150,9 +153,9 @@ def _identifier_list(values, maximum_items, maximum_length, label):
     return cleaned
 
 
-def _integer_list(values, maximum_items, label):
+def _integer_list(values, maximum_items, label, counter="張"):
     if not isinstance(values, list) or len(values) > maximum_items:
-        raise ValueError(f"每次最多連結 {maximum_items} 張{label}。")
+        raise ValueError(f"每次最多連結 {maximum_items} {counter}{label}。")
     try:
         cleaned = list(dict.fromkeys(int(value) for value in values))
     except (TypeError, ValueError) as exc:
