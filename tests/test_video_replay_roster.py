@@ -346,6 +346,17 @@ def test_replay_html_has_member_multiselect_inline_roster_and_copy_button():
     assert '$("shareLink").value = shareLinkFor(selected.id)' in html
 
 
+def test_replay_fullscreen_locks_landscape_and_unlocks_on_exit():
+    html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'document.addEventListener("fullscreenchange", syncFullscreenOrientation)' in html
+    assert '$("player").contains(document.fullscreenElement)' in html
+    assert 'orientation.lock("landscape")' in html
+    assert "orientation.unlock()" in html
+
+
 def test_bootstrap_and_versioned_migration_allow_multiple_best_and_enforce_roster_roles():
     assert "is_best_debater BOOLEAN" in schema.CREATE_VIDEO_CHAPTERS
     assert "video_chapters_best_role_check" in schema.CREATE_VIDEO_CHAPTERS
