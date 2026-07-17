@@ -67,6 +67,11 @@
       .back:hover {
         text-decoration: underline;
       }
+      .back-nav {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
       .caption {
         color: var(--muted);
         font-size: 0.9rem;
@@ -299,6 +304,17 @@
       .playlist-item.current {
         border-color: var(--accent);
       }
+      .vote-controls {
+        display: grid;
+        gap: 0.75rem;
+        justify-items: start;
+      }
+      .vote-controls > select {
+        width: 100%;
+      }
+      .vote-controls > div:empty {
+        display: none;
+      }
       .split {
         display: grid;
         grid-template-columns: 1fr 2fr;
@@ -353,7 +369,7 @@
           grid-template-columns: 1fr;
         }
         .playlist {
-          max-height: none;
+          max-height: 18rem;
         }
         .stats,
         .metrics {
@@ -364,7 +380,10 @@
   </head>
   <body>
     <main>
-      <a class="back" href="/">← 返回主頁</a>
+      <nav class="back-nav" aria-label="返回連結">
+        <a class="back" href="/">← 返回主頁</a>
+        <a id="sourceReturn" class="back hidden" href="#"></a>
+      </nav>
       <h1>比賽片段重溫</h1>
       <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>
@@ -473,14 +492,16 @@
         <section id="videoInteractions" class="split">
           <div>
             <h2>勝負投票</h2>
-            <label for="voteChoice">你認為哪方值得勝利？</label
-            ><select id="voteChoice"></select>
-            <div id="currentVote" class="caption"></div>
-            <button id="saveVote" class="primary" type="button">
-              提交投票
-            </button>
-            <div id="voteMessage"></div>
-            <div id="voteTotal" class="caption"></div>
+            <label for="voteChoice">你認為哪方值得勝利？</label>
+            <div class="vote-controls">
+              <select id="voteChoice"></select>
+              <div id="currentVote" class="caption"></div>
+              <button id="saveVote" class="primary" type="button">
+                提交投票
+              </button>
+              <div id="voteMessage"></div>
+              <div id="voteTotal" class="caption"></div>
+            </div>
             <div id="voteStats" class="metrics"></div>
           </div>
           <div>
@@ -575,6 +596,7 @@
         function shareLinkFor(videoId) {
           const shareUrl = new URL(location.href);
           shareUrl.searchParams.set("video_id", videoId);
+          shareUrl.searchParams.delete("return_to");
           return shareUrl.toString();
         }
         function currentVideos() {
@@ -1023,6 +1045,6 @@
       })();
     </script>
     <script src="/shared/vote-ui.js"></script>
-    <script src="/shared/server-tables.js"></script>
+    <script src="/shared/server-tables.js?v=__APP_VERSION__"></script>
   </body>
 </html>

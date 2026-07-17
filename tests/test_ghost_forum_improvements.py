@@ -326,9 +326,10 @@ def test_forum_thread_post_target_selects_its_page_and_qualifies_state_columns(m
     )
     monkeypatch.setattr(
         community_api,
-        "_resource_links",
-        lambda _db, owner_ids, forum=False: {
-            int(owner): {"matches": [], "photos": []} for owner in owner_ids
+        "_forum_resource_links",
+        lambda _db, owner_ids: {
+            int(owner): {"videos": [], "photos": [], "history_events": []}
+            for owner in owner_ids
         },
     )
 

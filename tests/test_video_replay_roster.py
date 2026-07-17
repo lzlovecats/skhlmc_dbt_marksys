@@ -346,6 +346,29 @@ def test_replay_html_has_member_multiselect_inline_roster_and_copy_button():
     assert '$("shareLink").value = shareLinkFor(selected.id)' in html
 
 
+def test_replay_vote_controls_have_scoped_vertical_spacing():
+    html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert ".vote-controls {" in html
+    assert "gap: 0.75rem;" in html
+    assert ".vote-controls > div:empty" in html
+    assert '<div class="vote-controls">' in html
+    assert 'id="saveVote"' in html
+    assert 'id="voteTotal"' in html
+
+
+def test_replay_mobile_playlist_remains_bounded():
+    html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "@media (max-width: 700px)" in html
+    assert "max-height: 18rem;" in html
+    assert "max-height: none;" not in html
+
+
 def test_replay_fullscreen_locks_landscape_and_unlocks_on_exit():
     html = (ROOT / "frontend" / "video_replay" / "index.html").read_text(
         encoding="utf-8"

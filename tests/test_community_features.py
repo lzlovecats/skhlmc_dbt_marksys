@@ -118,6 +118,38 @@ def test_history_memberships_default_oldest_and_allow_newest_server_sort(monkeyp
     assert caught.value.status_code == 400
 
 
+def test_history_events_default_newest_and_allow_oldest_server_sort(monkeypatch):
+    class CaptureDb:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, sql, params=None):
+            self.calls.append((sql, dict(params or {})))
+            if "COUNT(*) total" in sql:
+                return pd.DataFrame([{"total": 0}])
+            return pd.DataFrame()
+
+    db = CaptureDb()
+    monkeypatch.setattr(
+        community_api,
+        "_member_context",
+        lambda _request, _page: ("member", db),
+    )
+
+    community_api.history_events(SimpleNamespace())
+    default_sql = next(sql for sql, _params in db.calls if "SELECT id,academic_year_start" in sql)
+    assert "ORDER BY academic_year_start DESC,event_date DESC NULLS LAST,id DESC" in default_sql
+
+    db.calls.clear()
+    community_api.history_events(SimpleNamespace(), order="oldest")
+    oldest_sql = next(sql for sql, _params in db.calls if "SELECT id,academic_year_start" in sql)
+    assert "ORDER BY academic_year_start ASC,event_date ASC NULLS LAST,id ASC" in oldest_sql
+
+    with pytest.raises(community_api.HTTPException) as caught:
+        community_api.history_events(SimpleNamespace(), order="sideways")
+    assert caught.value.status_code == 400
+
+
 def test_recent_match_contract_and_first_result_notification_copy():
     match = community_logic.validate_recent_match(
         {
@@ -317,13 +349,34 @@ def test_linked_community_resources_open_their_actual_video_or_photo():
         encoding="utf-8"
     )
 
+    assert "mediaHref(`/video-replay?video_id=${encodeURIComponent(row.id)}`" in ghost
+    assert "mediaHref(`/video-replay?video_id=${encodeURIComponent(row.video_id)}`" in history
+    assert "未有公開影片" in history
     for page in (ghost, history):
-        assert 'href="/video-replay?video_id=${encodeURIComponent(row.video_id)}"' in page
         assert 'href="/team-history?match_id=${encodeURIComponent(row.match_id)}"' not in page
-        assert "未有公開影片" in page
-        assert 'href="/match-photos?photo_id=${row.id}"' in page
+        assert "mediaHref(`/match-photos?photo_id=${encodeURIComponent(row.id)}`" in page
+        assert 'searchParams.set("return_to"' in page
     assert "new URLSearchParams(location.search).get(\"photo_id\")" in gallery
     assert "&photo_id=${encodeURIComponent(linkedPhotoId)}" in gallery
+
+
+def test_linked_media_pages_offer_only_validated_source_return_links():
+    ghost = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(encoding="utf-8")
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(encoding="utf-8")
+    photos = (ROOT / "frontend" / "match_photos" / "index.html").read_text(encoding="utf-8")
+    replay = (ROOT / "frontend" / "video_replay" / "index.html").read_text(encoding="utf-8")
+    shared = (ROOT / "frontend" / "shared" / "server-tables.js").read_text(encoding="utf-8")
+
+    assert "linkHtml(activeThread.links,returnTo)" in ghost
+    assert 'url.searchParams.set("return_to", `${location.pathname}${location.search}`)' in history
+    for page in (photos, replay):
+        assert 'id="sourceReturn"' in page
+        assert "← 返回主頁" in page
+    assert '"/ghost-forum": "← 返回剛才帖文"' in shared
+    assert '"/team-history": "← 返回隊史 Timeline"' in shared
+    assert "target.origin === location.origin && labels[target.pathname]" in shared
+    assert "history.back()" in shared
+    assert 'shareUrl.searchParams.delete("return_to")' in replay
 
 
 def test_history_membership_sort_controls_share_url_backed_server_order():
@@ -333,12 +386,26 @@ def test_history_membership_sort_controls_share_url_backed_server_order():
 
     assert 'id="memberSort"' in history
     assert 'id="memberManagementSort"' in history
-    assert history.count('<option value="oldest">由舊至新</option>') == 2
-    assert history.count('<option value="newest">由新至舊</option>') == 2
-    assert 'searchParams.get("membership_order")' in history
+    assert 'id="memberSort"><option value="oldest">由舊至新</option><option value="newest">由新至舊</option>' in history
+    assert 'id="memberManagementSort"><option value="oldest">由舊至新</option><option value="newest">由新至舊</option>' in history
+    assert 'pageParams.get("membership_order")' in history
     assert 'searchParams.set("membership_order", membershipOrder)' in history
     assert "history.replaceState(null, \"\", url)" in history
     assert "memberships?order=${membershipOrder}" in history
+
+
+def test_history_timeline_sort_controls_share_url_backed_server_order():
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="eventSort"><option value="newest">由新至舊</option><option value="oldest">由舊至新</option>' in history
+    assert 'id="eventManagementSort"><option value="newest">由新至舊</option><option value="oldest">由舊至新</option>' in history
+    assert 'pageParams.get("timeline_order")' in history
+    assert 'url.searchParams.set("timeline_order", eventOrder)' in history
+    assert "history/events?order=${eventOrder}" in history
+    assert '["eventSort", "eventManagementSort"]' in history
+    assert "連結現有影片／圖片" in history
 
 
 def test_installed_web_app_allows_device_orientation_changes():
@@ -363,8 +430,9 @@ def test_ghost_forum_uses_post_language_split_resources_and_refreshes_latest_rep
         "刪除帖文",
         "🔄 重整新留言",
         'id="resourceTabs"',
-        'data-resource-kind="matches"',
+        'data-resource-kind="videos"',
         'data-resource-kind="photos"',
+        'data-resource-kind="history_events"',
         'id="resourcePager"',
         'params.set("latest","true")',
     ):
@@ -408,9 +476,10 @@ def test_refresh_new_replies_returns_the_latest_post_page(monkeypatch):
     )
     monkeypatch.setattr(
         community_api,
-        "_resource_links",
-        lambda _db, owner_ids, forum=False: {
-            int(owner): {"matches": [], "photos": []} for owner in owner_ids
+        "_forum_resource_links",
+        lambda _db, owner_ids: {
+            int(owner): {"videos": [], "photos": [], "history_events": []}
+            for owner in owner_ids
         },
     )
 
@@ -420,39 +489,49 @@ def test_refresh_new_replies_returns_the_latest_post_page(monkeypatch):
     assert captured["offset"] == 40
 
 
-def test_linked_match_resolves_the_first_visible_video_by_display_order():
+def test_forum_links_preserve_the_exact_video_and_history_event():
     calls = []
 
     class ResourceDb:
         def query(self, sql, params):
             calls.append(sql)
-            if "ghost_forum_thread_matches" in sql:
+            if "ghost_forum_thread_videos" in sql:
                 return pd.DataFrame(
                     [
                         {
                             "owner_id": 4,
-                            "match_id": "M1",
-                            "video_id": 73,
-                            "match_date": "2026-07-17",
-                            "match_time": "14:00",
+                            "id": 73,
+                            "video_title": "指定影片",
+                            "match_display": "M1",
                             "topic_text": "測試辯題",
                             "pro_team": "甲隊",
                             "con_team": "乙隊",
-                            "debate_format": "聯中",
                         }
                     ]
                 )
+            if "ghost_forum_thread_history_events" in sql:
+                return pd.DataFrame(
+                    [{
+                        "owner_id": 4,
+                        "id": 9,
+                        "academic_year_start": 2025,
+                        "event_date": "2026-07-17",
+                        "title": "隊史事件",
+                        "description": "事件內容",
+                    }]
+                )
             return pd.DataFrame()
 
-    links = community_api._resource_links(ResourceDb(), [4], forum=True)
+    links = community_api._forum_resource_links(ResourceDb(), [4])
 
-    assert links[4]["matches"][0]["video_id"] == 73
-    match_sql = calls[0]
-    assert "LEFT JOIN LATERAL" in match_sql
-    assert "match_videos" in match_sql
-    assert "COALESCE(video.is_visible,TRUE)=TRUE" in match_sql
-    assert "video.display_order ASC NULLS LAST" in match_sql
-    assert "LIMIT 1" in match_sql
+    assert links[4]["videos"][0]["id"] == 73
+    assert links[4]["videos"][0]["video_title"] == "指定影片"
+    assert links[4]["history_events"][0]["id"] == 9
+    assert links[4]["history_events"][0]["academic_year_label"] == "2025/26"
+    video_sql = calls[0]
+    assert "ghost_forum_thread_videos" in video_sql
+    assert "JOIN match_videos v ON v.id=l.video_id" in video_sql
+    assert "COALESCE(v.is_visible,TRUE)=TRUE" in video_sql
 
 
 def test_forward_role_cleanup_removes_only_recreated_legacy_aliases():
@@ -549,3 +628,191 @@ def test_history_resource_picker_rejects_unknown_resource_kind(monkeypatch):
     with pytest.raises(community_api.HTTPException) as caught:
         community_api.resource_options(SimpleNamespace(), kind="everything")
     assert caught.value.status_code == 400
+
+
+def test_forum_video_picker_searches_visible_video_inventory_and_titles(monkeypatch):
+    class ResourceDb:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, sql, params):
+            self.calls.append((sql, dict(params)))
+            if "COUNT(*)" in sql:
+                return pd.DataFrame([{"total": 1}])
+            return pd.DataFrame(
+                [
+                    {
+                        "id": 32,
+                        "match_id": None,
+                        "match_display": "2024 聯經複賽",
+                        "video_title": "零工經濟的生態對本港勞工市場利大於弊（反）",
+                        "topic_text": "零工經濟的生態對本港勞工市場利大於弊",
+                        "pro_team": "甲隊",
+                        "con_team": "乙隊",
+                    }
+                ]
+            )
+
+    db = ResourceDb()
+    monkeypatch.setattr(community_api, "_ghost_context", lambda _request: ("senior", db))
+
+    result = community_api.forum_resource_options(
+        SimpleNamespace(), search="零工經濟", kind="videos", page=1,
+    )
+
+    assert result["total"] == 1
+    assert result["items"][0]["id"] == 32
+    count_sql, count_params = db.calls[0]
+    item_sql, item_params = db.calls[1]
+    assert "FROM match_videos" in count_sql
+    assert "video_title" in count_sql
+    assert "COALESCE(v.is_visible,TRUE)=TRUE" in count_sql
+    assert count_params["search"] == "%零工經濟%"
+    assert "FROM match_videos" in item_sql
+    assert item_params["limit"] == 20
+    assert item_params["offset"] == 0
+
+
+def test_forum_thread_validation_uses_exact_video_and_history_event_ids():
+    values = community_logic.validate_thread(
+        {
+            "title": "討論",
+            "body": "內容",
+            "video_ids": [73, 73, 32],
+            "photo_ids": [5],
+            "history_event_ids": [9, 9, 10],
+        }
+    )
+
+    assert values["video_ids"] == [73, 32]
+    assert values["photo_ids"] == [5]
+    assert values["history_event_ids"] == [9, 10]
+    assert "match_ids" not in values
+
+    with pytest.raises(ValueError, match="最多連結 20 個隊史事件"):
+        community_logic.validate_thread(
+            {
+                "title": "太多事件",
+                "body": "內容",
+                "video_ids": [],
+                "photo_ids": [],
+                "history_event_ids": list(range(1, 22)),
+            }
+        )
+
+
+def test_forum_event_picker_returns_live_history_event_cards(monkeypatch):
+    class ResourceDb:
+        def query(self, sql, params):
+            if "COUNT(*)" in sql:
+                return pd.DataFrame([{"total": 1}])
+            return pd.DataFrame(
+                [{
+                    "id": 9,
+                    "academic_year_start": 2025,
+                    "event_date": "2026-07-17",
+                    "title": "校際賽奪冠",
+                    "description": "事件內容",
+                }]
+            )
+
+    monkeypatch.setattr(
+        community_api, "_ghost_context", lambda _request: ("senior", ResourceDb()),
+    )
+
+    result = community_api.forum_resource_options(
+        SimpleNamespace(), kind="history_events", event_id=9,
+    )
+
+    assert result["items"] == [{
+        "id": 9,
+        "academic_year_start": 2025,
+        "event_date": "2026-07-17",
+        "title": "校際賽奪冠",
+        "description": "事件內容",
+        "academic_year_label": "2025/26",
+    }]
+
+
+def test_history_event_deep_link_resolves_the_target_page(monkeypatch):
+    captured = {}
+
+    class HistoryDb:
+        def query(self, sql, params=None):
+            if "ROW_NUMBER()" in sql:
+                return pd.DataFrame([{"position": 21}])
+            if "COUNT(*) total" in sql:
+                return pd.DataFrame([{"total": 41}])
+            captured.update(params or {})
+            return pd.DataFrame(
+                [{
+                    "id": 9,
+                    "academic_year_start": 2025,
+                    "event_date": "2026-07-17",
+                    "title": "校際賽奪冠",
+                    "description": "事件內容",
+                }]
+            )
+
+    monkeypatch.setattr(
+        community_api,
+        "_member_context",
+        lambda _request, _page: ("member", HistoryDb()),
+    )
+    monkeypatch.setattr(
+        community_api,
+        "_history_resource_links",
+        lambda _db, owner_ids: {
+            int(owner): {"matches": [], "photos": []} for owner in owner_ids
+        },
+    )
+
+    result = community_api.history_events(
+        SimpleNamespace(), order="newest", event_id=9,
+    )
+
+    assert result["page"] == 2
+    assert result["target_event_id"] == 9
+    assert captured["offset"] == 20
+
+
+def test_team_history_discussion_link_preselects_event_without_prefilling_title():
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    forum = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "↗ 於老鬼專區出post討論" in history
+    assert "/ghost-forum?compose=1&history_event=" in history
+    assert 'data-resource-kind="history_events"' in forum
+    assert "showEventDiscussionComposer(historyEventId)" in forum
+    assert "selectedHistoryEvents.set(String(row.id),row)" in forum
+    assert "video_ids:[...selectedVideos.keys()].map(Number)" in forum
+    assert "history_event_ids:[...selectedHistoryEvents.keys()].map(Number)" in forum
+    event_helper = forum.split(
+        "async function showEventDiscussionComposer", 1
+    )[1].split("function startThreadEdit", 1)[0]
+    assert '$("threadTitle").value' not in event_helper
+
+
+def test_forum_video_link_migration_selects_first_visible_video_and_retires_match_links():
+    up = (
+        ROOT / "migrations" / "20260717_0006_ghost_forum_video_event_links.up.sql"
+    ).read_text(encoding="utf-8")
+    down = (
+        ROOT / "migrations" / "20260717_0006_ghost_forum_video_event_links.down.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE TABLE public.ghost_forum_thread_videos" in up
+    assert "JOIN LATERAL" in up
+    assert "COALESCE(video.is_visible, TRUE)=TRUE" in up
+    assert "video.display_order ASC NULLS LAST" in up
+    assert "video.created_at DESC" in up
+    assert "video.id DESC" in up
+    assert "LIMIT 1" in up
+    assert "DROP TABLE public.ghost_forum_thread_matches" in up
+    assert "CREATE TABLE public.ghost_forum_thread_history_events" in up
+    assert "WHERE video.match_id IS NULL" in down
+    assert "RAISE EXCEPTION" in down

@@ -388,6 +388,41 @@
         true,
       );
     });
+  if (["/video-replay", "/match-photos"].includes(location.pathname)) {
+    const sourceReturn = document.getElementById("sourceReturn"),
+      returnTo = new URLSearchParams(location.search).get("return_to"),
+      labels = {
+        "/ghost-forum": "← 返回剛才帖文",
+        "/team-history": "← 返回隊史 Timeline",
+      };
+    if (sourceReturn && returnTo) {
+      try {
+        const target = new URL(returnTo, location.origin);
+        if (target.origin === location.origin && labels[target.pathname]) {
+          sourceReturn.href = `${target.pathname}${target.search}${target.hash}`;
+          sourceReturn.textContent = labels[target.pathname];
+          sourceReturn.classList.remove("hidden");
+          sourceReturn.addEventListener("click", (event) => {
+            try {
+              const referrer = new URL(document.referrer);
+              if (
+                history.length > 1 &&
+                referrer.origin === target.origin &&
+                referrer.pathname === target.pathname
+              ) {
+                event.preventDefault();
+                history.back();
+              }
+            } catch (_error) {
+              // Follow the validated fallback href when referrer is unavailable.
+            }
+          });
+        }
+      } catch (_error) {
+        // Invalid or external return targets leave only the home link visible.
+      }
+    }
+  }
   if (location.pathname === "/video-replay")
     observeVisible("app", () => {
       let current = "";
