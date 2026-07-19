@@ -244,8 +244,16 @@
             headers: body ? { "Content-Type": "application/json" } : {},
             body: body ? JSON.stringify(body) : undefined,
           });
-          const data = await response.json();
-          if (!response.ok) throw Error(data.detail || data.message);
+          const contentType = response.headers.get("content-type") || "";
+          let data = null;
+          if (contentType.includes("application/json")) {
+            try { data = await response.json(); } catch (_) { data = null; }
+          } else {
+            await response.text();
+          }
+          if (!response.ok)
+            throw Error(data?.detail || data?.message || "操作暫時失敗，請稍後再試。");
+          if (!data) throw Error("伺服器回應格式不正確，請稍後再試。");
           return data;
         }
 

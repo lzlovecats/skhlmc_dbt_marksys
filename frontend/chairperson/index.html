@@ -527,11 +527,20 @@
             busy(false);
           }
         }
-        async function bell(count = 1) {
+        async function unlockBellAudio() {
           try {
             if (!audio)
               audio = new (window.AudioContext || window.webkitAudioContext)();
             if (audio.state === "suspended") await audio.resume();
+            return true;
+          } catch (e) {
+            toast("⚠️ 未能啟用鈴聲：" + e.message);
+            return false;
+          }
+        }
+        async function bell(count = 1) {
+          try {
+            if (!(await unlockBellAudio())) return;
             if (!bellBuffer) {
               bellBuffer = await fetch("/api/practice/bell")
                 .then((r) =>
@@ -776,6 +785,7 @@
             stop(single);
             $("singleStart").textContent = "繼續";
           } else {
+            unlockBellAudio();
             resume(single);
             $("singleStart").textContent = "暫停";
           }
@@ -793,6 +803,7 @@
             } else {
               stop(free[other]);
               freeButton(other, free[other].elapsed ? "繼續" : "開始");
+              unlockBellAudio();
               resume(free[side]);
               freeButton(side, "暫停");
             }

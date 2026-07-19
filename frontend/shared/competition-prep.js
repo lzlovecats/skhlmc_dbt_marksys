@@ -232,6 +232,7 @@
       $("prepRecentMatch").append(item);
     }
     $("prepFormat").replaceChildren(...state.data.formats.map((value) => option(value, value)));
+    $("prepEditFormat").replaceChildren(...state.data.formats.map((value) => option(value, value)));
     renderManuscriptSlots("");
     $("prepMemberUser").replaceChildren(...state.data.accounts.map((user) => option(user, user)));
   }
@@ -286,6 +287,8 @@
     $("prepProjectMeta").className = "notice warn";
     $("prepProjectMeta").textContent = "請先選擇或建立項目。";
     $("prepExport").disabled = true;
+    $("prepEditProject").disabled = true;
+    $("prepEditProjectForm").classList.add("hidden");
     $("prepDeleteProject").disabled = true;
     $("prepMemberDetails").classList.add("hidden");
     $("prepMemberEmpty").classList.remove("hidden");
@@ -327,6 +330,8 @@
       `${project.title}｜${project.match_date}｜${project.our_side === "pro" ? "正方" : "反方"}｜${project.debate_format}｜對手：${project.opponent || "未填"}｜到期：${expires}｜你的權限：${roleLabels[state.bundle.role]}`;
     $("prepMemberDetails").classList.remove("hidden");
     $("prepMemberEmpty").classList.add("hidden");
+    $("prepEditProject").disabled = !canEdit();
+    $("prepEditProjectForm").classList.add("hidden");
     $("prepDeleteProject").disabled = !isOwner();
     $("prepMemberForm").classList.toggle("hidden", !isOwner());
     renderMembers();
@@ -340,6 +345,24 @@
     );
     if (selected) selectManuscript(selected, "", false);
     else resetManuscript();
+  }
+
+  function openProjectEditor() {
+    const project = state.bundle?.project;
+    if (!project || !canEdit()) return;
+    $("prepEditTitle").value = project.title || "";
+    $("prepEditOpponent").value = project.opponent || "";
+    $("prepEditMatchDate").value = project.match_date || "";
+    $("prepEditMatchTime").value = project.match_time || "";
+    $("prepEditSide").value = project.our_side || "pro";
+    $("prepEditFormat").value = project.debate_format || "校園隨想";
+    $("prepEditTopic").value = project.topic_text || "";
+    $("prepEditProjectForm").classList.remove("hidden");
+    $("prepEditTitle").focus();
+  }
+
+  function closeProjectEditor() {
+    $("prepEditProjectForm").classList.add("hidden");
   }
 
   function syncEmbeddedForms() {
@@ -714,6 +737,38 @@
     $("prepReload").addEventListener("click", () => loadWorkspace());
     $("prepExport").addEventListener("click", () => {
       if (state.projectId) location.href = `/api/competition-prep/projects/${state.projectId}/export`;
+    });
+    $("prepEditProject").addEventListener("click", openProjectEditor);
+    $("prepCancelProjectEdit").addEventListener("click", closeProjectEditor);
+    $("prepEditProjectForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const project = state.bundle?.project;
+      const projectId = state.projectId;
+      if (!project || !projectId || !canEdit()) return;
+      busy(true);
+      try {
+        await api(`/api/competition-prep/projects/${projectId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            title: $("prepEditTitle").value.trim(),
+            opponent: $("prepEditOpponent").value.trim(),
+            match_date: $("prepEditMatchDate").value,
+            match_time: $("prepEditMatchTime").value,
+            topic_text: $("prepEditTopic").value.trim(),
+            our_side: $("prepEditSide").value,
+            debate_format: $("prepEditFormat").value,
+            revision: Number(project.revision),
+          }),
+        });
+        if (state.projectId !== projectId) return;
+        await loadProject(projectId);
+        closeProjectEditor();
+        toast("✅ 項目資料已更新。");
+      } catch (error) {
+        toast(`⚠️ ${error.message}`);
+      } finally {
+        busy(false);
+      }
     });
     $("prepDeleteProject").addEventListener("click", async () => {
       if (!state.projectId || !confirm("確定刪除整個比賽準備項目？所有稿件、策略、資源、弱點及 AI 結果都會一併刪除，不能復原。")) return;

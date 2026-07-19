@@ -360,6 +360,36 @@ def test_linked_community_resources_open_their_actual_video_or_photo():
     assert "&photo_id=${encodeURIComponent(linkedPhotoId)}" in gallery
 
 
+def test_all_general_frontend_pages_offer_a_home_link():
+    # The home page is the destination.  match_topic is a private bearer-link
+    # view whose deliberately narrow navigation contract is tested separately.
+    excluded = {"home", "match_topic"}
+    missing = []
+    for page in (ROOT / "frontend").glob("*/index.html"):
+        if page.parent.name in excluded:
+            continue
+        if 'href="/"' not in page.read_text(encoding="utf-8"):
+            missing.append(page.parent.name)
+
+    assert missing == []
+
+
+def test_match_photo_review_uses_the_school_gallery_name_everywhere():
+    home = (ROOT / "frontend" / "home" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    photos = (ROOT / "frontend" / "match_photos" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    bug_labels = (ROOT / "core" / "bug_report_logic.py").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (home, photos, bug_labels):
+        assert "聖呂中辯圖片回顧" in source
+        assert "比賽圖片回顧" not in source
+
+
 def test_linked_media_pages_offer_only_validated_source_return_links():
     ghost = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(encoding="utf-8")
     history = (ROOT / "frontend" / "team_history" / "index.html").read_text(encoding="utf-8")
