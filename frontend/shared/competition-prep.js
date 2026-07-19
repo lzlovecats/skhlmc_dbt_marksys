@@ -5,6 +5,7 @@
   const $ = (id) => document.getElementById(id);
   const toast = (message) => VoteUI.toast($("toast"), message);
   const busy = (value) => VoteUI.setBusy($("busy"), value);
+  const mobileLayout = window.matchMedia("(max-width: 800px)");
   const state = {
     data: null,
     bundle: null,
@@ -167,11 +168,48 @@
     $("review")?.remove();
   }
 
-  function switchPrepPane(name) {
-    document.querySelectorAll(".prep-pane").forEach((pane) =>
-      pane.classList.toggle("active", pane.id === name));
+  function setActiveTab(item, active) {
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-selected", String(active));
+  }
+
+  function scrollPrepContentIntoView(target) {
+    if (!mobileLayout.matches || !target) return;
+    requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
+  }
+
+  function switchPrepPane(name, { scroll = true } = {}) {
+    let target = null;
+    document.querySelectorAll(".prep-pane").forEach((pane) => {
+      const active = pane.id === name;
+      pane.classList.toggle("active", active);
+      if (active) target = pane.querySelector(".prep-subpane.active") || pane;
+    });
     document.querySelectorAll("[data-prep-pane]").forEach((item) =>
-      item.classList.toggle("active", item.dataset.prepPane === name));
+      setActiveTab(item, item.dataset.prepPane === name));
+    if (scroll) scrollPrepContentIntoView(target);
+  }
+
+  function switchPrepSubPane(parentId, name, { scroll = true } = {}) {
+    const parent = $(parentId);
+    if (!parent) return;
+    let target = null;
+    parent.querySelectorAll(".prep-subpane").forEach((pane) => {
+      const active = pane.id === name;
+      pane.classList.toggle("active", active);
+      if (active) target = pane;
+    });
+    parent.querySelectorAll("[data-prep-subpane]").forEach((item) =>
+      setActiveTab(item, item.dataset.prepSubpane === name));
+    if (scroll) scrollPrepContentIntoView(target);
+  }
+
+  function configureMobilePanels() {
+    if (!mobileLayout.matches) return;
+    ["bandwidthPanel", "modelPanel"].forEach((id) => {
+      const panel = $(id);
+      if (panel) panel.open = false;
+    });
   }
 
   function renderWorkspaceOptions() {
@@ -250,6 +288,7 @@
     $("prepExport").disabled = true;
     $("prepDeleteProject").disabled = true;
     $("prepMemberDetails").classList.add("hidden");
+    $("prepMemberEmpty").classList.remove("hidden");
     $("prepSaveResearch").classList.add("hidden");
     $("prepSaveFact").classList.add("hidden");
     $("prepResearchTarget").classList.add("hidden");
@@ -287,6 +326,7 @@
     $("prepProjectMeta").textContent =
       `${project.title}｜${project.match_date}｜${project.our_side === "pro" ? "正方" : "反方"}｜${project.debate_format}｜對手：${project.opponent || "未填"}｜到期：${expires}｜你的權限：${roleLabels[state.bundle.role]}`;
     $("prepMemberDetails").classList.remove("hidden");
+    $("prepMemberEmpty").classList.add("hidden");
     $("prepDeleteProject").disabled = !isOwner();
     $("prepMemberForm").classList.toggle("hidden", !isOwner());
     renderMembers();
@@ -411,8 +451,11 @@
     state.manuscriptFormBaseline = manuscriptContentSnapshot();
     syncEmbeddedForms();
     if (scroll) {
-      const targetId = target === "practice" ? "prepReviewHost" : "prepManuscriptForm";
-      $(targetId).scrollIntoView({ behavior: "smooth", block: "start" });
+      const subPaneId = target === "practice" ? "prepReviewPane" : "prepManuscriptEditPane";
+      switchPrepPane("prepManuscripts", { scroll: false });
+      switchPrepSubPane("prepManuscripts", subPaneId);
+      if (!mobileLayout.matches)
+        $(subPaneId).scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }
 
@@ -641,8 +684,17 @@
   }
 
   function wireEvents() {
-    document.querySelectorAll("[data-prep-pane]").forEach((item) =>
-      item.addEventListener("click", () => switchPrepPane(item.dataset.prepPane)));
+    document.querySelectorAll("[data-prep-pane]").forEach((item) => {
+      setActiveTab(item, item.classList.contains("active"));
+      item.addEventListener("click", () => switchPrepPane(item.dataset.prepPane));
+    });
+    document.querySelectorAll("[data-prep-subpane]").forEach((item) => {
+      setActiveTab(item, item.classList.contains("active"));
+      item.addEventListener("click", () => {
+        const parent = item.closest(".prep-pane");
+        if (parent) switchPrepSubPane(parent.id, item.dataset.prepSubpane);
+      });
+    });
     [
       [["prepManuscriptSearch", "prepManuscriptFilterStatus", "prepManuscriptFilterAssignee"], renderManuscripts],
       [["prepStrategySearch", "prepStrategyFilterSlot", "prepStrategyFilterPriority"], renderStrategy],
@@ -691,7 +743,8 @@
         });
         sessionStorage.competitionPrepProject = String(created.project_id);
         await loadWorkspace();
-        $("prepCreateDetails").open = false;
+        switchPrepPane("prepProject", { scroll: false });
+        switchPrepSubPane("prepProject", "prepProjectOverview");
         toast("✅ 已建立比賽準備項目。");
       } catch (error) { toast(`⚠️ ${error.message}`); }
       finally { busy(false); }
@@ -778,6 +831,7 @@
     $("reviewMode")?.addEventListener("change", () => queueMicrotask(syncEmbeddedForms));
   }
 
+  configureMobilePanels();
   moveExistingTools();
   wireEvents();
   syncEmbeddedForms();

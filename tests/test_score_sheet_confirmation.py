@@ -164,7 +164,7 @@ def test_schema_migration_and_ui_cover_side_status_and_stale_score_count():
     assert 'id="confirmCorrect"' in page
     assert 'id="submitDispute"' in page
     assert "/api/score-sheet-confirmation/respond" in page
-    assert 'href="/score-sheet-confirmation">✅ 核對比賽分紙' in home
+    assert 'href="/score-sheet-confirmation">✅ 核對比賽分紙' not in home
 
 
 def test_match_management_can_refresh_score_submission_and_confirmation_state():

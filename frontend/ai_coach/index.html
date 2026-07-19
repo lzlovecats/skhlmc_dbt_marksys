@@ -147,6 +147,24 @@
       .prep-pane.active {
         display: block;
       }
+      .prep-subpane {
+        display: none;
+      }
+      .prep-subpane.active {
+        display: block;
+      }
+      .prep-heading {
+        margin: 1rem 0 0.35rem;
+      }
+      .prep-heading .caption {
+        margin-bottom: 0;
+      }
+      .prep-subtabs {
+        margin-top: 0;
+      }
+      .coach-panel-body {
+        padding-top: 0.35rem;
+      }
       .prep-empty {
         padding: 1rem;
         border: 1px dashed var(--border);
@@ -259,6 +277,29 @@
           font-size: 1.25rem;
           overflow-wrap: anywhere;
         }
+        #prepTabs {
+          position: sticky;
+          top: max(0.35rem, env(safe-area-inset-top));
+          z-index: 12;
+          margin: 0.5rem 0 0;
+          padding: 0.35rem 0;
+          background: var(--bg);
+        }
+        .prep-subtabs {
+          position: sticky;
+          top: calc(max(0.35rem, env(safe-area-inset-top)) + 3.4rem);
+          z-index: 11;
+          margin: 0 0 0.75rem;
+          padding: 0.25rem 0;
+          background: var(--bg);
+        }
+        .prep-subpane {
+          scroll-margin-top: 7.5rem;
+        }
+        #bandwidthPanel,
+        #modelPanel {
+          margin-block: 0.65rem;
+        }
       }
       @media (max-width: 420px) {
         .choice-row {
@@ -303,7 +344,7 @@
             使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。
           </div>
         </details>
-        <details class="guide" open>
+        <details id="bandwidthPanel" class="guide" open>
           <summary>📊 系統資源及網絡傳輸量保護</summary>
           <div class="sub">
             <p id="bandwidthUsage">正在讀取本月系統用量…</p>
@@ -321,21 +362,23 @@
             </p>
           </div>
         </details>
-        <section class="card">
-          <h2>🤖 AI 模型</h2>
-          <label>AI 模型<select id="globalModel"></select></label>
-          <p id="modelNote" class="caption"></p>
-          <details open>
-            <summary>模型限額及成本估算</summary>
-            <p id="modelEstimate" class="caption"></p>
-          </details>
-          <div class="notice">
-            ℹ️ 日常練習請用 Gemini 2.5 Flash，深入分析用 Gemini 3.1
-            Pro。重要稿件先用 GPT-5.4 Mini。
+        <details id="modelPanel" class="guide" open>
+          <summary>🤖 AI 模型與用量設定</summary>
+          <div class="coach-panel-body">
+            <label>AI 模型<select id="globalModel"></select></label>
+            <p id="modelNote" class="caption"></p>
+            <details open>
+              <summary>模型限額及成本估算</summary>
+              <p id="modelEstimate" class="caption"></p>
+            </details>
+            <div class="notice">
+              ℹ️ 日常練習請用 Gemini 2.5 Flash，深入分析用 Gemini 3.1
+              Pro。重要稿件先用 GPT-5.4 Mini。
+            </div>
+            <div id="modelWarnings"></div>
+            <a href="/ai-fund">💲 前往 AI基金 管理入數 / 查閱用量</a>
           </div>
-          <div id="modelWarnings"></div>
-          <a href="/ai-fund">💲 前往 AI基金 管理入數 / 查閱用量</a>
-        </section>
+        </details>
         <nav class="tabs" id="tabs">
           <button class="active" data-pane="prep">🗂️ 比賽準備</button
           ><button data-pane="fact">✅ Fact Check易</button
@@ -345,19 +388,39 @@
           ><button data-pane="room">🎧 連線練習</button>
         </nav>
         <section id="prep" class="pane active">
-          <section class="card">
+          <header class="prep-heading">
             <h2>🗂️ 比賽準備</h2>
             <p class="caption">
               每個項目會在比賽後保留七日，並於第八日香港時間 00:00 自動清除。如有需要，請自行匯出內容。
             </p>
-            <div class="prep-toolbar">
-              <label>項目<select id="prepProjectSelect"><option value="">選擇項目…</option></select></label>
-              <button id="prepReload" type="button">重新載入</button>
-              <button id="prepExport" type="button" disabled>匯出 JSON</button>
-              <button id="prepDeleteProject" class="danger" type="button" disabled>刪除項目</button>
-            </div>
-            <details id="prepCreateDetails">
-              <summary>建立新比賽準備項目</summary>
+          </header>
+          <input id="prepProjectId" type="hidden" />
+          <nav class="tabs" id="prepTabs" aria-label="比賽準備功能">
+            <button class="active" data-prep-pane="prepProject">📁 項目</button>
+            <button data-prep-pane="prepManuscripts">📝 稿件</button>
+            <button data-prep-pane="prepStrategy">🛡️ 攻防</button>
+            <button data-prep-pane="prepEvidence">📚 資源</button>
+            <button data-prep-pane="prepWeakness">⚔️ 弱點</button>
+          </nav>
+
+          <section id="prepProject" class="prep-pane active">
+            <nav class="tabs prep-subtabs" aria-label="項目功能">
+              <button class="active" data-prep-subpane="prepProjectOverview">目前項目</button>
+              <button data-prep-subpane="prepProjectCreate">建立項目</button>
+              <button data-prep-subpane="prepProjectMembers">協作者</button>
+            </nav>
+            <section id="prepProjectOverview" class="card prep-subpane active">
+              <h2>目前項目</h2>
+              <div class="prep-toolbar">
+                <label>項目<select id="prepProjectSelect"><option value="">選擇項目…</option></select></label>
+                <button id="prepReload" type="button">重新載入</button>
+                <button id="prepExport" type="button" disabled>匯出 JSON</button>
+                <button id="prepDeleteProject" class="danger" type="button" disabled>刪除項目</button>
+              </div>
+              <div id="prepProjectMeta" class="caption prep-empty">請先選擇或建立項目。</div>
+            </section>
+            <section id="prepProjectCreate" class="card prep-subpane">
+              <h2>建立新比賽準備項目</h2>
               <form id="prepCreateForm">
                 <label>從「近期賽事」帶入<select id="prepRecentMatch"><option value="">手動輸入</option></select></label>
                 <div class="field-grid">
@@ -371,26 +434,29 @@
                 <label>辯題<input id="prepTopic" maxlength="500" required /></label>
                 <button class="primary">建立項目</button>
               </form>
-            </details>
-            <div id="prepProjectMeta" class="caption prep-empty">請先選擇或建立項目。</div>
-            <details id="prepMemberDetails" class="hidden">
-              <summary>協作者及權限</summary>
-              <div id="prepMemberList"></div>
-              <form id="prepMemberForm" class="prep-toolbar">
-                <label>隊員<select id="prepMemberUser"></select></label>
-                <label>角色<select id="prepMemberRole"><option value="editor">編輯者</option><option value="viewer">檢視者</option></select></label>
-                <button>加入／更新</button>
-              </form>
-            </details>
+            </section>
+            <section id="prepProjectMembers" class="prep-subpane">
+              <div id="prepMemberEmpty" class="notice warn">請先選擇項目。</div>
+              <section id="prepMemberDetails" class="card hidden">
+                <h2>協作者及權限</h2>
+                <div id="prepMemberList"></div>
+                <form id="prepMemberForm" class="prep-toolbar">
+                  <label>隊員<select id="prepMemberUser"></select></label>
+                  <label>角色<select id="prepMemberRole"><option value="editor">編輯者</option><option value="viewer">檢視者</option></select></label>
+                  <button>加入／更新</button>
+                </form>
+              </section>
+            </section>
           </section>
-          <nav class="tabs" id="prepTabs">
-            <button class="active" data-prep-pane="prepAudit">📝 全隊稿件審查</button>
-            <button data-prep-pane="prepStrategy">🛡️ 攻防策略</button>
-            <button data-prep-pane="prepEvidence">📚 論據資源庫</button>
-            <button data-prep-pane="prepWeakness">⚔️ 弱點訓練</button>
-          </nav>
-          <section id="prepAudit" class="prep-pane active">
-            <section class="card">
+
+          <section id="prepManuscripts" class="prep-pane">
+            <nav class="tabs prep-subtabs" aria-label="稿件功能">
+              <button class="active" data-prep-subpane="prepManuscriptListPane">稿件清單</button>
+              <button data-prep-subpane="prepManuscriptEditPane">編輯稿件</button>
+              <button data-prep-subpane="prepAuditPane">AI 審查</button>
+              <button data-prep-subpane="prepReviewPane">發言練習</button>
+            </nav>
+            <section id="prepManuscriptListPane" class="card prep-subpane active">
               <h2>全隊稿件</h2>
               <div class="prep-filter-bar">
                 <label>搜尋稿件<input id="prepManuscriptSearch" type="search" placeholder="搜尋標題、內容或負責隊員" /></label>
@@ -398,6 +464,9 @@
                 <label>負責隊員<select id="prepManuscriptFilterAssignee"><option value="">全部隊員</option><option value="__unassigned__">未分配</option></select></label>
               </div>
               <div id="prepManuscriptList" class="prep-empty">請先選擇項目。</div>
+            </section>
+            <section id="prepManuscriptEditPane" class="card prep-subpane">
+              <h2>編輯稿件</h2>
               <form id="prepManuscriptForm">
                 <input id="prepManuscriptId" type="hidden" />
                 <input id="prepManuscriptRevision" type="hidden" />
@@ -413,16 +482,26 @@
                   <button id="prepManuscriptReset" type="button">新增／清空</button>
                 </div>
               </form>
-              <hr />
-              <button id="prepTeamAudit" class="primary" type="button">AI 全隊交叉審查</button>
+            </section>
+            <section id="prepAuditPane" class="card prep-subpane">
+              <h2>AI 全隊交叉審查</h2>
+              <button id="prepTeamAudit" class="primary" type="button">開始全隊交叉審查</button>
               <p class="caption">系統會按照「我方論證責任」、主線一致性、攻防覆蓋、辯位分工及最高風險弱點審查全隊稿件。</p>
               <div id="prepAuditResult" class="result caption">尚未執行全隊審查。</div>
             </section>
-            <input id="prepProjectId" type="hidden" />
-            <div id="prepReviewHost"></div>
+            <section id="prepReviewPane" class="prep-subpane">
+              <div id="prepReviewHost"></div>
+            </section>
           </section>
+
           <section id="prepStrategy" class="prep-pane">
-            <section class="card">
+            <nav class="tabs prep-subtabs" aria-label="攻防功能">
+              <button class="active" data-prep-subpane="prepStrategyListPane">策略卡</button>
+              <button data-prep-subpane="prepStrategyCreatePane">新增策略</button>
+              <button data-prep-subpane="prepStrategyPlanPane">主線策劃</button>
+              <button data-prep-subpane="prepAttackPane">模擬攻擊</button>
+            </nav>
+            <section id="prepStrategyListPane" class="card prep-subpane active">
               <h2>攻防策略卡</h2>
               <div class="prep-filter-bar">
                 <label>搜尋策略卡<input id="prepStrategySearch" type="search" placeholder="搜尋標題或內容" /></label>
@@ -430,6 +509,9 @@
                 <label>優先級<select id="prepStrategyFilterPriority"><option value="">全部優先級</option><option value="1">高</option><option value="2">中</option><option value="3">低</option></select></label>
               </div>
               <div id="prepStrategyList" class="prep-empty">請先選擇項目。</div>
+            </section>
+            <section id="prepStrategyCreatePane" class="card prep-subpane">
+              <h2>新增策略卡</h2>
               <form id="prepStrategyCardForm">
                 <div class="field-grid">
                   <label>類型<select id="prepStrategyKind"><option value="mainline">全隊主線</option><option value="definition">定義</option><option value="standard">評判標準</option><option value="burden">我方論證責任</option><option value="argument">我方論點</option><option value="opponent_argument">對方論點</option><option value="attack">我方攻擊</option><option value="rebuttal">反駁</option><option value="defence_floor">最低防守線</option><option value="question">追問</option></select></label>
@@ -438,13 +520,23 @@
                 <label>內容<textarea id="prepStrategyContent" rows="5" maxlength="10000"></textarea></label>
                 <button class="primary">新增策略卡</button>
               </form>
-              <button id="prepAttack" type="button" class="primary">AI模擬攻擊</button>
+            </section>
+            <section id="prepStrategyPlanPane" class="prep-subpane">
+              <div id="prepStrategyHost"></div>
+            </section>
+            <section id="prepAttackPane" class="card prep-subpane">
+              <h2>AI模擬攻擊</h2>
+              <button id="prepAttack" type="button" class="primary">開始模擬攻擊</button>
               <div id="prepAttackResult" class="result caption">尚未執行模擬攻擊。</div>
             </section>
-            <div id="prepStrategyHost"></div>
           </section>
+
           <section id="prepEvidence" class="prep-pane">
-            <section class="card">
+            <nav class="tabs prep-subtabs" aria-label="資源功能">
+              <button class="active" data-prep-subpane="prepEvidenceListPane">資源庫</button>
+              <button data-prep-subpane="prepEvidenceCreatePane">新增資源</button>
+            </nav>
+            <section id="prepEvidenceListPane" class="card prep-subpane active">
               <h2>論據資源庫</h2>
               <p class="caption">「搵料易」及「Fact Check易」保留為獨立功能。你可以在此帶入查詢，並在完成後將結果加入目前項目。只有項目擁有者或編輯者可以加入內容。</p>
               <div class="actions"><button id="prepOpenResearch" type="button">用搵料易</button><button id="prepOpenFact" type="button">用 Fact Check易</button></div>
@@ -454,6 +546,9 @@
                 <label>適用範圍<select id="prepEvidenceFilterScope"><option value="">全部範圍</option><option value="our">我方</option><option value="opponent">對方</option><option value="both">雙方</option></select></label>
               </div>
               <div id="prepEvidenceList" class="prep-empty">請先選擇項目。</div>
+            </section>
+            <section id="prepEvidenceCreatePane" class="card prep-subpane">
+              <h2>新增論據資源</h2>
               <form id="prepEvidenceForm">
                 <label>可引用主張<input id="prepEvidenceClaim" maxlength="500" required /></label>
                 <label>摘錄／摘要<textarea id="prepEvidenceExcerpt" rows="5" maxlength="20000"></textarea></label>
@@ -468,8 +563,13 @@
               </form>
             </section>
           </section>
+
           <section id="prepWeakness" class="prep-pane">
-            <section class="card">
+            <nav class="tabs prep-subtabs" aria-label="弱點功能">
+              <button class="active" data-prep-subpane="prepWeaknessListPane">弱點清單</button>
+              <button data-prep-subpane="prepWeaknessCreatePane">新增弱點</button>
+            </nav>
+            <section id="prepWeaknessListPane" class="card prep-subpane active">
               <h2>弱點訓練</h2>
               <p class="caption">採用嚴格自由辯論模式：AI 在練習期間只會攻擊指定弱點，不會提示答案；練習結束後才會判斷通過、部分通過或未通過。</p>
               <div class="prep-filter-bar">
@@ -478,6 +578,9 @@
                 <label>負責隊員<select id="prepWeaknessFilterAssignee"><option value="">全部隊員</option><option value="__unassigned__">未分配</option></select></label>
               </div>
               <div id="prepWeaknessList" class="prep-empty">請先選擇項目。</div>
+            </section>
+            <section id="prepWeaknessCreatePane" class="card prep-subpane">
+              <h2>新增弱點</h2>
               <form id="prepWeaknessForm">
                 <div class="field-grid">
                   <label>弱點標題<input id="prepWeaknessTitle" maxlength="200" required /></label>

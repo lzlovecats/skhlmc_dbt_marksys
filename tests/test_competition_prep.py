@@ -66,13 +66,34 @@ def test_competition_prep_migration_guards_optional_browser_roles():
     assert "rolname IN ('anon', 'authenticated')" in up
 
 
-def test_ui_has_one_outer_prep_tab_four_inner_tabs_and_separate_search_tools():
+def test_ui_has_nested_mobile_prep_tabs_and_separate_search_tools():
     html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text()
+    script = (ROOT / "frontend" / "shared" / "competition-prep.js").read_text()
 
     assert 'data-pane="prep"' in html
     assert 'data-pane="strategy"' not in html
     assert 'data-pane="review"' not in html
-    assert html.count("data-prep-pane=") == 4
+    assert html.count("data-prep-pane=") == 5
+    for pane in (
+        "prepProject", "prepManuscripts", "prepStrategy", "prepEvidence",
+        "prepWeakness",
+    ):
+        assert f'data-prep-pane="{pane}"' in html
+    for subpane in (
+        "prepProjectOverview", "prepProjectCreate", "prepProjectMembers",
+        "prepManuscriptListPane", "prepManuscriptEditPane", "prepAuditPane",
+        "prepReviewPane", "prepStrategyListPane", "prepStrategyCreatePane",
+        "prepStrategyPlanPane", "prepAttackPane", "prepEvidenceListPane",
+        "prepEvidenceCreatePane", "prepWeaknessListPane",
+        "prepWeaknessCreatePane",
+    ):
+        assert f'data-prep-subpane="{subpane}"' in html
+    assert 'id="bandwidthPanel"' in html
+    assert 'id="modelPanel"' in html
+    assert "function switchPrepSubPane" in script
+    assert 'matchMedia("(max-width: 800px)")' in script
+    assert 'panel.open = false' in script
+    assert "scrollIntoView" in script
     assert 'data-pane="research"' in html
     assert 'data-pane="fact"' in html
     assert "AI模擬攻擊" in html
@@ -104,11 +125,17 @@ def test_prep_manuscript_contract_has_other_notes_and_third_deputy_only_for_join
 def test_prep_ui_separates_edit_and_practice_and_identifies_evidence_target():
     html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text()
     script = (ROOT / "frontend" / "shared" / "competition-prep.js").read_text()
+    select_manuscript = script.split("function selectManuscript", 1)[1].split(
+        "function resetManuscript", 1,
+    )[0]
 
     assert 'button("編輯"' in script
     assert 'button("練習"' in script
     assert "編輯／練習" not in script
     assert 'prepManuscriptSlot").addEventListener("change"' in script
+    assert 'switchPrepPane("prepManuscripts", { scroll: false })' in select_manuscript
+    assert 'switchPrepSubPane("prepManuscripts", subPaneId)' in select_manuscript
+    assert 'target === "practice" ? "prepReviewPane"' in select_manuscript
     assert "檢視資料出處" in script and "開來源" not in script
     assert "目前項目：" in script
     assert "只有項目擁有者或編輯者" in html
