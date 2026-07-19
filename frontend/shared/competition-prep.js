@@ -562,6 +562,7 @@
   async function runPrepAi(runType, outputId) {
     if (!state.projectId) return toast("⚠️ 請先選擇項目。");
     const projectId = state.projectId;
+    const generation = state.loadGeneration;
     const operationKey = `${projectId}:${runType}`;
     const operationId = state.pendingAiOperations.get(operationKey)
       || `prep-${crypto.randomUUID()}`;
@@ -576,10 +577,11 @@
         }),
       });
       state.pendingAiOperations.delete(operationKey);
+      if (state.projectId !== projectId || state.loadGeneration !== generation) return;
       $(outputId).classList.remove("caption");
       $(outputId).innerHTML = SafeMarkdown.render(data.markdown);
-      if (state.projectId === projectId) await loadProject(projectId);
-      toast("✅ AI 分析完成。");
+      await loadProject(projectId);
+      if (state.projectId === projectId) toast("✅ AI 分析完成。");
     } catch (error) {
       toast(`⚠️ ${error.message}`);
     } finally {

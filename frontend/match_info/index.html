@@ -278,7 +278,7 @@
         <summary>ℹ️ 首次使用指南</summary>
         <ul>
           <li>
-            使用賽會人員密碼登入後，可在此建立場次、抽辯題、抽站方及更新辯員資料。
+            使用賽會人員密碼登入後，可在此建立場次、產生辯題公佈連結、抽站方及更新辯員資料。
           </li>
           <li>
             編輯場次時，請確認賽制、正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。
@@ -311,7 +311,7 @@
 
         <section class="card">
           <h2>建立新場次</h2>
-          <p class="intro">請先建立場次，再進行抽辯題、抽站方或編輯資料。</p>
+          <p class="intro">請先建立場次，再產生辯題公佈連結、抽站方或編輯資料。</p>
           <div class="toolbar">
             <div class="field">
               <label for="newId">輸入比賽場次</label
@@ -361,16 +361,18 @@
           </section>
 
           <section class="card">
-            <h2>辯題私人分享及否決</h2>
+            <h2>產生辯題公佈連結</h2>
             <p class="intro">
-              系統會預抽三條同難度辯題，分別在比賽日前第十四、十三及十二日下午五時公布。正反方各有一次否決權；私人連結互不相同，亦不會向另一方顯示否決者身分。
+              系統會一次抽取三條不同辯題，並產生正反方各自的查閱連結。選擇「全部難度」時，三條辯題可以來自不同難度；正反方各有一次否決權。
             </p>
+            <div class="field">
+              <label for="difficulty">抽題難度</label>
+              <select id="difficulty"></select>
+            </div>
             <div id="topicReleaseState"></div>
             <div id="topicReleaseLinks" class="link-grid"></div>
             <div class="link-actions">
-              <button id="refreshTopicRelease" type="button">更新辯題公布狀態</button>
-              <button id="openTopicRelease" class="primary" type="button">預抽三題並建立私人分享連結</button>
-              <button id="rotateTopicReleaseLinks" type="button">重新產生私人連結</button>
+              <button id="openTopicRelease" class="primary" type="button">產生正反方查閱辯題連結</button>
               <button id="cancelTopicRelease" class="danger" type="button">取消辯題分享</button>
             </div>
           </section>
@@ -378,15 +380,6 @@
           <section class="card">
             <h2>抽籤工具</h2>
             <div class="draw-grid">
-              <div class="draw-card">
-                <h3>抽辯題</h3>
-                <label for="difficulty">難度篩選</label>
-                <select id="difficulty"></select>
-                <div class="caption">
-                  從辯題庫抽取一條辯題，結果會自動填入下方場次資料。
-                </div>
-                <button id="drawTopic" type="button">抽辯題</button>
-              </div>
               <div class="draw-card">
                 <h3>抽站方</h3>
                 <div class="caption">
@@ -426,7 +419,8 @@
               </div>
             </div>
             <div class="field section-heading">
-              <label for="topic">辯題</label><input id="topic" />
+              <label for="topic">最終辯題</label><input id="topic" readonly />
+              <div class="caption">此欄只會在否決期完結或第三條辯題公佈後顯示最終辯題。</div>
             </div>
 
             <h3 class="section-heading">正反方資料</h3>
@@ -728,39 +722,22 @@
           }).format(date);
         };
 
-        function candidateCards(release) {
-          return (release.candidates || []).map((candidate) => {
-            const vetoedBy = candidate.vetoed_by
-              ? `${candidate.vetoed_by === "pro" ? "正方" : "反方"}於 ${formatHkt(candidate.vetoed_at)}否決`
-              : candidate.number < 3
-                ? `否決截止：${formatHkt(candidate.veto_deadline)}`
-                : "第三條辯題不設否決";
-            return `<article class="candidate-card ${candidate.number === release.candidate_number ? "current" : ""}">
-              <strong>第 ${Number(candidate.number)} 條：${esc(candidate.topic_text)}</strong>
-              <p class="caption">公布：${esc(formatHkt(candidate.reveal_at))}｜${esc(vetoedBy)}</p>
-            </article>`;
-          }).join("");
-        }
-
         function renderTopicRelease() {
           const release = state.topic_release || {};
           const openButton = $("openTopicRelease");
-          const rotateButton = $("rotateTopicReleaseLinks");
           const cancelButton = $("cancelTopicRelease");
           if (!release.schema_ready) {
-            $("topicReleaseState").innerHTML = '<div class="notice warn">資料庫 migration 尚未完成，暫時不能建立辯題分享連結。</div>';
+            $("topicReleaseState").innerHTML = '<div class="notice warn">資料庫 migration 尚未完成，暫時不能產生辯題公佈連結。</div>';
             $("topicReleaseLinks").innerHTML = "";
             openButton.disabled = true;
-            rotateButton.disabled = true;
             cancelButton.disabled = true;
             return;
           }
           if (!release.active) {
-            $("topicReleaseState").innerHTML = '<p class="caption">此場次尚未建立辯題私人分享連結。請先儲存比賽日期、時間、正反方隊名及首條辯題。</p>';
+            $("topicReleaseState").innerHTML = '<p class="caption">此場次尚未產生辯題公佈連結。請先儲存比賽日期、時間及正反方隊名。</p>';
             $("topicReleaseLinks").innerHTML = "";
-            openButton.textContent = "預抽三題並建立私人分享連結";
+            openButton.textContent = "產生正反方查閱辯題連結";
             openButton.disabled = false;
-            rotateButton.disabled = true;
             cancelButton.disabled = true;
             return;
           }
@@ -771,32 +748,24 @@
             final: "目前辯題已確定",
             expired: "比賽已開始，連結已失效",
           };
-          const history = (release.history || []).map((round) => `
-            <div class="candidate-card">
-              <strong>第 ${Number(round.generation)} 代｜${round.revoked_at ? `已於 ${esc(formatHkt(round.revoked_at))} 撤銷` : "目前生效"}</strong>
-              <div class="candidate-list">${candidateCards(round)}</div>
-            </div>`).join("");
           $("topicReleaseState").innerHTML = `
             <div class="topic-release-summary">
               <strong>狀態：${esc(phaseLabels[currentRelease.phase] || currentRelease.phase || "未知")}</strong>
               <span class="caption">連結在 ${esc(formatHkt(currentRelease.expires_at))} 失效</span>
-            </div>
-            <div class="candidate-list">${candidateCards(currentRelease)}</div>
-            <details class="release-audit"><summary>檢視抽題及否決紀錄（${Number((release.history || []).length)} 代）</summary>${history}</details>`;
+            </div>`;
           $("topicReleaseLinks").innerHTML = ["pro", "con"].map((side) => {
             const label = side === "pro" ? "正方" : "反方";
             const token = currentRelease[`${side}_token`] || "";
             const url = `${location.origin}/match-topic?token=${encodeURIComponent(token)}`;
             return `<section class="link-card">
-              <h3>${label}辯題私人連結</h3>
+              <h3>${label}查閱辯題連結</h3>
               <label for="${side}TopicLink">${label}專用連結</label>
               <input id="${side}TopicLink" readonly value="${esc(url)}" onclick="this.select()">
-              <div class="link-actions"><button type="button" data-copy-topic="${side}">複製${label}分享連結</button></div>
+              <div class="link-actions"><button type="button" data-copy-topic="${side}">複製${label}查閱連結</button></div>
             </section>`;
           }).join("");
-          openButton.textContent = "重新預抽三題並建立新連結";
+          openButton.textContent = "重新抽取三條辯題並產生新連結";
           openButton.disabled = !currentRelease.can_redraw;
-          rotateButton.disabled = !currentRelease.can_rotate;
           cancelButton.disabled = !currentRelease.can_cancel;
         }
 
@@ -912,12 +881,12 @@
           renderTopicRelease();
         }
 
-        async function run(action, errorTarget = "notice") {
+        async function run(action) {
           setBusy(true);
           try {
             await action();
           } catch (error) {
-            showMessage(errorTarget, error.message);
+            toast(`⚠️ ${error.message || "操作失敗。"}`);
           } finally {
             setBusy(false);
           }
@@ -930,7 +899,7 @@
               password: $("password").value,
             });
             await load();
-          }, "loginMsg");
+          });
         });
 
         $("create").addEventListener("click", () =>
@@ -963,17 +932,6 @@
         });
 
         $("format").addEventListener("change", syncFormatFields);
-
-        $("drawTopic").addEventListener("click", () =>
-          run(async () => {
-            const result = await request("/api/match-info/draw-topic", {
-              difficulty: $("difficulty").value || null,
-            });
-            if (!result.ok) throw new Error(result.message);
-            $("topic").value = result.topic;
-            toast("✅ 已抽取辯題");
-          }),
-        );
 
         $("drawSides").addEventListener("click", () =>
           run(async () => {
@@ -1009,7 +967,7 @@
             await load(match.match_id);
             showMessage("saveMsg", result.message, "ok");
             toast("✅ 場次資料已儲存");
-          }, "saveMsg");
+          });
         });
 
         $("links").addEventListener("click", (event) => {
@@ -1053,44 +1011,24 @@
           }),
         );
 
-        $("refreshTopicRelease").addEventListener("click", () =>
-          run(async () => {
-            await refreshTopicRelease();
-            toast("✅ 已更新辯題公布狀態");
-          }),
-        );
-
         $("openTopicRelease").addEventListener("click", () => {
           if (hasUnsavedChanges()) {
-            showMessage("notice", "請先儲存目前場次資料，再建立辯題分享連結。");
+            toast("⚠️ 請先儲存目前場次資料，再產生辯題公佈連結。");
             return;
           }
           const replacing = Boolean(state.topic_release?.active);
           const message = replacing
-            ? "重新預抽會撤銷目前三條候選辯題，並令正反方現有私人連結即時失效。確定繼續？"
-            : "系統會按目前已儲存的首條辯題及難度，再預抽兩條候選辯題並建立正反方私人連結。確定繼續？";
+            ? "重新抽題會撤銷目前三條候選辯題，並令正反方現有連結即時失效。確定繼續？"
+            : "系統會按所選難度一次抽取三條不同辯題，並產生正反方各自的查閱連結。確定繼續？";
           if (!window.confirm(message)) return;
           run(async () => {
+            const matchId = current().match_id;
             const difficulty = $("difficulty").value;
             const result = await request(
-              `/api/match-info/${encodeURIComponent(current().match_id)}/topic-release/open`,
+              `/api/match-info/${encodeURIComponent(matchId)}/topic-release/open`,
               { difficulty: difficulty ? Number(difficulty) : null },
             );
-            state.topic_release = result;
-            renderTopicRelease();
-            toast(`✅ ${result.message}`);
-          });
-        });
-
-        $("rotateTopicReleaseLinks").addEventListener("click", () => {
-          if (!window.confirm("重新產生連結會令正反方現有私人連結即時失效，但不會更改候選辯題或否決紀錄。確定繼續？")) return;
-          run(async () => {
-            const result = await request(
-              `/api/match-info/${encodeURIComponent(current().match_id)}/topic-release/rotate-links`,
-              {},
-            );
-            state.topic_release = result;
-            renderTopicRelease();
+            await load(matchId);
             toast(`✅ ${result.message}`);
           });
         });
@@ -1113,7 +1051,7 @@
           const input = $(`${button.dataset.copyTopic}TopicLink`);
           run(async () => {
             await navigator.clipboard.writeText(input.value);
-            toast("✅ 已複製私人分享連結");
+            toast("✅ 已複製辯題公佈連結");
           });
         });
 

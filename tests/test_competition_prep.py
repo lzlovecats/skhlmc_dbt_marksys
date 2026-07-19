@@ -257,15 +257,34 @@ def test_competition_prep_ui_invalidates_stale_loads_and_captures_mutation_conte
     mutate = source.split("async function mutate", 1)[1].split(
         "async function removeMember", 1,
     )[0]
+    run_ai = source.split("async function runPrepAi", 1)[1].split(
+        "async function startWeakness", 1,
+    )[0]
 
     assert "state.loadGeneration += 1" in clear_project
     assert "const projectId = state.projectId" in mutate
     assert "await loadProject(projectId)" in mutate
     assert "state.projectId !== projectId" in mutate
+    guard = (
+        "if (state.projectId !== projectId || "
+        "state.loadGeneration !== generation) return;"
+    )
+    assert guard in run_ai
+    assert run_ai.index(guard) < run_ai.index('$(outputId).innerHTML')
+
+
+def test_ai_input_fingerprint_tracks_context_without_storing_plaintext():
+    first = logic.ai_input_fingerprint({"context": "第一版全隊稿件"})
+    second = logic.ai_input_fingerprint({"context": "第二版全隊稿件"})
+
+    assert first != second
+    assert len(first) == 64
+    assert "稿件" not in first
 
 
 def test_prep_ai_persists_result_before_usage_and_reuses_completed_operation(monkeypatch):
     events = []
+    snapshots = []
     bundle = {
         "project": {"revision": 2}, "role": "owner",
         "manuscripts": [], "strategy_cards": [], "evidence_cards": [], "weaknesses": [],
@@ -277,11 +296,12 @@ def test_prep_ai_persists_result_before_usage_and_reuses_completed_operation(mon
     )
     monkeypatch.setattr(logic, "project_bundle", lambda *_args: bundle)
     monkeypatch.setattr(logic, "build_ai_context", lambda _bundle: "context")
-    monkeypatch.setattr(
-        logic, "claim_ai_run",
-        lambda *_args, **_kwargs: events.append("claim") or {"state": "claimed"},
-        raising=False,
-    )
+    def claim(*args, **_kwargs):
+        events.append("claim")
+        snapshots.append(args[6])
+        return {"state": "claimed"}
+
+    monkeypatch.setattr(logic, "claim_ai_run", claim, raising=False)
     monkeypatch.setattr(
         logic, "complete_ai_run",
         lambda *_args, **_kwargs: events.append("complete"),
@@ -309,6 +329,10 @@ def test_prep_ai_persists_result_before_usage_and_reuses_completed_operation(mon
 
     assert json.loads(response.body)["markdown"] == "result"
     assert events == ["claim", "provider", "complete", "usage"]
+    assert snapshots == [{
+        "project_revision": 2,
+        "input_sha256": logic.ai_input_fingerprint({"context": "context"}),
+    }]
 
     monkeypatch.setattr(
         logic, "claim_ai_run",

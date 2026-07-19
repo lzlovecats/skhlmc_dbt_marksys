@@ -106,6 +106,9 @@ def match_admin_data(selected_match_id=None, db=None, compact=False):
         try:
             from core.match_topic_release import admin_state as topic_release_admin_state
             topic_release = topic_release_admin_state(selected, db)
+            # The release workflow may have atomically promoted a candidate to
+            # the final match topic.  Return that value in this same response.
+            matches = _match_records(db, detail_match_id=selected, compact=compact)
         except Exception:
             topic_release = {"schema_ready": False, "active": False, "history": []}
     else:
@@ -175,15 +178,17 @@ def save_match(data, db=None):
     new_access_hash = hash_password(raw_access) if raw_access else None
     new_review_hash = hash_password(raw_review) if raw_review else None
     with db.transaction() as session:
-        exists = session.execute(text(f"SELECT access_code_hash, review_password_hash FROM {TABLE_MATCHES} WHERE match_id = :id FOR UPDATE"), {"id": match_id}).fetchone()
+        exists = session.execute(text(f"SELECT access_code_hash, review_password_hash, topic_text FROM {TABLE_MATCHES} WHERE match_id = :id FOR UPDATE"), {"id": match_id}).fetchone()
         if not exists: return {"ok": False, "message": "場次不存在。"}
         access, review = exists._mapping["access_code_hash"], exists._mapping["review_password_hash"]
         access = None if data.get("clear_access_code") else new_access_hash or access
         review = None if data.get("clear_review_password") else new_review_hash or review
-        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "format": debate_format, "free_minutes": free_minutes, "access": access, "review": review}
+        # topic_text is server-owned: it remains blank while candidates are
+        # pending and is written only when match_topic_release makes one final.
+        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(exists._mapping.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "format": debate_format, "free_minutes": free_minutes, "access": access, "review": review}
         from core.match_topic_release import validate_active_release_update
         release_error = validate_active_release_update(
-            session, match_id, params["date"], params["time"], params["topic"],
+            session, match_id, params["date"], params["time"],
         )
         if release_error:
             return {"ok": False, "message": release_error}

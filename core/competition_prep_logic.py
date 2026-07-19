@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from datetime import date, datetime, time, timedelta
@@ -568,6 +569,11 @@ def _canonical_snapshot(value):
     if not isinstance(value, dict):
         value = {}
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def ai_input_fingerprint(value: dict) -> str:
+    """Hash authoritative AI inputs without copying their plaintext to the ledger."""
+    return hashlib.sha256(_canonical_snapshot(value).encode("utf-8")).hexdigest()
 
 
 def claim_ai_run(db, project_id, user_id, run_id, run_type, model_label, snapshot=None):

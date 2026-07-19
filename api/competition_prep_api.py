@@ -240,7 +240,10 @@ async def ai_run(project_id: int, body: AiRunBody, request: Request):
     config = coach._config(model_label, db)
     coach._require_enabled_model(model_label, config, enabled_providers)
     operation_id = body.operation_id
-    snapshot = {"project_revision": bundle["project"]["revision"]}
+    snapshot = {
+        "project_revision": bundle["project"]["revision"],
+        "input_sha256": logic.ai_input_fingerprint({"context": context}),
+    }
     claim = _handle(lambda: logic.claim_ai_run(
         db, project_id, user_id, operation_id, body.run_type, model_label, snapshot,
     ))

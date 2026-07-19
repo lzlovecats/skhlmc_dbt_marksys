@@ -794,6 +794,12 @@ async def run(body: CoachRequest, request: Request):
         body.topic = str(project["topic_text"])
         body.side = "正方" if project["our_side"] == "pro" else "反方"
         body.debate_format = str(project["debate_format"])
+        project_input = {
+            "revision": int(project.get("revision") or 0),
+            "topic_text": body.topic,
+            "side": body.side,
+            "debate_format": body.debate_format,
+        }
         if body.feature == "speech_review":
             manuscript = next((
                 item for item in prep_bundle["manuscripts"]
@@ -809,10 +815,32 @@ async def run(body: CoachRequest, request: Request):
             prep_run_type = (
                 "speech_retake" if body.review_attempt == "retake" else "speech_review"
             )
-            prep_snapshot = {"manuscript_id": body.prep_manuscript_id}
+            prep_snapshot = {
+                "project_revision": project_input["revision"],
+                "manuscript_id": body.prep_manuscript_id,
+                "manuscript_revision": int(manuscript.get("revision") or 0),
+                "input_sha256": prep_logic.ai_input_fingerprint({
+                    "project": project_input,
+                    "feature": body.feature,
+                    "position": body.position,
+                    "review_mode": body.review_mode,
+                    "review_attempt": body.review_attempt,
+                    "text": body.text,
+                    "previous_review": body.previous_review,
+                    "audio_intent_id": body.audio_intent_id,
+                    "audio_duration_seconds": body.audio_duration_seconds,
+                }),
+            }
         elif body.feature == "strategy":
             prep_run_type = "strategy_seed"
-            prep_snapshot = {"manuscript_id": None}
+            prep_snapshot = {
+                "project_revision": project_input["revision"],
+                "manuscript_id": None,
+                "input_sha256": prep_logic.ai_input_fingerprint({
+                    "project": project_input,
+                    "feature": body.feature,
+                }),
+            }
         _validate_coach_request(body)
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
     model_label = _requested_model_label(body, runtime_default_model)

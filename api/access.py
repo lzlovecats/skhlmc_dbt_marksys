@@ -39,7 +39,13 @@ def interactive_features_suspension(request: Request) -> dict:
     from core.feature_suspension import suspension_status
     from deploy.proxy import get_vote_db
 
-    return suspension_status(get_vote_db())
+    try:
+        db = get_vote_db()
+    except Exception:
+        # The suspension schedule is deliberately fail-open.  Database
+        # acquisition belongs inside that boundary as well as config reads.
+        db = None
+    return suspension_status(db)
 
 
 def require_interactive_features_available(request: Request) -> dict:

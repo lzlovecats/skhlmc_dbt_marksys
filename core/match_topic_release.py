@@ -135,6 +135,41 @@ def _current_candidate_number(row: dict) -> int:
     return 3
 
 
+def _final_topic(row: dict, *, now: dt.datetime | None = None) -> str:
+    """Return the topic that has become final under the rules, if any."""
+    values = _mapping(row)
+    now_value = _now(now)
+    number = _current_candidate_number(values)
+    final_at = {
+        1: _datetime(values.get("first_veto_deadline")),
+        2: _datetime(values.get("second_veto_deadline")),
+        3: _datetime(values.get("third_reveal_at")),
+    }[number]
+    if final_at is None or now_value < final_at:
+        return ""
+    return _candidate(values, number)
+
+
+def _sync_final_topic(conn, row: dict, *, now: dt.datetime | None = None) -> str:
+    """Persist only a rules-final topic in the ordinary match record."""
+    topic = _final_topic(row, now=now)
+    if not topic:
+        conn.execute(text(f"""
+            UPDATE {TABLE_MATCHES}
+            SET topic_text=''
+            WHERE match_id=:match_id
+              AND COALESCE(topic_text, '')<>''
+        """), {"match_id": _clean(row.get("match_id"))})
+        return ""
+    conn.execute(text(f"""
+        UPDATE {TABLE_MATCHES}
+        SET topic_text=:topic
+        WHERE match_id=:match_id
+          AND COALESCE(topic_text, '')<>:topic
+    """), {"topic": topic, "match_id": _clean(row.get("match_id"))})
+    return topic
+
+
 def public_payload(row, side: str, *, now: dt.datetime | None = None) -> dict:
     """Map one active release row to the exact data visible to one team."""
     values = _mapping(row)
@@ -242,13 +277,25 @@ def _release_select(where: str) -> str:
 def admin_state(match_id: str, db=None, *, now: dt.datetime | None = None) -> dict:
     db = _resolve_db(db)
     match_id = _clean(match_id)
-    rows = db.query(
-        _release_select("r.match_id=:match_id")
-        + " ORDER BY r.generation DESC LIMIT :limit",
-        {"match_id": match_id, "limit": MATCH_TOPIC_RELEASE_GENERATION_LIMIT},
-    )
-    history = [_admin_round(row, now=now) for _, row in rows.iterrows()]
-    active_row = next((row for _, row in rows.iterrows() if not _clean(row.get("revoked_at"))), None)
+    with db.transaction() as conn:
+        conn.execute(text(f"""
+            SELECT match_id FROM {TABLE_MATCHES}
+            WHERE match_id=:match_id FOR UPDATE
+        """), {"match_id": match_id}).fetchone()
+        rows = [
+            _mapping(row)
+            for row in conn.execute(text(
+                _release_select("r.match_id=:match_id")
+                + " ORDER BY r.generation DESC LIMIT :limit FOR UPDATE OF r"
+            ), {
+                "match_id": match_id,
+                "limit": MATCH_TOPIC_RELEASE_GENERATION_LIMIT,
+            }).fetchall()
+        ]
+        active_row = next((row for row in rows if not _clean(row.get("revoked_at"))), None)
+        if active_row is not None:
+            _sync_final_topic(conn, active_row, now=now)
+    history = [_admin_round(row, now=now) for row in rows]
     if active_row is None:
         return {"schema_ready": True, "active": False, "history": history}
     values = dict(active_row)
@@ -270,7 +317,7 @@ def open_release(
     *,
     now: dt.datetime | None = None,
 ) -> dict:
-    """Pre-draw three distinct topics and rotate both private team links."""
+    """Draw three distinct topics in one action and create both team links."""
     match_id = _clean(match_id)
     if difficulty not in (None, 1, 2, 3):
         raise TopicReleaseError("請選擇有效的辯題難度。")
@@ -281,41 +328,24 @@ def open_release(
             "lock_key": f"match-topic-release:{match_id}",
         })
         match = _mapping(conn.execute(text(f"""
-            SELECT match_id,match_date,match_time,topic_text,pro_team,con_team
+            SELECT match_id,match_date,match_time,pro_team,con_team
             FROM {TABLE_MATCHES} WHERE match_id=:match_id FOR UPDATE
         """), {"match_id": match_id}).fetchone())
         if not match:
             raise TopicReleaseError("場次不存在。")
         if not _clean(match.get("pro_team")) or not _clean(match.get("con_team")):
             raise TopicReleaseError("請先儲存正反方隊名。")
-        first_topic = _clean(match.get("topic_text"))
-        if not first_topic:
-            raise TopicReleaseError("請先抽取辯題並儲存場次資料。")
         schedule = release_schedule(match.get("match_date"), match.get("match_time"))
         if now_value >= schedule["first_reveal_at"]:
             raise TopicReleaseError("已到首條辯題公布時間，不能再建立或重新抽取辯題組合。")
 
-        first_row = _mapping(conn.execute(text(f"""
-            SELECT topic_text,difficulty FROM {TABLE_TOPICS}
-            WHERE topic_text=:topic LIMIT 1
-        """), {"topic": first_topic}).fetchone())
-        if not first_row:
-            raise TopicReleaseError("目前辯題不在已通過的辯題庫內，不能建立分享連結。")
-        first_difficulty = int(first_row.get("difficulty") or 0)
-        if first_difficulty not in (1, 2, 3):
-            raise TopicReleaseError("目前辯題尚未設定有效難度，不能建立分享連結。")
-        if difficulty is not None and first_difficulty != difficulty:
-            raise TopicReleaseError("目前辯題與所選難度不符，請重新抽取。")
-        selected_difficulty = difficulty or first_difficulty
-        params = {"first_topic": first_topic, "difficulty": selected_difficulty}
-        alternatives = conn.execute(text(f"""
-            SELECT topic_text FROM {TABLE_TOPICS}
-            WHERE topic_text<>:first_topic
-              AND difficulty=:difficulty
-            ORDER BY RANDOM() LIMIT 2
-        """), params).fetchall()
-        alternative_topics = [_clean(_mapping(row).get("topic_text") or row[0]) for row in alternatives]
-        if len(alternative_topics) != 2 or len(set([first_topic, *alternative_topics])) != 3:
+        difficulty_clause = " WHERE difficulty=:difficulty" if difficulty else ""
+        topic_rows = conn.execute(text(f"""
+            SELECT topic_text FROM {TABLE_TOPICS}{difficulty_clause}
+            ORDER BY RANDOM() LIMIT 3
+        """), {"difficulty": difficulty} if difficulty else {}).fetchall()
+        topics = [_clean(_mapping(row).get("topic_text") or row[0]) for row in topic_rows]
+        if len(topics) != 3 or len(set(topics)) != 3 or not all(topics):
             raise TopicReleaseError("辯題庫沒有足夠三條符合條件的不同辯題。")
 
         existing = _mapping(conn.execute(text(f"""
@@ -338,6 +368,12 @@ def open_release(
                 SET revoked_at=:now WHERE id=:id AND revoked_at IS NULL
             """), {"now": now_value, "id": int(existing["id"])})
 
+        # Candidate topics must not appear in the ordinary match record.  That
+        # field is populated only when one candidate becomes final by rule.
+        conn.execute(text(f"""
+            UPDATE {TABLE_MATCHES} SET topic_text='' WHERE match_id=:match_id
+        """), {"match_id": match_id})
+
         pro_token = secrets.token_urlsafe(32)
         con_token = secrets.token_urlsafe(32)
         conn.execute(text(f"""
@@ -355,12 +391,12 @@ def open_release(
             "match_id": match_id, "generation": generation,
             "match_date": _date(match.get("match_date")),
             "match_time": _time(match.get("match_time")),
-            "candidate_1": first_topic, "candidate_2": alternative_topics[0],
-            "candidate_3": alternative_topics[1], "pro_token": pro_token,
+            "candidate_1": topics[0], "candidate_2": topics[1],
+            "candidate_3": topics[2], "pro_token": pro_token,
             "con_token": con_token, "now": now_value, **schedule,
         })
     result = admin_state(match_id, db=db, now=now_value)
-    result.update({"ok": True, "message": "已預抽三條辯題並建立正反方私人連結。"})
+    result.update({"ok": True, "message": "已抽取三條辯題並產生正反方查閱連結。"})
     return result
 
 
@@ -396,6 +432,10 @@ def cancel_release(match_id: str, db=None, *, now: dt.datetime | None = None) ->
     match_id = _clean(match_id)
     now_value = _now(now)
     with db.transaction() as conn:
+        conn.execute(text(f"""
+            SELECT match_id FROM {TABLE_MATCHES}
+            WHERE match_id=:match_id FOR UPDATE
+        """), {"match_id": match_id}).fetchone()
         row = _mapping(conn.execute(text(f"""
             SELECT id,first_reveal_at FROM {TABLE_MATCH_TOPIC_RELEASES}
             WHERE match_id=:match_id AND revoked_at IS NULL FOR UPDATE
@@ -408,6 +448,9 @@ def cancel_release(match_id: str, db=None, *, now: dt.datetime | None = None) ->
             UPDATE {TABLE_MATCH_TOPIC_RELEASES}
             SET revoked_at=:now WHERE id=:id AND revoked_at IS NULL
         """), {"now": now_value, "id": int(row["id"])})
+        conn.execute(text(f"""
+            UPDATE {TABLE_MATCHES} SET topic_text='' WHERE match_id=:match_id
+        """), {"match_id": match_id})
     return {"ok": True, "message": "已取消辯題分享；原有連結即時失效。"}
 
 
@@ -416,17 +459,33 @@ def public_data(token: str, db=None, *, now: dt.datetime | None = None) -> dict 
     if not token or len(token) > 128:
         return None
     db = _resolve_db(db)
-    rows = db.query(
-        _release_select(
-            "r.revoked_at IS NULL AND (r.pro_token=:token OR r.con_token=:token)"
-        ) + " LIMIT 1",
-        {"token": token},
-    )
-    if rows.empty:
-        return None
-    row = dict(rows.iloc[0])
-    side = _side_from_token(row, token)
-    return public_payload(row, side, now=now)
+    with db.transaction() as conn:
+        match_id = _clean(conn.execute(text(f"""
+            SELECT match_id FROM {TABLE_MATCH_TOPIC_RELEASES}
+            WHERE revoked_at IS NULL
+              AND (pro_token=:token OR con_token=:token)
+            LIMIT 1
+        """), {"token": token}).scalar())
+        if not match_id:
+            return None
+        # Match rows are always locked before release rows so redraw and final
+        # promotion cannot deadlock each other.
+        conn.execute(text(f"""
+            SELECT match_id FROM {TABLE_MATCHES}
+            WHERE match_id=:match_id FOR UPDATE
+        """), {"match_id": match_id}).fetchone()
+        row = _mapping(conn.execute(text(
+            _release_select(
+                "r.match_id=:match_id AND r.revoked_at IS NULL "
+                "AND (r.pro_token=:token OR r.con_token=:token)"
+            ) + " LIMIT 1 FOR UPDATE OF r"
+        ), {"match_id": match_id, "token": token}).fetchone())
+        if not row:
+            return None
+        side = _side_from_token(row, token)
+        payload = public_payload(row, side, now=now)
+        _sync_final_topic(conn, row, now=now)
+        return payload
 
 
 def submit_veto(token: str, db=None, *, now: dt.datetime | None = None) -> dict:
@@ -465,10 +524,6 @@ def submit_veto(token: str, db=None, *, now: dt.datetime | None = None) -> dict:
         """), {"candidate": number, "now": now_value, "id": int(row["id"])}).rowcount
         if not changed:
             return {"ok": False, "reason": "used", "message": "你方已行使本場唯一一次辯題否決權。"}
-        next_topic = _candidate(row, number + 1)
-        conn.execute(text(f"""
-            UPDATE {TABLE_MATCHES} SET topic_text=:topic WHERE match_id=:match_id
-        """), {"topic": next_topic, "match_id": _clean(row.get("match_id"))})
     next_reveal = row["second_reveal_at" if number == 1 else "third_reveal_at"]
     return {
         "ok": True,
@@ -482,7 +537,6 @@ def validate_active_release_update(
     match_id: str,
     match_date: str,
     match_time: str,
-    topic_text: str,
 ) -> str:
     """Protect an active release schedule from ordinary match-form edits."""
     ready = conn.execute(text(
@@ -491,20 +545,17 @@ def validate_active_release_update(
     if not ready:
         return ""
     row = _mapping(conn.execute(text(f"""
-        SELECT release_match_date,release_match_time,candidate_1,candidate_2,candidate_3,
-               pro_veto_candidate,con_veto_candidate
+        SELECT release_match_date,release_match_time
         FROM {TABLE_MATCH_TOPIC_RELEASES}
         WHERE match_id=:match_id AND revoked_at IS NULL FOR UPDATE
     """), {"match_id": match_id}).fetchone())
     if not row:
         return ""
-    expected_topic = _candidate(row, _current_candidate_number(row))
     if (
         _clean(row.get("release_match_date"))[:10] != _clean(match_date)[:10]
         or _clean(row.get("release_match_time"))[:5] != _clean(match_time)[:5]
-        or expected_topic != _clean(topic_text)
     ):
-        return "此場次已有生效中的辯題分享；日期、時間及辯題已鎖定。首題公布前可先取消分享再修改。"
+        return "此場次已有生效中的辯題分享；日期及時間已鎖定。首題公布前可先取消分享再修改。"
     return ""
 
 
@@ -517,15 +568,28 @@ def visible_topic_for_roster(
 ) -> dict:
     """Hide staged topics from the separate public roster bearer link."""
     db = _resolve_db(db)
-    rows = db.query(
-        _release_select("r.match_id=:match_id AND r.revoked_at IS NULL") + " LIMIT 1",
-        {"match_id": _clean(match_id)},
-    )
-    if rows.empty:
-        return {"topic_text": _clean(fallback_topic), "topic_locked": False, "topic_reveal_at": ""}
-    payload = public_payload(dict(rows.iloc[0]), "pro", now=now)
+    match_id = _clean(match_id)
+    with db.transaction() as conn:
+        # Keep the same match-then-release lock order as open/cancel/public
+        # flows so a revoked generation cannot be promoted by a stale read.
+        conn.execute(text(f"""
+            SELECT match_id FROM {TABLE_MATCHES}
+            WHERE match_id=:match_id FOR UPDATE
+        """), {"match_id": match_id}).fetchone()
+        row = _mapping(conn.execute(text(
+            _release_select("r.match_id=:match_id AND r.revoked_at IS NULL")
+            + " LIMIT 1 FOR UPDATE OF r"
+        ), {"match_id": match_id}).fetchone())
+        if not row:
+            return {
+                "topic_text": _clean(fallback_topic),
+                "topic_locked": False,
+                "topic_reveal_at": "",
+            }
+        payload = public_payload(row, "pro", now=now)
+        final_topic = _sync_final_topic(conn, row, now=now)
     if payload.get("expired"):
-        return {"topic_text": _clean(fallback_topic), "topic_locked": False, "topic_reveal_at": ""}
+        return {"topic_text": final_topic or _clean(fallback_topic), "topic_locked": False, "topic_reveal_at": ""}
     return {
         "topic_text": _clean(payload.get("topic_text")),
         "topic_locked": not bool(payload.get("topic_text")),

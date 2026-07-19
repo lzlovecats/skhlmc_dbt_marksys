@@ -1513,6 +1513,7 @@ def test_competition_prep_coach_claims_and_saves_before_usage(monkeypatch):
     from core import competition_prep_logic as prep_logic
 
     events = []
+    snapshots = []
     bundle = {
         "project": {
             "topic_text": "測試辯題", "our_side": "pro",
@@ -1532,10 +1533,12 @@ def test_competition_prep_coach_claims_and_saves_before_usage(monkeypatch):
     monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args: "key")
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(prep_logic, "project_bundle", lambda *_args: bundle)
-    monkeypatch.setattr(
-        prep_logic, "claim_ai_run",
-        lambda *_args, **_kwargs: events.append("claim") or {"state": "claimed"},
-    )
+    def claim(*args, **_kwargs):
+        events.append("claim")
+        snapshots.append(args[6])
+        return {"state": "claimed"}
+
+    monkeypatch.setattr(prep_logic, "claim_ai_run", claim)
     monkeypatch.setattr(
         prep_logic, "complete_ai_run",
         lambda *_args, **_kwargs: events.append("complete"),
@@ -1558,6 +1561,8 @@ def test_competition_prep_coach_claims_and_saves_before_usage(monkeypatch):
 
     assert json.loads(response.body)["markdown"] == "result"
     assert events == ["claim", "provider", "complete", "usage"]
+    assert snapshots[0]["project_revision"] == 3
+    assert len(snapshots[0]["input_sha256"]) == 64
 
     monkeypatch.setattr(
         prep_logic, "claim_ai_run",

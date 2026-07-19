@@ -146,3 +146,18 @@ def test_developer_session_bypasses_only_the_schedule_gate(monkeypatch):
 
     assert status["active"] is False
     assert status["developer_bypass"] is True
+
+
+def test_database_acquisition_failure_keeps_fail_open_contract(monkeypatch):
+    monkeypatch.setattr(access, "has_developer_session", lambda _request: False)
+
+    def unavailable_db():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(proxy, "get_vote_db", unavailable_db)
+
+    status = access.interactive_features_suspension(object())
+
+    assert status["configured"] is False
+    assert status["active"] is False
+    assert status["retry_after_seconds"] == 0
