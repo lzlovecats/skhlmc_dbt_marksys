@@ -259,7 +259,8 @@
             <div><dt>比賽場次</dt><dd>${esc(data.match_id)}</dd></div>
             <div><dt>填寫方</dt><dd>${esc(data.side_label)}</dd></div>
             <div><dt>比賽時間</dt><dd>${esc(dateTime)}</dd></div>
-            ${data.topic_text ? `<div class="topic"><dt>辯題</dt><dd>${esc(data.topic_text)}</dd></div>` : ""}`;
+            ${data.topic_text ? `<div class="topic"><dt>辯題</dt><dd>${esc(data.topic_text)}</dd></div>` : ""}
+            ${data.topic_locked ? `<div class="topic"><dt>辯題公布</dt><dd>辯題會透過賽會提供的專用辯題連結，按賽規時間公布。</dd></div>` : ""}`;
         }
 
         async function load() {

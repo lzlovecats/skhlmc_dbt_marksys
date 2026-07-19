@@ -695,7 +695,7 @@
             typeof ctx.setSinkId !== "function"
           ) {
             status.textContent =
-              "此瀏覽器未能直接揀輸出；請先喺系統 Bluetooth 設定連線，鈴聲會跟系統預設喇叭。";
+              "此瀏覽器未能直接選擇輸出；請先在系統 Bluetooth 設定連線，鈴聲會使用系統預設揚聲器。";
             status.className = "output-status warn";
             return;
           }

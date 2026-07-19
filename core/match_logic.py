@@ -97,7 +97,23 @@ def match_admin_data(selected_match_id=None, db=None, compact=False):
     selected = _clean(selected_match_id) or (matches[0]["match_id"] if matches else "")
     if selected and selected not in {m["match_id"] for m in matches}: selected = matches[0]["match_id"] if matches else ""
     links = ensure_match_links(selected, db) if selected else {}
+    if selected:
+        try:
+            from core.score_confirmation import admin_state
+            confirmation = admin_state(selected, db)
+        except Exception:
+            confirmation = {"schema_ready": False, "score_count": 0, "links": {}}
+        try:
+            from core.match_topic_release import admin_state as topic_release_admin_state
+            topic_release = topic_release_admin_state(selected, db)
+        except Exception:
+            topic_release = {"schema_ready": False, "active": False, "history": []}
+    else:
+        confirmation = {"schema_ready": True, "score_count": 0, "links": {}}
+        topic_release = {"schema_ready": True, "active": False, "history": []}
     return {"matches": matches, "selected_match_id": selected or None, "roster_links": links,
+            "score_sheet_confirmation": confirmation,
+            "topic_release": topic_release,
             "default_date": _now().date().isoformat(), "default_time": "16:00",
             "debate_formats": list(DEBATE_FORMATS),
             "default_debate_format": DEBATE_FORMATS[0],
@@ -159,12 +175,18 @@ def save_match(data, db=None):
     new_access_hash = hash_password(raw_access) if raw_access else None
     new_review_hash = hash_password(raw_review) if raw_review else None
     with db.transaction() as session:
-        exists = session.execute(text(f"SELECT access_code_hash, review_password_hash FROM {TABLE_MATCHES} WHERE match_id = :id"), {"id": match_id}).fetchone()
+        exists = session.execute(text(f"SELECT access_code_hash, review_password_hash FROM {TABLE_MATCHES} WHERE match_id = :id FOR UPDATE"), {"id": match_id}).fetchone()
         if not exists: return {"ok": False, "message": "場次不存在。"}
         access, review = exists._mapping["access_code_hash"], exists._mapping["review_password_hash"]
         access = None if data.get("clear_access_code") else new_access_hash or access
         review = None if data.get("clear_review_password") else new_review_hash or review
         params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(data.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "format": debate_format, "free_minutes": free_minutes, "access": access, "review": review}
+        from core.match_topic_release import validate_active_release_update
+        release_error = validate_active_release_update(
+            session, match_id, params["date"], params["time"], params["topic"],
+        )
+        if release_error:
+            return {"ok": False, "message": release_error}
         session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, debate_format=:format, free_debate_minutes=:free_minutes, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
         debater_params = [
             {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))}
@@ -232,7 +254,15 @@ def roster_by_token(token, db=None):
     rows = db.query(f"SELECT l.match_id,l.side,l.roster_token,l.submitted_at,m.match_date,m.match_time,m.topic_text,m.pro_team,m.con_team FROM {TABLE_MATCH_ROSTER_LINKS} l JOIN {TABLE_MATCHES} m ON l.match_id=m.match_id WHERE l.roster_token=:token", {"token": token})
     if rows.empty: return None
     row = rows.iloc[0]; side = _clean(row["side"]); match_id = _clean(row["match_id"])
-    record = {"match_id":match_id,"side":side,"side_label":"正方" if side=="pro" else "反方","submitted":_has(row.get("submitted_at")),"match_date":_date(row.get("match_date")),"match_time":_time(row.get("match_time")),"topic_text":_clean(row.get("topic_text")),"team_name":_clean(row.get("pro_team") if side=="pro" else row.get("con_team"))}
+    try:
+        from core.match_topic_release import visible_topic_for_roster
+        topic_visibility = visible_topic_for_roster(
+            match_id, _clean(row.get("topic_text")), db,
+        )
+    except Exception:
+        # A bearer roster link must fail closed if release visibility cannot be checked.
+        topic_visibility = {"topic_text": "", "topic_locked": True, "topic_reveal_at": ""}
+    record = {"match_id":match_id,"side":side,"side_label":"正方" if side=="pro" else "反方","submitted":_has(row.get("submitted_at")),"match_date":_date(row.get("match_date")),"match_time":_time(row.get("match_time")),"topic_text":topic_visibility["topic_text"],"topic_locked":topic_visibility["topic_locked"],"topic_reveal_at":topic_visibility["topic_reveal_at"],"team_name":_clean(row.get("pro_team") if side=="pro" else row.get("con_team"))}
     debaters = db.query(f"SELECT position,debater_name FROM {TABLE_DEBATERS} WHERE match_id=:id AND side=:side", {"id":match_id,"side":side})
     for pos in range(1,5): record[f"debater_{pos}"]=""
     for _, d in debaters.iterrows(): record[f"debater_{int(d['position'])}"]=_clean(d["debater_name"])

@@ -15,6 +15,8 @@ TABLE_DEBATERS = "debaters"
 TABLE_SCORES = "scores"
 TABLE_DEBATER_SCORES = "debater_scores"
 TABLE_SCORE_DRAFTS = "score_drafts"
+TABLE_SCORE_SHEET_CONFIRMATIONS = "score_sheet_confirmations"
+TABLE_MATCH_TOPIC_RELEASES = "match_topic_releases"
 TABLE_TOPIC_VOTES = "topic_votes"
 TABLE_TOPIC_VOTE_BALLOTS = "topic_vote_ballots"
 TABLE_TOPIC_REMOVAL_VOTES = "topic_removal_votes"
@@ -34,6 +36,13 @@ TABLE_VIDEO_PROGRESS = "video_progress"
 TABLE_MATCH_PHOTOS = "match_photos"
 TABLE_RECENT_MATCHES = "recent_matches"
 TABLE_RECENT_MATCH_NOTIFICATIONS = "recent_match_notifications"
+TABLE_COMPETITION_PREP_PROJECTS = "competition_prep_projects"
+TABLE_COMPETITION_PREP_MEMBERS = "competition_prep_members"
+TABLE_COMPETITION_PREP_MANUSCRIPTS = "competition_prep_manuscripts"
+TABLE_COMPETITION_PREP_STRATEGY_CARDS = "competition_prep_strategy_cards"
+TABLE_COMPETITION_PREP_EVIDENCE_CARDS = "competition_prep_evidence_cards"
+TABLE_COMPETITION_PREP_WEAKNESSES = "competition_prep_weaknesses"
+TABLE_COMPETITION_PREP_AI_RUNS = "competition_prep_ai_runs"
 TABLE_COMMITTEE_MEMBERSHIPS = "committee_memberships"
 TABLE_HISTORY_EVENTS = "history_events"
 TABLE_HISTORY_EVENT_MATCHES = "history_event_matches"
@@ -231,6 +240,126 @@ CREATE TABLE IF NOT EXISTS {TABLE_SCORE_DRAFTS} (
         FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
         ON DELETE CASCADE
 );
+"""
+
+# Table: SCORE_SHEET_CONFIRMATIONS
+# One private bearer link and acknowledgement state per match side. The score
+# count binds each response to the exact set of judge sheets opened by staff.
+CREATE_SCORE_SHEET_CONFIRMATIONS = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_SCORE_SHEET_CONFIRMATIONS} (
+    match_id               TEXT,
+    side                   TEXT        CHECK (side IN ('pro', 'con')),
+    confirmation_token     TEXT        NOT NULL UNIQUE,
+    status                 TEXT        NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'disputed')),
+    dispute_reason         TEXT        NOT NULL DEFAULT '',
+    opened_score_count     INTEGER     NOT NULL CHECK (opened_score_count > 0),
+    opened_at              TIMESTAMP   NOT NULL,
+    responded_at           TIMESTAMP,
+    PRIMARY KEY (match_id, side),
+    CONSTRAINT score_sheet_confirmations_reason_check
+        CHECK (
+            char_length(dispute_reason) <= 2000
+            AND (status <> 'disputed' OR btrim(dispute_reason) <> '')
+        ),
+    CONSTRAINT fk_score_sheet_confirmations_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
+        ON DELETE CASCADE
+);
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_SCORE_SHEET_CONFIRMATIONS} FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_SCORE_SHEET_CONFIRMATIONS} FROM %I',
+            role_name
+        );
+    END LOOP;
+END $$;
+"""
+
+# Table: MATCH_TOPIC_RELEASES
+# Audited three-topic draw, side-scoped bearer links, and one veto per team.
+CREATE_MATCH_TOPIC_RELEASES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_MATCH_TOPIC_RELEASES} (
+    id                       BIGSERIAL   PRIMARY KEY,
+    match_id                 TEXT        NOT NULL,
+    generation               INTEGER     NOT NULL CHECK (generation > 0),
+    release_match_date       DATE        NOT NULL,
+    release_match_time       TIME        NOT NULL,
+    candidate_1              TEXT        NOT NULL,
+    candidate_2              TEXT        NOT NULL,
+    candidate_3              TEXT        NOT NULL,
+    pro_token                TEXT        NOT NULL UNIQUE,
+    con_token                TEXT        NOT NULL UNIQUE,
+    first_reveal_at          TIMESTAMP   NOT NULL,
+    first_veto_deadline      TIMESTAMP   NOT NULL,
+    second_reveal_at         TIMESTAMP   NOT NULL,
+    second_veto_deadline     TIMESTAMP   NOT NULL,
+    third_reveal_at          TIMESTAMP   NOT NULL,
+    expires_at               TIMESTAMP   NOT NULL,
+    pro_veto_candidate       SMALLINT    CHECK (pro_veto_candidate IN (1, 2)),
+    pro_veto_at              TIMESTAMP,
+    con_veto_candidate       SMALLINT    CHECK (con_veto_candidate IN (1, 2)),
+    con_veto_at              TIMESTAMP,
+    created_at               TIMESTAMP   NOT NULL DEFAULT NOW(),
+    tokens_rotated_at        TIMESTAMP,
+    revoked_at               TIMESTAMP,
+    UNIQUE (match_id, generation),
+    CONSTRAINT match_topic_releases_topics_distinct
+        CHECK (candidate_1 <> candidate_2 AND candidate_1 <> candidate_3 AND candidate_2 <> candidate_3),
+    CONSTRAINT match_topic_releases_topic_lengths
+        CHECK (
+            char_length(candidate_1) BETWEEN 1 AND 500
+            AND char_length(candidate_2) BETWEEN 1 AND 500
+            AND char_length(candidate_3) BETWEEN 1 AND 500
+        ),
+    CONSTRAINT match_topic_releases_schedule_order
+        CHECK (
+            first_reveal_at < first_veto_deadline
+            AND first_veto_deadline < second_reveal_at
+            AND second_reveal_at < second_veto_deadline
+            AND second_veto_deadline < third_reveal_at
+            AND third_reveal_at < expires_at
+        ),
+    CONSTRAINT match_topic_releases_pro_veto_pair
+        CHECK ((pro_veto_candidate IS NULL) = (pro_veto_at IS NULL)),
+    CONSTRAINT match_topic_releases_con_veto_pair
+        CHECK ((con_veto_candidate IS NULL) = (con_veto_at IS NULL)),
+    CONSTRAINT match_topic_releases_distinct_vetoes
+        CHECK (
+            pro_veto_candidate IS NULL OR con_veto_candidate IS NULL
+            OR pro_veto_candidate <> con_veto_candidate
+        ),
+    CONSTRAINT fk_match_topic_releases_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
+        ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_match_topic_releases_active_match
+    ON {TABLE_MATCH_TOPIC_RELEASES}(match_id) WHERE revoked_at IS NULL;
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_MATCH_TOPIC_RELEASES} FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_MATCH_TOPIC_RELEASES}_id_seq FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE {TABLE_MATCH_TOPIC_RELEASES} FROM %I',
+            role_name
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_MATCH_TOPIC_RELEASES}_id_seq FROM %I',
+            role_name
+        );
+    END LOOP;
+END $$;
 """
 
 # Table: TOPIC_VOTES
@@ -445,7 +574,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_VIDEO_COMMENTS} (
     video_id        INTEGER     NOT NULL,
     user_id         TEXT        NOT NULL,
     comment_text    TEXT        NOT NULL,
+    sticker_id      TEXT,
     created_at      TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT chk_video_comments_sticker_id
+        CHECK (sticker_id IS NULL OR char_length(sticker_id) BETWEEN 1 AND 200),
     CONSTRAINT fk_video_comments_video
         FOREIGN KEY (video_id) REFERENCES {TABLE_MATCH_VIDEOS}(id)
         ON DELETE CASCADE,
@@ -634,6 +766,136 @@ CREATE TABLE IF NOT EXISTS {TABLE_RECENT_MATCH_NOTIFICATIONS} (
 );
 """
 
+# Collaborative, short-retention workspace for the four Competition Prep
+# workflows. Text and structured data stay in PostgreSQL; binary media, if a
+# future workflow adds any, must use the existing private-R2 lifecycle.
+CREATE_COMPETITION_PREP = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_PROJECTS} (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200),
+    recent_match_id BIGINT REFERENCES {TABLE_RECENT_MATCHES}(id) ON DELETE SET NULL,
+    topic_text TEXT NOT NULL CHECK (char_length(topic_text) BETWEEN 1 AND 500),
+    our_side TEXT NOT NULL CHECK (our_side IN ('pro', 'con')),
+    debate_format TEXT NOT NULL CHECK (debate_format IN ('校園隨想', '聯中', '星島', '基本法盃')),
+    opponent TEXT NOT NULL DEFAULT '' CHECK (char_length(opponent) <= 200),
+    match_date DATE NOT NULL,
+    match_time TIME,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    updated_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_MEMBERS} (
+    project_id BIGINT NOT NULL REFERENCES {TABLE_COMPETITION_PREP_PROJECTS}(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+    added_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (project_id, user_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_competition_prep_project_owner
+    ON {TABLE_COMPETITION_PREP_MEMBERS}(project_id) WHERE role = 'owner';
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_MANUSCRIPTS} (
+    id BIGSERIAL PRIMARY KEY,
+    project_id BIGINT NOT NULL REFERENCES {TABLE_COMPETITION_PREP_PROJECTS}(id) ON DELETE CASCADE,
+    slot TEXT NOT NULL CHECK (slot IN ('main', 'dep1', 'dep2', 'dep3', 'closing', 'interaction', 'other')),
+    title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200),
+    body TEXT NOT NULL DEFAULT '',
+    assigned_user_id TEXT REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'reviewed', 'final')),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    updated_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (project_id, slot)
+);
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_STRATEGY_CARDS} (
+    id BIGSERIAL PRIMARY KEY,
+    project_id BIGINT NOT NULL REFERENCES {TABLE_COMPETITION_PREP_PROJECTS}(id) ON DELETE CASCADE,
+    parent_card_id BIGINT REFERENCES {TABLE_COMPETITION_PREP_STRATEGY_CARDS}(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('mainline', 'definition', 'standard', 'burden', 'argument', 'opponent_argument', 'attack', 'opponent_answer', 'rebuttal', 'defence_floor', 'concession', 'question')),
+    title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200),
+    content TEXT NOT NULL DEFAULT '',
+    assigned_slot TEXT CHECK (assigned_slot IS NULL OR assigned_slot IN ('main', 'dep1', 'dep2', 'dep3', 'closing', 'interaction')),
+    priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 1 AND 3),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'handled', 'risk', 'not_applicable')),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    updated_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_EVIDENCE_CARDS} (
+    id BIGSERIAL PRIMARY KEY,
+    project_id BIGINT NOT NULL REFERENCES {TABLE_COMPETITION_PREP_PROJECTS}(id) ON DELETE CASCADE,
+    claim_text TEXT NOT NULL CHECK (char_length(claim_text) BETWEEN 1 AND 500),
+    excerpt TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '' CHECK (char_length(source_url) <= 2000),
+    source_name TEXT NOT NULL DEFAULT '' CHECK (char_length(source_name) <= 200),
+    published_date DATE,
+    accessed_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    region TEXT NOT NULL DEFAULT '' CHECK (char_length(region) <= 100),
+    source_type TEXT NOT NULL DEFAULT 'other' CHECK (source_type IN ('government', 'academic', 'news', 'ngo', 'industry', 'ai_research', 'other')),
+    side_scope TEXT NOT NULL DEFAULT 'both' CHECK (side_scope IN ('our', 'opponent', 'both')),
+    limitations TEXT NOT NULL DEFAULT '',
+    linked_strategy_card_id BIGINT REFERENCES {TABLE_COMPETITION_PREP_STRATEGY_CARDS}(id) ON DELETE SET NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    updated_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_WEAKNESSES} (
+    id BIGSERIAL PRIMARY KEY,
+    project_id BIGINT NOT NULL REFERENCES {TABLE_COMPETITION_PREP_PROJECTS}(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL DEFAULT 'manual' CHECK (source_type IN ('manual', 'audit', 'speech', 'strategy')),
+    title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200),
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'logic' CHECK (category IN ('logic', 'evidence', 'definition', 'response', 'delivery', 'coordination')),
+    assigned_user_id TEXT REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE SET NULL,
+    priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 1 AND 3),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'practicing', 'passed')),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    updated_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_AI_RUNS} (
+    run_id TEXT PRIMARY KEY CHECK (char_length(run_id) BETWEEN 16 AND 200),
+    project_id BIGINT NOT NULL REFERENCES {TABLE_COMPETITION_PREP_PROJECTS}(id) ON DELETE CASCADE,
+    run_type TEXT NOT NULL CHECK (run_type IN ('team_audit', 'strategy_seed', 'strategy_attack', 'speech_review', 'speech_retake', 'weakness_feedback')),
+    source_revision INTEGER NOT NULL CHECK (source_revision >= 1),
+    model_label TEXT NOT NULL CHECK (char_length(model_label) BETWEEN 1 AND 120),
+    snapshot_json JSONB NOT NULL DEFAULT '{{}}'::jsonb CHECK (jsonb_typeof(snapshot_json) = 'object'),
+    output_markdown TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_projects_expiry ON {TABLE_COMPETITION_PREP_PROJECTS}(expires_at, id);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_members_user ON {TABLE_COMPETITION_PREP_MEMBERS}(user_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_manuscripts_project ON {TABLE_COMPETITION_PREP_MANUSCRIPTS}(project_id, slot);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_strategy_project ON {TABLE_COMPETITION_PREP_STRATEGY_CARDS}(project_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_evidence_project ON {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_weakness_project ON {TABLE_COMPETITION_PREP_WEAKNESSES}(project_id, status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_competition_prep_ai_runs_project ON {TABLE_COMPETITION_PREP_AI_RUNS}(project_id, created_at DESC);
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_COMPETITION_PREP_PROJECTS}, {TABLE_COMPETITION_PREP_MEMBERS}, {TABLE_COMPETITION_PREP_MANUSCRIPTS}, {TABLE_COMPETITION_PREP_STRATEGY_CARDS}, {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}, {TABLE_COMPETITION_PREP_WEAKNESSES}, {TABLE_COMPETITION_PREP_AI_RUNS} FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_COMPETITION_PREP_PROJECTS}_id_seq, {TABLE_COMPETITION_PREP_MANUSCRIPTS}_id_seq, {TABLE_COMPETITION_PREP_STRATEGY_CARDS}_id_seq, {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}_id_seq, {TABLE_COMPETITION_PREP_WEAKNESSES}_id_seq FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN SELECT rolname FROM pg_roles WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE {TABLE_COMPETITION_PREP_PROJECTS}, {TABLE_COMPETITION_PREP_MEMBERS}, {TABLE_COMPETITION_PREP_MANUSCRIPTS}, {TABLE_COMPETITION_PREP_STRATEGY_CARDS}, {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}, {TABLE_COMPETITION_PREP_WEAKNESSES}, {TABLE_COMPETITION_PREP_AI_RUNS} FROM ' || quote_ident(role_name);
+        EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_COMPETITION_PREP_PROJECTS}_id_seq, {TABLE_COMPETITION_PREP_MANUSCRIPTS}_id_seq, {TABLE_COMPETITION_PREP_STRATEGY_CARDS}_id_seq, {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}_id_seq, {TABLE_COMPETITION_PREP_WEAKNESSES}_id_seq FROM ' || quote_ident(role_name);
+    END LOOP;
+END $$;
+"""
+
 CREATE_COMMITTEE_MEMBERSHIPS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_COMMITTEE_MEMBERSHIPS} (
     id                     BIGSERIAL PRIMARY KEY,
@@ -729,6 +991,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_POSTS} (
     thread_id        BIGINT NOT NULL,
     author_user_id   TEXT NOT NULL,
     body             TEXT NOT NULL,
+    sticker_id       TEXT,
     quoted_post_id   BIGINT,
     is_first_post    BOOLEAN NOT NULL DEFAULT FALSE,
     revision         INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
@@ -743,7 +1006,12 @@ CREATE TABLE IF NOT EXISTS {TABLE_GHOST_FORUM_POSTS} (
         ON DELETE RESTRICT,
     CONSTRAINT fk_ghost_forum_post_quote
         FOREIGN KEY (quoted_post_id) REFERENCES {TABLE_GHOST_FORUM_POSTS}(id)
-        ON DELETE SET NULL
+        ON DELETE SET NULL,
+    CONSTRAINT chk_ghost_forum_posts_sticker_id
+        CHECK (
+            sticker_id IS NULL
+            OR (char_length(sticker_id) BETWEEN 1 AND 200 AND body = '')
+        )
 );
 """
 
@@ -1335,7 +1603,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_MOTION_COMMENTS} (
     motion_key      TEXT        NOT NULL,
     user_id         TEXT        NOT NULL,
     comment_text    TEXT        NOT NULL,
+    sticker_id      TEXT,
     created_at      TIMESTAMP   DEFAULT NOW(),
+    CONSTRAINT chk_motion_comments_sticker_id
+        CHECK (sticker_id IS NULL OR char_length(sticker_id) BETWEEN 1 AND 200),
     CONSTRAINT fk_motion_comments_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
@@ -1384,7 +1655,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
@@ -1794,6 +2065,8 @@ ALL_SCHEMAS = [
     CREATE_DEBATER_SCORES,      # → scores
     CREATE_BEST_DEBATER_RANKINGS,  # → scores
     CREATE_SCORE_DRAFTS,        # → matches
+    CREATE_SCORE_SHEET_CONFIRMATIONS,  # → matches
+    CREATE_MATCH_TOPIC_RELEASES,       # → matches
     CREATE_TOPIC_VOTES,         # → accounts
     CREATE_TOPIC_VOTE_BALLOTS,  # → topic_votes, accounts
     CREATE_TOPIC_REMOVAL_VOTES,         # → topics, accounts
@@ -1814,6 +2087,7 @@ ALL_SCHEMAS = [
     CREATE_MATCH_PHOTOS,              # → match_videos, accounts
     CREATE_RECENT_MATCHES,
     CREATE_RECENT_MATCH_NOTIFICATIONS,  # → recent_matches
+    CREATE_COMPETITION_PREP,           # → recent_matches, accounts
     CREATE_COMMITTEE_MEMBERSHIPS,     # → accounts
     CREATE_HISTORY_EVENTS,
     CREATE_HISTORY_EVENT_MATCHES,     # → history_events, matches

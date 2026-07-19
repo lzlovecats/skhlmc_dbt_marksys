@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="theme-color" content="#0e1117" />
     <title>AI 辯論易</title>
-    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
     <style>
       .pane {
         display: none;
@@ -119,10 +119,81 @@
       .estimate {
         margin: 0.65rem 0;
       }
+      .prep-toolbar,
+      .prep-list-row {
+        display: flex;
+        gap: 0.65rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .prep-toolbar > label {
+        flex: 1 1 18rem;
+      }
+      .prep-list-row {
+        justify-content: space-between;
+        padding: 0.7rem 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .prep-list-row:last-child {
+        border-bottom: 0;
+      }
+      .prep-list-row button,
+      .prep-toolbar button {
+        width: auto;
+      }
+      .prep-pane {
+        display: none;
+      }
+      .prep-pane.active {
+        display: block;
+      }
+      .prep-empty {
+        padding: 1rem;
+        border: 1px dashed var(--border);
+        border-radius: var(--radius);
+        color: var(--muted);
+      }
+      .prep-filter-bar {
+        display: grid;
+        grid-template-columns: minmax(12rem, 2fr) repeat(2, minmax(9rem, 1fr));
+        gap: 0.65rem;
+        margin: 0.75rem 0;
+      }
+      .prep-filter-bar label {
+        margin: 0;
+      }
+      .prep-group {
+        margin-bottom: 0.65rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+      .prep-group > summary {
+        padding: 0.8rem;
+        cursor: pointer;
+        font-weight: 750;
+      }
+      .prep-group-body {
+        padding: 0 0.8rem 0.35rem;
+        border-top: 1px solid var(--border);
+      }
       .result-actions {
         display: flex;
         gap: 0.6rem;
         margin-top: 0.8rem;
+        flex-wrap: wrap;
+      }
+      .prep-form-actions {
+        display: flex;
+        gap: 0.65rem;
+        margin-top: 0.75rem;
+        flex-wrap: wrap;
+      }
+      .prep-form-actions button {
+        width: auto;
+      }
+      #prepAttack {
+        margin-top: 0.75rem;
       }
       .room-frame {
         width: 100%;
@@ -135,7 +206,8 @@
       @media (max-width: 800px) {
         .layout,
         .room-grid,
-        .field-grid {
+        .field-grid,
+        .prep-filter-bar {
           grid-template-columns: 1fr;
         }
         .tabs {
@@ -206,7 +278,7 @@
       <a class="back" href="/">← 返回主頁</a>
       <h1>✨ AI 辯論易</h1>
       <p class="caption">
-        主線策劃、演辭檢討、搵料、Fact Check、即時練習及連線練習。
+        提供全隊備賽、資料搜集、資料核查、即時練習及連線練習功能。
       </p>
       <section id="login" class="card hidden">
         <h2>內部委員會成員登入</h2>
@@ -226,9 +298,7 @@
         <details class="guide">
           <summary>ℹ️ 首次使用指南</summary>
           <div class="sub">
-            • 使用「練習發言」輸入文字稿或錄音，AI
-            會按照正式評分標準提供反饋；台上發言完成分析後，可按評語重新錄音一次，檢查有冇改善。<br />• 使用「主線策劃」模式，AI
-            可根據辯題及你的立場生成論點及應對策略。<br />•
+            • 使用「比賽準備」集中管理全隊稿件、攻防策略、論據資源及弱點訓練；練習發言已放入「全隊稿件審查」。<br />•
             使用「搵料易」模式，AI 會即時搜尋網上資料並附上來源。<br />•
             使用「Fact Check易」模式，AI 會搜尋來源並核查陳述真偽。
           </div>
@@ -267,22 +337,162 @@
           <a href="/ai-fund">💲 前往 AI基金 管理入數 / 查閱用量</a>
         </section>
         <nav class="tabs" id="tabs">
-          <button class="active" data-pane="strategy">💡 主線策劃</button
-          ><button data-pane="review">📝 練習發言</button
+          <button class="active" data-pane="prep">🗂️ 比賽準備</button
           ><button data-pane="fact">✅ Fact Check易</button
           ><button data-pane="research">🌐 搵料易</button
           ><button data-pane="live">🎙️ 打Free De</button
           ><button data-pane="mock">🏟️ 打Mock</button
           ><button data-pane="room">🎧 連線練習</button>
         </nav>
-        <section id="strategy" class="pane active">
+        <section id="prep" class="pane active">
+          <section class="card">
+            <h2>🗂️ 比賽準備</h2>
+            <p class="caption">
+              每個項目會在比賽後保留七日，並於第八日香港時間 00:00 自動清除。如有需要，請自行匯出內容。
+            </p>
+            <div class="prep-toolbar">
+              <label>項目<select id="prepProjectSelect"><option value="">選擇項目…</option></select></label>
+              <button id="prepReload" type="button">重新載入</button>
+              <button id="prepExport" type="button" disabled>匯出 JSON</button>
+              <button id="prepDeleteProject" class="danger" type="button" disabled>刪除項目</button>
+            </div>
+            <details id="prepCreateDetails">
+              <summary>建立新比賽準備項目</summary>
+              <form id="prepCreateForm">
+                <label>從「近期賽事」帶入<select id="prepRecentMatch"><option value="">手動輸入</option></select></label>
+                <div class="field-grid">
+                  <label>項目名稱<input id="prepTitle" maxlength="200" required /></label>
+                  <label>對手<input id="prepOpponent" maxlength="200" /></label>
+                  <label>比賽日期<input id="prepMatchDate" type="date" required /></label>
+                  <label>比賽時間<input id="prepMatchTime" type="time" /></label>
+                  <label>我方立場<select id="prepSide"><option value="pro">正方</option><option value="con">反方</option></select></label>
+                  <label>賽制<select id="prepFormat"></select></label>
+                </div>
+                <label>辯題<input id="prepTopic" maxlength="500" required /></label>
+                <button class="primary">建立項目</button>
+              </form>
+            </details>
+            <div id="prepProjectMeta" class="caption prep-empty">請先選擇或建立項目。</div>
+            <details id="prepMemberDetails" class="hidden">
+              <summary>協作者及權限</summary>
+              <div id="prepMemberList"></div>
+              <form id="prepMemberForm" class="prep-toolbar">
+                <label>隊員<select id="prepMemberUser"></select></label>
+                <label>角色<select id="prepMemberRole"><option value="editor">編輯者</option><option value="viewer">檢視者</option></select></label>
+                <button>加入／更新</button>
+              </form>
+            </details>
+          </section>
+          <nav class="tabs" id="prepTabs">
+            <button class="active" data-prep-pane="prepAudit">📝 全隊稿件審查</button>
+            <button data-prep-pane="prepStrategy">🛡️ 攻防策略</button>
+            <button data-prep-pane="prepEvidence">📚 論據資源庫</button>
+            <button data-prep-pane="prepWeakness">⚔️ 弱點訓練</button>
+          </nav>
+          <section id="prepAudit" class="prep-pane active">
+            <section class="card">
+              <h2>全隊稿件</h2>
+              <div class="prep-filter-bar">
+                <label>搜尋稿件<input id="prepManuscriptSearch" type="search" placeholder="搜尋標題、內容或負責隊員" /></label>
+                <label>狀態<select id="prepManuscriptFilterStatus"><option value="">全部狀態</option><option value="draft">草稿</option><option value="reviewed">已審查</option><option value="final">定稿</option></select></label>
+                <label>負責隊員<select id="prepManuscriptFilterAssignee"><option value="">全部隊員</option><option value="__unassigned__">未分配</option></select></label>
+              </div>
+              <div id="prepManuscriptList" class="prep-empty">請先選擇項目。</div>
+              <form id="prepManuscriptForm">
+                <input id="prepManuscriptId" type="hidden" />
+                <input id="prepManuscriptRevision" type="hidden" />
+                <div class="field-grid">
+                  <label>辯位<select id="prepManuscriptSlot"></select></label>
+                  <label>標題<input id="prepManuscriptTitle" maxlength="200" /></label>
+                  <label>負責隊員<select id="prepManuscriptAssignee"><option value="">未分配</option></select></label>
+                  <label>狀態<select id="prepManuscriptStatus"><option value="draft">草稿</option><option value="reviewed">已審查</option><option value="final">定稿</option></select></label>
+                </div>
+                <label>稿件<textarea id="prepManuscriptBody" rows="10" maxlength="20000"></textarea></label>
+                <div class="prep-form-actions">
+                  <button class="primary">儲存稿件</button>
+                  <button id="prepManuscriptReset" type="button">新增／清空</button>
+                </div>
+              </form>
+              <hr />
+              <button id="prepTeamAudit" class="primary" type="button">AI 全隊交叉審查</button>
+              <p class="caption">系統會按照「我方論證責任」、主線一致性、攻防覆蓋、辯位分工及最高風險弱點審查全隊稿件。</p>
+              <div id="prepAuditResult" class="result caption">尚未執行全隊審查。</div>
+            </section>
+            <input id="prepProjectId" type="hidden" />
+            <div id="prepReviewHost"></div>
+          </section>
+          <section id="prepStrategy" class="prep-pane">
+            <section class="card">
+              <h2>攻防策略卡</h2>
+              <div class="prep-filter-bar">
+                <label>搜尋策略卡<input id="prepStrategySearch" type="search" placeholder="搜尋標題或內容" /></label>
+                <label>負責辯位<select id="prepStrategyFilterSlot"><option value="">全部辯位</option><option value="__unassigned__">未分配</option></select></label>
+                <label>優先級<select id="prepStrategyFilterPriority"><option value="">全部優先級</option><option value="1">高</option><option value="2">中</option><option value="3">低</option></select></label>
+              </div>
+              <div id="prepStrategyList" class="prep-empty">請先選擇項目。</div>
+              <form id="prepStrategyCardForm">
+                <div class="field-grid">
+                  <label>類型<select id="prepStrategyKind"><option value="mainline">全隊主線</option><option value="definition">定義</option><option value="standard">評判標準</option><option value="burden">我方論證責任</option><option value="argument">我方論點</option><option value="opponent_argument">對方論點</option><option value="attack">我方攻擊</option><option value="rebuttal">反駁</option><option value="defence_floor">最低防守線</option><option value="question">追問</option></select></label>
+                  <label>標題<input id="prepStrategyTitle" maxlength="200" required /></label>
+                </div>
+                <label>內容<textarea id="prepStrategyContent" rows="5" maxlength="10000"></textarea></label>
+                <button class="primary">新增策略卡</button>
+              </form>
+              <button id="prepAttack" type="button" class="primary">AI模擬攻擊</button>
+              <div id="prepAttackResult" class="result caption">尚未執行模擬攻擊。</div>
+            </section>
+            <div id="prepStrategyHost"></div>
+          </section>
+          <section id="prepEvidence" class="prep-pane">
+            <section class="card">
+              <h2>論據資源庫</h2>
+              <p class="caption">「搵料易」及「Fact Check易」保留為獨立功能。你可以在此帶入查詢，並在完成後將結果加入目前項目。只有項目擁有者或編輯者可以加入內容。</p>
+              <div class="actions"><button id="prepOpenResearch" type="button">用搵料易</button><button id="prepOpenFact" type="button">用 Fact Check易</button></div>
+              <div class="prep-filter-bar">
+                <label>搜尋論據<input id="prepEvidenceSearch" type="search" placeholder="搜尋主張、來源或限制" /></label>
+                <label>來源類型<select id="prepEvidenceFilterType"><option value="">全部來源</option><option value="government">政府</option><option value="academic">學術</option><option value="news">新聞</option><option value="ngo">非政府組織</option><option value="industry">業界</option><option value="ai_research">AI 搜尋摘要</option><option value="other">其他</option></select></label>
+                <label>適用範圍<select id="prepEvidenceFilterScope"><option value="">全部範圍</option><option value="our">我方</option><option value="opponent">對方</option><option value="both">雙方</option></select></label>
+              </div>
+              <div id="prepEvidenceList" class="prep-empty">請先選擇項目。</div>
+              <form id="prepEvidenceForm">
+                <label>可引用主張<input id="prepEvidenceClaim" maxlength="500" required /></label>
+                <label>摘錄／摘要<textarea id="prepEvidenceExcerpt" rows="5" maxlength="20000"></textarea></label>
+                <div class="field-grid">
+                  <label>來源名稱<input id="prepEvidenceSource" maxlength="200" /></label>
+                  <label>來源網址<input id="prepEvidenceUrl" type="url" maxlength="2000" /></label>
+                  <label>來源類型<select id="prepEvidenceType"><option value="government">政府</option><option value="academic">學術</option><option value="news">新聞</option><option value="ngo">非政府組織</option><option value="industry">業界</option><option value="ai_research">AI 搜尋摘要</option><option value="other">其他</option></select></label>
+                  <label>適用範圍<select id="prepEvidenceScope"><option value="our">我方</option><option value="opponent">對方</option><option value="both">雙方</option></select></label>
+                </div>
+                <label>限制／口徑<textarea id="prepEvidenceLimits" rows="3" maxlength="5000"></textarea></label>
+                <button class="primary">加入資源庫</button>
+              </form>
+            </section>
+          </section>
+          <section id="prepWeakness" class="prep-pane">
+            <section class="card">
+              <h2>弱點訓練</h2>
+              <p class="caption">採用嚴格自由辯論模式：AI 在練習期間只會攻擊指定弱點，不會提示答案；練習結束後才會判斷通過、部分通過或未通過。</p>
+              <div class="prep-filter-bar">
+                <label>搜尋弱點<input id="prepWeaknessSearch" type="search" placeholder="搜尋標題、描述或負責隊員" /></label>
+                <label>狀態<select id="prepWeaknessFilterStatus"><option value="">全部狀態</option><option value="open">待處理</option><option value="practicing">練習中</option><option value="passed">已通過</option></select></label>
+                <label>負責隊員<select id="prepWeaknessFilterAssignee"><option value="">全部隊員</option><option value="__unassigned__">未分配</option></select></label>
+              </div>
+              <div id="prepWeaknessList" class="prep-empty">請先選擇項目。</div>
+              <form id="prepWeaknessForm">
+                <div class="field-grid">
+                  <label>弱點標題<input id="prepWeaknessTitle" maxlength="200" required /></label>
+                  <label>分類<select id="prepWeaknessCategory"><option value="logic">邏輯</option><option value="evidence">證據</option><option value="definition">定義</option><option value="response">回應</option><option value="delivery">表達</option><option value="coordination">全隊協作</option></select></label>
+                </div>
+                <label>具體描述<textarea id="prepWeaknessDescription" rows="4" maxlength="10000"></textarea></label>
+                <button class="primary">新增弱點</button>
+              </form>
+            </section>
+          </section>
+        </section>
+        <section id="strategy" class="hidden">
           <div class="layout">
             <form id="strategyForm" class="card">
               <h2>主線策劃</h2>
-              <div
-                data-topic-source="topics"
-                data-topic-target="strategyTopic"
-              ></div>
               <label>輸入辯題<input id="strategyTopic" required /></label>
               <div class="field-grid">
                 <label
@@ -300,7 +510,7 @@
                 >
               </div>
               <p id="strategyEstimate" class="caption estimate"></p>
-              <button class="primary">生成主線</button>
+              <button class="primary">AI 建立策略初稿</button>
             </form>
             <section class="card">
               <h2>策略建議</h2>
@@ -315,14 +525,10 @@
             </section>
           </div>
         </section>
-        <section id="review" class="pane">
+        <section id="review" class="hidden">
           <div class="layout">
             <form id="reviewForm" class="card">
               <h2>練習發言</h2>
-              <div
-                data-topic-source="matches"
-                data-topic-target="reviewTopic"
-              ></div>
               <label>辯題<input id="reviewTopic" required /></label>
               <p id="reviewMatchNote" class="caption"></p>
               <div class="field-grid">
@@ -361,11 +567,7 @@
                   rows="7"
                   placeholder="輸入內容…"
                 ></textarea></label
-              ><label>錄音計時環節<select id="reviewStage"></select></label>
-              <div class="rec">
-                <button id="speechTimer" type="button">開始計時</button
-                ><span id="speechClock">00:00.000</span>
-              </div>
+              >
               <div class="rec">
                 <button type="button" id="record">開始錄音</button
                 ><span id="recordState">未錄音</span>
@@ -387,7 +589,7 @@
               <div id="retakeOffer" class="notice hidden">
                 <h3>按照建議再錄一次</h3>
                 <p>
-                  第一次錄音不會儲存，開始重錄時會即時由頁面記憶體清除，亦不會再次送去 AI。改進檢查只會提交上次 AI 文字評語、你可修改嘅文字稿，同一段全新錄音。
+                  第一次錄音不會儲存，開始重錄時會即時由頁面記憶體清除，亦不會再次送交 AI。改進檢查只會提交上次 AI 文字評語、你可修改的文字稿及一段全新錄音。
                 </p>
                 <p id="retakeEstimate" class="caption estimate"></p>
                 <button id="startRetake" type="button" class="primary">
@@ -397,7 +599,7 @@
               <div id="retakeActive" class="notice hidden">
                 <h3>重錄改進檢查</h3>
                 <p>
-                  辯題、立場、辯位、賽制及練習類型已鎖定；你仍可修改文字稿。請錄製一段全新錄音，再按「檢查今次有冇改進」。
+                  辯題、立場、辯位、賽制及練習類型已鎖定；你仍可修改文字稿。請錄製一段全新錄音，再按「檢查本次是否有改進」。
                 </p>
                 <button id="cancelRetake" type="button">取消重錄</button>
               </div>
@@ -432,7 +634,11 @@
                 <button id="downloadResearch" class="hidden" type="button">
                   下載搵料結果
                 </button>
+                <button id="prepSaveResearch" class="hidden" type="button">
+                  加入所選項目論據資源庫
+                </button>
               </div>
+              <p id="prepResearchTarget" class="caption hidden"></p>
             </section>
           </div>
         </section>
@@ -461,7 +667,11 @@
                 <button id="downloadFact" class="hidden" type="button">
                   下載 Fact Check 結果
                 </button>
+                <button id="prepSaveFact" class="hidden" type="button">
+                  加入所選項目論據資源庫
+                </button>
               </div>
+              <p id="prepFactTarget" class="caption hidden"></p>
             </section>
           </div>
         </section>
@@ -497,7 +707,7 @@
               校園隨想自由辯論時間固定為 2:30。
             </p>
             <p class="caption">
-              完場 AI 評價會以 point form 文字顯示，不會讀出。
+              比賽結束後，AI 評價會以條列式文字顯示，不會讀出。
             </p>
             <p id="liveEstimate" class="caption estimate"></p>
             <button class="primary">開始Free De</button>
@@ -546,10 +756,10 @@
           <section class="card">
             <h2>🎧 連線練習</h2>
             <p class="caption">
-              與另一位委員作真人對真人（1 對 1）Free De 或完整 Mock。收音只會在連線測試及 Server 確認輪到你發言後，以 STUN-only WebRTC P2P 直傳；主持可在完場後明確按一次要求 AI 評判。
+              與另一位委員進行真人對真人（1 對 1）Free De 或完整 Mock。音訊只會在連線測試完成，而且伺服器確認輪到你發言後，以 STUN-only WebRTC P2P 直傳；主持人可以在比賽結束後按下按鈕要求 AI 評判。
             </p>
             <p class="caption">
-              私隱提示：STUN／ICE 可能向已登入對手顯示網絡候選地址；Web Speech 逐字稿可能按瀏覽器供應商條款處理。房間控制及已提交逐字稿經 Render；只有主持完場後按掣，逐字稿先會交予 Gemini，結果在記憶體短暫保留約 15 分鐘。建議使用電腦版 Chrome。
+              私隱提示：STUN／ICE 可能向已登入對手顯示網絡候選地址；Web Speech 逐字稿可能按照瀏覽器供應商條款處理。房間控制及已提交的逐字稿會經過 Render；只有主持在完場後按下按鈕，逐字稿才會交予 Gemini，結果會在記憶體內短暫保留約 15 分鐘。建議使用電腦版 Chrome。
             </p>
           </section>
           <div id="activeRoom" class="card hidden">
@@ -637,8 +847,9 @@
     <div id="busy" class="busy">
       <div class="busy-pill"><i class="spinner"></i>處理中…</div>
     </div>
-    <script src="/shared/vote-ui.js"></script>
-    <script src="/shared/markdown.js"></script>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
+    <script src="/shared/markdown.js?v=__APP_VERSION__"></script>
     <script src="/shared/ai-parity.js?v=__APP_VERSION__"></script>
+    <script src="/shared/competition-prep.js?v=__APP_VERSION__"></script>
   </body>
 </html>

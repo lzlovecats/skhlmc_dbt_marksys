@@ -51,7 +51,8 @@ AI_PROVIDER_LABELS = {
     "other": "其他",
 }
 AI_FEATURE_LABELS = {
-    "speech_review": "練習發言", "strategy": "主線策劃", "web_research": "搵料易",
+    "speech_review": "練習發言", "strategy": "主線策劃", "competition_prep": "比賽準備",
+    "web_research": "搵料易",
     "fact_check": "Fact Check易", "free_debate_live": "打Free De",
     "full_mock_live": "打完整Mock", "vote_review": "辯題審查",
     "vote_analysis": "辯題庫 / 往績分析", "vote_discussion": "委員討論回應",
@@ -61,7 +62,7 @@ AI_FEATURE_LABELS = {
     "kiosk_match_review_tts": "AI評判易·粵語讀出",
 }
 AI_USAGE_FEATURES = (
-    "speech_review", "strategy", "web_research", "fact_check",
+    "speech_review", "strategy", "competition_prep", "web_research", "fact_check",
     "free_debate_live", "full_mock_live", "vote_review",
     "vote_analysis", "vote_discussion", "tts_review",
     "tts_script_analysis", "llm_review",

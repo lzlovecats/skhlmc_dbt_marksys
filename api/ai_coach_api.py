@@ -24,7 +24,10 @@ from ai_model_config import (
     DEFAULT_AI_MODEL,
     resolve_interactive_model_settings,
 )
-from api.access import require_page_user
+from api.access import (
+    require_interactive_features_available,
+    require_page_user,
+)
 from core.media_probe import MediaProbeError, canonical_audio_mime, audio_extension, probe_audio_file
 from prompts import (
     FACT_CHECK_SYSTEM_PROMPT, QA_REVIEW_SYSTEM_PROMPT, SPEECH_RETAKE_SYSTEM_PROMPT,
@@ -49,7 +52,11 @@ from system_limits import (
 router = APIRouter(prefix="/api/ai-coach", tags=["ai-coach"])
 _LIVE_BRIEF_TABLE = TABLE_AI_COACH_LIVE_BRIEFS
 FEATURE_TOKEN_ESTIMATES = {"speech_review": (2500, 1800), "strategy": (1200, 2500),
+                           "competition_prep": (8000, 4000),
                            "web_research": (1500, 2500), "fact_check": (1500, 2500)}
+# User-facing estimates need a representative recording size before a recording
+# exists. Actual provider usage metadata remains authoritative after each call.
+SPEECH_REVIEW_AUDIO_TOKEN_ESTIMATE = 1200
 AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 AI_PROVIDER_PUBLIC_ERROR = "AI 服務暫時無法完成請求，請稍後再試。"
@@ -72,6 +79,9 @@ class CoachRequest(BaseModel):
     review_mode: Literal["台上發言", "台下發問", "交互答問"] = "台上發言"
     review_attempt: Literal["initial", "retake"] = "initial"
     previous_review: str = Field(default="", max_length=20_000)
+    prep_project_id: int | None = Field(default=None, ge=1)
+    prep_manuscript_id: int | None = Field(default=None, ge=1)
+    operation_id: str = Field(default="", max_length=200)
 
 class LivePrepareRequest(BaseModel):
     topic: str = Field(max_length=500)
@@ -116,7 +126,9 @@ def consume_live_brief(brief_id, user_id):
     return str(row[0]) if row else ""
 
 def _context(request):
-    return require_page_user(request, "ai_coach")
+    user_id = require_page_user(request, "ai_coach")
+    require_interactive_features_available(request)
+    return user_id
 
 
 def _runtime_model_settings(db):
@@ -201,7 +213,8 @@ def _config(label, db=None):
 
 
 def _estimate(feature, config, has_audio=False):
-    inp,out=FEATURE_TOKEN_ESTIMATES.get(feature,(0,0));audio=0
+    inp,out=FEATURE_TOKEN_ESTIMATES.get(feature,(0,0))
+    audio=SPEECH_REVIEW_AUDIO_TOKEN_ESTIMATE if has_audio else 0
     usd=(inp*(config.get("input_price_per_million") or 0)+audio*(config.get("audio_input_price_per_million") or config.get("input_price_per_million") or 0)+out*(config.get("output_price_per_million") or 0))/1_000_000
     if feature in ("web_research","fact_check"):usd+=config.get("web_search_price_per_call") or 0
     return {"usd":round(usd,4),"hkd":round(usd*7.8,4)}
@@ -229,7 +242,7 @@ def _usage(
     audio = int(
         actual["audio_tokens"]
         if actual.get("audio_tokens") is not None
-        else 0
+        else (SPEECH_REVIEW_AUDIO_TOKEN_ESTIMATE if has_audio else 0)
     )
     search = int(
         actual["search_calls"]
@@ -752,7 +765,8 @@ def mock_plan(request: Request):
 @router.post("/run")
 async def run(body: CoachRequest, request: Request):
     user_id = _context(request)
-    _validate_coach_request(body)
+    if body.prep_project_id is None:
+        _validate_coach_request(body)
     from deploy.proxy import get_vote_db, _get_proxy_secret, _bandwidth_essential_gate_error
     budget_error = _bandwidth_essential_gate_error()
     if budget_error:
@@ -762,6 +776,44 @@ async def run(body: CoachRequest, request: Request):
             )
         raise HTTPException(429, budget_error)
     db = get_vote_db()
+    prep_bundle = None
+    prep_run_type = ""
+    prep_snapshot = None
+    if body.prep_project_id is not None:
+        from core import competition_prep_logic as prep_logic
+
+        try:
+            prep_bundle = prep_logic.project_bundle(db, body.prep_project_id, user_id)
+        except prep_logic.PrepError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        if prep_bundle["role"] not in prep_logic.EDIT_ROLES:
+            raise HTTPException(403, "只有項目擁有者或編輯者可以執行 AI 分析。")
+        if len(body.operation_id.strip()) < 16:
+            raise HTTPException(400, "比賽準備 AI 操作識別碼無效，請重新載入後再試。")
+        project = prep_bundle["project"]
+        body.topic = str(project["topic_text"])
+        body.side = "正方" if project["our_side"] == "pro" else "反方"
+        body.debate_format = str(project["debate_format"])
+        if body.feature == "speech_review":
+            manuscript = next((
+                item for item in prep_bundle["manuscripts"]
+                if int(item["id"]) == int(body.prep_manuscript_id or 0)
+            ), None)
+            if not manuscript:
+                raise HTTPException(400, "請先選擇項目內一份稿件。")
+            slot_positions = {"main": 1, "dep1": 2, "dep2": 3, "closing": 4, "dep3": 5}
+            if manuscript["slot"] in slot_positions:
+                body.position = slot_positions[manuscript["slot"]]
+            if body.review_attempt == "initial" and body.review_mode == "台上發言":
+                body.text = str(manuscript.get("body") or "")
+            prep_run_type = (
+                "speech_retake" if body.review_attempt == "retake" else "speech_review"
+            )
+            prep_snapshot = {"manuscript_id": body.prep_manuscript_id}
+        elif body.feature == "strategy":
+            prep_run_type = "strategy_seed"
+            prep_snapshot = {"manuscript_id": None}
+        _validate_coach_request(body)
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
     model_label = _requested_model_label(body, runtime_default_model)
     config = _config(model_label, db)
@@ -775,6 +827,20 @@ async def run(body: CoachRequest, request: Request):
         model_label = runtime_default_model
     key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")
     if not _get_proxy_secret(key_name): raise HTTPException(503,f"未設定 {key_name}")
+    operation_id = body.operation_id.strip() if prep_bundle is not None else "coach-" + secrets.token_urlsafe(18)
+    if prep_bundle is not None and prep_run_type:
+        try:
+            claim = prep_logic.claim_ai_run(
+                db, body.prep_project_id, user_id, operation_id, prep_run_type,
+                model_label, prep_snapshot,
+            )
+        except prep_logic.PrepError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        if claim["state"] == "completed":
+            return JSONResponse(
+                {"ok": True, "markdown": claim["output"], "cached": True},
+                headers={"Cache-Control": "no-store"},
+            )
     system, user = _message(body, db)
     if body.feature in ("speech_review", "strategy"):
         try:
@@ -784,7 +850,6 @@ async def run(body: CoachRequest, request: Request):
             if rag: user += "\n\n" + rag
         except Exception:
             pass
-    operation_id = "coach-" + secrets.token_urlsafe(18)
     primary_attempted = False
 
     def mark_primary_attempt():
@@ -837,6 +902,13 @@ async def run(body: CoachRequest, request: Request):
                     on_provider_attempt=mark_fallback_attempt,
                 )
             except HTTPException as fallback_exc:
+                if prep_bundle is not None and prep_run_type:
+                    try:
+                        prep_logic.release_ai_run(
+                            db, body.prep_project_id, user_id, operation_id, prep_run_type,
+                        )
+                    except Exception:
+                        pass
                 public_error = (
                     str(fallback_exc.detail)[:300]
                     if fallback_exc.status_code < 500
@@ -861,6 +933,13 @@ async def run(body: CoachRequest, request: Request):
             model_label = runtime_default_model
             completed_stage = "fallback"
         else:
+            if prep_bundle is not None and prep_run_type:
+                try:
+                    prep_logic.release_ai_run(
+                        db, body.prep_project_id, user_id, operation_id, prep_run_type,
+                    )
+                except Exception:
+                    pass
             if primary_attempted:
                 _usage(
                     db,
@@ -874,6 +953,14 @@ async def run(body: CoachRequest, request: Request):
                     operation_stage="primary",
                 )
             raise
+    if prep_bundle is not None and prep_run_type:
+        try:
+            prep_logic.complete_ai_run(
+                db, body.prep_project_id, user_id, operation_id, prep_run_type,
+                model_label, result,
+            )
+        except prep_logic.PrepError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
     _usage(db, user_id, body.feature, model_label, config, True,
            actual=actual, has_audio=bool(body.audio_intent_id),
            operation_id=operation_id, operation_stage=completed_stage)
@@ -944,7 +1031,17 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
     browser recover the *same* token when the HTTP response is lost, while the
     persistent ledger prevents another worker from disclosing a second token.
     """
-    user_id = _context(request)
+    suspended_error = None
+    try:
+        user_id = _context(request)
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        # Existing ledger-bound practices may finish after the pause begins.
+        # Re-authenticate first; the signed claim and durable lifecycle row are
+        # checked below before this exception can be bypassed.
+        user_id = require_page_user(request, "ai_coach")
+        suspended_error = exc
     from deploy import proxy
 
     country = proxy._solo_live_country_status(request)
@@ -955,6 +1052,12 @@ async def mint_live_token(body: LiveTokenRequest, request: Request):
     )
     if not claim or not claim.get("system_prompt"):
         raise HTTPException(400, "練習授權無效或已過期，請返回重新開始。")
+    if suspended_error is not None:
+        existing_practice = await asyncio.to_thread(
+            proxy._solo_live_practice_exists, claim,
+        )
+        if not existing_practice:
+            raise suspended_error
     mode = str(claim.get("mode") or "")
     if mode not in ("free", "mock"):
         raise HTTPException(400, "練習模式無效，請返回重新開始。")

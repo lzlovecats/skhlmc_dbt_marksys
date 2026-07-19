@@ -55,7 +55,7 @@ li { margin: .25rem 0; }
 
 label { display: block; margin: .8rem 0 .3rem; color: var(--muted); font-weight: 600; }
 input, textarea, select {
-    width: 100%; min-height: 2.7rem; padding: .55rem .7rem;
+    width: 100%; min-width: 0; max-width: 100%; min-height: 2.7rem; padding: .55rem .7rem;
     border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); color: var(--text); font: inherit;
 }

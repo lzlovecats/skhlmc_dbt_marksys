@@ -63,6 +63,10 @@ class SideBody(BaseModel):
     side: str = Field(max_length=10)
 
 
+class TopicReleaseBody(BaseModel):
+    difficulty: int | None = Field(default=None, ge=1, le=3)
+
+
 def _db():
     from deploy.proxy import get_vote_db
 
@@ -127,6 +131,57 @@ def regenerate(match_id: str, body: SideBody, request: Request):
 
     _admin(request)
     return logic.regenerate_link(match_id, body.side, db=_db())
+
+
+@router.post("/{match_id}/score-confirmation/open")
+def open_score_confirmation(match_id: str, request: Request):
+    from core.score_confirmation import open_confirmation
+
+    _admin(request)
+    try:
+        result = open_confirmation(match_id, db=_db())
+    except Exception as exc:
+        raise HTTPException(503, "核對分紙功能尚未完成資料庫準備。") from exc
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("message") or "未能開放核對分紙。")
+    return result
+
+
+def _topic_release_action(action):
+    from core.match_topic_release import TopicReleaseError
+
+    try:
+        return action()
+    except TopicReleaseError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, "辯題公布功能尚未完成資料庫準備。") from exc
+
+
+@router.post("/{match_id}/topic-release/open")
+def open_topic_release(match_id: str, body: TopicReleaseBody, request: Request):
+    from core.match_topic_release import open_release
+
+    _admin(request)
+    return _topic_release_action(
+        lambda: open_release(match_id, body.difficulty, db=_db())
+    )
+
+
+@router.post("/{match_id}/topic-release/rotate-links")
+def rotate_topic_release_links(match_id: str, request: Request):
+    from core.match_topic_release import rotate_links
+
+    _admin(request)
+    return _topic_release_action(lambda: rotate_links(match_id, db=_db()))
+
+
+@router.post("/{match_id}/topic-release/cancel")
+def cancel_topic_release(match_id: str, request: Request):
+    from core.match_topic_release import cancel_release
+
+    _admin(request)
+    return _topic_release_action(lambda: cancel_release(match_id, db=_db()))
 
 
 @router.delete("/{match_id}")

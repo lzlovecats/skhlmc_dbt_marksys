@@ -69,7 +69,12 @@ from ai_model_config import (
     get_tts_provider_config,
     model_slugs_for_feature,
 )
-from prompts import build_free_debate_live_prompt, build_full_mock_live_prompt, LIVE_RUNTIME_PROMPTS
+from prompts import (
+    LIVE_RUNTIME_PROMPTS,
+    build_free_debate_live_prompt,
+    build_full_mock_live_prompt,
+    build_weakness_live_prompt,
+)
 from prompts import build_room_judgement_prompt
 from api.vote_api import router as vote_router
 from api.auth_api import router as committee_router
@@ -87,15 +92,23 @@ from api.schedule_api import router as schedule_router
 from api.management_api import router as management_router
 from api.judging_api import router as judging_router
 from api.review_api import router as review_router
+from api.score_sheet_confirmation_api import router as score_sheet_confirmation_router
+from api.match_topic_release_api import router as match_topic_release_router
 from api.funds_api import router as funds_router
 from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
+from api.competition_prep_api import router as competition_prep_router
 from api.ai_training_api import router as ai_training_router
 from api.admin_console_api import router as admin_console_router
 from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
 from api.community_api import router as community_router
-from api.access import require_competition_staff, require_page_user
+from api.access import (
+    interactive_features_suspension,
+    require_competition_staff,
+    require_interactive_features_available,
+    require_page_user,
+)
 from version import APP_VERSION
 from system_limits import (
     BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
@@ -354,9 +367,12 @@ app.include_router(schedule_router)
 app.include_router(management_router)
 app.include_router(judging_router)
 app.include_router(review_router)
+app.include_router(score_sheet_confirmation_router)
+app.include_router(match_topic_release_router)
 app.include_router(funds_router)
 app.include_router(chairperson_router)
 app.include_router(ai_coach_router)
+app.include_router(competition_prep_router)
 app.include_router(ai_training_router)
 app.include_router(admin_console_router)
 app.include_router(kiosk_router)
@@ -367,6 +383,34 @@ logger = logging.getLogger("skh_proxy")
 
 def _cache_headers(cache_control):
     return {"Cache-Control": cache_control}
+
+
+def _scheduled_feature_page_block(request: Request) -> Response | None:
+    """Render the shared scheduled-pause message before a feature shell loads."""
+    status = interactive_features_suspension(request)
+    if not status.get("active"):
+        return None
+    message = xml_escape(
+        status.get("message") or "Vote 及 AI 辯論易暫停使用。"
+    )
+    body = f"""<!doctype html><html lang="zh-HK"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>功能暫停使用</title><link rel="stylesheet" href="/shared/app-shell.css?v={APP_VERSION}">
+</head><body><main><a class="back-link" href="/">← 返回主頁</a>
+<section class="card"><h1>功能暫停使用</h1><p>{message}</p>
+<p class="caption">系統會在設定時間結束後自動恢復，毋須重新登入。</p>
+</section></main></body></html>"""
+    return Response(
+        body,
+        status_code=503,
+        media_type="text/html",
+        headers={
+            "Cache-Control": CACHE_NO_STORE,
+            "Retry-After": str(
+                max(1, int(status.get("retry_after_seconds") or 1))
+            ),
+        },
+    )
 
 
 def _binary_cache_headers(cache_control):
@@ -2025,11 +2069,19 @@ async def appliance_practice_page():
 
 
 @app.get("/vote")
-async def vote_page():
+async def vote_page(request: Request):
     """Primary HTML voting page."""
-    return FileResponse(BASE_DIR / "frontend" / "vote" / "index.html",
-                        media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+    blocked = _scheduled_feature_page_block(request)
+    if blocked is not None:
+        return blocked
+    html = (BASE_DIR / "frontend" / "vote" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
 
 
 @app.get("/")
@@ -2069,9 +2121,14 @@ async def registration_page():
 @app.get("/registration_admin", include_in_schema=False)
 async def registration_admin_page():
     """Primary HTML organiser registration-management page; underscore path is legacy alias."""
-    return FileResponse(BASE_DIR / "frontend" / "registration_admin" / "index.html",
-                        media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "registration_admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
 
 
 @app.get("/video-replay")
@@ -2153,8 +2210,14 @@ async def team_roster_page():
 @app.get("/match-info")
 @app.get("/match_info", include_in_schema=False)
 async def match_info_page():
-    return FileResponse(BASE_DIR / "frontend" / "match_info" / "index.html",
-                        media_type="text/html", headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "match_info" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
 
 
 @app.get("/draw-match-schedule")
@@ -2187,6 +2250,30 @@ async def review_page():
     return FileResponse(BASE_DIR / "frontend" / "review" / "index.html",
                         media_type="text/html", headers=_cache_headers(CACHE_HTML))
 
+
+@app.get("/score-sheet-confirmation")
+async def score_sheet_confirmation_page():
+    html = (
+        BASE_DIR / "frontend" / "score_sheet_confirmation" / "index.html"
+    ).read_text(encoding="utf-8")
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_NO_STORE),
+    )
+
+
+@app.get("/match-topic")
+async def match_topic_page():
+    html = (
+        BASE_DIR / "frontend" / "match_topic" / "index.html"
+    ).read_text(encoding="utf-8")
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_NO_STORE),
+    )
+
 @app.get("/admin-hub")
 async def admin_hub_page():
     return FileResponse(BASE_DIR / "frontend" / "admin_hub" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
@@ -2205,7 +2292,10 @@ async def chairperson_page():
 
 
 @app.get("/ai-coach")
-async def ai_coach_page():
+async def ai_coach_page(request: Request):
+    blocked = _scheduled_feature_page_block(request)
+    if blocked is not None:
+        return blocked
     html = (BASE_DIR / "frontend" / "ai_coach" / "index.html").read_text(
         encoding="utf-8"
     )
@@ -2279,7 +2369,14 @@ async def developer_settings_page():
 @app.get("/lateness-fund")
 @app.get("/lateness_fund", include_in_schema=False)
 async def lateness_fund_page():
-    return FileResponse(BASE_DIR / "frontend" / "lateness_fund" / "index.html", media_type="text/html", headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "lateness_fund" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
 
 
 @app.get("/ai-fund")
@@ -3601,6 +3698,7 @@ def _render_live_debate_html(
     token, prompt, live_minutes, bell_schedule, ai_starts, *, segments=None,
     tokens=None, session_labels=None, session_label="自由辯論",
     practice_id="", session_max_seconds=LIVE_FREE_SESSION_MAX_SECONDS,
+    feedback_mode="free",
 ):
     """Server-render templates/live_debate.html the same way ai_coach does, so the
     kiosk gets the identical Live engine for Free De and multi-session Mock.
@@ -3631,6 +3729,7 @@ def _render_live_debate_html(
         "__LIVE_SESSION_MAX_SECONDS__": _script_safe_json(int(session_max_seconds)),
         "__AI_STARTS__": _script_safe_json(bool(ai_starts)),
         "__LIVE_PROMPTS__": _script_safe_json(LIVE_RUNTIME_PROMPTS),
+        "__LIVE_FEEDBACK_MODE__": _script_safe_json(feedback_mode),
     }
     # Substitute the original template in one pass. Sequential ``str.replace``
     # would rescan user-authored prompt text and corrupt it whenever a debate
@@ -3673,6 +3772,9 @@ async def appliance_ai_debate_page(request: Request):
             url="/practice?next=ai-debate", status_code=307,
             headers={"Cache-Control": CACHE_NO_STORE},
         )
+    blocked = _scheduled_feature_page_block(request)
+    if blocked is not None:
+        return blocked
     return FileResponse(BASE_DIR / "templates" / "appliance_ai_debate.html",
                         media_type="text/html",
                         headers=_cache_headers(CACHE_NO_CACHE))
@@ -3696,11 +3798,20 @@ async def _appliance_ai_debate_live_locked(request: Request):
         # /api/ai-coach/prepare-live has issued their member-bound claim.
         user_id = require_page_user(request, "ai_coach")
     except HTTPException:
-        from_coach = request.query_params.get("source") == "coach"
+        from_coach = request.query_params.get("source") in ("coach", "competition-prep")
         return _practice_error_page(
             "需要登入",
             "請先登入可使用 AI 辯論練習的帳戶。",
             "/ai-coach" if from_coach else "/practice/ai-debate",
+        )
+    try:
+        require_interactive_features_available(request)
+    except HTTPException as exc:
+        return _practice_error_page(
+            "功能暫停使用",
+            str(exc.detail),
+            "/ai-coach" if request.query_params.get("source") in ("coach", "competition-prep")
+            else "/practice/ai-debate",
         )
 
     q = request.query_params
@@ -3708,6 +3819,27 @@ async def _appliance_ai_debate_live_locked(request: Request):
     side = (q.get("side") or "正方").strip()
     debate_format = (q.get("format") or _PRACTICE_LIVE_FORMATS[0]).strip()
     mode = (q.get("mode") or "free").strip()
+    weakness_training = q.get("source") == "competition-prep"
+    weakness_bundle = None
+    weakness = None
+    if weakness_training:
+        from core import competition_prep_logic as prep_logic
+
+        try:
+            prep_project_id = int(q.get("prep_project_id") or 0)
+            weakness_id = int(q.get("weakness_id") or 0)
+            weakness_bundle, weakness = prep_logic.weakness_context(
+                get_vote_db(), prep_project_id, weakness_id, user_id,
+            )
+        except (TypeError, ValueError, prep_logic.PrepError) as exc:
+            return _practice_error_page(
+                "弱點訓練連結無效", str(exc), "/ai-coach",
+            )
+        project = weakness_bundle["project"]
+        topic = str(project.get("topic_text") or "").strip()
+        side = "正方" if project.get("our_side") == "pro" else "反方"
+        debate_format = str(project.get("debate_format") or _PRACTICE_LIVE_FORMATS[0])
+        mode = "free"
     if mode not in ("free", "mock"):
         mode = "free"
     country = _solo_live_country_status(request)
@@ -3803,15 +3935,23 @@ async def _appliance_ai_debate_live_locked(request: Request):
     )["bell_schedules"].get("free", [])
     from api.ai_coach_api import consume_live_brief
     research_brief = consume_live_brief(brief_id, user_id)
-    prompt = _bounded_live_system_prompt(
-        build_free_debate_live_prompt(topic, side, research_brief),
-    )
+    if weakness_training:
+        prompt = _bounded_live_system_prompt(build_weakness_live_prompt(
+            topic, side, weakness,
+            prep_logic.build_ai_context(weakness_bundle),
+        ))
+    else:
+        prompt = _bounded_live_system_prompt(
+            build_free_debate_live_prompt(topic, side, research_brief),
+        )
     speech_seconds = int(math.ceil(live_minutes * 2 * 60))
     practice_claim = _planned_live_practice_claim(launch_claim, [speech_seconds], prompt)
     html = _render_live_debate_html(
         "", prompt, live_minutes, bell_schedule, side == "反方",
         practice_id=practice_claim,
         session_max_seconds=LIVE_FREE_SESSION_MAX_SECONDS,
+        session_label="弱點訓練" if weakness_training else "自由辯論",
+        feedback_mode="weakness" if weakness_training else "free",
     )
     return Response(
         content=html, media_type="text/html",
@@ -4224,7 +4364,7 @@ def _room_nonmember_access_error(room, user_id):
         and creator_id not in connected_ids
         and len(connected_ids) >= max(0, capacity - 1)
     ):
-        return 409, "房間正預留一個位置畀主持。"
+        return 409, "房間正為主持預留一個位置。"
     return None
 
 
@@ -5649,14 +5789,14 @@ async def _room_handle_turn(room, member, speaking, *, request_id=""):
         if active is not None and member.user_id != active:
             await _room_send_member(room, member, {
                 "type": "turn_rejected",
-                "message": "呢段未輪到你嘅辯位發言。",
+                "message": "此環節尚未輪到你的辯位發言。",
             })
             return
         expected_side = room.expected_turn_side()
         if expected_side and member.role != expected_side:
             await _room_send_member(room, member, {
                 "type": "turn_rejected",
-                "message": f"自由辯論而家輪到{expected_side}發言。",
+                "message": f"自由辯論現在輪到{expected_side}發言。",
             })
             return
         if room.is_open_free_segment() and member.role in room.side_elapsed_ms:
@@ -5665,7 +5805,7 @@ async def _room_handle_turn(room, member, speaking, *, request_id=""):
             ):
                 await _room_send_member(room, member, {
                     "type": "turn_rejected",
-                    "message": f"{member.role}嘅自由辯論時間已用完。",
+                    "message": f"{member.role}的自由辯論時間已用完。",
                 })
                 return
         room.active_turn_user = member.user_id
@@ -6386,6 +6526,7 @@ def _build_room_plan(
 @app.post("/api/room/create")
 async def room_create(request: Request):
     user_id = require_page_user(request, "ai_room")
+    require_interactive_features_available(request)
     try:
         payload = await request.json()
     except Exception:
@@ -6666,7 +6807,7 @@ async def _room_register_socket(room, user_id, websocket):
                 and room.created_by not in connected_ids
                 and len(connected_ids) >= max(0, room.capacity - 1)
             ):
-                return None, "房間正預留一個位置畀主持。", 1013
+                return None, "房間正為主持預留一個位置。", 1013
             member = RoomMember(user_id, websocket)
             if user_id == room.created_by and room.creator_side:
                 member.role = room.creator_side

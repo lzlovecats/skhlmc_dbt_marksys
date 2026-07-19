@@ -39,9 +39,6 @@
   let audioIntentId = "";
   let audioMime = "audio/webm";
   let audioDurationSeconds = 0;
-  let timer = null;
-  let timerStartedAt = 0;
-  let firedBells = new Set();
   let reviewAttempt = "initial";
   let previousReviewMarkdown = "";
   let reviewContextSnapshot = "";
@@ -51,6 +48,7 @@
   let roomHandshakeTimer = 0;
   let roomPhase = "";
   let roomLeaveToken = "";
+  const pendingPrepOperations = new Map();
 
   const modelByLabel = (label) =>
     meta?.models.find((model) => model.label === label);
@@ -86,7 +84,7 @@
       return false;
     }
     document
-      .querySelectorAll(".pane, .tabs button")
+      .querySelectorAll(".pane, #tabs > button")
       .forEach((element) => element.classList.remove("active"));
     $(name).classList.add("active");
     document.querySelector(`[data-pane="${name}"]`).classList.add("active");
@@ -217,7 +215,7 @@
         pickerWrap.classList.add("hidden");
         targetWrap.classList.remove("hidden");
         note.textContent = supportsMatches
-          ? "而家未有比賽場次，請手動輸入。"
+          ? "目前沒有比賽場次，請手動輸入。"
           : "辯題庫為空，請手動輸入辯題。";
         return;
       }
@@ -247,13 +245,12 @@
 
   function syncReviewPositions() {
     if (!$("reviewPosition")) return;
-    const allowThirdDeputy = !selectedMatchId;
+    const allowThirdDeputy = $("reviewFormat").value === "聯中";
     const option = $("reviewPosition").querySelector('option[value="5"]');
     option.hidden = !allowThirdDeputy;
     option.disabled = !allowThirdDeputy;
     if (!allowThirdDeputy && $("reviewPosition").value === "5")
       $("reviewPosition").value = "1";
-    syncReviewStage();
   }
 
   const oppositeSide = () =>
@@ -274,26 +271,25 @@
       $("exchangeOrder").addEventListener("change", renderExchangeFields);
       renderExchangeFields();
     }
-    syncReviewStage();
   }
 
   function renderFloorFields() {
     if ($("floorMode").value === "我問，AI 答") {
       $("floorFields").innerHTML =
-        '<label>我嘅問題<textarea id="floorQuestion" rows="4" placeholder="輸入你想向對方或 AI 提出嘅問題…"></textarea></label>';
+        '<label>我的問題<textarea id="floorQuestion" rows="4" placeholder="輸入你想向對方或 AI 提出的問題…"></textarea></label>';
     } else {
       $("floorFields").innerHTML =
-        '<label>AI / 對方問題（可留空，AI 會先問）<textarea id="floorAiQuestion" rows="3" placeholder="如已有題目，可貼上問題；如留空，AI 會根據辯題先問一條問題。"></textarea></label><label>我嘅回答（如想 AI 先問，可留空）<textarea id="floorAnswer" rows="4" placeholder="輸入你對問題嘅回答…"></textarea></label>';
+        '<label>AI / 對方問題（可留空，AI 會先問）<textarea id="floorAiQuestion" rows="3" placeholder="如已有題目，可貼上問題；如留空，AI 會根據辯題先問一條問題。"></textarea></label><label>我的回答（如想 AI 先問，可留空）<textarea id="floorAnswer" rows="4" placeholder="輸入你對問題的回答…"></textarea></label>';
     }
   }
 
   function renderExchangeFields() {
     if ($("exchangeOrder").value === "我問，AI 答＋問，我再答") {
       $("exchangeFields").innerHTML =
-        '<label>我嘅問題<textarea id="exchangeQuestion" rows="3" placeholder="輸入你想先問嘅問題…"></textarea></label><label>我對 AI 追問嘅回答（可留空，AI 會先答＋追問）<textarea id="exchangeFinalAnswer" rows="4"></textarea></label>';
+        '<label>我的問題<textarea id="exchangeQuestion" rows="3" placeholder="輸入你想先問的問題…"></textarea></label><label>我對 AI 追問的回答（可留空，AI 會先答＋追問）<textarea id="exchangeFinalAnswer" rows="4"></textarea></label>';
     } else {
       $("exchangeFields").innerHTML =
-        '<label>AI / 對方問題（可留空，AI 會先問）<textarea id="exchangeAiQuestion" rows="3"></textarea></label><label>我嘅回答<textarea id="exchangeAnswer" rows="4"></textarea></label><label>我嘅追問<textarea id="exchangeFollowUp" rows="3"></textarea></label>';
+        '<label>AI / 對方問題（可留空，AI 會先問）<textarea id="exchangeAiQuestion" rows="3"></textarea></label><label>我的回答<textarea id="exchangeAnswer" rows="4"></textarea></label><label>我的追問<textarea id="exchangeFollowUp" rows="3"></textarea></label>';
     }
   }
 
@@ -307,14 +303,14 @@
       const floorMode = $("floorMode").value;
       lines.push(
         `模式：${floorMode}`,
-        `你嘅角色係${oppositeSide()}辯員，請以${oppositeSide()}立場參與問答。`,
+        `你的角色是${oppositeSide()}辯員，請以${oppositeSide()}立場參與問答。`,
       );
       if (floorMode === "我問，AI 答") {
         const question = $("floorQuestion").value.trim();
-        if (!question) warning = "請輸入你想問 AI 嘅問題。";
+        if (!question) warning = "請輸入你想向 AI 提出的問題。";
         lines.push(
-          `我嘅問題：${question}`,
-          "請以對方辯員身分回答呢條問題，再評估問題係咪清晰、尖銳、有追問空間。",
+          `我的問題：${question}`,
+          "請以對方辯員身分回答這條問題，再評估問題是否清晰、尖銳及有追問空間。",
         );
       } else {
         const question = $("floorAiQuestion").value.trim();
@@ -322,12 +318,12 @@
         if (question) lines.push(`AI / 對方問題：${question}`);
         if (answer)
           lines.push(
-            `我嘅回答：${answer}`,
-            "請評估我嘅回答，並指出點樣答得更直接、更有防守力。",
+            `我的回答：${answer}`,
+            "請評估我的回答，並指出如何回答得更直接、更有防守力。",
           );
         else if (question)
           lines.push(
-            "我未提供回答；請重申呢條問題，提示我可以由咩方向作答，暫時毋須評分。",
+            "我未提供回答；請重申這條問題，提示我可以從哪些方向作答，暫時毋須評分。",
           );
         else
           lines.push(
@@ -338,31 +334,31 @@
       const order = $("exchangeOrder").value;
       lines.push(
         `交互次序：${order}`,
-        `你嘅角色係${oppositeSide()}辯員，請以${oppositeSide()}立場參與問答。`,
+        `你的角色是${oppositeSide()}辯員，請以${oppositeSide()}立場參與問答。`,
       );
       if (order === "我問，AI 答＋問，我再答") {
         const question = $("exchangeQuestion").value.trim();
         const answer = $("exchangeFinalAnswer").value.trim();
-        if (!question) warning = "請輸入你想先問 AI 嘅問題。";
+        if (!question) warning = "請輸入你想先向 AI 提出的問題。";
         lines.push(
-          `我嘅問題：${question}`,
-          "請以對方辯員身分回答我嘅問題，然後追問我一條相關問題。",
+          `我的問題：${question}`,
+          "請以對方辯員身分回答我的問題，然後追問我一條相關問題。",
         );
         if (answer)
-          lines.push(`我對追問嘅回答：${answer}`, "請同時評估我嘅提問同回答。");
+          lines.push(`我對追問的回答：${answer}`, "請同時評估我的提問及回答。");
       } else {
         const question = $("exchangeAiQuestion").value.trim();
         const answer = $("exchangeAnswer").value.trim();
         const followUp = $("exchangeFollowUp").value.trim();
         if (question) lines.push(`AI / 對方問題：${question}`);
-        if (answer) lines.push(`我嘅回答：${answer}`);
-        if (followUp) lines.push(`我嘅追問：${followUp}`);
+        if (answer) lines.push(`我的回答：${answer}`);
+        if (followUp) lines.push(`我的追問：${followUp}`);
         if (answer && followUp)
           lines.push(
-            "請以對方辯員身分回答我嘅追問，並評估我嘅回答同追問質素。",
+            "請以對方辯員身分回答我的追問，並評估我的回答及追問質素。",
           );
         else if (question && !answer)
-          warning = "已有對方問題，請輸入你嘅回答。";
+          warning = "已有對方問題，請輸入你的回答。";
         else
           lines.push(
             `我未完成回答及追問；請以${oppositeSide()}辯員身分，根據辯題向我提出一條交互答問問題，暫時毋須評分。`,
@@ -371,104 +367,6 @@
     }
     if (speech) lines.unshift(speech, "");
     return { text: lines.join("\n"), warning };
-  }
-
-  function syncReviewStage() {
-    if (!meta || !$("reviewStage")) return;
-    const format = $("reviewFormat").value;
-    const mode = $("reviewMode").value;
-    const position = Number($("reviewPosition").value);
-    let allowed;
-    let preferred;
-    if (mode === "台下發問" && format === "聯中") {
-      allowed = ["floor_question", "floor_prep", "floor_answer"];
-    } else if (mode === "交互答問" && format === "星島") {
-      allowed = ["prep", "question", "answer"];
-    } else if (mode === "台上發言") {
-      preferred =
-        format === "星島"
-          ? position === 4
-            ? "deputy"
-            : "main"
-          : [1, 4, 5].includes(position)
-            ? "main"
-            : "deputy";
-      allowed = [preferred];
-    } else {
-      allowed = [];
-    }
-    const stages = meta.formats[format]?.timer_stages || [];
-    const previous = $("reviewStage").value;
-    $("reviewStage").innerHTML = stages
-      .filter(([key]) => allowed.includes(key))
-      .map(([key, label]) => `<option value="${key}">${esc(label)}</option>`)
-      .join("");
-    if (allowed.includes(previous)) $("reviewStage").value = previous;
-    $("reviewStage")
-      .closest("label")
-      .classList.toggle("hidden", !allowed.length);
-    $("speechTimer").disabled = !allowed.length;
-    $("speechClock").textContent = allowed.length
-      ? formatClock(stageEnd(), false)
-      : "此環節不設計時";
-    stopTimer();
-  }
-
-  function syncStageClock() {
-    stopTimer();
-    $("speechClock").textContent = formatClock(stageEnd(), false);
-  }
-
-  function stageEnd() {
-    const config = meta.formats[$("reviewFormat").value] || {};
-    return Number(config.overtime_times?.[$("reviewStage").value] ?? 0);
-  }
-  const formatClock = (seconds, negative) => {
-    const absolute = Math.abs(seconds);
-    const minutes = Math.floor(absolute / 60);
-    const secs = Math.floor(absolute) % 60;
-    const millis = Math.floor((absolute % 1) * 1000);
-    return `${negative ? "-" : ""}${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
-  };
-  function ring(count) {
-    const context = new (window.AudioContext || window.webkitAudioContext)();
-    for (let index = 0; index < count; index += 1) {
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      const at = context.currentTime + index * 0.22;
-      oscillator.frequency.value = 880;
-      gain.gain.setValueAtTime(0.2, at);
-      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.15);
-      oscillator.connect(gain).connect(context.destination);
-      oscillator.start(at);
-      oscillator.stop(at + 0.16);
-    }
-  }
-  function stopTimer() {
-    if (timer) clearInterval(timer);
-    timer = null;
-    $("speechTimer").textContent = "開始計時";
-  }
-  function toggleTimer() {
-    if (timer) return stopTimer();
-    timerStartedAt = performance.now();
-    firedBells = new Set();
-    $("speechTimer").textContent = "暫停計時";
-    const tick = () => {
-      const config = meta.formats[$("reviewFormat").value];
-      const schedule = config.bell_schedules[$("reviewStage").value] || [];
-      const elapsed = (performance.now() - timerStartedAt) / 1000;
-      const remaining = stageEnd() - elapsed;
-      $("speechClock").textContent = formatClock(remaining, remaining < 0);
-      schedule.forEach((bell, index) => {
-        if (elapsed >= bell.t && !firedBells.has(index)) {
-          firedBells.add(index);
-          ring(bell.rings);
-        }
-      });
-    };
-    tick();
-    timer = setInterval(tick, 31);
   }
 
   async function recordAudio() {
@@ -554,6 +452,18 @@
   }
 
   async function run(feature, payload, outputId, downloadId) {
+    const prepProjectId = (
+      ["strategy", "speech_review"].includes(feature)
+      ? Number($("prepProjectId")?.value) : 0
+    );
+    const prepManuscriptId = Number($("prepManuscriptId")?.value) || null;
+    const operationKey = prepProjectId
+      ? `${prepProjectId}:${feature}:${prepManuscriptId || 0}:${payload.review_attempt || "initial"}`
+      : "";
+    const operationId = operationKey
+      ? pendingPrepOperations.get(operationKey) || `prep-${crypto.randomUUID()}`
+      : "";
+    if (operationKey) pendingPrepOperations.set(operationKey, operationId);
     busy(true);
     try {
       const data = await api("/api/ai-coach/run", {
@@ -562,12 +472,24 @@
           ...payload,
           feature,
           model_label: $("globalModel").value,
+          ...(
+            ["strategy", "speech_review"].includes(feature)
+            && prepProjectId
+              ? {
+                  prep_project_id: prepProjectId,
+                  prep_manuscript_id: prepManuscriptId,
+                  operation_id: operationId,
+                }
+              : {}
+          ),
         }),
       });
+      if (operationKey) pendingPrepOperations.delete(operationKey);
       $(outputId).classList.remove("caption", "hidden");
       $(outputId).innerHTML = SafeMarkdown.render(data.markdown);
       $(downloadId).classList.remove("hidden");
       toast("✅ AI 分析完成。");
+      document.dispatchEvent(new CustomEvent("competition-prep-ai-complete"));
       return data;
     } catch (error) {
       toast(`⚠️ ${error.message}`);
@@ -599,7 +521,7 @@
       `估算成本：${estimateText(reviewEstimate)}。`;
     $("retakeEstimate").textContent = model.supports_audio
       ? `改進檢查會另作一次錄音分析，估算成本：${estimateText(model.estimates.speech_review_audio)}。`
-      : "改進檢查必須選用支援錄音分析嘅模型，並會另作一次 AI 分析。";
+      : "改進檢查必須選用支援錄音分析的模型，並會另作一次 AI 分析。";
     $("researchEstimate").textContent =
       `估算成本：${searchEstimate("web_research")}，${searchModel ? `按 ${searchModel.label} 及 1 次搜尋工具估算` : "搜尋模型暫時不可用"}。`;
     $("factEstimate").textContent =
@@ -608,7 +530,7 @@
     if (model.is_premium)
       warnings.push("你正在使用高級模型。請確保不要濫用，避免資金用盡。");
     if (!model.available)
-      warnings.push(`未設定 ${model.api_key_name}，呢個模型暫時未能使用。`);
+      warnings.push(`未設定 ${model.api_key_name}，此模型暫時未能使用。`);
     if (meta.fund.balance_hkd < meta.fund.low_balance_hkd)
       warnings.push(
         `AI基金餘額偏低：HKD ${meta.fund.balance_hkd.toFixed(2)}。建議新增資金。`,
@@ -641,12 +563,12 @@
       searchWarning + searchAvailabilityWarning;
     const liveProviderWarning = model.label.startsWith("Gemini")
       ? ""
-      : `<div class="notice warn">⚠️ 而家模型為 ${esc(model.label)}，不支援 Live；開始時會改用 Gemini Live。</div>`;
+      : `<div class="notice warn">⚠️ 目前模型為 ${esc(model.label)}，不支援 Live；開始時會改用 Gemini Live。</div>`;
     const liveResearchWarning = model.supports_web_search
       ? searchAvailabilityWarning
       : searchModel
         ? `<div class="notice warn">⚠️ Live 賽前搵料會自動改用 ${esc(searchModel.label)}，估算成本為 ${esc(searchEstimate("web_research"))}。${searchModel.available ? "" : `未設定 ${esc(searchModel.api_key_name)}，相關練習暫時不可開始。`}</div>`
-        : '<div class="notice warn">⚠️ Live 賽前搵料所需嘅搜尋模型不可用，相關練習暫時不可開始。</div>';
+        : '<div class="notice warn">⚠️ Live 賽前資料搜集所需的搜尋模型不可用，相關練習暫時不可開始。</div>';
     const ttsWarning = meta.azure_tts
       ? ""
       : meta.server_tts_configured
@@ -737,7 +659,7 @@
       );
       if (requestId !== mockPlanRequest) return;
       $("mockInfo").textContent =
-        `Mock 流程（${$("mockFormat").value}）：共 ${plan.segments.length} 段，全長約 ${plan.total_minutes.toFixed(0)} 分鐘，分 ${plan.session_count} 節連線（每節 ≤ 15 分鐘，自動接力）。逐段跟賽制響叮。`;
+        `Mock 流程（${$("mockFormat").value}）：共 ${plan.segments.length} 段，全長約 ${plan.total_minutes.toFixed(0)} 分鐘，分 ${plan.session_count} 節連線（每節 ≤ 15 分鐘，自動接力）。各段會按照賽制鳴鐘。`;
       $("mockSequence").innerHTML = plan.segments
         .map((segment) => `<li>${esc(segment.label)}</li>`)
         .join("");
@@ -768,7 +690,7 @@
     $("roomMinutes").min = structure === "mock" ? "2" : ".5";
     $("roomSideLabel").firstChild.textContent = "你的立場";
     $("roomModeInfo").textContent =
-      "真人對真人（1 對 1）：只在測試及 Server 確認輪到你發言後開咪；自由辯論由正方開始，每次停咪後嚴格正反交替，一方用完時間先跳過。主持可在完場後按一次要求 AI 評判。";
+      "真人對真人（1 對 1）：只會在測試完成，而且伺服器確認輪到你發言後開啟麥克風；自由辯論由正方開始，每次停止收音後嚴格按正反方交替，一方用盡時間後才會跳過該方。主持人可以在比賽結束後按下按鈕要求 AI 評判。";
     $("roomTimeNote").textContent =
       !adjustable && free ? "校園隨想自由辯論為每邊 2:30。" : "";
     const minimum = structure === "mock" ? 2 : 0.5;
@@ -831,7 +753,7 @@
       if (pendingRoomCode !== normalized) return;
       roomHandshakeTimer = 0;
       $("activeRoomNote").textContent =
-        "房間控制連線仍在重試；為免意外離開，已保留房間。你可等候恢復，或明確按「離開房間」。";
+        "房間控制連線仍在重試；為免意外離開，系統已保留房間。你可以等候恢復，或按下「離開房間」。";
       toast("⚠️ 房間連線暫未恢復，系統會繼續重試。");
     }, 60000);
   }
@@ -866,8 +788,8 @@
       sessionStorage.aiRoomMode = "A";
       $("retryRoom").classList.add("hidden");
       $("activeRoomNote").textContent = message.phase === "ended"
-        ? "房間已結束；可查看短暫保留嘅逐字稿及 AI 評判。"
-        : "真人對真人練習；只在測試及輪到自己發言時 P2P 傳聲，Render 同步控制及已提交逐字稿。";
+        ? "房間已結束；可以查看短暫保留的逐字稿及 AI 評判。"
+        : "真人對真人練習；只會在測試及輪到自己發言時以 P2P 傳送音訊，Render 會同步控制資料及已提交的逐字稿。";
       if (pendingRoomSuccess) toast(`✅ ${pendingRoomSuccess}`);
       pendingRoomSuccess = "";
     } else if (message.type === "room_phase") {
@@ -875,7 +797,7 @@
       if (roomPhase === "ended") {
         clearRoomHandshake();
         $("activeRoomNote").textContent =
-          "房間已結束；可切換功能，亦可留喺本頁查看短暫保留嘅結果。";
+          "房間已結束；可以切換功能，亦可以留在本頁查看短暫保留的結果。";
       }
     } else if (message.type === "room_terminal") {
       const text = String(message.message || "房間連線已終止。");
@@ -957,13 +879,13 @@
       return toast("⚠️ 發言資料已更改，請重新完成首次分析。");
     }
     if (!currentModel()?.supports_audio)
-      return toast("⚠️ 請先選擇支援錄音分析嘅模型，再開始重錄。");
+      return toast("⚠️ 請先選擇支援錄音分析的模型，再開始重錄。");
     reviewAttempt = "retake";
     setReviewContextLocked(true);
     clearRecordedAudio();
     $("retakeOffer").classList.add("hidden");
     $("retakeActive").classList.remove("hidden");
-    $("reviewSubmit").textContent = "檢查今次有冇改進";
+    $("reviewSubmit").textContent = "檢查本次是否有改進";
     $("record").focus();
   }
 
@@ -1009,7 +931,7 @@
   );
   $("reviewFormat").addEventListener("change", () => {
     resetReviewCycle("賽制已更改，請重新分析發言。");
-    syncReviewStage();
+    syncReviewPositions();
   });
   $("reviewMode").addEventListener("change", () => {
     resetReviewCycle("練習類型已更改，請重新分析發言。");
@@ -1017,10 +939,7 @@
   });
   $("reviewPosition").addEventListener("change", () => {
     resetReviewCycle("辯位已更改，請重新分析發言。");
-    syncReviewStage();
   });
-  $("reviewStage").addEventListener("change", syncStageClock);
-  $("speechTimer").addEventListener("click", toggleTimer);
   $("record").addEventListener("click", recordAudio);
   $("startRetake").addEventListener("click", startReviewRetake);
   $("cancelRetake").addEventListener("click", cancelReviewRetake);
@@ -1063,9 +982,9 @@
       if (!previousReviewMarkdown)
         return toast("⚠️ 缺少上次 AI 評語，請重新完成首次分析。");
       if (!audioIntentId)
-        return toast("⚠️ 請先錄製一段全新錄音，再檢查有冇改進。");
+        return toast("⚠️ 請先錄製一段全新錄音，再檢查本次是否有改進。");
       if (!currentModel()?.supports_audio)
-        return toast("⚠️ 改進檢查必須使用支援錄音分析嘅模型。");
+        return toast("⚠️ 改進檢查必須使用支援錄音分析的模型。");
     } else if (!review.text && !audioIntentId) {
       return toast("⚠️ 請輸入文字稿或錄音。");
     }

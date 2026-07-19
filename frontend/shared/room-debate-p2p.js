@@ -195,13 +195,13 @@
     const indicator = $("micStatus");
     indicator.classList.remove("live", "testing");
     if (micMode === "live") {
-      indicator.textContent = "🎙️ 咪高峰：已開啟（你正在發言，聲音會傳送畀對方）";
+      indicator.textContent = "🎙️ 麥克風：已開啟（你正在發言，聲音會傳送給對方）";
       indicator.classList.add("live");
     } else if (micMode === "testing") {
-      indicator.textContent = "🧪 咪高峰：測試期間暫時開啟";
+      indicator.textContent = "🧪 麥克風：測試期間暫時開啟";
       indicator.classList.add("testing");
     } else {
-      indicator.textContent = "🔇 咪高峰：已靜音（聲音不會傳送）";
+      indicator.textContent = "🔇 麥克風：已靜音（聲音不會傳送）";
     }
   }
 
@@ -572,7 +572,7 @@
     if (message.type === "rtc_offer") {
       localSignalGeneration = generation;
       if (activePeer.signalingState !== "stable") {
-        log(`忽略非 stable 狀態嘅 RTC offer（${activePeer.signalingState}）。`);
+        log(`忽略非 stable 狀態的 RTC offer（${activePeer.signalingState}）。`);
         return;
       }
       await activePeer.setRemoteDescription(message.description);
@@ -931,7 +931,7 @@
       peerLeftUser = disconnectedPeer.user_id;
       setMicMode("muted");
       if (remoteAudio) remoteAudio.muted = true;
-      showRoomAlert("對方已離開房間；計時及咪高峰已暫停。");
+      showRoomAlert("對方已離開房間；計時及麥克風已暫停。");
     } else if (
       peerLeftUser
       && roster.some((item) => item.user_id === peerLeftUser && item.connected)
@@ -1296,7 +1296,7 @@
     $("segLabel").textContent = message.seg_label
       || (phase === "lobby" ? "等待開始…" : "");
     $("segSub").textContent = message.rtc_paused
-      ? "P2P 中斷，計時已暫停，咪高峰已靜音，正在 ICE restart…"
+      ? "P2P 中斷，計時已暫停，麥克風已靜音，正在 ICE restart…"
       : message.side === "雙方" && message.expected_turn_side
         ? `嚴格交替｜輪到${message.expected_turn_side}發言`
         : (message.side || "");
@@ -1863,7 +1863,7 @@
         peerLeftUser = String(message.user_id || "");
         setMicMode("muted");
         if (remoteAudio) remoteAudio.muted = true;
-        showRoomAlert("對方已離開房間；計時及咪高峰已暫停。");
+        showRoomAlert("對方已離開房間；計時及麥克風已暫停。");
         break;
       case "ended":
         handleEnded(message);

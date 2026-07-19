@@ -156,7 +156,7 @@ def dev_logout(request:Request,response:Response):
 @router.get("/developer/data")
 def dev_data(request:Request):
     _require(request,"developer"); db=_db()
-    config_keys=("maintenance_mode","maintenance_deadline","bypass_active_check_until","tts_recording_allowed_users","ai_managers","senior_committee_members","ai_enabled_providers","ai_default_model")
+    config_keys=("maintenance_mode","maintenance_deadline","interactive_features_suspension_start","interactive_features_suspension_end","bypass_active_check_until","tts_recording_allowed_users","ai_managers","senior_committee_members","ai_enabled_providers","ai_default_model")
     loaded_configs=_configs(db,(*config_keys,"login_disabled_accounts"))
     configs={key:_display_config(loaded_configs.get(key)) for key in config_keys}
     enabled_providers, effective_default_model = resolve_interactive_model_settings(
@@ -189,7 +189,8 @@ def dev_data(request:Request):
     provider_keys={provider:next((str(config.get("api_key") or "") for config in AI_MODEL_OPTIONS.values() if config.get("provider")==provider),"") for provider in providers}
     models=[{"label":label,"provider":config.get("provider","")} for label,config in AI_MODEL_OPTIONS.items()]
     subs=_rows(db.query(f"SELECT user_id,COUNT(*) AS device_count FROM {TABLE_PUSH_SUBSCRIPTIONS} WHERE is_active=TRUE GROUP BY user_id ORDER BY user_id LIMIT :account_limit", {"account_limit": ACCOUNT_INVENTORY_LIMIT}))
-    return {"version":APP_VERSION,"account_options":account_options,"inactive_accounts":inactive_accounts,"ai_options":{"providers":providers,"models":models,"default_model":effective_default_model,"key_status":{provider:bool(key and _get_proxy_secret(key)) for provider,key in provider_keys.items()},"key_names":provider_keys},"configs":configs,"subscriptions":subs}
+    from core.feature_suspension import suspension_status
+    return {"version":APP_VERSION,"account_options":account_options,"inactive_accounts":inactive_accounts,"ai_options":{"providers":providers,"models":models,"default_model":effective_default_model,"key_status":{provider:bool(key and _get_proxy_secret(key)) for provider,key in provider_keys.items()},"key_names":provider_keys},"configs":configs,"feature_suspension":suspension_status(db),"subscriptions":subs}
 
 @router.get("/developer/collection/{kind}")
 def dev_collection(kind:str,request:Request,page:int=1):
@@ -350,7 +351,7 @@ def update_bypass(body:BypassBody,request:Request):
 
 @router.post("/developer/settings")
 def developer_settings(body:JsonSettings,request:Request):
-    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","maintenance_deadline","tts_recording_allowed_users","ai_managers","senior_committee_members","ai_enabled_providers","ai_default_model"}
+    _require(request,"developer"); db=_db(); allowed={"maintenance_mode","maintenance_deadline","interactive_features_suspension_start","interactive_features_suspension_end","tts_recording_allowed_users","ai_managers","senior_committee_members","ai_enabled_providers","ai_default_model"}
     account_list_keys={"tts_recording_allowed_users","ai_managers","senior_committee_members"}
     cleaned={}
     for key,value in body.values.items():
@@ -397,6 +398,27 @@ def developer_settings(body:JsonSettings,request:Request):
         model=str(cleaned.get("ai_default_model") or _config(db,"ai_default_model") or DEFAULT_AI_MODEL).strip()
         if model not in AI_MODEL_OPTIONS or AI_MODEL_OPTIONS[model].get("provider") not in providers: raise HTTPException(400,"預設模型必須屬於已啟用的 Provider")
         cleaned["ai_enabled_providers"]=providers; cleaned["ai_default_model"]=model
+    suspension_keys={
+        "interactive_features_suspension_start",
+        "interactive_features_suspension_end",
+    }
+    if suspension_keys & cleaned.keys():
+        from core.feature_suspension import validate_suspension_window
+
+        start=cleaned.get(
+            "interactive_features_suspension_start",
+            _config(db,"interactive_features_suspension_start") or "",
+        )
+        end=cleaned.get(
+            "interactive_features_suspension_end",
+            _config(db,"interactive_features_suspension_end") or "",
+        )
+        try:
+            start,end=validate_suspension_window(start,end)
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
+        cleaned["interactive_features_suspension_start"]=start
+        cleaned["interactive_features_suspension_end"]=end
     requested={user for key,value in cleaned.items() if key in account_list_keys for user in value}
     if requested:
         rows=db.query(

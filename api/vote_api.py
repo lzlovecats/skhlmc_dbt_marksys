@@ -13,7 +13,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from account_access import AI_COMMENT_ACCOUNT_ID
-from api.access import require_page_user
+from api.access import require_interactive_features_available, require_page_user
 from system_limits import VOTE_PENDING_MOTION_LIMIT
 
 router = APIRouter(prefix="/api/vote", tags=["vote"])
@@ -22,7 +22,9 @@ router = APIRouter(prefix="/api/vote", tags=["vote"])
 # ── dependencies (resolved from the proxy at request time) ────────────────────
 def _committee_user(request: Request) -> str:
     """401 unless the request carries a valid committee cookie / bearer token."""
-    return require_page_user(request, "vote")
+    user_id = require_page_user(request, "vote")
+    require_interactive_features_available(request)
+    return user_id
 
 
 def _activity_payload(user_id: str, db) -> dict:

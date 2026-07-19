@@ -104,6 +104,7 @@ GHOST_FORUM_THREAD_LIMIT = _limit("GHOST_FORUM_THREAD_LIMIT", 10_000, minimum=10
 GHOST_FORUM_POST_LIMIT = _limit("GHOST_FORUM_POST_LIMIT", 100_000, minimum=1_000, maximum=500_000, group="api", description="Senior committee forum post rows")
 GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS = _limit("GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS", 15 * 60, minimum=60, maximum=60 * 60, group="api", description="Retry age for a claimed graduate-forum push")
 RECENT_MATCH_NOTIFICATION_CLAIM_TTL_SECONDS = _limit("RECENT_MATCH_NOTIFICATION_CLAIM_TTL_SECONDS", 15 * 60, minimum=60, maximum=60 * 60, group="api", description="Retry age for a claimed recent-match push")
+MATCH_TOPIC_RELEASE_GENERATION_LIMIT = _limit("MATCH_TOPIC_RELEASE_GENERATION_LIMIT", 50, minimum=3, maximum=100, group="database", description="Audited topic-release generations retained per match")
 
 # Render monthly bandwidth and Live WebSocket protection.
 BANDWIDTH_WARN_BYTES = _limit("BANDWIDTH_WARN_BYTES", 3 * GB, minimum=MIB, maximum=3 * GB, group="bandwidth", description="Monthly warning threshold")
@@ -171,6 +172,15 @@ MAX_AUDIO_BYTES = _limit("MAX_AUDIO_BYTES", 2 * MIB, minimum=KIB, maximum=2 * MI
 TTS_MAX_DURATION_SECONDS = _limit("TTS_MAX_DURATION_SECONDS", 60, minimum=1, maximum=60, group="ai", description="TTS/AI recording duration")
 TTS_REVIEW_CONCURRENCY = _limit("TTS_REVIEW_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent TTS quality reviews")
 AI_COACH_CONCURRENCY = _limit("AI_COACH_CONCURRENCY", 3, minimum=1, maximum=3, group="ai", description="Concurrent AI Coach requests")
+COMPETITION_PREP_PROJECT_LIMIT = _limit("COMPETITION_PREP_PROJECT_LIMIT", 200, minimum=10, maximum=500, group="database", description="Competition-preparation projects visible to one member")
+COMPETITION_PREP_MEMBER_LIMIT = _limit("COMPETITION_PREP_MEMBER_LIMIT", 50, minimum=2, maximum=100, group="database", description="Collaborators per competition-preparation project")
+COMPETITION_PREP_MANUSCRIPT_LIMIT = _limit("COMPETITION_PREP_MANUSCRIPT_LIMIT", 30, minimum=4, maximum=100, group="database", description="Manuscripts per competition-preparation project")
+COMPETITION_PREP_MANUSCRIPT_MAX_CHARS = _limit("COMPETITION_PREP_MANUSCRIPT_MAX_CHARS", 20_000, minimum=2_000, maximum=40_000, group="ai", description="Characters per competition-preparation manuscript")
+COMPETITION_PREP_CARD_LIMIT = _limit("COMPETITION_PREP_CARD_LIMIT", 200, minimum=20, maximum=500, group="database", description="Strategy or evidence cards per competition-preparation project")
+COMPETITION_PREP_WEAKNESS_LIMIT = _limit("COMPETITION_PREP_WEAKNESS_LIMIT", 100, minimum=10, maximum=300, group="database", description="Weaknesses per competition-preparation project")
+COMPETITION_PREP_AI_CONTEXT_MAX_CHARS = _limit("COMPETITION_PREP_AI_CONTEXT_MAX_CHARS", 60_000, minimum=10_000, maximum=60_000, group="ai", description="Combined competition-preparation context sent to a provider")
+COMPETITION_PREP_AI_OUTPUT_MAX_CHARS = _limit("COMPETITION_PREP_AI_OUTPUT_MAX_CHARS", 40_000, minimum=5_000, maximum=60_000, group="ai", description="AI output retained per competition-preparation run")
+COMPETITION_PREP_PRUNE_BATCH = _limit("COMPETITION_PREP_PRUNE_BATCH", 50, minimum=5, maximum=200, group="database", description="Expired competition-preparation projects removed per request")
 KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES = _limit("KIOSK_MATCH_REVIEW_MAX_AUDIO_BYTES", 12 * MIB, minimum=MIB, maximum=12 * MIB, group="ai", description="Temporary full-match kiosk recording bytes")
 KIOSK_MATCH_REVIEW_MAX_SECONDS = _limit("KIOSK_MATCH_REVIEW_MAX_SECONDS", 90 * 60, minimum=10 * 60, maximum=90 * 60, group="ai", description="Full-match kiosk recording duration")
 KIOSK_MATCH_REVIEW_CONCURRENCY = _limit("KIOSK_MATCH_REVIEW_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent full-match audio reviews")

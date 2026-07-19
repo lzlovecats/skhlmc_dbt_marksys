@@ -199,7 +199,7 @@
         <details class="card">
           <summary>📽 比賽日投影及 AI評判易</summary>
           <p class="caption">
-            大屏顯示辯題、正反隊名同而家發言者；正式場次亦可完成硬件測試、全場錄音及私人預覽 AI 第二意見。
+            大屏顯示辯題、正反隊名及目前發言者；正式場次亦可完成硬件測試、全場錄音及私人預覽 AI 第二意見。
           </p>
           <a
             class="button projector"
@@ -434,9 +434,9 @@
             "。";
           let winner =
             c.pro_votes > c.con_votes
-              ? "今日嘅勝方係正方 " + v.pro_team
+              ? "今日的勝方是正方 " + v.pro_team
               : c.con_votes > c.pro_votes
-                ? "今日嘅勝方係反方 " + v.con_team
+                ? "今日的勝方是反方 " + v.con_team
                 : "今日雙方票數相同，須按賽規處理";
           const repl = {
             ...v,
