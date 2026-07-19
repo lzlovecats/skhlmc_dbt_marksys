@@ -48,6 +48,9 @@
       .split {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+      .split > * {
+        min-width: 0;
+      }
       .wide {
         grid-column: 1/-1;
       }

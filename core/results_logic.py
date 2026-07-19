@@ -1,12 +1,22 @@
 """Read model for the organiser results page."""
 
 import math
+from statistics import median
 
 import pandas as pd
 
+from core.judging_logic import _deserialize, normalize_judge_name
 from core.vote_logic import _resolve_db
-from scoring import derive_debater_ranks, is_valid_competition_ranking
-from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORES
+from scoring import (
+    FREE_DEBATE_CRITERIA,
+    GRAND_TOTAL,
+    SPEECH_CRITERIA,
+    derive_debater_ranks,
+    free_debate_col,
+    is_valid_competition_ranking,
+    speech_col,
+)
+from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
 from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
 RANK_COLUMNS = ("pro1_m", "pro2_m", "pro3_m", "pro4_m", "con1_m", "con2_m", "con3_m", "con4_m")
@@ -16,6 +26,9 @@ ROLE_KEYS = {
     "con1_m": ("反方主辯", "con", 1), "con2_m": ("反方一副", "con", 2),
     "con3_m": ("反方二副", "con", 3), "con4_m": ("反方結辯", "con", 4),
 }
+ANOMALY_DIRECTION_GAP = GRAND_TOTAL * 0.10
+ANOMALY_MARGIN_GAP = GRAND_TOTAL * 0.15
+ANOMALY_SCALE_GAP = GRAND_TOTAL * 0.10
 
 
 def _clean(value):
@@ -184,21 +197,156 @@ def _best_debaters(match_id, scores, db):
     }
 
 
-def _anomalies(scores):
-    if len(scores) < 3:
+def _number_or_none(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _zero_score_fields(payload, side):
+    try:
+        data = _deserialize(payload)
+    except (AttributeError, TypeError, ValueError, KeyError):
         return []
+    if not isinstance(data, dict):
+        return []
+    fields = []
+    speech_rows = data.get("raw_df_a")
+    if isinstance(speech_rows, list):
+        for index, source in enumerate(speech_rows):
+            if not isinstance(source, dict):
+                continue
+            role = _clean(source.get("辯位")) or f"第{index + 1}位"
+            for criterion in SPEECH_CRITERIA:
+                value = _number_or_none(source.get(speech_col(criterion)))
+                if value == 0:
+                    fields.append(f"{side}{role}－{criterion['key']}")
+    free_rows = data.get("raw_df_b")
+    if isinstance(free_rows, list):
+        for source in free_rows:
+            if not isinstance(source, dict):
+                continue
+            for criterion in FREE_DEBATE_CRITERIA:
+                value = _number_or_none(source.get(free_debate_col(criterion)))
+                if value == 0:
+                    fields.append(f"{side}自由辯論－{criterion['key']}")
+    if _number_or_none(data.get("coherence")) == 0:
+        fields.append(f"{side}內容連貫")
+    return fields
+
+
+def _zero_score_anomalies(scores, drafts):
+    if drafts is None or drafts.empty:
+        return []
+    score_judges = {
+        normalize_judge_name(value): _clean(value) for value in scores["judge_name"]
+    }
+    fields_by_judge = {}
+    for _, row in drafts.iterrows():
+        judge_key = normalize_judge_name(row.get("judge_name"))
+        if judge_key not in score_judges:
+            continue
+        judge = score_judges[judge_key]
+        side = {"pro": "正方", "con": "反方"}.get(
+            _clean(row.get("side")).lower(), _clean(row.get("side")),
+        )
+        if side not in {"正方", "反方"}:
+            continue
+        fields_by_judge.setdefault(judge, []).extend(
+            _zero_score_fields(row.get("score_payload"), side),
+        )
     anomalies = []
-    for column, side in (("pro_total_score", "正方"), ("con_total_score", "反方")):
-        mean = scores[column].mean()
-        std = scores[column].std()
-        if std and not pd.isna(std):
-            for _, row in scores.iterrows():
-                value = row[column]
-                if abs(value - mean) > 2 * std:
-                    anomalies.append({
-                        "judge_name": _clean(row["judge_name"]), "side": side, "score": int(value),
-                        "mean": round(float(mean), 1), "std": round(float(std), 1),
-                    })
+    for judge, fields in fields_by_judge.items():
+        unique_fields = list(dict.fromkeys(fields))
+        if unique_fields:
+            anomalies.append({
+                "type": "zero_score",
+                "judge_name": judge,
+                "fields": unique_fields,
+                "message": (
+                    f"有 {len(unique_fields)} 個評分欄位為 0："
+                    f"{'、'.join(unique_fields)}。"
+                ),
+            })
+    return anomalies
+
+
+def _margin_label(value):
+    if value > 0:
+        return f"正方 +{round(value, 1):g}"
+    if value < 0:
+        return f"反方 +{round(abs(value), 1):g}"
+    return "平分"
+
+
+def _anomalies(scores, drafts=None):
+    anomalies = _zero_score_anomalies(scores, drafts)
+    rows = []
+    for _, row in scores.iterrows():
+        pro = _number_or_none(row.get("pro_total_score"))
+        con = _number_or_none(row.get("con_total_score"))
+        if pro is not None and con is not None:
+            rows.append({
+                "judge_name": _clean(row.get("judge_name")),
+                "margin": pro - con,
+                "scale": (pro + con) / 2,
+            })
+    if len(rows) < 3:
+        return anomalies
+
+    for index, row in enumerate(rows):
+        peers = rows[:index] + rows[index + 1:]
+        peer_margins = [item["margin"] for item in peers]
+        peer_margin = float(median(peer_margins))
+        margin_gap = abs(row["margin"] - peer_margin)
+        peer_direction_agrees = (
+            all(value > 0 for value in peer_margins)
+            or all(value < 0 for value in peer_margins)
+        )
+        opposite_direction = (
+            peer_direction_agrees and row["margin"] * peer_margin < 0
+        )
+        if opposite_direction and margin_gap >= ANOMALY_DIRECTION_GAP:
+            anomalies.append({
+                "type": "direction",
+                "judge_name": row["judge_name"],
+                "gap": round(margin_gap, 1),
+                "message": (
+                    "判決方向與其餘評判一致方向相反；"
+                    f"該評判為 {_margin_label(row['margin'])}，"
+                    f"同儕中位數為 {_margin_label(peer_margin)}，"
+                    f"相差 {round(margin_gap, 1):g} 分。"
+                ),
+            })
+        elif margin_gap >= ANOMALY_MARGIN_GAP:
+            anomalies.append({
+                "type": "margin",
+                "judge_name": row["judge_name"],
+                "gap": round(margin_gap, 1),
+                "message": (
+                    "正反方分差與其餘評判差距過大；"
+                    f"該評判為 {_margin_label(row['margin'])}，"
+                    f"同儕中位數為 {_margin_label(peer_margin)}，"
+                    f"相差 {round(margin_gap, 1):g} 分。"
+                ),
+            })
+
+        peer_scale = float(median([item["scale"] for item in peers]))
+        scale_gap = abs(row["scale"] - peer_scale)
+        if scale_gap >= ANOMALY_SCALE_GAP:
+            anomalies.append({
+                "type": "scale",
+                "judge_name": row["judge_name"],
+                "gap": round(scale_gap, 1),
+                "message": (
+                    "雙方整體評分水平與其餘評判差距過大；"
+                    f"該評判雙方平均為 {round(row['scale'], 1):g} 分，"
+                    f"同儕中位數為 {round(peer_scale, 1):g} 分，"
+                    f"相差 {round(scale_gap, 1):g} 分。"
+                ),
+            })
     return anomalies
 
 
@@ -227,6 +375,15 @@ def results_data(selected_match_id=None, db=None, match_ids=None):
         if "topic_text" in match_scores.columns and _clean(match_scores["topic_text"].iloc[0])
         else "（未有辯題資料）"
     )
+    final_drafts = db.query(
+        f"""SELECT judge_name,side,score_payload FROM {TABLE_SCORE_DRAFTS}
+            WHERE match_id=:match_id AND COALESCE(is_final,FALSE)=TRUE
+            ORDER BY judge_name,side LIMIT :draft_limit""",
+        {
+            "match_id": selected,
+            "draft_limit": JUDGE_MAX_PER_MATCH * 2,
+        },
+    )
     best_rows, best = _best_debaters(selected, match_scores, db)
     pro_team, con_team = _clean(match_scores["pro_team"].iloc[0]), _clean(match_scores["con_team"].iloc[0])
     winner = "pro" if pro_votes > con_votes else "con" if con_votes > pro_votes else "draw"
@@ -234,5 +391,6 @@ def results_data(selected_match_id=None, db=None, match_ids=None):
         "matches": matches, "selected_match_id": selected, "has_scores": True,
         "topic": topic, "judge_count": len(match_scores), "pro_team": pro_team, "con_team": con_team,
         "pro_votes": pro_votes, "con_votes": con_votes, "draws": draws, "winner": winner,
-        "best_debaters": best_rows, "best_debater": best, "anomalies": _anomalies(match_scores),
+        "best_debaters": best_rows, "best_debater": best,
+        "anomalies": _anomalies(match_scores, final_drafts),
     }

@@ -304,13 +304,16 @@
               '<div class="notice warn">最佳辯論員資料暫時不可用。</div>';
           }
           const section = $("anomalySection");
-          section.classList.toggle("hidden", state.judge_count < 3);
-          if (state.judge_count >= 3)
+          const canCompareJudges = state.judge_count >= 3;
+          section.classList.toggle(
+            "hidden", !canCompareJudges && !state.anomalies.length,
+          );
+          if (canCompareJudges || state.anomalies.length)
             $("anomalies").innerHTML = state.anomalies.length
               ? state.anomalies
                   .map(
                     (item) =>
-                      `<div class="notice warn">⚠️ ${esc(item.judge_name)} 的${esc(item.side)}評分 (${item.score}) 偏離其他評判 (平均: ${item.mean}，標準差: ${item.std})</div>`,
+                      `<div class="notice warn">⚠️ <strong>${esc(item.judge_name)}</strong>：${esc(item.message || "評分需要核對。")}</div>`,
                   )
                   .join("")
               : '<div class="notice ok">所有評判評分無明顯異常。</div>';

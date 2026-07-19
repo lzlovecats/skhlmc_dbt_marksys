@@ -1,17 +1,130 @@
 """Cross-layer regressions for the competition-result path."""
 
 from contextlib import AbstractContextManager
+import hashlib
+import hmac
+import json
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from fastapi import Response
 from pypdf import PdfReader
 
-from core.judging_logic import submit_best_debater_rankings, submit_final_scores
-from core.results_logic import RANK_COLUMNS, _best_debaters, judge_ranking
+from core.judging_logic import _deserialize, submit_best_debater_rankings, submit_final_scores
+from core.results_logic import RANK_COLUMNS, _anomalies, _best_debaters, judge_ranking
 from score_sheet_pdf import _build_ranks, build_score_sheet_pdf
 from scoring import COHERENCE_MAX, FREE_DEBATE_CRITERIA, SPEECH_CRITERIA, free_debate_col, speech_col
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_review_cookie_token_is_ascii_for_chinese_match_id(monkeypatch):
+    import deploy.proxy as proxy
+
+    monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: "test-secret")
+
+    token = proxy._sign_review_token("第二屆冠軍賽")
+
+    assert token is not None
+    assert token.isascii()
+    assert proxy._verify_review_token(token) == "第二屆冠軍賽"
+    response = Response()
+    response.set_cookie("review_match", token, httponly=True, samesite="lax")
+    assert any(name == b"set-cookie" for name, _ in response.raw_headers)
+    longest_token = proxy._sign_review_token("賽" * 200)
+    assert longest_token is not None and longest_token.isascii()
+    assert proxy._verify_review_token(longest_token) == "賽" * 200
+
+
+def test_review_cookie_accepts_existing_ascii_token_during_rollout(monkeypatch):
+    import deploy.proxy as proxy
+
+    secret = "test-secret"
+    subject = "review:M1"
+    signature = hmac.new(
+        secret.encode(), subject.encode(), hashlib.sha256,
+    ).hexdigest()
+    monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: secret)
+
+    assert proxy._verify_review_token(f"{subject}:{signature}") == "M1"
+
+
+def test_review_login_handles_non_json_server_errors_without_json_parse_message():
+    source = (ROOT / "frontend" / "review" / "index.html").read_text()
+
+    assert 'response.headers.get("content-type")' in source
+    assert "await response.text()" in source
+    assert "操作暫時失敗，請稍後再試。" in source
+
+
+def test_anomaly_detection_compares_each_judge_with_other_judges():
+    scores = pd.DataFrame([
+        {"judge_name": "甲", "pro_total_score": 330, "con_total_score": 300},
+        {"judge_name": "乙", "pro_total_score": 325, "con_total_score": 300},
+        {"judge_name": "丙", "pro_total_score": 280, "con_total_score": 330},
+    ])
+
+    anomalies = _anomalies(scores)
+
+    assert [(item["judge_name"], item["type"]) for item in anomalies] == [
+        ("丙", "direction"),
+    ]
+    assert anomalies[0]["gap"] == 77.5
+
+
+def test_anomaly_detection_flags_extreme_margin_and_scoring_scale():
+    margin_scores = pd.DataFrame([
+        {"judge_name": "甲", "pro_total_score": 330, "con_total_score": 310},
+        {"judge_name": "乙", "pro_total_score": 332, "con_total_score": 308},
+        {"judge_name": "丙", "pro_total_score": 370, "con_total_score": 270},
+    ])
+    scale_scores = pd.DataFrame([
+        {"judge_name": "甲", "pro_total_score": 330, "con_total_score": 310},
+        {"judge_name": "乙", "pro_total_score": 332, "con_total_score": 308},
+        {"judge_name": "丙", "pro_total_score": 280, "con_total_score": 260},
+    ])
+
+    assert [(item["judge_name"], item["type"]) for item in _anomalies(margin_scores)] == [
+        ("丙", "margin"),
+    ]
+    assert [(item["judge_name"], item["type"]) for item in _anomalies(scale_scores)] == [
+        ("丙", "scale"),
+    ]
+
+
+def test_zero_in_any_detailed_score_field_is_anomalous_but_zero_deduction_is_not():
+    payload = _side_data()
+    payload["raw_df_a"][0][speech_col(SPEECH_CRITERIA[0])] = 0
+    payload["raw_df_b"][0][free_debate_col(FREE_DEBATE_CRITERIA[0])] = 0
+    payload["coherence"] = 0
+    payload["deduction"] = 0
+    scores = pd.DataFrame([
+        {"judge_name": "甲", "pro_total_score": 420, "con_total_score": 420},
+    ])
+    drafts = pd.DataFrame([
+        {"judge_name": "甲", "side": "正方", "score_payload": payload},
+    ])
+
+    anomalies = _anomalies(scores, drafts)
+
+    assert len(anomalies) == 1
+    assert anomalies[0]["type"] == "zero_score"
+    assert anomalies[0]["judge_name"] == "甲"
+    assert anomalies[0]["fields"] == [
+        "正方主辯－內容", "正方自由辯論－內容", "正方內容連貫",
+    ]
+    assert "扣分" not in anomalies[0]["message"]
+
+
+def test_management_ui_shows_zero_score_anomalies_even_below_three_judges():
+    source = (ROOT / "frontend" / "management" / "index.html").read_text()
+
+    assert "state.anomalies.length" in source
+    assert "item.message" in source
+    assert "state.judge_count < 3" not in source
 
 
 def _side_data():
@@ -31,6 +144,16 @@ def _side_data():
         "deduction": 0,
         "coherence": COHERENCE_MAX,
     }
+
+
+def test_legacy_nested_dataframe_json_is_normalised_for_score_sheet_review():
+    speech = pd.DataFrame(_side_data()["raw_df_a"]).to_json(force_ascii=False)
+    free = pd.DataFrame(_side_data()["raw_df_b"]).to_json(force_ascii=False)
+
+    decoded = _deserialize(json.dumps({"raw_df_a": speech, "raw_df_b": free}))
+
+    assert decoded["raw_df_a"] == _side_data()["raw_df_a"]
+    assert decoded["raw_df_b"] == _side_data()["raw_df_b"]
 
 
 class _RowResult:

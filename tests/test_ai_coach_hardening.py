@@ -840,6 +840,7 @@ def test_mock_jit_token_requires_reserved_practice_and_does_not_reserve_again(mo
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: claim)
     monkeypatch.setattr(proxy, "_solo_live_practice_reserved", lambda _claim: True)
     monkeypatch.setattr(proxy, "_solo_live_token_issued", lambda _claim, _index: False)
+    monkeypatch.setattr(proxy, "_solo_live_practice_state", lambda _claim: None)
     def mark(_claim, _index, *, report_reason=False, before_update=None,
              after_update=None):
         assert report_reason is True
@@ -1122,6 +1123,7 @@ def test_lost_jit_response_retry_returns_same_token_without_second_mint(monkeypa
         proxy, "_solo_live_token_issued",
         lambda _claim, index: index in issued,
     )
+    monkeypatch.setattr(proxy, "_solo_live_practice_state", lambda _claim: None)
     def mark(_claim, index, *, report_reason=False, before_update=None,
              after_update=None):
         assert report_reason is True
@@ -1187,6 +1189,7 @@ def test_jit_provider_failure_can_retry_without_duplicate_marker(monkeypatch):
     monkeypatch.setattr(proxy, "_verify_live_practice_claim", lambda *_args, **_kwargs: claim)
     monkeypatch.setattr(proxy, "_solo_live_practice_reserved", lambda _claim: True)
     monkeypatch.setattr(proxy, "_solo_live_token_issued", lambda _claim, index: index in issued)
+    monkeypatch.setattr(proxy, "_solo_live_practice_state", lambda _claim: None)
     def mark(_claim, index, *, report_reason=False, before_update=None,
              after_update=None):
         assert report_reason is True
@@ -1705,6 +1708,7 @@ def test_custom_audio_uri_falls_back_without_phantom_custom_attempt(monkeypatch)
 def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     captured = []
     broadcasts = []
+    ledger = []
 
     class _Client:
         def __init__(self, **_kwargs):
@@ -1723,9 +1727,13 @@ def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     async def broadcast(_room, message):
         broadcasts.append(message)
 
+    async def log(*args, **kwargs):
+        ledger.append((args, kwargs))
+
     monkeypatch.setattr(proxy.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(proxy, "post_json_bounded", bounded)
     monkeypatch.setattr(proxy, "_room_broadcast", broadcast)
+    monkeypatch.setattr(proxy, "_log_room_judgement_attempt", log)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
     monkeypatch.setattr(proxy, "ROOM_JUDGEMENT_MODELS", ("model-a",))
@@ -1748,6 +1756,8 @@ def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):
     }
     assert "2MiB" in room.judgement
     assert broadcasts[-1] == {"type": "judgement", "text": room.judgement}
+    assert len(ledger) == 1
+    assert ledger[0][0][2] is False
 
 
 def test_room_judgement_fallback_logs_each_attempt_under_one_operation(monkeypatch):
@@ -1862,6 +1872,7 @@ def test_room_judgement_missing_key_does_not_log_phantom_provider_call(monkeypat
 
 def test_room_judgement_unexpected_error_never_broadcasts_secret(monkeypatch):
     broadcasts = []
+    ledger = []
     secret = "gemini-room-super-secret"
 
     class _Client:
@@ -1880,9 +1891,13 @@ def test_room_judgement_unexpected_error_never_broadcasts_secret(monkeypatch):
     async def broadcast(_room, message):
         broadcasts.append(message)
 
+    async def log(*args, **kwargs):
+        ledger.append((args, kwargs))
+
     monkeypatch.setattr(proxy.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(proxy, "post_json_bounded", bounded)
     monkeypatch.setattr(proxy, "_room_broadcast", broadcast)
+    monkeypatch.setattr(proxy, "_log_room_judgement_attempt", log)
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
     monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: secret)
     monkeypatch.setattr(proxy, "ROOM_JUDGEMENT_MODELS", ("model-a",))
@@ -1898,6 +1913,8 @@ def test_room_judgement_unexpected_error_never_broadcasts_secret(monkeypatch):
     assert secret not in room.judgement
     assert secret not in repr(broadcasts)
     assert "上游服務連線錯誤" in room.judgement
+    assert len(ledger) == 1
+    assert ledger[0][0][2] is False
 
 
 def test_bandwidth_35gb_blocks_solo_server_tts_not_direct_quota(monkeypatch):

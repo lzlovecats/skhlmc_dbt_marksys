@@ -50,7 +50,18 @@ def _serialize(data):
 
 
 def _deserialize(raw):
-    return raw if isinstance(raw, dict) else json.loads(raw)
+    data = dict(raw) if isinstance(raw, Mapping) else json.loads(raw)
+    if not isinstance(data, dict):
+        return data
+    for key in ("raw_df_a", "raw_df_b"):
+        value = data.get(key)
+        if not isinstance(value, str):
+            continue
+        nested = json.loads(value)
+        if isinstance(nested, dict):
+            nested = pd.DataFrame(nested).to_dict(orient="records")
+        data[key] = nested
+    return data
 
 
 def _now():

@@ -153,3 +153,13 @@ def test_shared_form_controls_cannot_exceed_mobile_container_width():
     assert rule, "shared form controls need a common width contract"
     assert re.search(r"\bmin-width\s*:\s*0(?:px)?\s*;", rule.group(1))
     assert re.search(r"\bmax-width\s*:\s*100%\s*;", rule.group(1))
+
+
+def test_ai_fund_split_cards_can_shrink_inside_the_mobile_viewport():
+    source = (ROOT / "frontend" / "ai_fund" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    rule = re.search(r"\.split\s*>\s*\*\s*\{([^}]*)\}", source)
+
+    assert rule, "AI Fund split-grid children need an explicit shrink contract"
+    assert re.search(r"\bmin-width\s*:\s*0(?:px)?\s*;", rule.group(1))

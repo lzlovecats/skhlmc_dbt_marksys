@@ -95,6 +95,7 @@ ADMIN_SESSION_TTL_SECONDS = _limit("ADMIN_SESSION_TTL_SECONDS", 4 * 60 * 60, min
 JUDGING_SESSION_TTL_SECONDS = _limit("JUDGING_SESSION_TTL_SECONDS", 12 * 60 * 60, minimum=15 * 60, maximum=24 * 60 * 60, group="api", description="Match-scoped judging session TTL")
 JUDGING_SESSION_CLOCK_SKEW_SECONDS = _limit("JUDGING_SESSION_CLOCK_SKEW_SECONDS", 60, minimum=0, maximum=300, group="api", description="Allowed future clock skew in judging session tokens")
 JUDGING_SESSION_TOKEN_MAX_CHARS = _limit("JUDGING_SESSION_TOKEN_MAX_CHARS", 2_048, minimum=256, maximum=4_096, group="api", description="Judging session token characters")
+REVIEW_SESSION_TOKEN_MAX_CHARS = _limit("REVIEW_SESSION_TOKEN_MAX_CHARS", 2_048, minimum=256, maximum=4_096, group="api", description="Match-review session token characters")
 REGISTRATION_ADMIN_SESSION_TTL_SECONDS = _limit("REGISTRATION_ADMIN_SESSION_TTL_SECONDS", 12 * 60 * 60, minimum=60 * 60, maximum=24 * 60 * 60, group="api", description="Organiser registration and competition-control session TTL")
 MAX_ADMIN_CONSOLE_SESSIONS = _limit("MAX_ADMIN_CONSOLE_SESSIONS", 256, minimum=16, maximum=256, group="api", description="In-memory privileged console sessions")
 RECENT_MATCH_INVENTORY_LIMIT = _limit("RECENT_MATCH_INVENTORY_LIMIT", 500, minimum=10, maximum=2_000, group="api", description="Committee recent-match announcement rows")

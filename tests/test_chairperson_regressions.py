@@ -81,6 +81,35 @@ def test_free_debate_switch_stops_the_other_side_before_resuming():
     assert "resume(free[side]);" in free_handler
 
 
+def test_timer_start_unlocks_mobile_audio_inside_the_user_gesture():
+    bell_source = _between(
+        INLINE_SCRIPT,
+        "async function unlockBellAudio",
+        "async function bell",
+    )
+    single_handler = _between(
+        INLINE_SCRIPT,
+        '$("singleStart").onclick',
+        '$("singleReset").onclick',
+    )
+    free_handler = _between(
+        INLINE_SCRIPT,
+        "const side = e.target.dataset.free;",
+        "const reset = e.target.dataset.reset;",
+    )
+
+    assert "AudioContext || window.webkitAudioContext" in bell_source
+    assert "audio.resume()" in bell_source
+    assert "unlockBellAudio();" in single_handler
+    assert single_handler.index("unlockBellAudio();") < single_handler.index(
+        "resume(single);"
+    )
+    assert "unlockBellAudio();" in free_handler
+    assert free_handler.index("unlockBellAudio();") < free_handler.index(
+        "resume(free[side]);"
+    )
+
+
 def test_closing_panel_displays_the_official_submission_count():
     assert 'id="closingStatus"' in HTML
     assert "現時已有 " in INLINE_SCRIPT

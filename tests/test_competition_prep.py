@@ -101,6 +101,23 @@ def test_ui_has_nested_mobile_prep_tabs_and_separate_search_tools():
     assert "competition-prep.js?v=__APP_VERSION__" in html
 
 
+def test_project_overview_supports_inline_detail_editing_for_editors():
+    html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text()
+    script = (ROOT / "frontend" / "shared" / "competition-prep.js").read_text()
+
+    for element_id in (
+        "prepEditProject", "prepEditProjectForm", "prepEditTitle",
+        "prepEditOpponent", "prepEditMatchDate", "prepEditMatchTime",
+        "prepEditSide", "prepEditFormat", "prepEditTopic",
+        "prepCancelProjectEdit",
+    ):
+        assert f'id="{element_id}"' in html
+    assert 'method: "PATCH"' in script
+    assert 'revision: Number(project.revision)' in script
+    assert '$("prepEditProject").disabled = !canEdit()' in script
+    assert '項目資料已更新。' in script
+
+
 def test_prep_manuscript_contract_has_other_notes_and_third_deputy_only_for_joint_school():
     html = (ROOT / "frontend" / "ai_coach" / "index.html").read_text()
     script = (ROOT / "frontend" / "shared" / "competition-prep.js").read_text()

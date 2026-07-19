@@ -122,6 +122,7 @@ from system_limits import (
     JUDGING_SESSION_CLOCK_SKEW_SECONDS,
     JUDGING_SESSION_TOKEN_MAX_CHARS,
     JUDGING_SESSION_TTL_SECONDS,
+    REVIEW_SESSION_TOKEN_MAX_CHARS,
     REGISTRATION_ADMIN_SESSION_TTL_SECONDS,
     GZIP_COMPRESS_LEVEL, GZIP_MINIMUM_SIZE,
     AI_PROVIDER_PROMPT_MAX_CHARS, AI_PROVIDER_RESPONSE_MAX_BYTES,
@@ -943,19 +944,58 @@ def _verify_judging_token(token: str):
 
 
 def _sign_review_token(match_id: str):
-    secret = _get_relay_cookie_secret(); subject = f"review:{match_id}"
-    if not secret or not match_id: return None
-    return f"{subject}:{hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()}"
+    secret = _get_relay_cookie_secret()
+    normalized_match = str(match_id or "").strip()
+    if not secret or not normalized_match or len(normalized_match) > 200:
+        return None
+    encoded = _claim_b64(normalized_match.encode("utf-8"))
+    subject = f"rv2.{encoded}"
+    signature = hmac.new(
+        str(secret).encode(), subject.encode("ascii"), hashlib.sha256,
+    ).hexdigest()
+    token = f"{subject}.{signature}"
+    return token if len(token) <= REVIEW_SESSION_TOKEN_MAX_CHARS else None
 
 
 def _verify_review_token(token: str):
-    if not token or ":" not in token: return None
-    subject, sig = token.rsplit(":", 1)
-    if not subject.startswith("review:"): return None
-    secret = _get_relay_cookie_secret(); match_id = subject[7:]
-    if not secret or not match_id: return None
-    expected = hmac.new(str(secret).encode(), subject.encode(), hashlib.sha256).hexdigest()
-    return match_id if hmac.compare_digest(sig, expected) else None
+    value = str(token or "")
+    if not value or len(value) > REVIEW_SESSION_TOKEN_MAX_CHARS:
+        return None
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        return None
+
+    if value.startswith("rv2."):
+        try:
+            prefix, encoded, signature = value.split(".", 2)
+            if (
+                prefix != "rv2"
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)
+                or not re.fullmatch(r"[0-9a-f]{64}", signature)
+            ):
+                return None
+            match_id = _claim_b64decode(encoded).decode("utf-8")
+        except (TypeError, ValueError, UnicodeError):
+            return None
+        subject = f"rv2.{encoded}"
+    else:
+        # Keep existing ASCII review cookies valid during rollout.
+        if ":" not in value:
+            return None
+        subject, signature = value.rsplit(":", 1)
+        if (
+            not subject.startswith("review:")
+            or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        ):
+            return None
+        match_id = subject[7:]
+
+    if not match_id or len(match_id) > 200:
+        return None
+    expected = hmac.new(
+        str(secret).encode(), subject.encode(), hashlib.sha256,
+    ).hexdigest()
+    return match_id if hmac.compare_digest(signature, expected) else None
 
 
 def _require_committee_user(request: Request):

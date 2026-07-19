@@ -415,9 +415,25 @@
                 <label>項目<select id="prepProjectSelect"><option value="">選擇項目…</option></select></label>
                 <button id="prepReload" type="button">重新載入</button>
                 <button id="prepExport" type="button" disabled>匯出 JSON</button>
+                <button id="prepEditProject" type="button" disabled>編輯資料</button>
                 <button id="prepDeleteProject" class="danger" type="button" disabled>刪除項目</button>
               </div>
               <div id="prepProjectMeta" class="caption prep-empty">請先選擇或建立項目。</div>
+              <form id="prepEditProjectForm" class="hidden">
+                <div class="field-grid">
+                  <label>項目名稱<input id="prepEditTitle" maxlength="200" required /></label>
+                  <label>對手<input id="prepEditOpponent" maxlength="200" /></label>
+                  <label>比賽日期<input id="prepEditMatchDate" type="date" required /></label>
+                  <label>比賽時間<input id="prepEditMatchTime" type="time" /></label>
+                  <label>我方立場<select id="prepEditSide"><option value="pro">正方</option><option value="con">反方</option></select></label>
+                  <label>賽制<select id="prepEditFormat"></select></label>
+                </div>
+                <label>辯題<input id="prepEditTopic" maxlength="500" required /></label>
+                <div class="prep-toolbar">
+                  <button class="primary" type="submit">儲存項目資料</button>
+                  <button id="prepCancelProjectEdit" type="button">取消</button>
+                </div>
+              </form>
             </section>
             <section id="prepProjectCreate" class="card prep-subpane">
               <h2>建立新比賽準備項目</h2>
