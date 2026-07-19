@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>核對比賽分紙</title>
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
+    <style>
+      main { width: min(100%, 84rem); }
+      .meta, .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }
+      .meta div, .metric { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: .7rem; background: var(--surface); }
+      .meta dt, .metric .label { color: var(--muted); font-size: .82rem; }
+      .meta dd { margin: .15rem 0 0; font-weight: 700; overflow-wrap: anywhere; }
+      .metric .value { font-size: 1.15rem; font-weight: 700; overflow-wrap: anywhere; }
+      .toolbar { display: flex; align-items: end; gap: .7rem; }
+      .toolbar label { flex: 1; margin: 0; }
+      .table-wrap { overflow: auto; }
+      table { min-width: 650px; }
+      .side-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+      .side-grid > * { min-width: 0; }
+      .response-actions { display: flex; gap: .7rem; flex-wrap: wrap; }
+      .response-actions button { flex: 1 1 12rem; }
+      #disputeReason { min-height: 8rem; }
+      @media (max-width: 760px) {
+        .meta, .metrics, .side-grid { grid-template-columns: 1fr; }
+        .toolbar { align-items: stretch; flex-direction: column; }
+        .toolbar label, .toolbar select { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="back-link" href="/">← 返回主頁</a>
+      <h1>✅ 核對比賽分紙</h1>
+      <p class="intro">請使用賽會提供予你方的專用連結，逐一核對所有評判已提交的完整分紙。</p>
+      <details class="guide">
+        <summary>ℹ️ 核對流程</summary>
+        <ul>
+          <li>選擇每位評判，核對正反方總分及所有評分細項。</li>
+          <li>全部無誤後按「確認分紙無誤」；如有問題，選擇「提出異議」並說明原因。</li>
+          <li>每方只可提交一次。如評判分紙其後有新增，賽會須重新開放並提供新連結。</li>
+          <li>確認或提出異議不會直接修改評判分數或正式賽果。</li>
+        </ul>
+      </details>
+
+      <div id="loading" class="notice">載入中…</div>
+      <div id="error" class="notice warn hidden"></div>
+      <section id="app" class="hidden">
+        <section class="card">
+          <h2>場次及核對方</h2>
+          <dl id="matchMeta" class="meta"></dl>
+          <div id="statusNotice"></div>
+        </section>
+        <section class="card toolbar">
+          <label>選擇評判<select id="judge"></select></label>
+        </section>
+        <section id="sheetSummary" class="card"></section>
+        <section id="sheetDetails"></section>
+        <section id="responseCard" class="card">
+          <h2>提交你方核對結果</h2>
+          <div id="responseState"></div>
+          <div id="responseForm">
+            <div class="response-actions">
+              <button id="confirmCorrect" class="primary" type="button">確認分紙無誤</button>
+              <button id="showDispute" class="danger" type="button">提出異議</button>
+            </div>
+            <div id="disputeForm" class="hidden">
+              <label>異議內容<textarea id="disputeReason" maxlength="2000" placeholder="請清楚列出評判、分紙位置及需要賽會核查的內容。"></textarea></label>
+              <div class="response-actions">
+                <button id="submitDispute" class="danger" type="button">提交異議</button>
+                <button id="cancelDispute" type="button">取消</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+    <div id="busy" class="busy-overlay"><div class="busy-pill"><span class="spinner"></span>處理中…</div></div>
+    <div id="toast" class="toast"></div>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const token = new URL(location.href).searchParams.get("token") || "";
+        const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+        let state = null;
+        const busy = (active) => VoteUI.setBusy($("busy"), active);
+        const toast = (text) => VoteUI.toast($("toast"), text);
+
+        async function api(url, body = null, method = "GET") {
+          const response = await fetch(url, {
+            method,
+            credentials: "same-origin",
+            headers: body ? {"Content-Type": "application/json"} : {},
+            body: body ? JSON.stringify(body) : undefined,
+            cache: "no-store",
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw Error(data.detail || data.message || "操作失敗。");
+          return data;
+        }
+
+        function table(rows) {
+          if (!rows?.length) return '<p class="caption">（詳細評分資料不可用）</p>';
+          const keys = Object.keys(rows[0]);
+          return `<div class="table-wrap"><table><thead><tr>${keys.map((key) => `<th>${esc(key)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${keys.map((key) => `<td>${esc(row[key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+        }
+
+        function renderMeta() {
+          const dateTime = [state.match_date || "未設定", state.match_time].filter(Boolean).join(" ");
+          $("matchMeta").innerHTML = `
+            <div><dt>場次</dt><dd>${esc(state.match_id)}</dd></div>
+            <div><dt>你方</dt><dd>${esc(state.side_label)}｜${esc(state.team_name)}</dd></div>
+            <div><dt>日期時間</dt><dd>${esc(dateTime)}</dd></div>
+            <div style="grid-column:1/-1"><dt>辯題</dt><dd>${esc(state.topic_text || "未設定")}</dd></div>`;
+          const labels = {pending: "尚未回覆", confirmed: "已確認分紙無誤", disputed: "已提出異議"};
+          $("statusNotice").innerHTML = state.stale
+            ? '<div class="notice warn">評判分紙數目已更新，此連結已過期。請向賽會索取重新開放的核對連結。</div>'
+            : `<div class="notice ${state.status === "confirmed" ? "ok" : state.status === "disputed" ? "warn" : ""}">你方狀態：${esc(labels[state.status] || state.status)}</div>`;
+        }
+
+        function renderSheet() {
+          const sheet = state.sheet || {};
+          const record = sheet.record;
+          if (!sheet.has_scores || !record) {
+            $("sheetSummary").innerHTML = '<div class="notice warn">暫未有可核對的分紙。</div>';
+            $("sheetDetails").innerHTML = "";
+            return;
+          }
+          $("judge").innerHTML = (sheet.judges || []).map((judge) => `<option value="${esc(judge)}" ${judge === sheet.selected_judge ? "selected" : ""}>${esc(judge)}</option>`).join("");
+          const pro = Number(record.pro_total_score || 0), con = Number(record.con_total_score || 0);
+          const winner = pro > con ? `正方（${record.pro_team}）` : con > pro ? `反方（${record.con_team}）` : "平票";
+          $("sheetSummary").innerHTML = `<h2>${esc(sheet.selected_judge)}的分紙</h2><div class="metrics">
+            <div class="metric"><div class="label">正方總分｜${esc(record.pro_team)}</div><div class="value">${esc(pro)} / ${esc(sheet.config?.grand_total)}</div></div>
+            <div class="metric"><div class="label">反方總分｜${esc(record.con_team)}</div><div class="value">${esc(con)} / ${esc(sheet.config?.grand_total)}</div></div>
+            <div class="metric"><div class="label">本張分紙勝方</div><div class="value">${esc(winner)}</div></div>
+          </div>`;
+          if (sheet.missing_sides?.length) {
+            $("sheetDetails").innerHTML = `<div class="notice warn">分紙細項不完整（缺少：${esc(sheet.missing_sides.join("、"))}），請立即向賽會提出異議。</div>`;
+            return;
+          }
+          $("sheetDetails").innerHTML = `<div class="side-grid">${["正方", "反方"].map((side) => {
+            const data = sheet.sides[side];
+            return `<section class="card"><h2>${side}：${esc(data.team_name)}</h2>
+              <h3>甲：台上發言</h3>${table(data.raw_df_a)}
+              <h3>乙：自由辯論</h3>${table(data.raw_df_b)}
+              <p>扣分總和：${esc(data.deduction)}<br>內容連貫：${esc(data.coherence)} / ${esc(sheet.config?.coherence_max)}<br><strong>${side}總分：${esc(data.final_total)} / ${esc(sheet.config?.grand_total)}</strong></p>
+            </section>`;
+          }).join("")}</div>`;
+        }
+
+        function renderResponse() {
+          const done = state.status !== "pending" || state.stale;
+          $("responseForm").classList.toggle("hidden", done);
+          $("responseState").innerHTML = state.stale
+            ? '<div class="notice warn">評判分紙數目已更新；舊核對狀態及連結已過期，請向賽會索取重新開放的連結。</div>'
+            : state.status === "confirmed"
+              ? '<div class="notice ok">你方已確認分紙無誤。</div>'
+              : state.status === "disputed"
+                ? `<div class="notice warn">你方已提交異議：${esc(state.dispute_reason)}</div>`
+                : '<p class="caption">請先逐一查看所有評判分紙，再提交一次性的核對結果。</p>';
+        }
+
+        async function load(judge = "") {
+          busy(true);
+          try {
+            const query = new URLSearchParams({token});
+            if (judge) query.set("judge_name", judge);
+            state = await api(`/api/score-sheet-confirmation/data?${query}`);
+            $("loading").classList.add("hidden");
+            $("error").classList.add("hidden");
+            $("app").classList.remove("hidden");
+            renderMeta(); renderSheet(); renderResponse();
+          } catch (error) {
+            $("loading").classList.add("hidden");
+            $("error").textContent = error.message;
+            $("error").classList.remove("hidden");
+          } finally { busy(false); }
+        }
+
+        async function respond(status, reason = "") {
+          busy(true);
+          try {
+            const result = await api(
+              `/api/score-sheet-confirmation/respond?token=${encodeURIComponent(token)}`,
+              {status, reason},
+              "POST",
+            );
+            toast(`✅ ${result.message}`);
+            await load($("judge").value);
+          } catch (error) { toast(`⚠️ ${error.message}`); }
+          finally { busy(false); }
+        }
+
+        $("judge").onchange = () => load($("judge").value);
+        $("confirmCorrect").onclick = () => {
+          if (window.confirm("確認你方已逐一核對所有評判分紙，並確認內容無誤？提交後不能自行更改。")) respond("confirmed");
+        };
+        $("showDispute").onclick = () => $("disputeForm").classList.remove("hidden");
+        $("cancelDispute").onclick = () => $("disputeForm").classList.add("hidden");
+        $("submitDispute").onclick = () => {
+          const reason = $("disputeReason").value.trim();
+          if (!reason) return toast("⚠️ 請填寫異議內容。");
+          if (window.confirm("確定向賽會提交此異議？提交後不能自行更改。")) respond("disputed", reason);
+        };
+        if (!token) {
+          $("loading").classList.add("hidden");
+          $("error").textContent = "請使用賽會提供予你方的專用核對連結。";
+          $("error").classList.remove("hidden");
+        } else load();
+      })();
+    </script>
+  </body>
+</html>

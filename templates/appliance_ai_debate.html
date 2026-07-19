@@ -430,7 +430,7 @@
             <input type="hidden" id="solo-topic" name="topic" />
             <input type="hidden" name="source" value="kiosk" />
             <div class="field">
-              <label class="title">你嘅立場</label>
+              <label class="title">你的立場</label>
               <div class="toggle-row">
                 <label class="toggle"
                   ><input type="radio" name="side" value="正方" checked /><span
@@ -459,7 +459,7 @@
             </div>
             <button type="submit" class="start-btn">▶ 開始單人練習</button>
             <div class="note">
-              使用同 AI Coach 相同嘅 Gemini Live、提示詞、計時及完整 Mock 流程。
+              使用與 AI Coach 相同的 Gemini Live、提示詞、計時及完整 Mock 流程。
             </div>
           </section>
         </form>
@@ -525,7 +525,7 @@
                 </div>
                 <div class="field">
                   <label class="title" for="room-side" id="room-side-title"
-                    >你嘅立場</label
+                    >你的立場</label
                   ><select id="room-side">
                     <option>正方</option>
                     <option>反方</option>
@@ -560,7 +560,7 @@
                 🔑 加入房間
               </button>
               <div class="note">
-                由建立房間嘅隊員提供房間代碼；所有人需要使用委員帳戶。
+                由建立房間的隊員提供房間代碼；所有人需要使用委員帳戶。
               </div>
             </section>
           </form>
@@ -631,7 +631,7 @@
         });
         $("topic-status").textContent = filtered.length
           ? "搵到 " + filtered.length + " 條辯題；打開下拉選單即可選用。"
-          : "搵唔到符合條件嘅辯題，可以改用手動輸入。";
+          : "找不到符合條件的辯題，可改用手動輸入。";
       }
       async function loadTopics() {
         try {
@@ -690,7 +690,7 @@
         } else if (minutes > 10) {
           $("room-minutes").value = "10";
         }
-        $("room-side-title").textContent = "你嘅立場";
+        $("room-side-title").textContent = "你的立場";
         $("room-info").textContent =
           (structure === "mock" ? "完整 Mock" : "Free De") +
           "（真人對真人）：只在測試及輪到自己發言時開啟 STUN-only P2P 收音；自由辯論由正方開始，每次停咪後嚴格正反交替，一方用完時間先跳過。主持可在完場後按一次要求 AI 評判。建議使用電腦版 Chrome。";

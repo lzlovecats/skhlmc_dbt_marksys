@@ -39,8 +39,8 @@ def test_outbound_mic_is_authoritatively_turn_gated_and_visibly_muted():
     assert "requestedTurnMatches || previouslyOwnedTurn === serverTurnId" in ROOM_JS
     assert 'setMicMode("testing")' in ROOM_JS
     assert 'finally {' in ROOM_JS and 'setMicMode("muted")' in ROOM_JS
-    assert "咪高峰：已靜音" in ROOM_HTML
-    assert "咪高峰：已開啟" in ROOM_JS
+    assert "麥克風：已靜音" in ROOM_HTML
+    assert "麥克風：已開啟" in ROOM_JS
 
 
 def test_dead_media_tracks_pause_and_recover_instead_of_silent_timing():
@@ -119,7 +119,7 @@ def test_strict_free_turn_is_visible_and_gates_the_speak_button():
     assert "嚴格交替｜輪到${message.expected_turn_side}發言" in ROOM_JS
     assert "!expectedSideOkay && state.expected_turn_side" in ROOM_JS
     assert "等待${state.expected_turn_side}發言" in ROOM_JS
-    assert "每次停咪後嚴格正反交替" in PARITY_JS
+    assert "每次停止收音後嚴格按正反方交替" in PARITY_JS
     assert "每次停咪後嚴格正反交替" in APPLIANCE_HTML
 
 

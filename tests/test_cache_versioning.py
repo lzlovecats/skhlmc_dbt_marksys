@@ -2,14 +2,39 @@
 
 import asyncio
 
+from fastapi import Request
+
 import deploy.proxy as proxy
 
 
-def test_ai_coach_html_versions_shared_ai_parity_without_placeholder():
-    response = asyncio.run(proxy.ai_coach_page())
+def _request(path):
+    return Request({
+        "type": "http", "method": "GET", "path": path,
+        "query_string": b"", "headers": [],
+    })
+
+
+def test_ai_coach_html_versions_shared_ai_parity_without_placeholder(monkeypatch):
+    monkeypatch.setattr(
+        proxy, "interactive_features_suspension", lambda _request: {"active": False}
+    )
+    response = asyncio.run(proxy.ai_coach_page(_request("/ai-coach")))
     html = response.body.decode("utf-8")
 
+    assert f'href="/shared/app-shell.css?v={proxy.APP_VERSION}"' in html
+    assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
+    assert f'src="/shared/markdown.js?v={proxy.APP_VERSION}"' in html
     assert f'src="/shared/ai-parity.js?v={proxy.APP_VERSION}"' in html
+    assert "__APP_VERSION__" not in html
+
+
+def test_score_sheet_confirmation_versions_shared_assets_and_is_private():
+    response = asyncio.run(proxy.score_sheet_confirmation_page())
+    html = response.body.decode("utf-8")
+
+    assert response.headers["cache-control"] == "no-store"
+    assert f'href="/shared/app-shell.css?v={proxy.APP_VERSION}"' in html
+    assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
     assert "__APP_VERSION__" not in html
 
 
@@ -53,3 +78,22 @@ def test_chairperson_html_versions_all_shared_assets():
     assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
     assert f'src="/shared/markdown.js?v={proxy.APP_VERSION}"' in html
     assert "__APP_VERSION__" not in html
+
+
+def test_date_input_pages_version_mobile_layout_and_shared_scripts():
+    pages = (
+        proxy.developer_settings_page,
+        proxy.lateness_fund_page,
+        proxy.match_info_page,
+        proxy.match_photos_page,
+        proxy.recent_matches_page,
+        proxy.registration_admin_page,
+        proxy.team_history_page,
+    )
+
+    for page in pages:
+        response = asyncio.run(page())
+        html = response.body.decode("utf-8")
+        assert f'href="/shared/app-shell.css?v={proxy.APP_VERSION}"' in html
+        assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
+        assert "__APP_VERSION__" not in html

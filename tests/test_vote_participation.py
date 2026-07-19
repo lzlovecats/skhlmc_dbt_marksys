@@ -1,5 +1,6 @@
 """Vote participation denominators — joining before membership must not count."""
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -141,3 +142,14 @@ def test_shared_form_labels_and_buttons_have_explicit_vertical_spacing():
 
     assert "label > input:not([type=\"checkbox\"]):not([type=\"radio\"])" in source
     assert "form > button { margin-top: 1rem; }" in source
+
+
+def test_shared_form_controls_cannot_exceed_mobile_container_width():
+    source = (ROOT / "frontend" / "shared" / "app-shell.css").read_text(
+        encoding="utf-8"
+    )
+    rule = re.search(r"input,\s*textarea,\s*select\s*\{([^}]*)\}", source)
+
+    assert rule, "shared form controls need a common width contract"
+    assert re.search(r"\bmin-width\s*:\s*0(?:px)?\s*;", rule.group(1))
+    assert re.search(r"\bmax-width\s*:\s*100%\s*;", rule.group(1))

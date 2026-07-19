@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>開發者設定</title>
-    <link rel="stylesheet" href="/shared/app-shell.css" />
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
     <style>
       .pane {
         display: none;
@@ -105,9 +105,9 @@
         </div>
         <nav class="tabs">
           <button class="active" data-pane="bugs">Bug 回報</button
-          ><button data-pane="accounts">帳戶管理</button
-          ><button data-pane="training">AI 訓練 / 基金</button
-          ><button data-pane="system">系統設定</button
+          ><button data-pane="accounts">帳戶及權限</button
+          ><button data-pane="aiServices">AI 服務</button
+          ><button data-pane="system">系統及通知</button
           ><button data-pane="passwords">密碼管理</button>
         </nav>
         <section id="bugs" class="pane active">
@@ -130,8 +130,6 @@
               <div id="accountsTable"></div>
             </section>
           </div>
-        </section>
-        <section id="training" class="pane">
           <div class="split">
             <form id="trainingForm" class="card">
               <h2>委派管理角色</h2>
@@ -175,6 +173,18 @@
               </fieldset>
               <button class="primary">更新名單</button>
             </form>
+            <section class="card">
+              <h2>臨時開放提案</h2>
+              <p class="caption">只可為非活躍委員臨時開放，權限會在指定時間自動失效。</p>
+              <div id="activeBypasses"></div>
+              <label>選擇委員<select id="bypassUsers" multiple size="6"></select></label>
+              <label>到期時間<input id="bypassExpiry" type="datetime-local" /></label>
+              <div class="actions"><button id="saveBypass" class="primary">啟用臨時權限</button><button id="revokeAllBypass" class="danger">全部撤銷</button></div>
+            </section>
+          </div>
+        </section>
+        <section id="aiServices" class="pane">
+          <div class="split">
             <form id="modelsForm" class="card">
               <h2>AI Provider / Model 設定</h2>
               <fieldset class="account-picker">
@@ -185,6 +195,17 @@
               <div id="providerKeyStatus" class="caption"></div>
               <button class="primary">更新 AI 設定</button>
             </form>
+            <section class="card">
+              <h2>定時停用 Vote 及 AI 辯論易</h2>
+              <p class="caption">指定香港時間後，兩個功能會同步暫停並在結束時間自動恢復。Developer session 不受停用時段限制，但原有頁面權限仍會照常驗證；已建立的 AI 練習房及已開始的 Solo 練習不會被中斷。</p>
+              <p id="featureSuspensionState">正在讀取停用設定…</p>
+              <label>開始時間（香港時間）<input id="featureSuspensionStart" type="datetime-local" /></label>
+              <label>結束時間（香港時間）<input id="featureSuspensionEnd" type="datetime-local" /></label>
+              <div class="actions">
+                <button id="saveFeatureSuspension" class="primary" type="button">儲存停用時間</button>
+                <button id="clearFeatureSuspension" class="danger" type="button">清除停用時間</button>
+              </div>
+            </section>
           </div>
         </section>
         <section id="system" class="pane">
@@ -203,14 +224,6 @@
               <button id="saveMaintDeadline">儲存預期完成時間</button>
               <button id="toggleMaint" class="primary" type="button">切換維護模式</button>
             </div>
-          </section>
-          <section class="card">
-            <h2>臨時開放提案</h2>
-            <p class="caption">只可為非活躍委員臨時開放，權限會在指定時間自動失效。</p>
-            <div id="activeBypasses"></div>
-            <label>選擇委員<select id="bypassUsers" multiple size="6"></select></label>
-            <label>到期時間<input id="bypassExpiry" type="datetime-local" /></label>
-            <div class="actions"><button id="saveBypass" class="primary">啟用臨時權限</button><button id="revokeAllBypass" class="danger">全部撤銷</button></div>
           </section>
           <form id="pushForm" class="card">
             <h2>手動推送通知</h2>
@@ -263,7 +276,7 @@
         <div class="actions"><button value="cancel">取消</button><button id="dialogConfirm" value="confirm" class="danger">確認</button></div>
       </form>
     </dialog>
-    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
     <script>
       (() => {
         const $ = (x) => document.getElementById(x),
@@ -454,6 +467,20 @@
             deadline.setMinutes(deadline.getMinutes() - deadline.getTimezoneOffset());
             $("maintenanceDeadline").value = deadline.toISOString().slice(0, 16);
           }
+          $("featureSuspensionStart").value = String(
+            c.interactive_features_suspension_start || "",
+          ).slice(0, 16);
+          $("featureSuspensionEnd").value = String(
+            c.interactive_features_suspension_end || "",
+          ).slice(0, 16);
+          const suspension = data.feature_suspension || {};
+          $("featureSuspensionState").textContent = suspension.active
+            ? `現正停用；結束時間：${suspension.end.replace("T", " ")}（香港時間）`
+            : suspension.scheduled
+              ? `已排程；${suspension.start.replace("T", " ")} 至 ${suspension.end.replace("T", " ")}（香港時間）`
+              : suspension.configured
+                ? "上次停用時段已結束。可設定新時段或清除舊設定。"
+                : "目前沒有設定停用時段。";
           const bypasses = parseBypasses(c.bypass_active_check_until);
           $("activeBypasses").innerHTML =
             Object.entries(bypasses)
@@ -567,6 +594,44 @@
               }),
             },
             "AI Provider 設定已更新。",
+          );
+        };
+        $("saveFeatureSuspension").onclick = () => {
+          if (!$("featureSuspensionStart").value || !$("featureSuspensionEnd").value)
+            return toast("⚠️ 請同時輸入開始及結束時間。");
+          mutate(
+            "/api/developer/settings",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                values: {
+                  interactive_features_suspension_start:
+                    $("featureSuspensionStart").value,
+                  interactive_features_suspension_end:
+                    $("featureSuspensionEnd").value,
+                },
+              }),
+            },
+            "Vote 及 AI 辯論易停用時間已更新。",
+          );
+        };
+        $("clearFeatureSuspension").onclick = async () => {
+          if (!(await askAction(
+            "清除停用時間？",
+            "如功能現正停用，清除後 Vote 及 AI 辯論易會立即恢復。",
+          ))) return;
+          mutate(
+            "/api/developer/settings",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                values: {
+                  interactive_features_suspension_start: "",
+                  interactive_features_suspension_end: "",
+                },
+              }),
+            },
+            "停用時間已清除。",
           );
         };
         $("saveMaintDeadline").onclick = () => {
@@ -749,6 +814,6 @@
         load();
       })();
     </script>
-    <script src="/shared/server-tables.js"></script>
+    <script src="/shared/server-tables.js?v=__APP_VERSION__"></script>
   </body>
 </html>

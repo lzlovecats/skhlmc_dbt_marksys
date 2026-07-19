@@ -236,7 +236,7 @@ def _feature_schema_state(db, feature: str) -> bool:
     except Exception as exc:
         raise HTTPException(503, f"{feature} schema狀態暫時無法驗證") from exc
     if state == PARTIAL:
-        raise HTTPException(503, f"{feature} schema只建立咗一部分，請先完成正式migration")
+        raise HTTPException(503, f"{feature} schema 只完成部分建立，請先完成正式 migration")
     if state == DISABLED:
         return False
     return state == READY
@@ -1248,8 +1248,8 @@ async def regenerate_suggestions(request: Request):
     rows = _rows(db.query(f"SELECT script_id AS id,category,text FROM {TABLE_TTS_SCRIPTS} WHERE is_active=TRUE ORDER BY category,sort_order LIMIT :inventory_limit", {"inventory_limit": TTS_AI_ANALYSIS_SCRIPT_LIMIT}))
     locked_rows = _rows(db.query(f"SELECT DISTINCT script_id FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE status IN ('pending','accepted') LIMIT :inventory_limit", {"inventory_limit": AI_TRAINING_INVENTORY_LIMIT}))
     locked_ids = {str(x["script_id"]) for x in locked_rows}
-    locked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) in locked_ids) or "（暫時冇已錄音句子）"
-    unlocked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) not in locked_ids) or "（暫時冇未錄音句子）"
+    locked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) in locked_ids) or "（暫時沒有已錄音句子）"
+    unlocked = "\n".join(f"[{x['category']}] {x['id']}｜{x['text']}" for x in rows if str(x["id"]) not in locked_ids) or "（暫時沒有未錄音句子）"
     prompt = build_tts_regenerate_prompt(locked, unlocked)[:AI_TRAINING_PROMPT_MAX_CHARS]
     url = _gemini_generation_url("tts_script_analysis")
     payload = {"systemInstruction":{"parts":[{"text":TTS_REGENERATE_SYSTEM_PROMPT}]}, "contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "temperature": .5}}

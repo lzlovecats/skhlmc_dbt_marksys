@@ -44,6 +44,8 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     # Runtime settings.
     "maintenance_mode": ConfigSpec("runtime", _BOOLEAN),
     "maintenance_deadline": ConfigSpec("runtime", _STRING),
+    "interactive_features_suspension_start": ConfigSpec("runtime", _STRING),
+    "interactive_features_suspension_end": ConfigSpec("runtime", _STRING),
     "ai_enabled_providers": ConfigSpec("ai", _ARRAY),
     "ai_default_model": ConfigSpec("ai", _STRING),
     # Account access and delegated capabilities.

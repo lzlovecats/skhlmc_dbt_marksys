@@ -100,6 +100,10 @@ PAGE_ACCESS_POLICIES = {
         denied_accounts=_AI_COACH_DENIED,
         denial_message="此系統帳戶不能使用 AI 練習頁面。",
     ),
+    "competition_prep": PageAccessPolicy(
+        denied_accounts=_MEMBER_ONLY,
+        denial_message="此系統帳戶不能使用比賽準備協作功能。",
+    ),
     "ai_room": PageAccessPolicy(
         denied_accounts=_AI_COACH_DENIED,
         denial_message="此系統帳戶不能加入 AI 練習房間。",

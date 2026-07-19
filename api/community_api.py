@@ -3,9 +3,11 @@
 from datetime import datetime, timedelta
 import logging
 import secrets
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -23,6 +25,7 @@ from core.community_logic import (
     validate_thread,
 )
 from core.roles import is_senior_committee
+from core.sticker_catalog import get_sticker, list_stickers
 from schema import (
     TABLE_ACCOUNTS,
     TABLE_COMMITTEE_MEMBERSHIPS,
@@ -45,6 +48,7 @@ from schema import (
     TABLE_RECENT_MATCHES,
 )
 from system_limits import (
+    CACHE_STATIC_MAX_AGE_SECONDS,
     COMMITTEE_MEMBERSHIP_INVENTORY_LIMIT,
     GHOST_FORUM_NOTIFICATION_CLAIM_TTL_SECONDS,
     GHOST_FORUM_POST_LIMIT,
@@ -53,6 +57,7 @@ from system_limits import (
     RECENT_MATCH_INVENTORY_LIMIT,
     RECENT_MATCH_NOTIFICATION_CLAIM_TTL_SECONDS,
 )
+from version import APP_VERSION
 
 
 router = APIRouter(prefix="/api/community", tags=["committee-community"])
@@ -118,7 +123,8 @@ class ForumThreadUpdateBody(BaseModel):
 
 
 class ForumPostBody(BaseModel):
-    body: str = Field(max_length=8000)
+    body: str = Field(default="", max_length=8000)
+    sticker_id: str | None = Field(default=None, min_length=1, max_length=200)
     quoted_post_id: int | None = Field(default=None, ge=1)
 
 
@@ -186,6 +192,19 @@ def _validation(function, values):
         return function(values)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+def _forum_reply_content(body: str, sticker_id: str | None):
+    has_text = bool(str(body or "").strip())
+    has_sticker = sticker_id is not None
+    if has_text == has_sticker:
+        raise HTTPException(400, "每則回覆必須選擇文字或一張 Sticker。")
+    if has_sticker:
+        sticker = get_sticker(sticker_id)
+        if sticker is None:
+            raise HTTPException(400, "所選 Sticker 不存在或已停止提供。")
+        return "", sticker.sticker_id
+    return _validation(validate_post_body, body), None
 
 
 def _connection_rows(connection, sql, params=None):
@@ -1170,6 +1189,43 @@ def forum_session(request: Request):
     }
 
 
+@router.get("/forum/stickers")
+def forum_stickers(request: Request):
+    _user, _db_value = _ghost_context(request)
+    return {
+        "items": [
+            {
+                "id": item.sticker_id,
+                "label": item.label,
+                "url": (
+                    "/api/community/forum/stickers/"
+                    f"{quote(item.sticker_id, safe='')}?v={quote(APP_VERSION, safe='')}"
+                ),
+            }
+            for item in list_stickers()
+        ]
+    }
+
+
+@router.get("/forum/stickers/{sticker_id}")
+def forum_sticker_image(sticker_id: str, request: Request):
+    _user, _db_value = _ghost_context(request)
+    sticker = get_sticker(sticker_id)
+    if sticker is None:
+        raise HTTPException(404, "找不到 Sticker。")
+    return FileResponse(
+        sticker.path,
+        media_type="image/webp",
+        headers={
+            "Cache-Control": (
+                f"private, max-age={CACHE_STATIC_MAX_AGE_SECONDS}, immutable"
+            ),
+            "X-Content-Type-Options": "nosniff",
+            "Vary": "Cookie",
+        },
+    )
+
+
 @router.get("/forum/threads")
 def forum_threads(request: Request, page: int = 1, search: str = "", sort: str = "activity"):
     user, db = _ghost_context(request)
@@ -1348,10 +1404,16 @@ def forum_thread(
     posts = db.query(
         f"""SELECT p.id,p.author_user_id,
                    CASE WHEN p.deleted_at IS NULL THEN p.body ELSE '' END body,
+                   CASE WHEN p.deleted_at IS NULL THEN p.sticker_id ELSE NULL END sticker_id,
                    p.quoted_post_id,p.is_first_post,p.revision,p.created_at,p.updated_at,
-                   p.deleted_at,(p.author_user_id=:user AND p.deleted_at IS NULL) can_edit,
+                   p.deleted_at,
+                   (p.author_user_id=:user AND p.deleted_at IS NULL
+                    AND p.sticker_id IS NULL) can_edit,
+                   (p.author_user_id=:user AND p.deleted_at IS NULL
+                    AND p.is_first_post=FALSE) can_delete,
                    q.author_user_id quoted_author,
                    CASE WHEN q.deleted_at IS NULL THEN LEFT(q.body,500) ELSE '' END quoted_body,
+                   CASE WHEN q.deleted_at IS NULL THEN q.sticker_id ELSE NULL END quoted_sticker_id,
                    (SELECT COUNT(*) FROM {TABLE_GHOST_FORUM_REACTIONS} r WHERE r.post_id=p.id) like_count,
                    EXISTS(SELECT 1 FROM {TABLE_GHOST_FORUM_REACTIONS} r
                           WHERE r.post_id=p.id AND r.user_id=:user) viewer_liked
@@ -1515,7 +1577,7 @@ def delete_forum_thread(thread_id: int, revision: int, request: Request):
 @router.post("/forum/threads/{thread_id}/posts")
 def create_forum_post(thread_id: int, body: ForumPostBody, request: Request):
     user, db = _ghost_context(request)
-    post_body = _validation(validate_post_body, body.body)
+    post_body, sticker_id = _forum_reply_content(body.body, body.sticker_id)
     now = _now()
     with db.transaction() as connection:
         connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('ghost_forum_inventory'))"))
@@ -1541,10 +1603,17 @@ def create_forum_post(thread_id: int, body: ForumPostBody, request: Request):
         row = connection.execute(
             text(
                 f"""INSERT INTO {TABLE_GHOST_FORUM_POSTS}
-                    (thread_id,author_user_id,body,quoted_post_id,created_at,updated_at)
-                    VALUES(:thread,:user,:body,:quote,:now,:now) RETURNING id,revision"""
+                    (thread_id,author_user_id,body,sticker_id,quoted_post_id,created_at,updated_at)
+                    VALUES(:thread,:user,:body,:sticker,:quote,:now,:now) RETURNING id,revision"""
             ),
-            {"thread": thread_id, "user": user, "body": post_body, "quote": body.quoted_post_id, "now": now},
+            {
+                "thread": thread_id,
+                "user": user,
+                "body": post_body,
+                "sticker": sticker_id,
+                "quote": body.quoted_post_id,
+                "now": now,
+            },
         ).mappings().one()
         connection.execute(
             text(f"UPDATE {TABLE_GHOST_FORUM_THREADS} SET last_activity_at=:now WHERE id=:id"),
@@ -1585,7 +1654,8 @@ def update_forum_post(post_id: int, body: ForumPostUpdateBody, request: Request)
     post_body = _validation(validate_post_body, body.body)
     changed = db.execute_count(
         f"""UPDATE {TABLE_GHOST_FORUM_POSTS} SET body=:body,revision=revision+1,updated_at=:now
-            WHERE id=:id AND author_user_id=:user AND revision=:revision AND deleted_at IS NULL""",
+            WHERE id=:id AND author_user_id=:user AND revision=:revision
+              AND deleted_at IS NULL AND sticker_id IS NULL""",
         {"body": post_body, "now": _now(), "id": post_id, "user": user, "revision": body.revision},
     )
     if not changed:
@@ -1598,7 +1668,7 @@ def delete_forum_post(post_id: int, revision: int, request: Request):
     user, db = _ghost_context(request)
     changed = db.execute_count(
         f"""UPDATE {TABLE_GHOST_FORUM_POSTS}
-            SET body='',deleted_at=:now,revision=revision+1,updated_at=:now
+            SET body='',sticker_id=NULL,deleted_at=:now,revision=revision+1,updated_at=:now
             WHERE id=:id AND author_user_id=:user AND revision=:revision
               AND is_first_post=FALSE AND deleted_at IS NULL""",
         {"now": _now(), "id": post_id, "user": user, "revision": revision},

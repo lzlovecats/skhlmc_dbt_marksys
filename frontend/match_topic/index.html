@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <title>賽事辯題公布</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111827" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="stylesheet" href="/shared/vote-ui.css?v=__APP_VERSION__" />
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
+    <style>
+      main { width: min(100%, 52rem); margin: 0 auto; }
+      h1 { margin: 0 0 .45rem; font-size: clamp(1.75rem, 5vw, 2.4rem); }
+      .intro, .muted { color: var(--muted); }
+      .card { margin-top: 1rem; }
+      .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem 1rem; }
+      .meta dt { color: var(--muted); font-size: .85rem; }
+      .meta dd { margin: .15rem 0 0; font-weight: 650; overflow-wrap: anywhere; }
+      .topic-card { border-color: #3977c9; background: linear-gradient(145deg, rgb(38 104 190 / .16), var(--card)); }
+      .eyebrow { margin: 0 0 .55rem; color: #8cc1ff; font-weight: 700; }
+      .topic { margin: 0; font-size: clamp(1.5rem, 5vw, 2.2rem); line-height: 1.45; overflow-wrap: anywhere; }
+      .schedule { margin-top: 1rem; padding: .85rem; border-radius: 10px; background: var(--surface); }
+      .schedule strong { display: block; margin-bottom: .25rem; }
+      .countdown { color: #8cc1ff; font-variant-numeric: tabular-nums; }
+      .veto-panel { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+      .danger { width: 100%; margin-top: .75rem; background: #a92f3e; border-color: #d85265; }
+      .danger:hover { background: #bd3547; }
+      .notice { margin-top: 1rem; }
+      .notice.ok { border-color: #357a52; color: var(--ok); }
+      .hidden { display: none !important; }
+      @media (max-width: 560px) { .meta { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>賽事辯題公布</h1>
+      <p class="intro">此頁只供獲發連結的隊伍查閱。請勿轉發私人連結。</p>
+      <div id="loading" class="notice">正在核對辯題公布狀態……</div>
+      <div id="error" class="notice warn hidden"></div>
+      <div id="app" class="hidden">
+        <section class="card">
+          <dl id="meta" class="meta"></dl>
+        </section>
+        <section id="topicCard" class="card topic-card"></section>
+        <section class="card">
+          <h2>辯題否決狀態</h2>
+          <div id="vetoState"></div>
+          <div id="actionMessage"></div>
+          <button id="vetoButton" class="danger hidden" type="button">行使我方唯一一次辯題否決權</button>
+        </section>
+      </div>
+      <div id="busy" class="busy-overlay hidden" aria-live="polite">正在提交……</div>
+    </main>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const token = new URL(location.href).searchParams.get("token") || "";
+        const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        })[char]);
+        let state = null;
+        let timer = null;
+        let submitting = false;
+
+        const formatTime = (value) => {
+          if (!value) return "未設定";
+          const date = new Date(value);
+          return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("zh-HK", {
+            timeZone: "Asia/Hong_Kong", year: "numeric", month: "long", day: "numeric",
+            weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+          }).format(date);
+        };
+        const formatMatchTime = (date, time) => [date || "未設定日期", time || ""].filter(Boolean).join(" ");
+        const countdownText = (target) => {
+          const seconds = Math.max(0, Math.ceil((new Date(target).getTime() - Date.now()) / 1000));
+          const days = Math.floor(seconds / 86400);
+          const hours = Math.floor((seconds % 86400) / 3600);
+          const minutes = Math.floor((seconds % 3600) / 60);
+          const secs = seconds % 60;
+          return `${days ? `${days}日 ` : ""}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+        };
+        const showError = (message) => {
+          $("loading").classList.add("hidden");
+          $("app").classList.add("hidden");
+          $("error").textContent = message;
+          $("error").classList.remove("hidden");
+        };
+
+        function startCountdown(target) {
+          clearInterval(timer);
+          const node = $("countdown");
+          if (!node || !target) return;
+          let reloading = false;
+          const update = () => {
+            const remaining = new Date(target).getTime() - Date.now();
+            node.textContent = countdownText(target);
+            if (remaining <= 0 && !reloading) {
+              reloading = true;
+              clearInterval(timer);
+              setTimeout(load, 500);
+            }
+          };
+          update();
+          timer = setInterval(update, 1000);
+        }
+
+        function render(data) {
+          state = data;
+          $("meta").innerHTML = `
+            <div><dt>比賽場次</dt><dd>${esc(data.match_id)}</dd></div>
+            <div><dt>我方身分</dt><dd>${esc(data.side_label)}・${esc(data.team_name || "未設定隊名")}</dd></div>
+            <div><dt>對賽隊伍</dt><dd>${esc(data.opponent || "未設定隊名")}</dd></div>
+            <div><dt>比賽時間</dt><dd>${esc(formatMatchTime(data.match_date, data.match_time))}</dd></div>`;
+
+          if (data.phase === "scheduled") {
+            $("topicCard").innerHTML = `
+              <p class="eyebrow">第 ${Number(data.candidate_number)} 條候選辯題</p>
+              <h2 class="topic">辯題尚未公布</h2>
+              <div class="schedule"><strong>公布時間：${esc(formatTime(data.reveal_at))}</strong>
+              <span>尚餘 <span id="countdown" class="countdown"></span></span></div>`;
+            startCountdown(data.reveal_at);
+          } else {
+            clearInterval(timer);
+            $("topicCard").innerHTML = `
+              <p class="eyebrow">${data.final ? "最終辯題" : `第 ${Number(data.candidate_number)} 條候選辯題`}</p>
+              <h2 class="topic">${esc(data.topic_text)}</h2>
+              ${data.final ? "" : `<div class="schedule"><strong>否決截止：${esc(formatTime(data.veto_deadline))}</strong><span>尚餘 <span id="countdown" class="countdown"></span></span></div>`}`;
+            if (!data.final) startCountdown(data.veto_deadline);
+          }
+
+          const vetoCount = Number(data.veto_count || 0);
+          const genericStatus = vetoCount === 0 ? "尚未有辯題被否決。" : `已有 ${vetoCount} 條辯題被否決。賽會不會顯示由哪一方提出否決。`;
+          $("vetoState").innerHTML = `<p>${esc(genericStatus)}</p><p class="muted">${esc(data.message || "")}</p>`;
+          $("vetoButton").classList.toggle("hidden", !data.veto_allowed);
+          $("loading").classList.add("hidden");
+          $("error").classList.add("hidden");
+          $("app").classList.remove("hidden");
+        }
+
+        async function load() {
+          if (!token) {
+            showError("此連結缺少辯題查閱代碼，請使用賽會提供的完整私人連結。");
+            return;
+          }
+          try {
+            const response = await fetch(`/api/match-topic-release/data?token=${encodeURIComponent(token)}`, { cache: "no-store" });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || "未能載入辯題公布狀態。");
+            if (data.expired) {
+              showError(data.message || "此辯題連結已失效。");
+              return;
+            }
+            render(data);
+          } catch (error) {
+            showError(error.message || "未能載入辯題公布狀態。");
+          }
+        }
+
+        $("vetoButton").addEventListener("click", async () => {
+          if (submitting || !state?.veto_allowed) return;
+          const confirmed = window.confirm("確認行使我方本場唯一一次辯題否決權？提交後不能撤回，下一條辯題會按賽規時間公布。");
+          if (!confirmed) return;
+          submitting = true;
+          VoteUI.setBusy($("busy"), true);
+          try {
+            const response = await fetch(`/api/match-topic-release/veto?token=${encodeURIComponent(token)}`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || "未能提交辯題否決。");
+            $("actionMessage").innerHTML = `<div class="notice ok">${esc(data.message)}</div>`;
+            await load();
+          } catch (error) {
+            $("actionMessage").innerHTML = `<div class="notice warn">${esc(error.message || "未能提交辯題否決。")}</div>`;
+          } finally {
+            submitting = false;
+            VoteUI.setBusy($("busy"), false);
+          }
+        });
+
+        load();
+      })();
+    </script>
+  </body>
+</html>

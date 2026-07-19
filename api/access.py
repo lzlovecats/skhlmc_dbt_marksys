@@ -25,6 +25,42 @@ def has_developer_session(request: Request) -> bool:
     return developer_session_active(request)
 
 
+def interactive_features_suspension(request: Request) -> dict:
+    """Return the shared Vote/AI suspension state with Developer bypass."""
+    if has_developer_session(request):
+        return {
+            "configured": False,
+            "scheduled": False,
+            "active": False,
+            "message": "",
+            "retry_after_seconds": 0,
+            "developer_bypass": True,
+        }
+    from core.feature_suspension import suspension_status
+    from deploy.proxy import get_vote_db
+
+    try:
+        db = get_vote_db()
+    except Exception:
+        # The suspension schedule is deliberately fail-open.  Database
+        # acquisition belongs inside that boundary as well as config reads.
+        db = None
+    return suspension_status(db)
+
+
+def require_interactive_features_available(request: Request) -> dict:
+    """Fail new Vote/AI operations during the configured suspension window."""
+    status = interactive_features_suspension(request)
+    if status.get("active"):
+        retry_after = max(1, int(status.get("retry_after_seconds") or 1))
+        raise HTTPException(
+            503,
+            status.get("message") or "Vote 及 AI 辯論易暫停使用。",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return status
+
+
 def require_page_user_or_developer(request: Request, page: str) -> str:
     """Allow the Developer management identity or a normal page member."""
     if has_developer_session(request):

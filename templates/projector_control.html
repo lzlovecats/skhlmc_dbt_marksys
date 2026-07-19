@@ -458,7 +458,7 @@
         <span class="badge" id="kioskBadge">正在連接比賽日 Kiosk</span>
       </div>
       <div class="advisory">
-        AI評判易只提供 AI 輔助第二意見，正式賽果以評判團為準。Kiosk 會將錄音片段持續寫入本機備份，網絡或 AI 失敗時不會主動刪除；但正式公開比賽仍必須另設獨立硬件錄音機，唔可以將瀏覽器當成唯一錄音。結果完成後只會先喺呢個控制頁私人預覽；必須由操作員手動發布先會投影。如粵語語音服務已設定並可用，發布時會先準備語音；投影完成後再由操作員另按「讀出／重新讀出」，否則全程只投影文字。
+        AI評判易只提供 AI 輔助第二意見，正式賽果以評判團為準。Kiosk 會將錄音片段持續寫入本機備份，網絡或 AI 失敗時不會主動刪除；但正式公開比賽仍必須另設獨立硬件錄音機，不可將瀏覽器當成唯一錄音。結果完成後只會先在此控制頁私人預覽；必須由操作員手動發布才會投影。如粵語語音服務已設定並可用，發布時會先準備語音；投影完成後再由操作員另按「讀出／重新讀出」，否則全程只投影文字。
       </div>
 
       <section>
@@ -664,7 +664,7 @@
             });
             if (selected && matchById(selected)) select.value = selected;
             if (!matches.length) {
-              setStatus("未有可用嘅正式場次。", "err");
+              setStatus("未有可用的正式場次。", "err");
             }
           } catch (error) {
             if (!authRedirecting) setStatus(error.message, "err");
@@ -727,7 +727,7 @@
             var empty = document.createElement("div");
             empty.className = "meta";
             empty.textContent = state.match_id
-              ? "未能載入呢個正式場次嘅發言進程。"
+              ? "未能載入此正式場次的發言進程。"
               : "請先套用正式場次。";
             box.appendChild(empty);
             updateControlAvailability();
@@ -801,7 +801,7 @@
             ? "已選場次：" +
               (shownMatchId || "—") +
               (schedule ? " · " + schedule : "") +
-              "。呢個只係預覽；撳「套用正式場次」先會改變大屏及 AI評判易。"
+              "。這只是預覽；按「套用正式場次」後才會改變大屏及 AI評判易。"
             : state.configured
             ? "場次：" +
               (state.match_id || "—") +
@@ -1267,7 +1267,7 @@
             : "📽️ 只投影文字";
           el("ttsStatus").textContent = available
             ? statusKey(session.tts_status) === "not_requested"
-              ? "粵語朗讀服務可用；結果唔會自動播放。"
+              ? "粵語朗讀服務可用；結果不會自動播放。"
               : "粵語朗讀狀態：" + ttsStatusLabel(session.tts_status)
             : "粵語語音服務目前不可用；只可投影文字，朗讀控制已停用。";
         }
@@ -1680,7 +1680,7 @@
             sessionState === "processing"
               ? "警告：強制接管會撤銷目前 Active Kiosk 並取消今次 AI 分析。已開始的 provider call 可能仍會產生費用，但其後完成的結果不會寫入。確定繼續？"
               : interrupts
-                ? "警告：接管會即時撤銷目前 Active Kiosk，停止同保留其本機錄音，呢一場會標記為中斷，而且唔會自動上載或交畀 AI。確定繼續？"
+                ? "警告：接管會即時撤銷目前 Active Kiosk，停止並保留其本機錄音，此場比賽會標記為中斷，而且不會自動上載或交予 AI。確定繼續？"
                 : "確定撤銷目前 Active Kiosk？下一部 Standby Kiosk 會取得控制權，並必須重新做硬件測試。";
           if (!window.confirm(warning)) return;
           await runAiCommand(
@@ -1702,8 +1702,8 @@
           if (
             !window.confirm(
               speak
-                ? "確定將私人預覽嘅 AI 輔助摘要顯示喺大屏並準備粵語語音？投影完成後，請另按「讀出／重新讀出」先會由現場喇叭播放。"
-                : "粵語語音目前不可用。確定只將 AI 輔助摘要顯示喺大屏？",
+                ? "確定將私人預覽的 AI 輔助摘要顯示於大屏並準備粵語語音？投影完成後，請另按「讀出／重新讀出」，才會由現場揚聲器播放。"
+                : "粵語語音目前不可用。確定只將 AI 輔助摘要顯示於大屏？",
             )
           )
             return;

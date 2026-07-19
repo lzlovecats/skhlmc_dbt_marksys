@@ -65,6 +65,30 @@ def test_ai_coach_ui_prices_search_fallback_with_actual_default_model():
     assert '$("researchForm"), $("factForm")' in sync_model
 
 
+def test_speech_review_audio_estimate_includes_representative_audio_tokens():
+    config = {
+        "input_price_per_million": 0.30,
+        "audio_input_price_per_million": 1.00,
+        "output_price_per_million": 2.50,
+    }
+
+    text_only = ai_coach_api._estimate("speech_review", config)
+    with_audio = ai_coach_api._estimate(
+        "speech_review", config, has_audio=True
+    )
+
+    expected_usd = (
+        2500 * 0.30
+        + ai_coach_api.SPEECH_REVIEW_AUDIO_TOKEN_ESTIMATE * 1.00
+        + 1800 * 2.50
+    ) / 1_000_000
+    assert with_audio == {
+        "usd": round(expected_usd, 4),
+        "hkd": round(expected_usd * 7.8, 4),
+    }
+    assert with_audio["usd"] > text_only["usd"]
+
+
 def test_speech_review_has_no_application_duration_or_two_mib_limit():
     source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
 
@@ -744,6 +768,32 @@ def test_ai_coach_ledger_respects_explicit_zero_usage(monkeypatch):
     assert ledger[0]["audio_tokens"] == 0
     assert ledger[0]["search_calls"] == 0
     assert ledger[0]["estimated_cost_usd"] == 0
+
+
+def test_ai_coach_ledger_estimates_audio_when_provider_omits_audio_usage(monkeypatch):
+    ledger = []
+    monkeypatch.setattr(
+        funds_logic,
+        "log_ai_usage",
+        lambda *_args, **kwargs: ledger.append(kwargs["usage"]),
+    )
+
+    ai_coach_api._usage(
+        object(), "alice", "speech_review", "Gemini", {
+            "provider": "gemini",
+            "input_price_per_million": 0.30,
+            "audio_input_price_per_million": 1.00,
+            "output_price_per_million": 2.50,
+        }, True, actual={
+            "input_tokens": 20,
+            "output_tokens": 10,
+            "cost_source": "provider_usage_without_audio_breakdown",
+        }, has_audio=True,
+    )
+
+    assert ledger[0]["audio_tokens"] == (
+        ai_coach_api.SPEECH_REVIEW_AUDIO_TOKEN_ESTIMATE
+    )
 
 
 def test_openrouter_web_search_payload_uses_bounded_result_caps(monkeypatch):
@@ -1457,6 +1507,76 @@ def test_custom_web_research_uses_grounded_default_only(monkeypatch):
     assert args[4]["provider"] == "gemini" and args[5] is True
     assert kwargs["actual"]["cost_source"] == "gemini_usage_metadata"
     assert "gemini-super-secret" not in repr(ledger)
+
+
+def test_competition_prep_coach_claims_and_saves_before_usage(monkeypatch):
+    from core import competition_prep_logic as prep_logic
+
+    events = []
+    snapshots = []
+    bundle = {
+        "project": {
+            "topic_text": "測試辯題", "our_side": "pro",
+            "debate_format": "聯中", "revision": 3,
+        },
+        "role": "owner", "manuscripts": [], "strategy_cards": [],
+        "evidence_cards": [], "weaknesses": [],
+    }
+    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
+    monkeypatch.setattr(ai_coach_api, "_runtime_model_settings", lambda _db: (("model",), "model"))
+    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: {
+        "provider": "gemini", "api_key": "GEMINI_API_KEY",
+    })
+    monkeypatch.setattr(ai_coach_api, "_require_enabled_model", lambda *_args: None)
+    monkeypatch.setattr(ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user"))
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args: "key")
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(prep_logic, "project_bundle", lambda *_args: bundle)
+    def claim(*args, **_kwargs):
+        events.append("claim")
+        snapshots.append(args[6])
+        return {"state": "claimed"}
+
+    monkeypatch.setattr(prep_logic, "claim_ai_run", claim)
+    monkeypatch.setattr(
+        prep_logic, "complete_ai_run",
+        lambda *_args, **_kwargs: events.append("complete"),
+    )
+    monkeypatch.setattr(prep_logic, "release_ai_run", lambda *_args: events.append("release"))
+
+    async def generate(*_args, on_provider_attempt=None, **_kwargs):
+        events.append("provider")
+        on_provider_attempt()
+        return "result", {}
+
+    monkeypatch.setattr(ai_coach_api, "_generate", generate)
+    monkeypatch.setattr(ai_coach_api, "_usage", lambda *_args, **_kwargs: events.append("usage"))
+    body = ai_coach_api.CoachRequest(
+        feature="strategy", model_label="model", prep_project_id=3,
+        operation_id="prep-operation-67890",
+    )
+
+    response = asyncio.run(ai_coach_api.run(body, _request("US")))
+
+    assert json.loads(response.body)["markdown"] == "result"
+    assert events == ["claim", "provider", "complete", "usage"]
+    assert snapshots[0]["project_revision"] == 3
+    assert len(snapshots[0]["input_sha256"]) == 64
+
+    monkeypatch.setattr(
+        prep_logic, "claim_ai_run",
+        lambda *_args, **_kwargs: {"state": "completed", "output": "cached"},
+    )
+
+    async def should_not_call_provider(*_args, **_kwargs):
+        raise AssertionError("completed operation must not call provider again")
+
+    monkeypatch.setattr(ai_coach_api, "_generate", should_not_call_provider)
+    cached = asyncio.run(ai_coach_api.run(body, _request("US")))
+    assert json.loads(cached.body) == {
+        "ok": True, "markdown": "cached", "cached": True,
+    }
 
 
 def test_custom_fallback_failure_logs_safe_fallback_failure(monkeypatch):

@@ -1743,7 +1743,7 @@ def test_guest_first_reserves_creator_side_and_creator_slot():
         )
         assert blocked is None and "主持" in error and close_code == 1013
         assert proxy._room_nonmember_access_error(room, "outsider") == (
-            409, "房間正預留一個位置畀主持。",
+            409, "房間正為主持預留一個位置。",
         )
         host, error, _ = await proxy._room_register_socket(
             room, "host", _WebSocket(),
@@ -2279,7 +2279,8 @@ def test_room_frontend_is_stun_only_and_has_no_render_media_fallback():
 
 
 def test_changed_practice_shells_revalidate_room_contract(monkeypatch):
-    coach = asyncio.run(proxy.ai_coach_page())
+    monkeypatch.setattr(proxy, "_scheduled_feature_page_block", lambda _request: None)
+    coach = asyncio.run(proxy.ai_coach_page(object()))
     assert coach.headers["cache-control"] == "no-cache"
     monkeypatch.setattr(proxy, "require_kiosk_user", lambda _request: "kiosk")
     kiosk = asyncio.run(proxy.appliance_ai_debate_page(object()))

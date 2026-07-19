@@ -75,6 +75,9 @@ def test_domain_save_persists_valid_format_and_clears_irrelevant_minutes():
                 }
             })()
 
+        def scalar(self):
+            return False
+
     class Session:
         def execute(self, statement, params=None):
             statements.append((" ".join(str(statement).split()), params))

@@ -440,7 +440,7 @@
         </div>
       </div>
       <div class="now" id="now">
-        <div class="label">而家發言</div>
+        <div class="label">現在發言</div>
         <div class="role" id="role">—</div>
         <div class="speaker" id="speaker"></div>
       </div>
@@ -1245,7 +1245,7 @@
           } finally {
             setEngine(
               "standby",
-              "lease 已失效；錄音已停止並只保留本機備份，唔會上載或呼叫 AI",
+              "lease 已失效；錄音已停止並只保留本機備份，不會上載或呼叫 AI",
               String(detail || "Kiosk lease 已失效"),
             );
             leaseLossBusy = false;
