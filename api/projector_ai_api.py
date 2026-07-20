@@ -539,6 +539,49 @@ def _open_json(ciphertext) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def load_official_ai_judge_evidence(
+    match_id: str,
+    *,
+    session_id: str = "",
+    db=None,
+) -> dict:
+    """Load one unexpired encrypted full-match transcript for staff scoring."""
+    executor = db or _db()
+    now = _now()
+    _prune_expired(executor, now)
+    requested_session = str(session_id or "").strip()
+    session_filter = "AND session_id=:session" if requested_session else ""
+    rows = executor.query(
+        f"""SELECT session_id,match_id,status,result_ciphertext,result_expires_at
+            FROM {TABLE_SESSIONS}
+            WHERE match_id=:match_id {session_filter}
+              AND status IN ('ready','published')
+              AND result_ciphertext IS NOT NULL
+              AND result_expires_at>:now
+            ORDER BY created_at DESC LIMIT 1""",
+        {
+            "match_id": str(match_id or ""),
+            "session": requested_session,
+            "now": now,
+        },
+    )
+    if rows.empty:
+        raise ValueError("未有可用的完整比賽逐字稿，或兩小時私人保存期限已過。")
+    row = rows.iloc[0]
+    private = _open_json(row.get("result_ciphertext"))
+    transcript = str(private.get("transcript") or "").strip()
+    if not transcript or not bool(private.get("recording_deleted")):
+        raise ValueError("完整比賽逐字稿未完成私隱處理，暫不可用作正式 AI 分紙。")
+    return {
+        "session_id": str(row.get("session_id") or ""),
+        "match_id": str(row.get("match_id") or ""),
+        "transcript": transcript,
+        "result_expires_at": str(row.get("result_expires_at") or ""),
+        "source_model_label": str(private.get("model_label") or ""),
+        "recording_deleted": True,
+    }
+
+
 def _seal_bytes(payload: bytes) -> bytes:
     return _fernet().encrypt(bytes(payload))
 

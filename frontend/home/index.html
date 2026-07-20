@@ -437,6 +437,8 @@
           </div>
           <div class="support-actions">
             <button type="button" data-doc="manual">📖 閱讀使用手冊</button
+            ><button type="button" data-doc="runbook"
+              >🎬 比賽當日 Runbook</button
             ><button type="button" data-doc="rules">📋 查看賽規</button>
           </div>
         </details>
@@ -503,6 +505,7 @@
             "一般人員",
             "內部委員會成員",
           ],
+          runbook: ["主席", "IT 顧問"],
           rules: [],
         };
 
@@ -656,7 +659,9 @@
           $("modalTitle").textContent =
             kind === "manual"
               ? "聖呂中辯電子賽務系統：用戶使用手冊"
-              : "校園隨想辯論比賽：賽規";
+              : kind === "runbook"
+                ? "比賽當日 Runbook"
+                : "校園隨想辯論比賽：賽規";
           $("roleTabs").innerHTML = roles[kind]
             .map(
               (item) =>

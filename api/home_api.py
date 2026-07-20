@@ -35,3 +35,9 @@ def manual(role: str = Query("評判")):
 def rules(role: str = Query("評判")):
     from core import home_logic as logic
     return {"markdown": logic.rules_for_role(role)}
+
+
+@router.get("/runbook")
+def runbook(role: str = Query("主席")):
+    from core import home_logic as logic
+    return {"markdown": logic.runbook_for_role(role)}

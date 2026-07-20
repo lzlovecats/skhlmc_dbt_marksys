@@ -24,7 +24,7 @@ from scoring import (
     is_valid_competition_ranking,
     speech_col,
 )
-from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_SCORE_DRAFTS, TABLE_SCORES
+from schema import TABLE_BEST_DEBATER_RANKINGS, TABLE_DEBATERS, TABLE_DEBATER_SCORES, TABLE_MATCHES, TABLE_OFFICIAL_AI_JUDGE_RUNS, TABLE_SCORE_DRAFTS, TABLE_SCORES
 from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
 HKT = ZoneInfo("Asia/Hong_Kong")
@@ -259,6 +259,10 @@ def save_draft(match_id, judge_name, side, score_data, db=None):
             text(f"""SELECT
                 EXISTS(SELECT 1 FROM {TABLE_SCORES}
                        WHERE match_id=:match_id AND judge_name=:judge) AS submitted,
+                EXISTS(SELECT 1 FROM {TABLE_SCORES}
+                       WHERE match_id=:match_id AND judge_kind='ai') AS ai_submitted,
+                EXISTS(SELECT 1 FROM {TABLE_OFFICIAL_AI_JUDGE_RUNS}
+                       WHERE match_id=:match_id) AS ai_flow_started,
                 (SELECT COUNT(DISTINCT judge_name) FROM {TABLE_SCORE_DRAFTS}
                  WHERE match_id=:match_id) AS n,
                 EXISTS(SELECT 1 FROM {TABLE_SCORE_DRAFTS}
@@ -271,6 +275,10 @@ def save_draft(match_id, judge_name, side, score_data, db=None):
         values = capacity._mapping
         if bool(values["submitted"]):
             raise ValueError("你已提交過評分！無法修改評分！")
+        if bool(values.get("ai_submitted", False)):
+            raise ValueError("本場正式 AI 第三評判分紙已完成，不可再加入真人評分。")
+        if bool(values.get("ai_flow_started", False)):
+            raise ValueError("本場正式 AI 評判流程已開始，真人分紙數目已鎖定。")
         if int(values["n"] or 0) >= JUDGE_MAX_PER_MATCH and not bool(values["current"]):
             raise ValueError("本場評判人數已達保護上限，請聯絡賽會人員。")
         session.execute(
@@ -306,11 +314,19 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data, db=None):
             text(f"""SELECT
                 EXISTS(SELECT 1 FROM {TABLE_SCORES}
                        WHERE match_id=:match_id AND judge_name=:judge_name) AS submitted,
+                EXISTS(SELECT 1 FROM {TABLE_SCORES}
+                       WHERE match_id=:match_id AND judge_kind='ai') AS ai_submitted,
+                EXISTS(SELECT 1 FROM {TABLE_OFFICIAL_AI_JUDGE_RUNS}
+                       WHERE match_id=:match_id) AS ai_flow_started,
                 (SELECT COUNT(*) FROM {TABLE_SCORES} WHERE match_id=:match_id) AS n"""),
             {"match_id": match_id, "judge_name": judge},
         ).fetchone()
         if bool(state._mapping["submitted"]):
             return False
+        if bool(state._mapping.get("ai_submitted", False)):
+            raise ValueError("本場正式 AI 第三評判分紙已完成，不可再加入真人評分。")
+        if bool(state._mapping.get("ai_flow_started", False)):
+            raise ValueError("本場正式 AI 評判流程已開始，真人分紙數目已鎖定。")
         if int(state._mapping["n"] or 0) >= JUDGE_MAX_PER_MATCH:
             raise ValueError("本場評判人數已達保護上限，請聯絡賽會人員。")
         session.execute(
@@ -325,8 +341,8 @@ def submit_final_scores(match_id, judge_name, pro_data, con_data, db=None):
                 for side, data in (("正方", pro), ("反方", con))
             ],
         )
-        session.execute(text(f"""INSERT INTO {TABLE_SCORES} (match_id,judge_name,pro_total_score,con_total_score,submitted_time,pro_free_debate_score,con_free_debate_score,pro_deduction_points,con_deduction_points,pro_coherence_score,con_coherence_score)
-            VALUES (:match_id,:judge_name,:pro_total,:con_total,:submitted_time,:pro_free,:con_free,:pro_deduction,:con_deduction,:pro_coherence,:con_coherence)"""), {"match_id":match_id,"judge_name":judge,"pro_total":pro["final_total"],"con_total":con["final_total"],"submitted_time":now.strftime("%H:%M:%S"),"pro_free":pro["total_b"],"con_free":con["total_b"],"pro_deduction":pro["deduction"],"con_deduction":con["deduction"],"pro_coherence":pro["coherence"],"con_coherence":con["coherence"]})
+        session.execute(text(f"""INSERT INTO {TABLE_SCORES} (match_id,judge_name,pro_total_score,con_total_score,submitted_time,pro_free_debate_score,con_free_debate_score,pro_deduction_points,con_deduction_points,pro_coherence_score,con_coherence_score,judge_kind)
+            VALUES (:match_id,:judge_name,:pro_total,:con_total,:submitted_time,:pro_free,:con_free,:pro_deduction,:con_deduction,:pro_coherence,:con_coherence,'human')"""), {"match_id":match_id,"judge_name":judge,"pro_total":pro["final_total"],"con_total":con["final_total"],"submitted_time":now.strftime("%H:%M:%S"),"pro_free":pro["total_b"],"con_free":con["total_b"],"pro_deduction":pro["deduction"],"con_deduction":con["deduction"],"pro_coherence":pro["coherence"],"con_coherence":con["coherence"]})
         params = [{"match_id":match_id,"judge_name":judge,"side":db_side,"position":index + 1,"score":int(score)} for db_side, data in (("pro",pro),("con",con)) for index, score in enumerate(data["ind_scores"])]
         session.execute(text(f"""INSERT INTO {TABLE_DEBATER_SCORES} (match_id,judge_name,side,position,debater_score)
             VALUES (:match_id,:judge_name,:side,:position,:score)

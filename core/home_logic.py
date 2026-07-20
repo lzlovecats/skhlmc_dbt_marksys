@@ -30,6 +30,13 @@ MANUAL_ROLE_SECTIONS = {
     "一般人員": "四、一般人員",
     "內部委員會成員": "五、內部委員會成員",
 }
+
+RUNBOOK_ROLE_SECTIONS = {
+    "主席": "主席",
+    "IT 顧問": "IT 顧問",
+}
+
+
 def _get_configs(db, keys):
     return get_configs(db, keys)
 
@@ -176,7 +183,7 @@ def run_status_checks(db=None):
     return results
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _read_asset(name):
     try:
         return (ASSETS_DIR / name).read_text(encoding="utf-8")
@@ -203,3 +210,9 @@ def manual_for_role(role):
 def rules_for_role(role):
     """Return the complete official rules; they are not role-specific excerpts."""
     return _read_asset("rules.md")
+
+
+def runbook_for_role(role):
+    role = role if role in RUNBOOK_ROLE_SECTIONS else "主席"
+    content = _read_asset("match_day_runbook.md")
+    return extract_markdown_section(content, 2, RUNBOOK_ROLE_SECTIONS[role]) or content

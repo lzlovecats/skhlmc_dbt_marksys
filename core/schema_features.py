@@ -16,6 +16,7 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*")
 # is an explicit code change to the exact applied migration version; merely
 # finding legacy/lazy-created relations can never turn a feature on.
 FEATURE_MIGRATION_VERSIONS: dict[str, str | None] = {
+    "data_factory": "20260720_0001",
     "dataset_model": None,
     "eval": None,
     "rag": None,

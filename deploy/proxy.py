@@ -99,6 +99,7 @@ from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
 from api.competition_prep_api import router as competition_prep_router
 from api.ai_training_api import router as ai_training_router
+from api.ai_factory_api import router as ai_factory_router
 from api.admin_console_api import router as admin_console_router
 from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
@@ -333,8 +334,13 @@ app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_HTTP_BODY_BYTES)
 
 @app.middleware("http")
 async def enforce_essential_only_budget(request: Request, call_next):
-    """At 4GB, block provider calls while retaining pages, JSON, R2 and admin."""
-    if request.url.path in ESSENTIAL_ONLY_BLOCKED_PATHS:
+    """At 4GB, block non-essential provider calls while retaining core services."""
+    path = request.url.path
+    factory_generation = (
+        path.startswith("/api/ai-training/factory/jobs/")
+        and path.endswith("/generate")
+    )
+    if path in ESSENTIAL_ONLY_BLOCKED_PATHS or factory_generation:
         budget_error = _bandwidth_essential_gate_error()
         if budget_error:
             return JSONResponse({"detail": budget_error}, status_code=429)
@@ -375,6 +381,7 @@ app.include_router(chairperson_router)
 app.include_router(ai_coach_router)
 app.include_router(competition_prep_router)
 app.include_router(ai_training_router)
+app.include_router(ai_factory_router)
 app.include_router(admin_console_router)
 app.include_router(kiosk_router)
 app.include_router(projector_ai_router)

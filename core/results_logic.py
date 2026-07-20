@@ -106,7 +106,8 @@ def _scores(match_id=None, db=None):
     db = _resolve_db(db)
     params = {}
     sql = f"""
-        SELECT s.match_id, s.judge_name, s.pro_total_score, s.con_total_score,
+        SELECT s.match_id, s.judge_name, s.judge_kind,
+               s.pro_total_score, s.con_total_score,
                s.submitted_time, s.pro_free_debate_score, s.con_free_debate_score,
                s.pro_deduction_points, s.con_deduction_points,
                s.pro_coherence_score, s.con_coherence_score,
@@ -387,9 +388,18 @@ def results_data(selected_match_id=None, db=None, match_ids=None):
     best_rows, best = _best_debaters(selected, match_scores, db)
     pro_team, con_team = _clean(match_scores["pro_team"].iloc[0]), _clean(match_scores["con_team"].iloc[0])
     winner = "pro" if pro_votes > con_votes else "con" if con_votes > pro_votes else "draw"
+    judge_kinds = (
+        match_scores["judge_kind"].fillna("human").astype(str)
+        if "judge_kind" in match_scores.columns
+        else pd.Series(["human"] * len(match_scores))
+    )
+    ai_mask = judge_kinds == "ai"
     return {
         "matches": matches, "selected_match_id": selected, "has_scores": True,
         "topic": topic, "judge_count": len(match_scores), "pro_team": pro_team, "con_team": con_team,
+        "human_judge_count": int((~ai_mask).sum()),
+        "ai_judge_count": int(ai_mask.sum()),
+        "ai_judge_names": match_scores.loc[ai_mask, "judge_name"].astype(str).tolist(),
         "pro_votes": pro_votes, "con_votes": con_votes, "draws": draws, "winner": winner,
         "best_debaters": best_rows, "best_debater": best,
         "anomalies": _anomalies(match_scores, final_drafts),

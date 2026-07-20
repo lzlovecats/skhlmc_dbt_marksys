@@ -58,15 +58,18 @@ AI_FEATURE_LABELS = {
     "vote_analysis": "辯題庫 / 往績分析", "vote_discussion": "委員討論回應",
     "tts_review": "AI訓練·錄音檢查", "tts_script_analysis": "AI訓練·句庫分析",
     "llm_review": "AI訓練·文字審查", "tts": "粵語語音合成",
+    "data_factory_generation": "辯論LLM資料工廠·生成",
     "kiosk_match_review": "AI評判易（Kiosk）",
     "kiosk_match_review_tts": "AI評判易·粵語讀出",
+    "official_ai_judge": "正式 AI 第三評判",
 }
 AI_USAGE_FEATURES = (
     "speech_review", "strategy", "competition_prep", "web_research", "fact_check",
     "free_debate_live", "full_mock_live", "vote_review",
     "vote_analysis", "vote_discussion", "tts_review",
     "tts_script_analysis", "llm_review",
-    "kiosk_match_review", "tts", "kiosk_match_review_tts",
+    "data_factory_generation",
+    "kiosk_match_review", "tts", "kiosk_match_review_tts", "official_ai_judge",
 )
 TTS_USAGE_FEATURES = frozenset(("tts", "kiosk_match_review_tts"))
 _AI_PRUNE_LOCK = threading.Lock()
@@ -334,25 +337,15 @@ def prune_ai_usage(db):
         return True
 
 
-def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
-    """Record one provider call using actual or explicitly estimated metadata.
-
-    Failed calls normally remain zero-cost, preserving the legacy behaviour.
-    When a provider may bill an unsuccessful attempt, the caller can pass its
-    known usage metadata and it will be retained instead of silently discarded.
-    ``operation_id`` and ``operation_stage`` correlate multiple provider calls
-    without persisting prompts, transcripts or synthesized text.
-    """
+def _ai_usage_insert_params(user_id, feature, success, usage, error_message):
     if feature not in AI_USAGE_FEATURES:
         raise ValueError("不支援的 AI 功能類型。")
-    db = _resolve_db(db)
-    prune_ai_usage(db)
     usage = usage if isinstance(usage, dict) else {}
     model_label = str(usage.get("model_label") or NON_MANUAL_DEFAULT_AI_MODEL)
     provider = str(usage.get("provider") or "gemini").lower()
     if provider not in AI_PROVIDERS:
         provider = "other"
-    params = {
+    return {
         "user": user_id,
         "feature": feature,
         "model": model_label,
@@ -375,15 +368,45 @@ def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=Non
         "error": str(error_message or "")[:1000],
         "now": _now(),
     }
+
+
+_AI_USAGE_INSERT_SQL = f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}(
+    user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,
+    input_tokens,output_tokens,audio_tokens,billable_characters,search_calls,
+    operation_id,operation_stage,cost_source,status,error_message,created_at
+) VALUES(
+    :user,:feature,:model,:provider,:usd,:hkd,:input,:output,:audio,:characters,
+    :search,:operation_id,:operation_stage,:source,:status,:error,:now
+)"""
+
+
+def log_ai_usage_in_transaction(
+    conn, user_id, feature, success, usage=None, error_message=""
+):
+    """Write one provider-call ledger row inside the caller's transaction."""
+    params = _ai_usage_insert_params(
+        user_id, feature, success, usage, error_message
+    )
+    conn.execute(text(_AI_USAGE_INSERT_SQL), params)
+    return params
+
+
+def log_ai_usage(user_id, feature, success, usage=None, error_message="", db=None):
+    """Record one provider call using actual or explicitly estimated metadata.
+
+    Failed calls normally remain zero-cost, preserving the legacy behaviour.
+    When a provider may bill an unsuccessful attempt, the caller can pass its
+    known usage metadata and it will be retained instead of silently discarded.
+    ``operation_id`` and ``operation_stage`` correlate multiple provider calls
+    without persisting prompts, transcripts or synthesized text.
+    """
+    db = _resolve_db(db)
+    prune_ai_usage(db)
+    params = _ai_usage_insert_params(
+        user_id, feature, success, usage, error_message
+    )
     db.execute(
-        f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}(
-            user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,
-            input_tokens,output_tokens,audio_tokens,billable_characters,search_calls,
-            operation_id,operation_stage,cost_source,status,error_message,created_at
-        ) VALUES(
-            :user,:feature,:model,:provider,:usd,:hkd,:input,:output,:audio,:characters,
-            :search,:operation_id,:operation_stage,:source,:status,:error,:now
-        )""",
+        _AI_USAGE_INSERT_SQL,
         params,
     )
 

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from api.access import require_competition_staff
 
 from debate_timing import DEBATE_FORMATS
+from system_limits import JUDGE_MAX_PER_MATCH
 
 router = APIRouter(prefix="/api/match-info", tags=["match-info"])
 
@@ -22,6 +23,9 @@ class SaveBody(BaseModel):
     con_team: str = Field(default="", max_length=100)
     debate_format: str = Field(default=DEBATE_FORMATS[0], max_length=20)
     free_debate_minutes: float | None = Field(default=None, ge=2, le=10)
+    expected_human_judge_count: int = Field(
+        ge=1, le=JUDGE_MAX_PER_MATCH - 1
+    )
     pro_1: str = Field(default="", max_length=80)
     pro_2: str = Field(default="", max_length=80)
     pro_3: str = Field(default="", max_length=80)

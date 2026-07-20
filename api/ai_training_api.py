@@ -383,7 +383,12 @@ def _prune_audit(db):
                 f"""DELETE FROM {TABLE_AI_TRAINING_AUDIT}
                     WHERE created_at < NOW() - make_interval(days => :days)
                       AND action NOT IN (
-                        'consent_granted','consent_withdrawn','submission_withdrawn'
+                        'consent_granted','consent_withdrawn','submission_withdrawn',
+                        'factory_source_created','factory_source_withdrawn',
+                        'factory_item_reviewed','factory_item_invalidated',
+                        'factory_item_withdrawn','factory_topic_tag_approved',
+                        'factory_topic_tag_retired','factory_release_published',
+                        'factory_release_invalidated'
                       )""",
                 {"days": AI_TRAINING_AUDIT_RETENTION_DAYS},
             )
@@ -1024,6 +1029,15 @@ def withdraw_llm(submission_id: int, request: Request):
     user, db = _ctx(request)
     now = datetime.now()
     changed = False
+    try:
+        from core.ai_factory_store import FACTORY_TABLES
+
+        factory_state = feature_bundle_state(db, "data_factory", FACTORY_TABLES)
+    except Exception as exc:
+        raise HTTPException(503, "資料工廠狀態暫時無法驗證，未有撤回任何資料") from exc
+    if factory_state == PARTIAL:
+        raise HTTPException(503, "資料工廠 migration 不完整，未有撤回任何資料")
+    factory_ready = factory_state == READY
     with db.transaction() as conn:
         current = conn.execute(text(f"""SELECT status
             FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
@@ -1038,6 +1052,15 @@ def withdraw_llm(submission_id: int, request: Request):
             changed = True
             _audit(db, user, "submission_withdrawn", "llm_submission", submission_id,
                    conn=conn)
+        if factory_ready:
+            from core.ai_factory_store import withdraw_submission_sources_in_transaction
+
+            withdraw_submission_sources_in_transaction(
+                conn,
+                user,
+                submission_id,
+                "原始 LLM 投稿由提交者撤回",
+            )
     if changed:
         _prune_audit(db)
     cleanup_params = {
