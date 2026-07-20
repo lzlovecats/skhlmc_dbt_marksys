@@ -425,6 +425,18 @@ def test_claim_enforces_database_locked_global_and_per_manager_concurrency(
     assert error.value.status_code == 429
     assert expected_message in str(error.value)
     assert not any("INSERT INTO ai_factory_attempts" in sql for sql, _ in db.conn.calls)
+    global_sql = next(
+        sql for sql, _params in db.conn.calls
+        if "SELECT COUNT(*) FROM ai_factory_transcript_attempts" in sql
+        and "created_by" not in sql
+    )
+    manager_sql = next(
+        sql for sql, _params in db.conn.calls
+        if "j.created_by=:actor" in sql
+    )
+    assert "FROM ai_factory_transcript_attempts" in global_sql
+    assert "FROM ai_factory_transcript_attempts" in manager_sql
+    assert "JOIN ai_factory_transcript_runs" in manager_sql
     db.conn.assert_done()
 
 

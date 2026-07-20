@@ -388,7 +388,7 @@ def _prune_audit(db):
                         'factory_item_reviewed','factory_item_invalidated',
                         'factory_item_withdrawn','factory_topic_tag_approved',
                         'factory_topic_tag_retired','factory_release_published',
-                        'factory_release_invalidated'
+                        'factory_release_invalidated','factory_transcript_withdrawn'
                       )""",
                 {"days": AI_TRAINING_AUDIT_RETENTION_DAYS},
             )

@@ -16,6 +16,13 @@ BUDGET_GATE_UP_PATH = (
 BUDGET_GATE_DOWN_PATH = (
     ROOT / "migrations/20260720_0008_remove_ai_factory_budget_gate.down.sql"
 )
+TRANSCRIPT_UP_PATH = (
+    ROOT / "migrations/20260720_0009_add_transcript_structure_factory.up.sql"
+)
+TRANSCRIPT_DOWN_PATH = (
+    ROOT / "migrations/20260720_0009_add_transcript_structure_factory.down.sql"
+)
+AI_TRAINING_API_PATH = ROOT / "api/ai_training_api.py"
 
 FACTORY_TABLES = {
     "ai_factory_sources",
@@ -28,6 +35,14 @@ FACTORY_TABLES = {
     "ai_factory_release_items",
 }
 
+TRANSCRIPT_TABLES = {
+    "ai_factory_transcripts",
+    "ai_factory_transcript_runs",
+    "ai_factory_transcript_windows",
+    "ai_factory_transcript_attempts",
+    "ai_factory_transcript_segments",
+}
+
 PERMANENT_FACTORY_AUDIT_ACTIONS = {
     "factory_source_created",
     "factory_source_withdrawn",
@@ -38,12 +53,13 @@ PERMANENT_FACTORY_AUDIT_ACTIONS = {
     "factory_topic_tag_retired",
     "factory_release_published",
     "factory_release_invalidated",
+    "factory_transcript_withdrawn",
 }
 
 
 def test_data_factory_feature_is_explicit_and_old_optional_bundles_stay_disabled():
     assert schema_features.FEATURE_MIGRATION_VERSIONS == {
-        "data_factory": "20260720_0001",
+        "data_factory": "20260720_0009",
         "dataset_model": None,
         "eval": None,
         "rag": None,
@@ -85,7 +101,7 @@ def test_factory_bootstrap_mirrors_tables_marker_and_privacy_boundary():
     for table in FACTORY_TABLES:
         assert f"CREATE TABLE IF NOT EXISTS {table}" in ddl
         assert table in lock
-    assert "skhlmc-feature:data_factory:20260720_0001" in ddl
+    assert "skhlmc-feature:data_factory:20260720_0009" in ddl
     assert "llm_submission" in ddl
     assert "admin_paste" in ddl
     assert "submission_confirmed" in ddl
@@ -94,6 +110,53 @@ def test_factory_bootstrap_mirrors_tables_marker_and_privacy_boundary():
     assert "'anon', 'authenticated'" in lock
     factory_index = schema.ALL_SCHEMAS.index(schema.CREATE_AI_DATA_FACTORY)
     assert schema.ALL_SCHEMAS[factory_index + 1] == schema.LOCK_AI_DATA_FACTORY_PRIVILEGES
+    assert schema.ALL_SCHEMAS[factory_index + 2] == schema.CREATE_AI_FACTORY_TRANSCRIPT_WORKFLOW
+    assert schema.ALL_SCHEMAS[factory_index + 3] == schema.LOCK_AI_FACTORY_TRANSCRIPT_PRIVILEGES
+
+
+def test_transcript_factory_migration_is_private_versioned_and_reversible():
+    up = TRANSCRIPT_UP_PATH.read_text(encoding="utf-8")
+    down = TRANSCRIPT_DOWN_PATH.read_text(encoding="utf-8")
+
+    assert created_table_names(up) == TRANSCRIPT_TABLES
+    assert browser_privilege_revokes(up) == TRANSCRIPT_TABLES
+    assert "skhlmc-feature:data_factory:20260720_0009" in up
+    assert "transcript_structure_v1" in up
+    assert "char_length(content_text) BETWEEN 1 AND 200000" in up
+    assert "attempt_no BETWEEN 1 AND 3" in up
+    assert "status IN ('draft', 'invalidated')" in up
+    assert "factory_transcript_withdrawn" in up
+    assert "factory_transcript_withdrawn" in schema.CREATE_INDICES
+    assert "ON DELETE CASCADE" not in up
+    assert "refusing to remove used transcript factory data" in down
+    assert "DELETE FROM" not in down.upper()
+    assert "skhlmc-feature:data_factory:20260720_0001" in down
+
+
+def test_transcript_factory_bootstrap_matches_migration_tables_and_privacy():
+    pattern = re.compile(
+        r"CREATE TABLE(?: IF NOT EXISTS)? (?:public\.)?"
+        r"(ai_factory_[a-z_]+) \((.*?)\n\);",
+        re.DOTALL,
+    )
+
+    def definitions(sql):
+        values = {}
+        for name, body in pattern.findall(sql):
+            if name not in TRANSCRIPT_TABLES:
+                continue
+            normalized = " ".join(body.replace("public.", "").split())
+            normalized = re.sub(r"\(\s+", "(", normalized)
+            normalized = re.sub(r"\s+\)", ")", normalized)
+            values[name] = normalized
+        return values
+
+    migrated = definitions(TRANSCRIPT_UP_PATH.read_text(encoding="utf-8"))
+    bootstrapped = definitions(schema.CREATE_AI_FACTORY_TRANSCRIPT_WORKFLOW)
+    assert migrated == bootstrapped
+    assert set(migrated) == TRANSCRIPT_TABLES
+    for table in TRANSCRIPT_TABLES:
+        assert table in schema.LOCK_AI_FACTORY_TRANSCRIPT_PRIVILEGES
 
 
 def test_factory_bootstrap_table_definitions_match_the_migration():
@@ -173,10 +236,15 @@ def test_factory_down_refuses_used_bundle_and_drops_in_dependency_order():
 
 
 def test_factory_governance_audit_actions_are_permanent_in_schema_and_migration():
-    up = UP_PATH.read_text(encoding="utf-8")
+    migrations = "\n".join((
+        UP_PATH.read_text(encoding="utf-8"),
+        TRANSCRIPT_UP_PATH.read_text(encoding="utf-8"),
+    ))
+    runtime_maintenance = AI_TRAINING_API_PATH.read_text(encoding="utf-8")
     for action in PERMANENT_FACTORY_AUDIT_ACTIONS:
-        assert action in up
+        assert action in migrations
         assert action in schema.CREATE_INDICES
+        assert action in runtime_maintenance
 
 
 def test_factory_generation_uses_shared_ai_fund_accounting(monkeypatch):

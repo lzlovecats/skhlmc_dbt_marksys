@@ -24,6 +24,11 @@ from schema import (
     TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_SOURCES,
     TABLE_AI_FACTORY_TOPIC_TAGS,
+    TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_RUNS,
+    TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS,
+    TABLE_AI_FACTORY_TRANSCRIPTS,
     TABLE_AI_TRAINING_AUDIT,
     TABLE_LLM_TRAINING_SUBMISSIONS,
 )
@@ -56,6 +61,11 @@ FACTORY_TABLES = (
     TABLE_AI_FACTORY_ITEM_TAGS,
     TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_RELEASE_ITEMS,
+    TABLE_AI_FACTORY_TRANSCRIPTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_RUNS,
+    TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS,
+    TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS,
 )
 SOURCE_KINDS = frozenset(("llm_submission", "admin_paste"))
 RIGHTS_BASES = frozenset(
@@ -835,8 +845,12 @@ def claim_attempt(
         global_active = int(
             conn.execute(
                 text(
-                    f"""SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS}
-                        WHERE status IN ('claimed','running')"""
+                    f"""SELECT
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS}
+                            WHERE status IN ('claimed','running'))
+                        +
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS}
+                            WHERE status IN ('claimed','running'))"""
                 )
             ).scalar()
             or 0
@@ -844,9 +858,16 @@ def claim_attempt(
         manager_active = int(
             conn.execute(
                 text(
-                    f"""SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS} a
-                        JOIN {TABLE_AI_FACTORY_JOBS} j ON j.id=a.job_id
-                        WHERE a.status IN ('claimed','running') AND j.created_by=:actor"""
+                    f"""SELECT
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS} a
+                            JOIN {TABLE_AI_FACTORY_JOBS} j ON j.id=a.job_id
+                            WHERE a.status IN ('claimed','running')
+                              AND j.created_by=:actor)
+                        +
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS} a
+                            JOIN {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} r ON r.id=a.run_id
+                            WHERE a.status IN ('claimed','running')
+                              AND r.created_by=:actor)"""
                 ),
                 {"actor": str(actor)},
             ).scalar()

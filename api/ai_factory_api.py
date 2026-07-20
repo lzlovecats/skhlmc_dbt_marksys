@@ -42,6 +42,7 @@ from core.ai_data_factory import (
 )
 from core.ai_factory_store import (
     FACTORY_TABLES,
+    RIGHTS_BASES,
     SOURCE_LANGUAGES,
     FactoryStoreError,
     canonical_json,
@@ -54,6 +55,8 @@ from core.ai_factory_store import (
     get_release_for_download,
     get_source,
     mark_provider_started,
+    new_id,
+    normalized_content,
     reap_stale_attempts,
     review_item,
     sha256_text,
@@ -61,6 +64,28 @@ from core.ai_factory_store import (
     utc_now,
     withdraw_item,
     withdraw_source,
+)
+from core.ai_transcript_factory import (
+    TRANSCRIPT_STRUCTURE_RECIPE,
+    TranscriptWindow,
+    build_transcript_prompt,
+    build_transcript_window_plan,
+    estimate_transcript_cost,
+    parse_validate_transcript_boundaries,
+    transcript_manifest_hash,
+    transcript_preview_hashes,
+    transcript_provider_payload,
+    transcript_recipe_metadata,
+)
+from core.ai_transcript_store import (
+    claim_transcript_window,
+    complete_transcript_attempt,
+    confirm_transcript_run,
+    create_transcript_preview,
+    fail_transcript_attempt,
+    mark_transcript_provider_started,
+    review_transcript_segment,
+    withdraw_transcript,
 )
 from core.roles import is_ai_manager
 from core.schema_features import PARTIAL, READY, feature_bundle_state
@@ -71,6 +96,10 @@ from schema import (
     TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_SOURCES,
     TABLE_AI_FACTORY_TOPIC_TAGS,
+    TABLE_AI_FACTORY_TRANSCRIPT_RUNS,
+    TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS,
+    TABLE_AI_FACTORY_TRANSCRIPTS,
     TABLE_LLM_TRAINING_SUBMISSIONS,
 )
 from system_limits import (
@@ -85,6 +114,9 @@ from system_limits import (
     AI_FACTORY_SOURCE_NOTE_MAX_CHARS,
     AI_FACTORY_TOPIC_TAG_MAX,
     AI_FACTORY_TOPIC_TAG_MAX_CHARS,
+    AI_FACTORY_TRANSCRIPT_MAX_CHARS,
+    AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS,
+    AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS,
     AI_PROVIDER_OUTPUT_MAX_TOKENS,
     AI_TRAINING_JSON_MAX_BYTES,
     AI_TRAINING_PROVIDER_TIMEOUT_SECONDS,
@@ -93,15 +125,34 @@ from system_limits import (
 
 router = APIRouter(prefix="/api/ai-training/factory", tags=["ai-training-factory"])
 CONFIRMATION_VERSION = "factory-send-v1"
+TRANSCRIPT_CONFIRMATION_VERSION = "transcript-send-v1"
 THIRD_PARTY_WARNING = (
     "以上完整 system prompt、user prompt 及來源文字會傳送到所選第三方 AI "
     "provider；請先確認內容已匿名化並具有所需使用權。"
 )
 _RECIPE_LABELS = {
-    "rag_knowledge_card_v1": "RAG 知識卡",
-    "rag_argument_decomposition_v1": "RAG 論證拆解",
+    "rag_knowledge_card_v1": "RAG 來源知識卡",
+    "rag_argument_decomposition_v1": "RAG 論證拆解卡",
     "sft_speech_critique_v1": "演辭評改",
-    "sft_attack_defence_v1": "三輪攻防",
+    "sft_attack_defence_v1": "SFT 攻防演練對話",
+    TRANSCRIPT_STRUCTURE_RECIPE: "完整逐字稿結構拆分",
+}
+_RECIPE_DESCRIPTIONS = {
+    "rag_knowledge_card_v1": (
+        "將來源整理為摘要、重點主張及限制，供日後進行語意檢索，並在回答問題時引用。"
+    ),
+    "rag_argument_decomposition_v1": (
+        "將論證拆分為主張、前提、機制、影響、反駁及比較，方便按論證結構檢索和分析。"
+    ),
+    "sft_speech_critique_v1": (
+        "把來源發言製成演辭與教練評語配對，供模型學習具體、平衡且可執行的評改方式。"
+    ),
+    "sft_attack_defence_v1": (
+        "根據已標示正方或反方的來源建立三輪模擬攻防對話，供模型學習連貫追問及回應。"
+    ),
+    TRANSCRIPT_STRUCTURE_RECIPE: (
+        "把未分段的完整比賽逐字稿拆成可核對的發言段落，標示辯位、立場、環節及需要人工確認的內容。"
+    ),
 }
 _PII_PATTERNS = (
     ("可能包含香港身份證號碼", re.compile(r"(?i)(?<![A-Z0-9])[A-Z]{1,2}\d{6}\([0-9A]\)(?![A-Z0-9])")),
@@ -138,6 +189,30 @@ class FactoryGenerateBody(BaseModel):
     anonymized_confirmed: bool = False
     third_party_confirmed: bool = False
     pii_override_reason: str = Field(default="", max_length=1000)
+
+
+class TranscriptPreviewBody(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    topic_text: str = Field(default="", max_length=500)
+    source_note: str = Field(min_length=1, max_length=AI_FACTORY_SOURCE_NOTE_MAX_CHARS)
+    language: str = Field(default=LANGUAGE, max_length=35)
+    rights_basis: str = Field(max_length=40)
+    rights_for_storage_confirmed: bool = False
+    content_text: str = Field(min_length=1, max_length=AI_FACTORY_TRANSCRIPT_MAX_CHARS)
+    model_label: str = Field(default=NON_MANUAL_DEFAULT_AI_MODEL, max_length=200)
+    manager_instruction: str = Field(default="", max_length=AI_FACTORY_INSTRUCTION_MAX_CHARS)
+
+
+class TranscriptConfirmBody(BaseModel):
+    preview_token: str = Field(min_length=1, max_length=30_000)
+    rights_confirmed: bool = False
+    anonymized_confirmed: bool = False
+    third_party_confirmed: bool = False
+    pii_override_reason: str = Field(default="", max_length=1000)
+
+
+class TranscriptWithdrawBody(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class FactoryReviewBody(BaseModel):
@@ -504,9 +579,10 @@ def bootstrap(request: Request):
         )
         tags = [dict(row) for row in frame.to_dict("records")]
     recipes = []
-    for recipe in list_recipe_metadata():
+    for recipe in [*list_recipe_metadata(), transcript_recipe_metadata()]:
         value = dict(recipe)
         value["label"] = _RECIPE_LABELS[value["recipe_id"]]
+        value["description"] = _RECIPE_DESCRIPTIONS[value["recipe_id"]]
         recipes.append(value)
     readiness = {
         "ready": state == READY,
@@ -533,6 +609,7 @@ def bootstrap(request: Request):
             "limits": {
                 "source_max_chars": AI_FACTORY_SOURCE_MAX_CHARS,
                 "source_note_max_chars": AI_FACTORY_SOURCE_NOTE_MAX_CHARS,
+                "transcript_max_chars": AI_FACTORY_TRANSCRIPT_MAX_CHARS,
                 "instruction_max_chars": AI_FACTORY_INSTRUCTION_MAX_CHARS,
                 "default_items_per_job": AI_FACTORY_CANDIDATE_DEFAULT,
                 "max_items_per_job": AI_FACTORY_CANDIDATE_MAX,
@@ -638,6 +715,516 @@ def withdraw_factory_source(
     return _store_call(withdraw_source, db, user, source_id, reason)
 
 
+@router.post("/transcripts/preview")
+def preview_transcript(body: TranscriptPreviewBody, request: Request):
+    user, db = _manager(request)
+    _require_ready(db)
+    if not body.rights_for_storage_confirmed:
+        raise HTTPException(400, "請先確認你有權儲存及處理這份逐字稿")
+    if body.language not in SOURCE_LANGUAGES:
+        raise HTTPException(400, "逐字稿來源語言不正確")
+    if body.rights_basis not in RIGHTS_BASES:
+        raise HTTPException(400, "逐字稿權利依據不正確")
+    title = body.title.strip()
+    source_note = body.source_note.strip()
+    if not title or not source_note:
+        raise HTTPException(400, "逐字稿標題及來源說明不可留空")
+    content = normalized_content(body.content_text)
+    if not content:
+        raise HTTPException(400, "逐字稿內容不可為空")
+    if len(content) > AI_FACTORY_TRANSCRIPT_MAX_CHARS:
+        raise HTTPException(413, f"完整逐字稿最多 {AI_FACTORY_TRANSCRIPT_MAX_CHARS} 字")
+    if AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS > AI_PROVIDER_OUTPUT_MAX_TOKENS:
+        raise HTTPException(503, "伺服器模型輸出上限不足以完成逐字稿拆分")
+    config, _api_key = _model_config(db, body.model_label)
+    instruction = body.manager_instruction.strip()
+    transcript_id = new_id("transcript")
+    run_id = new_id("transcript_run")
+    content_sha = sha256_text(content)
+    windows = _contract_call(build_transcript_window_plan, len(content))
+    prompts = [
+        _contract_call(
+            build_transcript_prompt,
+            content,
+            window,
+            manager_instruction=instruction,
+        )
+        for window in windows
+    ]
+    previews = []
+    for prompt in prompts:
+        provider_payload = transcript_provider_payload(
+            body.model_label, config, prompt,
+        )
+        input_sha, preview_sha = transcript_preview_hashes(
+            transcript_id, content_sha, prompt, provider_payload,
+        )
+        previews.append({
+            **prompt.window.to_dict(),
+            "prompt_sha256": prompt.prompt_sha256,
+            "input_sha256": input_sha,
+            "preview_sha256": preview_sha,
+            "system_prompt": prompt.system,
+            "user_prompt": prompt.user,
+            "provider_payload": provider_payload,
+        })
+    manifest_sha = transcript_manifest_hash(previews)
+    estimate = estimate_transcript_cost(config, prompts)
+    expires = utc_now() + timedelta(seconds=AI_FACTORY_PREVIEW_TTL_SECONDS)
+    preview_secret = _preview_secret()
+    warnings = list(dict.fromkeys(
+        _pii_warnings("\n".join((
+            title, body.topic_text, source_note, instruction, content,
+        )))
+    ))
+    from core import r2_storage
+
+    claim = {
+        "kind": "ai_factory_transcript_preview",
+        "confirmation_version": TRANSCRIPT_CONFIRMATION_VERSION,
+        "user_id": user,
+        "transcript_id": transcript_id,
+        "run_id": run_id,
+        "content_sha256": content_sha,
+        "manifest_sha256": manifest_sha,
+        "model_label": body.model_label,
+        "provider": str(config["provider"]),
+        "provider_model": str(config["model"]),
+        "prompt_version": prompts[0].prompt_version,
+        "prompt_template_sha256": prompts[0].prompt_template_sha256,
+        "window_count": len(previews),
+        "pii_warnings": warnings,
+        "estimate": json_safe(estimate),
+    }
+    token = r2_storage.sign_upload_claim(
+        claim, preview_secret, expires=AI_FACTORY_PREVIEW_TTL_SECONDS,
+    )
+    stored = _store_call(
+        create_transcript_preview,
+        db,
+        user,
+        transcript_id=transcript_id,
+        run_id=run_id,
+        title=title,
+        topic_text=body.topic_text.strip(),
+        source_note=source_note,
+        language_code=body.language,
+        rights_basis=body.rights_basis,
+        content_text=content,
+        content_sha256=content_sha,
+        model_label=body.model_label,
+        provider=str(config["provider"]),
+        provider_model=str(config["model"]),
+        prompt_version=prompts[0].prompt_version,
+        prompt_template_sha256=prompts[0].prompt_template_sha256,
+        instruction_text=instruction,
+        manifest_sha256=manifest_sha,
+        preview_expires_at=expires,
+        estimated_cost_hkd=estimate["estimated_cost_hkd"],
+        window_previews=previews,
+    )
+    stored_by_ordinal = {
+        int(item["ordinal"]): str(item["id"])
+        for item in stored["windows"]
+    }
+    return json_safe({
+        "transcript_id": transcript_id,
+        "run_id": run_id,
+        "preview_token": token,
+        "recipe_id": TRANSCRIPT_STRUCTURE_RECIPE,
+        "model_label": body.model_label,
+        "provider": config["provider"],
+        "provider_model": config["model"],
+        "content_length": len(content),
+        "content_sha256": content_sha,
+        "manifest_sha256": manifest_sha,
+        "window_count": len(previews),
+        "windows": [
+            {**item, "id": stored_by_ordinal[int(item["ordinal"])]}
+            for item in previews
+        ],
+        "estimate": estimate,
+        "expires_at": expires.isoformat(),
+        "pii_warnings": warnings,
+        "third_party_warning": THIRD_PARTY_WARNING,
+    })
+
+
+@router.post("/transcripts/{transcript_id}/withdraw")
+def withdraw_factory_transcript(
+    transcript_id: str,
+    request: Request,
+    body: TranscriptWithdrawBody,
+):
+    user, db = _manager(request)
+    _require_ready(db)
+    reason = body.reason.strip()
+    return _store_call(
+        withdraw_transcript,
+        db,
+        user,
+        transcript_id,
+        reason,
+    )
+
+
+@router.post("/transcript-runs/{run_id}/confirm")
+def confirm_transcript(run_id: str, body: TranscriptConfirmBody, request: Request):
+    user, db = _manager(request)
+    _require_ready(db)
+    from core import r2_storage
+
+    signed = r2_storage.verify_upload_claim(body.preview_token, _preview_secret())
+    if not isinstance(signed, dict) or signed.get("kind") != "ai_factory_transcript_preview":
+        raise HTTPException(409, "逐字稿精確預覽已過期或簽署不正確")
+    if str(signed.get("user_id") or "") != user or str(signed.get("run_id") or "") != run_id:
+        raise HTTPException(403, "逐字稿精確預覽不屬於目前管理員或工作")
+    if signed.get("confirmation_version") != TRANSCRIPT_CONFIRMATION_VERSION:
+        raise HTTPException(409, "逐字稿確認文字版本已更新，請重新預覽")
+    warnings = signed.get("pii_warnings") or []
+    if not isinstance(warnings, list):
+        raise HTTPException(409, "逐字稿個人資料預覽記錄不正確")
+    return _store_call(
+        confirm_transcript_run,
+        db,
+        user,
+        run_id,
+        manifest_sha256=str(signed.get("manifest_sha256") or ""),
+        confirmation_version=TRANSCRIPT_CONFIRMATION_VERSION,
+        anonymization_confirmed=body.anonymized_confirmed,
+        rights_confirmed=body.rights_confirmed,
+        third_party_confirmed=body.third_party_confirmed,
+        pii_warning_count=len(warnings),
+        pii_override_reason=body.pii_override_reason,
+    )
+
+
+def _claimed_transcript_window(value: dict) -> TranscriptWindow:
+    return TranscriptWindow(
+        ordinal=int(value["window_ordinal"]),
+        context_start=int(value["context_start"]),
+        context_end=int(value["context_end"]),
+        core_start=int(value["core_start"]),
+        core_end=int(value["core_end"]),
+    )
+
+
+@router.post("/transcript-runs/{run_id}/next")
+async def generate_next_transcript_window(run_id: str, request: Request):
+    user, db = _manager(request)
+    _require_ready(db)
+    _require_nonessential_bandwidth()
+    claimed = _store_call(claim_transcript_window, db, user, run_id)
+    if claimed.get("done"):
+        return claimed
+    attempt_id = str(claimed["attempt_id"])
+    raw_text = ""
+    raw_usage = {}
+    provider_called = False
+    config = None
+    estimate = None
+
+    def mark_attempt_started():
+        nonlocal provider_called
+        _store_call(mark_transcript_provider_started, db, attempt_id)
+        provider_called = True
+
+    try:
+        config, api_key = _model_config(db, str(claimed["model_label"]))
+        if (
+            str(config.get("provider") or "") != str(claimed["provider"])
+            or str(config.get("model") or "") != str(claimed["provider_model"])
+        ):
+            raise HTTPException(409, "逐字稿工作所鎖定的模型設定已改變")
+        window = _claimed_transcript_window(claimed)
+        prompt = _contract_call(
+            build_transcript_prompt,
+            str(claimed["content_text"]),
+            window,
+            manager_instruction=str(claimed.get("instruction_text") or ""),
+        )
+        provider_payload = transcript_provider_payload(
+            str(claimed["model_label"]), config, prompt,
+        )
+        input_sha, preview_sha = transcript_preview_hashes(
+            str(claimed["transcript_id"]),
+            str(claimed["content_sha256"]),
+            prompt,
+            provider_payload,
+        )
+        pinned = (
+            str(claimed["prompt_version"]),
+            str(claimed["prompt_template_sha256"]),
+            str(claimed["prompt_sha256"]),
+            str(claimed["input_sha256"]),
+            str(claimed["preview_sha256"]),
+        )
+        rebuilt = (
+            prompt.prompt_version,
+            prompt.prompt_template_sha256,
+            prompt.prompt_sha256,
+            input_sha,
+            preview_sha,
+        )
+        if pinned != rebuilt:
+            raise HTTPException(409, "逐字稿精確預覽無法重建，沒有呼叫 AI provider")
+        estimate = estimate_transcript_cost(config, [prompt])
+        from core.ai_provider import generate_text
+
+        _account_provider_bytes(
+            user,
+            run_id,
+            len(prompt.system.encode("utf-8")) + len(prompt.user.encode("utf-8")),
+        )
+        raw_text, raw_usage = await generate_text(
+            config,
+            prompt.system,
+            prompt.user,
+            api_key=api_key,
+            web_search=False,
+            max_prompt_chars=len(prompt.system) + len(prompt.user),
+            timeout_seconds=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS,
+            temperature=prompt.temperature,
+            require_complete=True,
+            structured_json=True,
+            preserve_text=True,
+            max_response_bytes=AI_TRAINING_JSON_MAX_BYTES,
+            max_output_tokens=AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS,
+            on_provider_attempt=mark_attempt_started,
+        )
+        response_bytes = len(raw_text.encode("utf-8"))
+        _account_provider_bytes(user, run_id, response_bytes)
+        parsed = parse_validate_transcript_boundaries(raw_text, window=window)
+        usage = _actual_usage(
+            raw_usage,
+            config,
+            str(claimed["model_label"]),
+            run_id,
+            int(claimed["attempt_no"]),
+            fallback_estimate=estimate,
+        )
+        result = _store_call(
+            complete_transcript_attempt,
+            db,
+            user,
+            attempt_id,
+            boundaries=list(parsed.boundaries),
+            response_sha256=parsed.provider_text_sha256,
+            response_bytes=response_bytes,
+            usage=usage,
+        )
+        return {
+            **result,
+            "run_id": run_id,
+            "window_ordinal": int(claimed["window_ordinal"]),
+            "window_count": int(claimed["window_count"]),
+        }
+    except HTTPException as exc:
+        try:
+            fail_transcript_attempt(
+                db,
+                user,
+                attempt_id,
+                error_code="factory_state_error",
+                response_sha256=sha256_text(raw_text) if raw_text else "",
+                response_bytes=len(raw_text.encode("utf-8")) if raw_text else 0,
+                provider_called=provider_called,
+                usage=(
+                    _actual_usage(
+                        raw_usage,
+                        config,
+                        str(claimed["model_label"]),
+                        run_id,
+                        int(claimed["attempt_no"]),
+                        fallback_estimate=estimate,
+                    )
+                    if provider_called and config is not None else None
+                ),
+            )
+        except Exception:
+            pass
+        raise exc
+    except FactoryContractError as exc:
+        response_bytes = len(raw_text.encode("utf-8")) if raw_text else 0
+        _store_call(
+            fail_transcript_attempt,
+            db,
+            user,
+            attempt_id,
+            error_code="invalid_provider_output",
+            response_sha256=sha256_text(raw_text) if raw_text else "",
+            response_bytes=response_bytes,
+            provider_called=provider_called,
+            usage=(
+                _actual_usage(
+                    raw_usage,
+                    config,
+                    str(claimed["model_label"]),
+                    run_id,
+                    int(claimed["attempt_no"]),
+                    fallback_estimate=estimate,
+                ) if provider_called and config is not None else None
+            ),
+        )
+        raise HTTPException(502, "AI 回覆未通過逐字稿邊界驗證，請人工重試此視窗") from exc
+    except Exception as exc:
+        response_usage = getattr(exc, "usage", None)
+        if isinstance(response_usage, dict):
+            raw_usage = dict(response_usage)
+        try:
+            fail_transcript_attempt(
+                db,
+                user,
+                attempt_id,
+                error_code="provider_error",
+                response_sha256=sha256_text(raw_text) if raw_text else "",
+                response_bytes=len(raw_text.encode("utf-8")) if raw_text else 0,
+                provider_called=provider_called,
+                usage=(
+                    _actual_usage(
+                        raw_usage,
+                        config,
+                        str(claimed["model_label"]),
+                        run_id,
+                        int(claimed["attempt_no"]),
+                        fallback_estimate=estimate,
+                    ) if provider_called and config is not None else None
+                ),
+            )
+        except Exception:
+            pass
+        raise HTTPException(502, "AI provider 未能完成逐字稿視窗，系統不會自動重試") from exc
+
+
+@router.get("/transcript-runs")
+def transcript_runs(request: Request, page: int = 1):
+    _user, db = _manager(request)
+    _require_ready(db)
+    page, _, offset = bounds(page)
+    total = scalar_count(db, f"SELECT COUNT(*) AS total FROM {TABLE_AI_FACTORY_TRANSCRIPT_RUNS}")
+    frame = db.query(
+        f"""SELECT r.id,r.transcript_id,r.recipe_key,r.model_label,r.status,
+            r.window_count,r.estimated_cost_hkd,r.created_by,r.created_at,r.updated_at,
+            t.title,t.topic_text,t.content_sha256,t.withdrawn_at,t.withdrawal_reason,
+            COALESCE(w.succeeded_windows,0) AS succeeded_windows,
+            COALESCE(w.failed_windows,0) AS failed_windows,
+            COALESCE(s.segment_count,0) AS segment_count,
+            COALESCE(s.pending_segments,0) AS pending_segments
+            FROM {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} r
+            JOIN {TABLE_AI_FACTORY_TRANSCRIPTS} t ON t.id=r.transcript_id
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) FILTER (WHERE status='succeeded') AS succeeded_windows,
+                    COUNT(*) FILTER (WHERE status='failed') AS failed_windows
+                FROM {TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS} WHERE run_id=r.id
+            ) w ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS segment_count,
+                    COUNT(*) FILTER (WHERE review_status='pending') AS pending_segments
+                FROM {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS} WHERE run_id=r.id
+            ) s ON TRUE
+            ORDER BY r.created_at DESC,r.id DESC LIMIT :limit OFFSET :offset""",
+        {"limit": PAGE_SIZE, "offset": offset},
+    )
+    return payload([dict(row) for row in frame.to_dict("records")], page, total)
+
+
+@router.get("/transcript-segments")
+def transcript_segments(request: Request, status: str = "pending", page: int = 1):
+    _user, db = _manager(request)
+    _require_ready(db)
+    if status not in ("pending", "approved", "rejected"):
+        raise HTTPException(400, "逐字稿段落審核狀態不正確")
+    page, _, offset = bounds(page)
+    params = {"status": status, "limit": PAGE_SIZE, "offset": offset}
+    total = scalar_count(
+        db,
+        f"""SELECT COUNT(*) AS total
+            FROM {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS} s
+            JOIN {TABLE_AI_FACTORY_TRANSCRIPTS} t ON t.id=s.transcript_id
+            JOIN {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} r ON r.id=s.run_id
+            WHERE s.review_status=:status AND r.invalidated_at IS NULL
+                AND t.withdrawn_at IS NULL""",
+        params,
+    )
+    frame = db.query(
+        f"""WITH ranked AS (
+            SELECT s.*,
+                ROW_NUMBER() OVER(PARTITION BY s.run_id ORDER BY s.start_offset,s.id) AS sequence_no,
+                COUNT(*) OVER(PARTITION BY s.run_id) AS run_segment_count
+            FROM {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS} s
+        )
+        SELECT s.id,s.run_id,s.transcript_id,s.start_offset,s.end_offset,
+            s.original_json,s.reviewed_json,s.review_status,s.review_note,
+            s.reviewed_by,s.reviewed_at,s.approved_source_id,s.created_at,
+            s.sequence_no,s.run_segment_count,t.title AS transcript_title,
+            t.topic_text,t.content_sha256
+        FROM ranked s
+        JOIN {TABLE_AI_FACTORY_TRANSCRIPTS} t ON t.id=s.transcript_id
+        JOIN {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} r ON r.id=s.run_id
+        WHERE s.review_status=:status AND r.invalidated_at IS NULL
+            AND t.withdrawn_at IS NULL
+        ORDER BY COALESCE(s.reviewed_at,s.created_at),s.run_id,s.start_offset
+        LIMIT :limit OFFSET :offset""",
+        params,
+    )
+    values = []
+    for row in frame.to_dict("records"):
+        value = json_safe(dict(row))
+        value["payload"] = value.get("reviewed_json") or value.get("original_json")
+        value["item_kind"] = "transcript_segment"
+        values.append(value)
+    return payload(values, page, total)
+
+
+@router.get("/transcript-segments/{segment_id}/context")
+def transcript_segment_context(segment_id: str, request: Request):
+    _user, db = _manager(request)
+    _require_ready(db)
+    frame = db.query(
+        f"""SELECT s.id,s.start_offset,s.end_offset,t.id AS transcript_id,
+            t.title,t.content_text,t.content_sha256
+            FROM {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS} s
+            JOIN {TABLE_AI_FACTORY_TRANSCRIPTS} t ON t.id=s.transcript_id
+            JOIN {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} r ON r.id=s.run_id
+            WHERE s.id=:id AND r.invalidated_at IS NULL AND t.withdrawn_at IS NULL""",
+        {"id": segment_id},
+    )
+    if frame.empty:
+        raise HTTPException(404, "找不到逐字稿段落")
+    row = json_safe(dict(frame.iloc[0]))
+    text_value = str(row.pop("content_text"))
+    start = int(row["start_offset"])
+    end = int(row["end_offset"])
+    context_start = max(0, start - AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS)
+    context_end = min(
+        len(text_value), end + AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS,
+    )
+    return {
+        **row,
+        "context_start": context_start,
+        "context_end": context_end,
+        "context_text": text_value[context_start:context_end],
+        "transcript_length": len(text_value),
+    }
+
+
+@router.post("/transcript-segments/{segment_id}/review")
+def review_transcript(
+    segment_id: str, body: FactoryReviewBody, request: Request,
+):
+    user, db = _manager(request)
+    _require_ready(db)
+    return _store_call(
+        review_transcript_segment,
+        db,
+        user,
+        segment_id,
+        decision=body.status,
+        reviewed_payload=body.reviewed_payload if body.status == "approved" else None,
+        note=body.note,
+    )
+
+
 @router.post("/jobs/preview")
 def preview_job(body: FactoryPreviewBody, request: Request):
     user, db = _manager(request)
@@ -652,7 +1239,6 @@ def preview_job(body: FactoryPreviewBody, request: Request):
         raise HTTPException(400, "資料配方不正確")
     config, _api_key = _model_config(db, body.model_label)
     tags = _topic_tags(db, body.topic_tag_ids)
-    preview_secret = _preview_secret()
     if body.job_id:
         _store_call(reap_stale_attempts, db)
         frame = db.query(
@@ -725,6 +1311,7 @@ def preview_job(body: FactoryPreviewBody, request: Request):
     }
     input_sha, preview_sha = _preview_hashes(source, prompt, provider_payload, context)
     expires = utc_now() + timedelta(seconds=AI_FACTORY_PREVIEW_TTL_SECONDS)
+    preview_secret = _preview_secret()
     job = _store_call(
         create_or_refresh_job_preview,
         db,
