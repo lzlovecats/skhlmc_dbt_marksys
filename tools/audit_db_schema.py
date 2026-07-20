@@ -457,6 +457,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print checksum and aggregate object counts instead of definitions",
     )
+    parser.add_argument(
+        "--output",
+        default="",
+        help="write the JSON report to this path instead of standard output",
+    )
     return parser
 
 
@@ -479,7 +484,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Schema audit failed: {type(exc).__name__}", file=sys.stderr)
         return 1
     output = snapshot_summary(snapshot) if args.summary else snapshot
-    print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
+    encoded = json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True)
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(encoded + "\n", encoding="utf-8")
+    else:
+        print(encoded)
     expected = args.expect_checksum.strip().lower()
     return int(bool(expected) and snapshot["schema_checksum"].lower() != expected)
 

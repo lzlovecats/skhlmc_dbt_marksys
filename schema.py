@@ -108,12 +108,14 @@ VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 # Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
 CREATE_ACCOUNTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
-    user_id             TEXT    PRIMARY KEY,
-    password_hash       TEXT,
-    account_status      TEXT    DEFAULT 'inactive',
+    user_id             VARCHAR(50)  PRIMARY KEY,
+    password_hash       VARCHAR(255) NOT NULL,
+    account_status      CHAR(10)     NOT NULL DEFAULT 'inactive',
     active_since        DATE    DEFAULT CURRENT_DATE,
     last_login_at       TIMESTAMP,
-    account_disabled    BOOLEAN DEFAULT FALSE
+    account_disabled    BOOLEAN DEFAULT FALSE,
+    CONSTRAINT accounts_status_check
+        CHECK (BTRIM(account_status) IN ('admin', 'active', 'inactive'))
 );
 """
 
@@ -121,16 +123,16 @@ CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
 # Stores debate match metadata. Debater names live in DEBATERS.
 CREATE_MATCHES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_MATCHES} (
-    match_id               TEXT    PRIMARY KEY,
+    match_id               VARCHAR(255) PRIMARY KEY,
     match_date             DATE,
     match_time             TIME,
-    topic_text             TEXT,
-    pro_team               TEXT,
-    con_team               TEXT,
+    topic_text             VARCHAR(255),
+    pro_team               VARCHAR(255),
+    con_team               VARCHAR(255),
     debate_format          TEXT    NOT NULL DEFAULT '校園隨想',
     free_debate_minutes    NUMERIC(4,1),
     expected_human_judge_count SMALLINT,
-    access_code_hash       TEXT,
+    access_code_hash       VARCHAR(255),
     review_password_hash   TEXT,
     CONSTRAINT matches_debate_format_check
         CHECK (debate_format IN ('校園隨想', '聯中', '星島', '基本法盃')),
@@ -154,10 +156,14 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCHES} (
 # The approved debate topic bank.
 CREATE_TOPICS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPICS} (
-    topic_text  TEXT    PRIMARY KEY,
-    author      TEXT,
-    category    TEXT,
-    difficulty  INTEGER
+    topic_text  VARCHAR(255) PRIMARY KEY,
+    author      VARCHAR(50),
+    category    VARCHAR(50),
+    difficulty  INTEGER,
+    CONSTRAINT difficulty_range_check
+        CHECK (difficulty BETWEEN 1 AND 3),
+    CONSTRAINT topics_author_fkey
+        FOREIGN KEY (author) REFERENCES {TABLE_ACCOUNTS}(user_id)
 );
 """
 
@@ -181,11 +187,11 @@ CREATE TABLE IF NOT EXISTS {TABLE_DEBATERS} (
 # Stores finalised judge scoresheets (immutable after submission).
 # pro_name / con_name removed — derive from matches via JOIN.
 # Individual debater scores moved to DEBATER_SCORES.
-# One row per (match_id, judge_name) — enforced by UNIQUE constraint.
+# One row per (match_id, judge_name) — enforced by the composite primary key.
 CREATE_SCORES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_SCORES} (
-    match_id                 TEXT,
-    judge_name               TEXT,
+    match_id                 VARCHAR(255) NOT NULL,
+    judge_name               VARCHAR(100) NOT NULL,
     pro_total_score          INTEGER,
     con_total_score          INTEGER,
     submitted_time           TIME,
@@ -197,7 +203,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_SCORES} (
     con_coherence_score      INTEGER,
     judge_kind               TEXT NOT NULL DEFAULT 'human'
                                 CHECK (judge_kind IN ('human', 'ai')),
-    UNIQUE (match_id, judge_name),
+    PRIMARY KEY (match_id, judge_name),
     CONSTRAINT fk_scores_match
         FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
         ON DELETE CASCADE
@@ -246,14 +252,13 @@ CREATE TABLE IF NOT EXISTS {TABLE_BEST_DEBATER_RANKINGS} (
 # `score_payload` stores the validated scoring state as structured JSON.
 CREATE_SCORE_DRAFTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_SCORE_DRAFTS} (
-    match_id        TEXT,
-    judge_name      TEXT,
-    side            TEXT,
-    score_payload   JSONB,
+    match_id        VARCHAR(255) NOT NULL,
+    judge_name      VARCHAR(255) NOT NULL,
+    side            CHAR(10) NOT NULL,
+    score_payload   JSONB NOT NULL,
     is_final        BOOLEAN DEFAULT FALSE,
     updated_at      TIMESTAMP,
-    CONSTRAINT score_drafts_match_judge_side_key
-        UNIQUE (match_id, judge_name, side),
+    PRIMARY KEY (match_id, judge_name, side),
     CONSTRAINT fk_score_drafts_match
         FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
         ON DELETE CASCADE
@@ -385,14 +390,20 @@ END $$;
 # Per-voter ballots live in TOPIC_VOTE_BALLOTS.
 CREATE_TOPIC_VOTES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_VOTES} (
-    topic_text          TEXT    PRIMARY KEY,
-    proposer_user_id    TEXT,
-    status              TEXT    DEFAULT 'pending',
-    created_at          TIMESTAMP,
+    topic_text          VARCHAR(255) PRIMARY KEY,
+    proposer_user_id    VARCHAR(50),
+    status              VARCHAR(20) DEFAULT 'pending',
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deadline_date       DATE,
-    approval_threshold  INTEGER,
-    category            TEXT,
+    approval_threshold  INTEGER NOT NULL,
+    category            VARCHAR(50),
     difficulty          INTEGER,
+    CONSTRAINT topic_votes_status_check
+        CHECK (status IN ('pending', 'passed', 'rejected')),
+    CONSTRAINT topic_votes_threshold_check
+        CHECK (approval_threshold > 0),
+    CONSTRAINT topic_votes_pending_deadline_check
+        CHECK (status <> 'pending' OR deadline_date IS NOT NULL),
     CONSTRAINT fk_topic_votes_proposer_user
         FOREIGN KEY (proposer_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
@@ -406,7 +417,8 @@ CREATE_TOPIC_VOTE_BALLOTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_VOTE_BALLOTS} (
     topic_text          TEXT,
     user_id             TEXT,
-    vote_choice         TEXT    CHECK (vote_choice IN ('agree', 'against')),
+    vote_choice         TEXT    NOT NULL
+                                CHECK (vote_choice IN ('agree', 'against')),
     against_reasons     JSONB   DEFAULT '[]',
     PRIMARY KEY (topic_text, user_id),
     CONSTRAINT fk_topic_vote_ballots_topic
@@ -425,13 +437,21 @@ CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_VOTE_BALLOTS} (
 # status: 'pending' | 'passed' | 'rejected'  (mirrors topic_votes lifecycle)
 CREATE_TOPIC_REMOVAL_VOTES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTES} (
-    topic_text          TEXT    PRIMARY KEY,
-    proposer_user_id    TEXT,
-    status              TEXT    DEFAULT 'pending',
-    removal_reasons     JSONB   DEFAULT '[]',
-    created_at          TIMESTAMP,
+    topic_text          VARCHAR(255) PRIMARY KEY,
+    proposer_user_id    VARCHAR(255),
+    status              CHAR(20) DEFAULT 'pending',
+    removal_reasons     JSONB NOT NULL DEFAULT '[]',
+    created_at          TIMESTAMP NOT NULL,
     deadline_date       DATE,
-    approval_threshold  INTEGER,
+    approval_threshold  INTEGER NOT NULL,
+    CONSTRAINT topic_removal_votes_status_check
+        CHECK (BTRIM(status) IN ('pending', 'passed', 'rejected')),
+    CONSTRAINT topic_removal_votes_threshold_check
+        CHECK (approval_threshold > 0),
+    CONSTRAINT topic_removal_votes_pending_deadline_check
+        CHECK (BTRIM(status) <> 'pending' OR deadline_date IS NOT NULL),
+    CONSTRAINT topic_removal_votes_reasons_array_check
+        CHECK (jsonb_typeof(removal_reasons) = 'array'),
     -- Deliberately no FK to topics: a passed removal deletes the bank row but
     -- the resolved motion and its ballots remain as governance history.
     CONSTRAINT fk_topic_removal_votes_proposer_user
@@ -447,7 +467,8 @@ CREATE_TOPIC_REMOVAL_VOTE_BALLOTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (
     topic_text      TEXT,
     user_id         TEXT,
-    vote_choice     TEXT    CHECK (vote_choice IN ('agree', 'against')),
+    vote_choice     TEXT    NOT NULL
+                            CHECK (vote_choice IN ('agree', 'against')),
     PRIMARY KEY (topic_text, user_id),
     CONSTRAINT fk_topic_removal_vote_ballots_topic
         FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPIC_REMOVAL_VOTES}(topic_text)
@@ -462,8 +483,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (
 # Audit log for all logins (committee personal accounts, admin, score review).
 # login_type: 'committee' | 'admin' | 'score_review'
 CREATE_LOGIN_RECORDS = f"""
+CREATE SEQUENCE IF NOT EXISTS login_record_id_seq AS INTEGER;
 CREATE TABLE IF NOT EXISTS {TABLE_LOGIN_RECORDS} (
-    id              SERIAL      PRIMARY KEY,
+    id              INTEGER     PRIMARY KEY
+                                DEFAULT nextval('login_record_id_seq'),
     user_id         TEXT,
     login_type      TEXT,
     logged_in_at    TIMESTAMP,
@@ -471,6 +494,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_LOGIN_RECORDS} (
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
 );
+ALTER SEQUENCE login_record_id_seq
+    OWNED BY {TABLE_LOGIN_RECORDS}.id;
 """
 
 # Table: NOTIFICATION_READS
@@ -488,7 +513,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_NOTIFICATION_READS} (
     PRIMARY KEY (notification_id, user_id),
     CONSTRAINT fk_notification_reads_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE CASCADE
 );
 """
 
@@ -896,7 +920,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_AI_RUNS} (
 );
 CREATE INDEX IF NOT EXISTS idx_competition_prep_projects_expiry ON {TABLE_COMPETITION_PREP_PROJECTS}(expires_at, id);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_members_user ON {TABLE_COMPETITION_PREP_MEMBERS}(user_id, project_id);
-CREATE INDEX IF NOT EXISTS idx_competition_prep_manuscripts_project ON {TABLE_COMPETITION_PREP_MANUSCRIPTS}(project_id, slot);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_strategy_project ON {TABLE_COMPETITION_PREP_STRATEGY_CARDS}(project_id, sort_order, id);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_evidence_project ON {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_weakness_project ON {TABLE_COMPETITION_PREP_WEAKNESSES}(project_id, status, priority, id);
@@ -1252,12 +1275,31 @@ CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
     intent_id       TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL,
     media_kind      TEXT NOT NULL,
-    object_keys     TEXT NOT NULL,
+    object_keys     JSONB NOT NULL,
     intent_metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     declared_bytes  BIGINT NOT NULL CHECK (declared_bytes > 0),
     status          TEXT NOT NULL DEFAULT 'issued',
     created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMP,
+    CONSTRAINT r2_upload_intents_object_keys_check
+        CHECK (
+            jsonb_typeof(object_keys)='array'
+            AND jsonb_array_length(object_keys)>0
+        ),
+    CONSTRAINT r2_upload_intents_status_check
+        CHECK (
+            status IN (
+                'issued', 'completed', 'processing', 'consumed',
+                'orphan_deleted'
+            )
+        ),
+    CONSTRAINT r2_upload_intents_completion_check
+        CHECK (
+            (status IN ('issued', 'processing') AND completed_at IS NULL)
+            OR
+            (status IN ('completed', 'consumed', 'orphan_deleted')
+                AND completed_at IS NOT NULL)
+        ),
     CONSTRAINT fk_r2_upload_intent_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
@@ -1548,8 +1590,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_LIVE_BRIEFS} (
     brief_id   TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL,
     brief      TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ai_coach_live_briefs_expiry_check
+        CHECK (expires_at > created_at)
 );
 """
 
@@ -2329,11 +2373,9 @@ CREATE TABLE IF NOT EXISTS {TABLE_MOTION_COMMENTS} (
 CREATE_AI_FUND_TRANSACTIONS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
     id                  SERIAL      PRIMARY KEY,
-    transaction_type    TEXT        NOT NULL
-                                CHECK (transaction_type IN ('member_deposit', 'provider_topup', 'provider_refund', 'member_refund', 'adjustment')),
+    transaction_type    TEXT        NOT NULL,
     status              TEXT        DEFAULT 'pending'
                                 CHECK (status IN ('pending', 'confirmed', 'rejected')),
-    provider            TEXT,
     amount_hkd          NUMERIC(10, 2) NOT NULL,
     payment_method      TEXT,
     reference_no        TEXT,
@@ -2345,6 +2387,14 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
     rejected_by         TEXT,
     rejected_at         TIMESTAMP,
     status_note         TEXT,
+    provider            TEXT,
+    CONSTRAINT chk_ai_fund_transaction_type
+        CHECK (
+            transaction_type IN (
+                'member_deposit', 'provider_topup', 'provider_refund',
+                'member_refund', 'adjustment'
+            )
+        ),
     CONSTRAINT fk_ai_fund_tx_created_by
         FOREIGN KEY (created_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL,
@@ -2476,115 +2526,72 @@ CREATE TABLE IF NOT EXISTS {TABLE_BUG_REPORTS} (
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
 DROP VIEW IF EXISTS {VIEW_COMMITTEE_VOTE_ACTIVITY};
 CREATE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
-WITH tv_events AS (
-    SELECT DISTINCT tv.topic_text, tv.created_at
-    FROM {TABLE_TOPIC_VOTES} tv
-    WHERE EXISTS (
-        SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-        WHERE b.topic_text = tv.topic_text
-    )
-),
-tdv_events AS (
-    SELECT DISTINCT tdv.topic_text, tdv.created_at
-    FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
-    WHERE EXISTS (
-        SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-        WHERE b.topic_text = tdv.topic_text
-    )
-),
-all_events AS (
-    SELECT topic_text, created_at, 'tv' AS vote_source FROM tv_events
-    UNION ALL
-    SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
-),
-combined_ballots AS (
-    SELECT
-        b.user_id,
-        b.vote_choice,
-        tv.created_at
-    FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-    JOIN {TABLE_TOPIC_VOTES} tv ON tv.topic_text = b.topic_text
-    UNION ALL
-    SELECT
-        b.user_id,
-        b.vote_choice,
-        tdv.created_at
-    FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-    JOIN {TABLE_TOPIC_REMOVAL_VOTES} tdv ON tdv.topic_text = b.topic_text
-),
-ballot_summary AS (
-    SELECT
-        a.user_id,
-        COUNT(cb.vote_choice) AS total_ballots,
-        COUNT(cb.vote_choice) FILTER (WHERE cb.vote_choice = 'agree') AS agree_ballots
+WITH eligible_accounts AS (
+    SELECT a.user_id, a.account_status, a.active_since
     FROM {TABLE_ACCOUNTS} a
-    LEFT JOIN combined_ballots cb
-      ON cb.user_id = a.user_id
-     AND (a.active_since IS NULL OR cb.created_at::date >= a.active_since)
-    GROUP BY a.user_id
-),
-base_stats AS (
-    SELECT
-        a.user_id,
-        a.account_status,
-        (
-            SELECT COUNT(*) FROM all_events ae
-            WHERE a.active_since IS NULL
-               OR ae.created_at::date >= a.active_since
-        ) AS total_votes,
-        (
-            SELECT COUNT(*) FROM all_events ae
-            WHERE (a.active_since IS NULL OR ae.created_at::date >= a.active_since)
-              AND (
-                  (
-                      ae.vote_source = 'tv'
-                      AND EXISTS (
-                          SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-                          WHERE b.topic_text = ae.topic_text
-                            AND b.user_id = a.user_id
-                      )
-                  ) OR (
-                      ae.vote_source = 'tdv'
-                      AND EXISTS (
-                          SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-                          WHERE b.topic_text = ae.topic_text
-                            AND b.user_id = a.user_id
-                      )
-                  )
-              )
-        ) AS participated_votes,
-        (
-            SELECT COUNT(*) FROM (
-                SELECT ae.topic_text, ae.vote_source
-                FROM all_events ae
-                WHERE a.active_since IS NULL
-                   OR ae.created_at::date >= a.active_since
-                ORDER BY ae.created_at DESC
-                LIMIT 10
-            ) p
-            WHERE (
-                p.vote_source = 'tv'
-                AND EXISTS (
-                    SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-                    WHERE b.topic_text = p.topic_text
-                      AND b.user_id = a.user_id
-                )
-            ) OR (
-                p.vote_source = 'tdv'
-                AND EXISTS (
-                    SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-                    WHERE b.topic_text = p.topic_text
-                      AND b.user_id = a.user_id
-                )
-            )
-        ) AS last10_participated,
-        COALESCE(bs.total_ballots, 0) AS total_ballots,
-        COALESCE(bs.agree_ballots, 0) AS agree_ballots
-    FROM {TABLE_ACCOUNTS} a
-    LEFT JOIN ballot_summary bs ON bs.user_id = a.user_id
     WHERE LOWER(a.user_id) NOT IN ({sql_account_id_literals(NON_MEMBER_ACCOUNT_DB_KEYS)})
       AND a.user_id != ''
       AND COALESCE(a.account_disabled, FALSE) = FALSE
+),
+all_events AS (
+    SELECT tv.topic_text, tv.created_at, 'tv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_VOTES} tv
+    JOIN (
+        SELECT DISTINCT topic_text FROM {TABLE_TOPIC_VOTE_BALLOTS}
+    ) ballots ON ballots.topic_text = tv.topic_text
+    UNION ALL
+    SELECT removal.topic_text, removal.created_at, 'tdv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_REMOVAL_VOTES} removal
+    JOIN (
+        SELECT DISTINCT topic_text FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
+    ) ballots ON ballots.topic_text = removal.topic_text
+),
+event_ballots AS (
+    SELECT ballot.topic_text, ballot.user_id, ballot.vote_choice,
+           'tv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_VOTE_BALLOTS} ballot
+    UNION ALL
+    SELECT ballot.topic_text, ballot.user_id, ballot.vote_choice,
+           'tdv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} ballot
+),
+eligible_activity AS (
+    SELECT
+        account.user_id,
+        event.topic_text,
+        event.vote_source,
+        event.created_at,
+        ballot.vote_choice,
+        ROW_NUMBER() OVER (
+            PARTITION BY account.user_id
+            ORDER BY event.created_at DESC
+        ) AS event_recency
+    FROM eligible_accounts account
+    JOIN all_events event
+      ON account.active_since IS NULL
+      OR event.created_at::DATE >= account.active_since
+    LEFT JOIN event_ballots ballot
+      ON ballot.topic_text = event.topic_text
+     AND ballot.vote_source = event.vote_source
+     AND ballot.user_id = account.user_id
+),
+base_stats AS (
+    SELECT
+        account.user_id,
+        account.account_status,
+        COUNT(activity.topic_text) AS total_votes,
+        COUNT(activity.vote_choice) AS participated_votes,
+        COUNT(activity.vote_choice) FILTER (
+            WHERE activity.event_recency <= 10
+        ) AS last10_participated,
+        COUNT(activity.vote_choice) AS total_ballots,
+        COUNT(activity.vote_choice) FILTER (
+            WHERE activity.vote_choice = 'agree'
+        ) AS agree_ballots
+    FROM eligible_accounts account
+    LEFT JOIN eligible_activity activity
+      ON activity.user_id = account.user_id
+    GROUP BY account.user_id, account.account_status
 )
 SELECT
     user_id,
@@ -2714,6 +2721,14 @@ CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at
     ON {TABLE_LOGIN_RECORDS}(logged_in_at);
 CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at
     ON {TABLE_NOTIFICATION_READS}(read_at);
+CREATE INDEX IF NOT EXISTS idx_llm_training_status_created
+    ON {TABLE_LLM_TRAINING_SUBMISSIONS}(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_training_submitter_created
+    ON {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_monthly_resource_limits_updated
+    ON {TABLE_MONTHLY_RESOURCE_LIMITS}(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
+    ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
     ON {TABLE_AI_TRAINING_AUDIT}(created_at)
     WHERE action NOT IN (
@@ -2746,6 +2761,111 @@ CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created
     ON {TABLE_BUG_REPORTS}(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created
     ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC);
+"""
+
+# Final empty-database privilege contract.  Browser roles never receive direct
+# catalog access; a deployment may later grant app_backend to one secret login.
+LOCK_APPLICATION_PRIVILEGES = """
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+
+DO $bootstrap$
+DECLARE
+    role_name TEXT;
+    object_name TEXT;
+    object_kind "char";
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM '
+            || quote_ident(role_name);
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public '
+            || 'REVOKE ALL PRIVILEGES ON TABLES FROM '
+            || quote_ident(role_name);
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public '
+            || 'REVOKE ALL PRIVILEGES ON SEQUENCES FROM '
+            || quote_ident(role_name);
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public '
+            || 'REVOKE EXECUTE ON FUNCTIONS FROM '
+            || quote_ident(role_name);
+
+        FOR object_name, object_kind IN
+            SELECT c.relname, c.relkind
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public'
+              AND c.relkind IN ('r','p','v','m','f')
+        LOOP
+            EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.'
+                || quote_ident(object_name)
+                || ' FROM ' || quote_ident(role_name);
+        END LOOP;
+
+        FOR object_name IN
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relkind='S'
+        LOOP
+            EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE public.'
+                || quote_ident(object_name)
+                || ' FROM ' || quote_ident(role_name);
+        END LOOP;
+    END LOOP;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname='app_backend'
+    ) THEN
+        CREATE ROLE app_backend
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+            NOINHERIT NOBYPASSRLS;
+    END IF;
+
+    FOR object_name, object_kind IN
+        SELECT c.relname, c.relkind
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public'
+          AND c.relkind IN ('r','p','v','m','f')
+          AND c.relname<>'schema_migrations'
+    LOOP
+        IF object_kind IN ('v','m') THEN
+            EXECUTE 'GRANT SELECT ON TABLE public.'
+                || quote_ident(object_name) || ' TO app_backend';
+        ELSE
+            EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.'
+                || quote_ident(object_name) || ' TO app_backend';
+        END IF;
+    END LOOP;
+
+    FOR object_name IN
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relkind='S'
+    LOOP
+        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.'
+            || quote_ident(object_name) || ' TO app_backend';
+    END LOOP;
+END
+$bootstrap$;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_backend;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO app_backend;
+
+GRANT USAGE ON SCHEMA public TO app_backend;
 """
 
 # Typed, namespaced application configuration.  ``value`` retains its native
@@ -2849,6 +2969,7 @@ ALL_SCHEMAS = [
     CREATE_APP_CONFIG,                  # typed runtime configuration
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
+    LOCK_APPLICATION_PRIVILEGES,          # final database-wide ACL contract
 ]
 
 

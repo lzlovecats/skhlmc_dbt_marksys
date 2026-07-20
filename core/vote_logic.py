@@ -829,16 +829,23 @@ def find_stale_removed_topics(db=None):
 # ─────────────────────────────────────────────────────────────
 def apply_topic_pass(topic, author=None, category=None, difficulty=None, db=None):
     db = _resolve_db(db)
-    db.execute(
-        f"""INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty)
-            VALUES (:topic_text, :author, :category, :difficulty)
-            ON CONFLICT (topic_text) DO NOTHING""",
-        {"topic_text": topic, "author": author, "category": category, "difficulty": difficulty},
-    )
-    return db.execute_count(
-        f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
-        {"topic_text": topic},
-    )
+    with motion_transaction(db, TABLE_TOPIC_VOTES, topic) as transaction_db:
+        transaction_db.execute(
+            f"""INSERT INTO {TABLE_TOPICS} (topic_text, author, category, difficulty)
+                VALUES (:topic_text, :author, :category, :difficulty)
+                ON CONFLICT (topic_text) DO NOTHING""",
+            {
+                "topic_text": topic,
+                "author": author,
+                "category": category,
+                "difficulty": difficulty,
+            },
+        )
+        return transaction_db.execute_count(
+            f"UPDATE {TABLE_TOPIC_VOTES} SET status = 'passed' "
+            "WHERE topic_text = :topic_text AND status = 'pending'",
+            {"topic_text": topic},
+        )
 
 
 def apply_topic_reject(topic, db=None):
@@ -851,15 +858,22 @@ def apply_topic_reject(topic, db=None):
 
 def apply_depose_pass(topic, db=None):
     db = _resolve_db(db)
-    updated = db.execute_count(
-        f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' WHERE topic_text = :topic_text AND status = 'pending'",
-        {"topic_text": topic},
-    )
-    # Always remove the topic from the bank when a removal passes.
-    # Decoupled from `updated` so it self-heals even if the status row was
-    # already resolved (e.g. a prior run/session), preventing stale entries.
-    db.execute(f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text", {"topic_text": topic})
-    return updated
+    with motion_transaction(
+        db, TABLE_TOPIC_REMOVAL_VOTES, topic,
+    ) as transaction_db:
+        updated = transaction_db.execute_count(
+            f"UPDATE {TABLE_TOPIC_REMOVAL_VOTES} SET status = 'passed' "
+            "WHERE topic_text = :topic_text AND status = 'pending'",
+            {"topic_text": topic},
+        )
+        # Always remove the topic from the bank when a removal passes.  Keeping
+        # this in the same transaction also preserves the resolved motion and
+        # ballots after the legacy cascade foreign key is removed.
+        transaction_db.execute(
+            f"DELETE FROM {TABLE_TOPICS} WHERE topic_text = :topic_text",
+            {"topic_text": topic},
+        )
+        return updated
 
 
 def apply_depose_reject(topic, db=None):

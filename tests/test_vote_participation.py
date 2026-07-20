@@ -28,19 +28,19 @@ def _compact(value):
 def test_activity_view_filters_ballots_by_each_members_start_date():
     sql = _compact(CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW)
 
-    # Ballot rows need their motion timestamp before the per-account boundary
-    # can be applied.  Aggregating the two ballot tables first was the shipped
-    # bug: members with active_since set inherited old ballots in this count.
-    assert "JOIN topic_votes tv ON tv.topic_text = b.topic_text" in sql
+    # Eligible events are joined to each account before ballot aggregation, so
+    # no pre-membership ballot can enter either denominator.
     assert (
-        "JOIN topic_removal_votes tdv ON tdv.topic_text = b.topic_text"
+        "JOIN all_events event ON account.active_since IS NULL OR "
+        "event.created_at::DATE >= account.active_since"
         in sql
     )
     assert (
-        "LEFT JOIN combined_ballots cb ON cb.user_id = a.user_id "
-        "AND (a.active_since IS NULL OR cb.created_at::date >= a.active_since)"
+        "LEFT JOIN event_ballots ballot ON ballot.topic_text = event.topic_text"
         in sql
     )
+    assert "ROW_NUMBER() OVER" in sql
+    assert "SELECT COUNT(*) FROM all_events" not in sql
 
 
 def test_activity_view_excludes_every_non_member_system_account():
