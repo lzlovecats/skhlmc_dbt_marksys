@@ -2004,7 +2004,7 @@ async def projector_set_state(request: Request):
     with engine.begin() as conn:
         current = conn.execute(
             text("SELECT match_id, debate_format, seg_index, visible "
-                 "FROM projector_state WHERE display_key = :k"),
+                 "FROM projector_state WHERE display_key = :k FOR UPDATE"),
             {"k": display_key},
         ).fetchone()
         cur = current._mapping if current else {}

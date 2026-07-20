@@ -148,6 +148,22 @@ def test_projector_public_surface_never_contains_transcript_contract():
     assert "projector_ai_markers" in migration
 
 
+def test_projector_public_poll_fails_each_feed_closed_independently():
+    display = (ROOT / "templates" / "projector_display.html").read_text(
+        encoding="utf-8"
+    )
+    poll_block = display.split("async function pollPublic()", 1)[1].split(
+        "function showLogin", 1
+    )[0]
+
+    assert "projectorStateFailures" in poll_block
+    assert "publicAiFailures" in poll_block
+    assert "projectorState = null" in poll_block
+    assert "publicAiState = null" in poll_block
+    assert "renderConnectionStatus()" in poll_block
+    assert "results.some" not in poll_block
+
+
 def test_no_tts_provider_means_text_only_and_no_synthesis(monkeypatch):
     monkeypatch.setattr(proxy, "tts_provider_configured", lambda: False)
 
@@ -467,6 +483,95 @@ def test_first_kiosk_claim_is_active_and_second_same_display_is_standby(monkeypa
     assert first["lease_generation"] == 1
     assert second["role"] == "standby"
     assert state["lease_device_id"] == "a" * 32
+
+
+def test_same_kiosk_tab_reload_rotates_lease_only_without_an_active_session(
+    monkeypatch,
+):
+    now = dt.datetime(2026, 7, 17, 12, 0, 0)
+    client_id = "client-a-abcdefghijkl"
+    state = {
+        "lease_device_id": "a" * 32,
+        "lease_client_id": client_id,
+        "lease_token_hash": projector_ai_api._lease_token_hash("old-token"),
+        "lease_generation": 4,
+        "lease_expires_at": now + dt.timedelta(seconds=15),
+        "current_session_status": "ready",
+        "lease_device_label": "Kiosk A",
+    }
+
+    class Conn:
+        def execute(self, statement, params):
+            sql = " ".join(str(statement).split())
+            if sql.startswith("UPDATE projector_ai_controls"):
+                state.update(
+                    lease_device_id=params["device"],
+                    lease_client_id=params["client"],
+                    lease_token_hash=params["token_hash"],
+                    lease_generation=params["generation"],
+                    lease_expires_at=params["expires"],
+                )
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class DB:
+        @contextmanager
+        def transaction(self):
+            yield Conn()
+
+    monkeypatch.setattr(projector_ai_api, "_require_kiosk", lambda _request: "kiosk")
+    monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+    monkeypatch.setattr(projector_ai_api, "_now", lambda: now)
+    monkeypatch.setattr(projector_ai_api, "_ensure_control", lambda *_args: None)
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_locked_lease_control",
+        lambda _conn, _display: SimpleNamespace(_mapping=state.copy()),
+    )
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_device_for_claim",
+        lambda _conn, _request, _response, _now: {
+            "device_id": "a" * 32,
+            "label": "Kiosk A",
+        },
+    )
+    request = SimpleNamespace(headers={}, cookies={})
+
+    reclaimed = projector_ai_api.claim_kiosk_lease(
+        projector_ai_api.LeaseClaimBody(display="main", client_id=client_id),
+        request,
+        projector_ai_api.Response(),
+    )
+
+    assert reclaimed["role"] == "active"
+    assert reclaimed["lease_generation"] == 5
+    assert reclaimed["lease_token"]
+    assert state["lease_token_hash"] == projector_ai_api._lease_token_hash(
+        reclaimed["lease_token"]
+    )
+
+    with pytest.raises(HTTPException) as malformed:
+        projector_ai_api.claim_kiosk_lease(
+            projector_ai_api.LeaseClaimBody(display="main", client_id=client_id),
+            SimpleNamespace(
+                headers={projector_ai_api.LEASE_GENERATION_HEADER: "5"},
+                cookies={},
+            ),
+            projector_ai_api.Response(),
+        )
+    assert malformed.value.status_code == 423
+    assert state["lease_generation"] == 5
+
+    state["current_session_status"] = "recording"
+    pinned = projector_ai_api.claim_kiosk_lease(
+        projector_ai_api.LeaseClaimBody(display="main", client_id=client_id),
+        request,
+        projector_ai_api.Response(),
+    )
+
+    assert pinned["role"] == "standby"
+    assert pinned["reason"] == "active_session_pinned"
+    assert state["lease_generation"] == 5
 
 
 def test_staff_takeover_cancels_processing_or_interrupts_recording_only_when_confirmed(
@@ -801,6 +906,9 @@ def test_start_waits_for_previous_kiosk_command_ack(monkeypatch):
         def execute(self, statement, params):
             sql = " ".join(str(statement).split())
             statements.append(sql)
+            if sql.startswith("SELECT match_id FROM projector_state"):
+                row = SimpleNamespace(_mapping={"match_id": "M1"})
+                return SimpleNamespace(fetchone=lambda: row)
             if sql.startswith("SELECT kiosk_last_seen_at"):
                 row = SimpleNamespace(
                     _mapping={
@@ -854,6 +962,89 @@ def test_start_waits_for_previous_kiosk_command_ack(monkeypatch):
     assert raised.value.status_code == 409
     assert "上一個控制指令" in raised.value.detail
     assert not any("INSERT INTO projector_ai_sessions" in sql for sql in statements)
+
+
+def test_start_rechecks_locked_projector_match_before_creating_session(monkeypatch):
+    now = dt.datetime(2026, 7, 17, 12, 0, 0)
+    statements = []
+
+    class Conn:
+        def execute(self, statement, params):
+            sql = " ".join(str(statement).split())
+            statements.append(sql)
+            if sql.startswith("SELECT match_id FROM projector_state"):
+                row = SimpleNamespace(_mapping={"match_id": "M2"})
+                return SimpleNamespace(fetchone=lambda: row)
+            if sql.startswith("SELECT kiosk_last_seen_at"):
+                row = SimpleNamespace(
+                    _mapping={
+                        "kiosk_last_seen_at": now,
+                        "hardware_status": {"passed": True},
+                        "capabilities": {"media_primed": True},
+                        "command_revision": 1,
+                        "ack_revision": 1,
+                        "lease_device_id": "device-a",
+                        "lease_generation": 2,
+                        "lease_expires_at": now + dt.timedelta(seconds=15),
+                    }
+                )
+                return SimpleNamespace(fetchone=lambda: row)
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class DB:
+        def query(self, _sql, _params):
+            # The old implementation only checked this stale pre-transaction view.
+            return pd.DataFrame([{"match_id": "M1"}])
+
+        @contextmanager
+        def transaction(self):
+            yield Conn()
+
+    monkeypatch.setattr(
+        projector_ai_api, "require_competition_staff", lambda _request: "staff"
+    )
+    monkeypatch.setattr(projector_ai_api, "_db", lambda: DB())
+    monkeypatch.setattr(projector_ai_api, "_now", lambda: now)
+    monkeypatch.setattr(projector_ai_api, "_prune_expired", lambda _db, _now: None)
+    monkeypatch.setattr(projector_ai_api, "_ensure_control", lambda *_args: None)
+    monkeypatch.setattr(projector_ai_api, "_kiosk_seen_is_fresh", lambda *_args: True)
+    monkeypatch.setattr(projector_ai_api, "_hardware_is_fresh", lambda *_args: True)
+    monkeypatch.setattr(
+        projector_ai_api,
+        "_official_match",
+        lambda _db, _match: {
+            "match_id": "M1",
+            "topic": "測試辯題",
+            "pro_team": "甲隊",
+            "con_team": "乙隊",
+        },
+    )
+    monkeypatch.setattr(projector_ai_api, "_issue_command", lambda *_args, **_kwargs: 2)
+
+    with pytest.raises(HTTPException) as raised:
+        projector_ai_api.start_session(
+            projector_ai_api.StartBody(
+                display="main",
+                match_id="M1",
+                recording_notice_confirmed=True,
+            ),
+            SimpleNamespace(cookies={}),
+        )
+
+    assert raised.value.status_code == 409
+    assert "場次不一致" in raised.value.detail
+    assert any(
+        sql.startswith("SELECT match_id FROM projector_state") and "FOR UPDATE" in sql
+        for sql in statements
+    )
+    assert not any("INSERT INTO projector_ai_sessions" in sql for sql in statements)
+
+    proxy_source = (ROOT / "deploy" / "proxy.py").read_text(encoding="utf-8")
+    state_setter = proxy_source.split(
+        "async def projector_set_state(request: Request):", 1
+    )[1].split("# ---------------------------------------------------------------------------", 1)[0]
+    initial_state_read = state_setter.split("match_row =", 1)[0]
+    assert "FROM projector_state WHERE display_key = :k FOR UPDATE" in initial_state_read
 
 
 def test_completed_review_persists_control_then_session_under_one_transaction(

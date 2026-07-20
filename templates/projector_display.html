@@ -525,7 +525,8 @@
 
         let projectorState = null;
         let publicAiState = null;
-        let publicFailures = 0;
+        let projectorStateFailures = 0;
+        let publicAiFailures = 0;
         let kioskAuthenticated = false;
         let kioskLimits = {
           max_bytes: 12 * 1024 * 1024,
@@ -1108,20 +1109,40 @@
           };
         }
 
+        function renderConnectionStatus() {
+          let message = "";
+          if (KIOSK_MODE && heartbeatFailures > 2) {
+            message = "Kiosk 控制連線中斷，重試中…";
+          } else if (projectorStateFailures > 2 && publicAiFailures > 2) {
+            message = "投影及 AI 公開資料連線中斷，畫面暫停更新…";
+          } else if (projectorStateFailures > 2) {
+            message = "投影資料連線中斷，畫面暫停更新…";
+          } else if (publicAiFailures > 2) {
+            message = "AI 公開資料連線中斷，AI 內容暫停更新…";
+          }
+          $("conn").textContent = message;
+        }
+
         async function pollPublic() {
           const results = await Promise.allSettled([
             fetchJson("/api/projector/state?display=" + encodeURIComponent(DISPLAY)),
             fetchJson("/api/projector/ai/public?display=" + encodeURIComponent(DISPLAY)),
           ]);
-          if (results[0].status === "fulfilled") projectorState = results[0].value;
-          if (results[1].status === "fulfilled") publicAiState = results[1].value;
-          if (results.some((item) => item.status === "fulfilled")) {
-            publicFailures = 0;
-            $("conn").textContent = "";
+          if (results[0].status === "fulfilled") {
+            projectorState = results[0].value;
+            projectorStateFailures = 0;
           } else {
-            publicFailures += 1;
-            if (publicFailures > 2) $("conn").textContent = "連線中斷，重試中…";
+            projectorStateFailures += 1;
+            if (projectorStateFailures > 2) projectorState = null;
           }
+          if (results[1].status === "fulfilled") {
+            publicAiState = results[1].value;
+            publicAiFailures = 0;
+          } else {
+            publicAiFailures += 1;
+            if (publicAiFailures > 2) publicAiState = null;
+          }
+          renderConnectionStatus();
           renderScreens();
         }
 
@@ -1469,15 +1490,15 @@
             mergeLimits(response);
             leaseExpiresAt = String(response.expires_at || leaseExpiresAt);
             heartbeatFailures = 0;
+            renderConnectionStatus();
           } catch (error) {
             heartbeatFailures += 1;
             if (error.status === 401 || error.status === 403) {
               showLogin("kiosk 登入已失效；本機錄音不會自動清除，請重新登入。 ");
             } else if (error.status === 423) {
               await handleLeaseLoss(error.message);
-            } else if (heartbeatFailures > 2) {
-              $("conn").textContent = "Kiosk 控制連線中斷，重試中…";
             }
+            renderConnectionStatus();
           }
         }
 

@@ -1213,14 +1213,20 @@ def start_session(body: StartBody, request: Request):
         raise HTTPException(404, "找不到所選正式場次。")
     if not match.get("topic") or not match.get("pro_team") or not match.get("con_team"):
         raise HTTPException(400, "正式場次的辯題及正反方資料未完整。")
-    current = db.query(
-        "SELECT match_id FROM projector_state WHERE display_key=:display",
-        {"display": display},
-    )
-    if current.empty or str(current.iloc[0].get("match_id") or "") != match["match_id"]:
-        raise HTTPException(409, "投影控制所選場次與 AI評判易場次不一致。")
     session_id = uuid.uuid4().hex
     with db.transaction() as conn:
+        current = conn.execute(
+            text(
+                """SELECT match_id FROM projector_state
+                    WHERE display_key=:display FOR UPDATE"""
+            ),
+            {"display": display},
+        ).fetchone()
+        if (
+            current is None
+            or str(current._mapping.get("match_id") or "") != match["match_id"]
+        ):
+            raise HTTPException(409, "投影控制所選場次與 AI評判易場次不一致。")
         _ensure_control(conn, display, now)
         control = conn.execute(
             text(
@@ -1769,6 +1775,16 @@ def claim_kiosk_lease(
             owner_device == str(device["device_id"])
             and owner_client == client
         )
+        session_pinned = (
+            str(values.get("current_session_status") or "")
+            in ACTIVE_RECORDING_STATES
+        )
+        credentialless_reload = (
+            same_owner
+            and not str(request.headers.get(LEASE_TOKEN_HEADER) or "").strip()
+            and request.headers.get(LEASE_GENERATION_HEADER) is None
+            and body.lease_generation == 0
+        )
         can_claim = _lease_can_claim(
             owner_device_id=owner_device,
             owner_client_id=owner_client,
@@ -1778,7 +1794,7 @@ def claim_kiosk_lease(
             session_status=str(values.get("current_session_status") or ""),
             now=now,
         )
-        if same_owner:
+        if same_owner and not credentialless_reload:
             _assert_lease_mapping(
                 values,
                 request,
@@ -1808,7 +1824,7 @@ def claim_kiosk_lease(
                     "now": now,
                 },
             )
-        elif can_claim:
+        elif can_claim and not (same_owner and session_pinned):
             token = secrets.token_urlsafe(32)
             generation = int(values.get("lease_generation") or 0) + 1
             conn.execute(
@@ -1840,7 +1856,6 @@ def claim_kiosk_lease(
             )
         else:
             response.headers["Cache-Control"] = "no-store"
-            pinned = str(values.get("current_session_status") or "") in ACTIVE_RECORDING_STATES
             return {
                 "ok": True,
                 "role": "standby",
@@ -1854,7 +1869,7 @@ def claim_kiosk_lease(
                     "generation": int(values.get("lease_generation") or 0),
                     "expires_at": str(values.get("lease_expires_at") or ""),
                 },
-                "reason": "active_session_pinned" if pinned else "lease_held",
+                "reason": "active_session_pinned" if session_pinned else "lease_held",
                 "lease_ttl_seconds": PROJECTOR_KIOSK_LEASE_TTL_SECONDS,
             }
     response.headers["Cache-Control"] = "no-store"
