@@ -171,11 +171,14 @@ def test_match_management_can_refresh_score_submission_and_confirmation_state():
     page = (ROOT / "frontend" / "match_info" / "index.html").read_text(
         encoding="utf-8"
     )
+    manual = (ROOT / "assets" / "user_manual.md").read_text(encoding="utf-8")
 
     assert 'id="refreshScoreConfirmation"' in page
     assert '$("refreshScoreConfirmation").addEventListener("click"' in page
     assert "await refreshScoreConfirmation()" in page
     assert "renderScoreConfirmation()" in page
+    assert "主席宣讀正式賽果及所有真人評判完成評語後" in manual
+    assert "分別傳送予正、反方代表" in manual
 
 
 def test_rules_limit_fact_check_authority_to_factual_verification():

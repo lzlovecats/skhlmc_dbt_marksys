@@ -281,7 +281,7 @@
             使用賽會人員密碼登入後，可在此建立場次、產生辯題公佈連結、抽站方及更新辯員資料。
           </li>
           <li>
-            編輯場次時，請確認賽制、正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。
+            編輯場次時，請確認賽制、原定真人評判數目、正反方隊名、辯員姓名、評判入場密碼及查閱分紙密碼均正確。
           </li>
           <li>
             刪除場次會一併刪除該場次的正式評分與暫存資料，請再次確認相關紀錄不再需要。
@@ -346,7 +346,7 @@
           <section class="card">
             <h2>核對比賽分紙</h2>
             <p class="intro">
-              確認所有評判已正式提交分紙後，開放正反方核對。每次重新開放都會令舊連結失效，並把雙方狀態重設為待回覆。
+              主席宣讀正式賽果及所有真人評判完成評語後，才開放正反方核對。每次重新開放都會令舊連結失效，並把雙方狀態重設為待回覆。
             </p>
             <div id="scoreConfirmationState"></div>
             <div id="scoreConfirmationLinks" class="link-grid"></div>
@@ -416,6 +416,17 @@
                   step="0.5"
                   value="5"
                 />
+              </div>
+              <div class="field">
+                <label for="expectedHumanJudges">原定真人評判數目</label>
+                <input
+                  id="expectedHumanJudges"
+                  type="number"
+                  min="1"
+                  step="1"
+                  required
+                />
+                <div class="caption">須在任何評判開始填寫分紙前設定。雙數時必須加入一名正式 AI 評判。</div>
               </div>
             </div>
             <div class="field section-heading">
@@ -558,6 +569,7 @@
           "match_time",
           "debate_format",
           "free_debate_minutes",
+          "expected_human_judge_count",
           "topic_text",
           "pro_team",
           "con_team",
@@ -605,6 +617,7 @@
               match_time: "time",
               debate_format: "format",
               free_debate_minutes: "freeMinutes",
+              expected_human_judge_count: "expectedHumanJudges",
               topic_text: "topic",
             }[key] || key
           );
@@ -674,7 +687,7 @@
             return;
           }
           $("scoreConfirmationState").innerHTML =
-            `<p class="caption">目前已提交評判分紙：${esc(scoreCount)} 份。${scoreCount ? "請由賽會人員確認已收齊後才開放。" : "未有分紙，不能開放核對。"}</p>`;
+            `<p class="caption">目前已提交評判分紙：${esc(scoreCount)} 份。${scoreCount ? "須在正式賽果已宣讀及所有真人評判完成評語後才開放。" : "未有分紙，不能開放核對。"}</p>`;
           $("openScoreConfirmation").disabled = scoreCount < 1;
           $("openScoreConfirmation").textContent = Object.keys(links).length
             ? "重新開放並產生新連結"
@@ -831,6 +844,9 @@
                 `<option value="${esc(format)}">${esc(format)}</option>`,
             )
             .join("");
+          $("expectedHumanJudges").max = String(
+            state.max_human_judge_count,
+          );
           $("difficulty").innerHTML =
             `<option value="">全部難度</option>${state.difficulties.map((item) => `<option value="${item.value}">${esc(item.label)}</option>`).join("")}`;
           fillMatch();

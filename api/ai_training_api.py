@@ -383,7 +383,12 @@ def _prune_audit(db):
                 f"""DELETE FROM {TABLE_AI_TRAINING_AUDIT}
                     WHERE created_at < NOW() - make_interval(days => :days)
                       AND action NOT IN (
-                        'consent_granted','consent_withdrawn','submission_withdrawn'
+                        'consent_granted','consent_withdrawn','submission_withdrawn',
+                        'factory_source_created','factory_source_withdrawn',
+                        'factory_item_reviewed','factory_item_invalidated',
+                        'factory_item_withdrawn','factory_topic_tag_approved',
+                        'factory_topic_tag_retired','factory_release_published',
+                        'factory_release_invalidated'
                       )""",
                 {"days": AI_TRAINING_AUDIT_RETENTION_DAYS},
             )
@@ -540,12 +545,35 @@ def admin_recordings(request: Request, page: int = 1, status: str = "all", speak
             "total": total, "total_pages": max(1, (total + ADMIN_RECORDING_PAGE_SIZE - 1) // ADMIN_RECORDING_PAGE_SIZE)}
 
 
+@router.get("/admin/submissions")
+def admin_submissions(request: Request, page: int = 1, status: str = "all", submitter: str = ""):
+    _user, db = _admin(request)
+    page = max(1, int(page or 1)); offset = (page - 1) * AI_TRAINING_ADMIN_PAGE_SIZE
+    clauses, params = ["1=1"], {}
+    if status != "all": clauses.append("status=:status"); params["status"] = status
+    if submitter.strip(): clauses.append("submitted_by=:submitter"); params["submitter"] = submitter.strip()
+    where = " AND ".join(clauses)
+    total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE {where}", params)
+    params.update(limit=AI_TRAINING_ADMIN_PAGE_SIZE, offset=offset)
+    rows = _rows(db.query(f"""SELECT id,submitted_by,data_type,side,title,topic_text,
+        content_text,source_note,status,ai_review_status,ai_review_json,review_note,created_at
+        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE {where}
+        ORDER BY created_at DESC LIMIT :limit OFFSET :offset""", params))
+    return {"items": json_safe(rows), "page": page, "page_size": AI_TRAINING_ADMIN_PAGE_SIZE,
+            "total": total, "total_pages": max(1, (total + AI_TRAINING_ADMIN_PAGE_SIZE - 1) // AI_TRAINING_ADMIN_PAGE_SIZE)}
+
+
 @router.get("/admin/stats")
 def admin_stats(request: Request):
     _user, db = _admin(request)
     recordings = _rows(db.query(f"SELECT status,COUNT(*) AS count FROM {TABLE_TTS_VOICE_RECORDINGS} GROUP BY status"))
     llm_rows = _rows(db.query(f"SELECT status,COUNT(*) AS count FROM {TABLE_LLM_TRAINING_SUBMISSIONS} GROUP BY status"))
-    return {"recordings": recordings, "llm": llm_rows, "allowed_users": _users(db, ALLOWED_KEY)}
+    llm_submitters = _rows(db.query(f"""SELECT DISTINCT submitted_by
+        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE submitted_by IS NOT NULL
+        ORDER BY submitted_by LIMIT :group_limit""",
+        {"group_limit": AI_TRAINING_READINESS_GROUP_LIMIT}))
+    return {"recordings": recordings, "llm": llm_rows,
+            "llm_submitters": llm_submitters, "allowed_users": _users(db, ALLOWED_KEY)}
 
 
 @router.get("/recordings/{record_id}/audio")
@@ -1001,6 +1029,15 @@ def withdraw_llm(submission_id: int, request: Request):
     user, db = _ctx(request)
     now = datetime.now()
     changed = False
+    try:
+        from core.ai_factory_store import FACTORY_TABLES
+
+        factory_state = feature_bundle_state(db, "data_factory", FACTORY_TABLES)
+    except Exception as exc:
+        raise HTTPException(503, "資料工廠狀態暫時無法驗證，未有撤回任何資料") from exc
+    if factory_state == PARTIAL:
+        raise HTTPException(503, "資料工廠 migration 不完整，未有撤回任何資料")
+    factory_ready = factory_state == READY
     with db.transaction() as conn:
         current = conn.execute(text(f"""SELECT status
             FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
@@ -1015,6 +1052,15 @@ def withdraw_llm(submission_id: int, request: Request):
             changed = True
             _audit(db, user, "submission_withdrawn", "llm_submission", submission_id,
                    conn=conn)
+        if factory_ready:
+            from core.ai_factory_store import withdraw_submission_sources_in_transaction
+
+            withdraw_submission_sources_in_transaction(
+                conn,
+                user,
+                submission_id,
+                "原始 LLM 投稿由提交者撤回",
+            )
     if changed:
         _prune_audit(db)
     cleanup_params = {
@@ -1322,7 +1368,8 @@ def export_recording_manifest(request: Request, response: Response, speaker: str
 
 
 @router.get("/export/llm.jsonl")
-def export_llm(request: Request, after_id: int = 0, before_id: int = 0):
+def export_llm(request: Request, after_id: int = 0, before_id: int = 0,
+               submitter: str = ""):
     _user, db = _admin(request)
     after_id, before_id = max(0, after_id), max(0, before_id)
     where = "status='accepted' AND id>:after_id"
@@ -1330,6 +1377,9 @@ def export_llm(request: Request, after_id: int = 0, before_id: int = 0):
     if before_id:
         where += " AND id<=:before_id"
         params["before_id"] = before_id
+    if submitter.strip():
+        where += " AND submitted_by=:submitter"
+        params["submitter"] = submitter.strip()
     # Check the database-side byte total first.  Loading 5,000 maximum-sized
     # submissions and only then rejecting JSONL could temporarily use >100MB.
     size = _rows(db.query(f"""SELECT COUNT(*) AS row_count,

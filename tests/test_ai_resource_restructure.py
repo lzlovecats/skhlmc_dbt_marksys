@@ -40,7 +40,7 @@ class _Result:
         return self._all
 
 
-def test_budget_save_snapshots_donations_and_applies_google_ten_percent_buffer(monkeypatch):
+def test_budget_save_uses_full_google_allocation_for_external_cap(monkeypatch):
     statements = []
 
     class Session:
@@ -78,8 +78,15 @@ def test_budget_save_snapshots_donations_and_applies_google_ten_percent_buffer(m
     openrouter = next(item for item in inserts if item.get("key") == "provider:openrouter")
     assert fund["start"].isoformat() == "2026-06-25T00:00:00+08:00"
     assert fund["end"].isoformat() == "2026-07-25T00:00:00+08:00"
-    assert google["cap"] == 9.0
+    assert google["cap"] == 10.0
     assert openrouter["cap"] == round(22 / 7.8, 4)
+
+
+def test_budget_ui_does_not_apply_a_google_only_cap_factor():
+    source = (ROOT / "frontend" / "ai_fund" / "index.html").read_text()
+
+    assert "外部 cap 為分配 90%" not in source
+    assert 'box.dataset.budgetProvider === "google"' not in source
 
 
 def test_positive_provider_allocation_requires_external_cap_confirmation(monkeypatch):

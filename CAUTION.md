@@ -190,6 +190,7 @@ HTML/CSS/JS 原檔直接 serve。Shared asset 會被 cache，HTML 亦有 `stale-
 - `node --check` 只驗 standalone `.js`；HTML inline script 要抽取／browser smoke／contract test。
 - Page route 改成 FileResponse 前，核對原本有冇 runtime injection、auth gate、cache header 或 CSP assumptions。
 - Service worker 主要處理 push subscription/notification，唔係 offline app cache；唔好假設佢會幫 asset invalidation。
+- 原生 `<select multiple>` 唔等於可直接點選嘅 multi-select：普通點擊會清走之前選項，桌面要靠 Ctrl／Cmd，touch 行為亦唔清楚。需要同時選多個帳戶時用獨立 checkbox、可見已選數量及需要時加搜尋，提交時讀 checked set；regression 要驗互動 contract，唔可以只驗有 `multiple` attribute。
 
 ## 18. Async UI 一定要防 stale response
 

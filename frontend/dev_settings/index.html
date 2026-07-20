@@ -177,7 +177,18 @@
               <h2>臨時開放提案</h2>
               <p class="caption">只可為非活躍委員臨時開放，權限會在指定時間自動失效。</p>
               <div id="activeBypasses"></div>
-              <label>選擇委員<select id="bypassUsers" multiple size="6"></select></label>
+              <fieldset class="account-picker">
+                <legend>選擇委員</legend>
+                <label
+                  >搜尋帳戶<input
+                    id="bypassUsersSearch"
+                    type="search"
+                    placeholder="輸入帳戶名稱"
+                    autocomplete="off"
+                /></label>
+                <div id="bypassUsersOptions" class="account-options"></div>
+                <p id="bypassUsersSummary" class="caption"></p>
+              </fieldset>
               <label>到期時間<input id="bypassExpiry" type="datetime-local" /></label>
               <div class="actions"><button id="saveBypass" class="primary">啟用臨時權限</button><button id="revokeAllBypass" class="danger">全部撤銷</button></div>
             </section>
@@ -327,10 +338,14 @@
           $(`${id}Summary`).textContent =
             `已選 ${selectedAccounts(id).length} 個帳戶`;
         }
-        function renderAccountPicker(id, selected) {
+        function renderAccountPicker(
+          id,
+          selected,
+          accounts = data.account_options || [],
+        ) {
           const selectedSet = new Set(selected);
           const options = $(`${id}Options`);
-          options.innerHTML = (data.account_options || [])
+          options.innerHTML = accounts
             .map(
               (userId) =>
                 `<label class="account-option" data-user="${esc(userId.toLowerCase())}"><input type="checkbox" value="${esc(userId)}" ${selectedSet.has(userId) ? "checked" : ""}><span>${esc(userId)}</span></label>`,
@@ -489,9 +504,11 @@
                   `<div class="actions"><span>${esc(uid)}（至 ${esc(expiry)}）</span><button data-revoke-bypass="${esc(uid)}" class="danger">撤銷</button></div>`,
               )
               .join("") || '<p class="caption">目前沒有委員獲臨時提案權限。</p>';
-          $("bypassUsers").innerHTML = (data.inactive_accounts || [])
-            .map((uid) => `<option value="${esc(uid)}">${esc(uid)}</option>`)
-            .join("");
+          renderAccountPicker(
+            "bypassUsers",
+            [],
+            data.inactive_accounts || [],
+          );
           if (!$("bypassExpiry").value) {
             const date = new Date(Date.now() + 7 * 86400000);
             date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
@@ -693,9 +710,7 @@
           }
         };
         $("saveBypass").onclick = () => {
-          const users = [...$("bypassUsers").selectedOptions].map(
-            (option) => option.value,
-          );
+          const users = selectedAccounts("bypassUsers");
           if (!users.length) return toast("⚠️ 請選擇至少一位委員。");
           mutate(
             "/api/developer/bypass",

@@ -190,6 +190,10 @@ KIOSK_MATCH_REVIEW_TRANSCRIPT_MAX_CHARS = _limit("KIOSK_MATCH_REVIEW_TRANSCRIPT_
 KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS = _limit("KIOSK_MATCH_REVIEW_PROVIDER_TIMEOUT_SECONDS", 300, minimum=60, maximum=300, group="ai", description="Per-pass full-match Gemini timeout")
 KIOSK_PROJECTOR_RESULT_PERSIST_ATTEMPTS = _limit("KIOSK_PROJECTOR_RESULT_PERSIST_ATTEMPTS", 3, minimum=1, maximum=5, group="ai", description="Server-side attempts to persist a completed kiosk review to projector state")
 KIOSK_LOCAL_RECORDING_RETENTION_DAYS = _limit("KIOSK_LOCAL_RECORDING_RETENTION_DAYS", 7, minimum=1, maximum=30, group="storage", description="Failed kiosk recordings retained in browser storage")
+OFFICIAL_AI_JUDGE_CONCURRENCY = _limit("OFFICIAL_AI_JUDGE_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent official third-judge provider calls")
+OFFICIAL_AI_JUDGE_TIMEOUT_SECONDS = _limit("OFFICIAL_AI_JUDGE_TIMEOUT_SECONDS", 300, minimum=60, maximum=300, group="ai", description="Official third-judge provider timeout")
+OFFICIAL_AI_JUDGE_PROMPT_MAX_CHARS = _limit("OFFICIAL_AI_JUDGE_PROMPT_MAX_CHARS", 140_000, minimum=20_000, maximum=140_000, group="ai", description="Official third-judge prompt characters including full transcript")
+OFFICIAL_AI_JUDGE_CLAIM_TTL_SECONDS = _limit("OFFICIAL_AI_JUDGE_CLAIM_TTL_SECONDS", 360, minimum=300, maximum=600, group="ai", description="Official third-judge attempt claim lifetime")
 PROJECTOR_START_COMMAND_TTL_SECONDS = _limit("PROJECTOR_START_COMMAND_TTL_SECONDS", 20, minimum=5, maximum=60, group="live", description="Projector start command acknowledgement deadline")
 PROJECTOR_KIOSK_LEASE_TTL_SECONDS = _limit("PROJECTOR_KIOSK_LEASE_TTL_SECONDS", 15, minimum=10, maximum=60, group="live", description="Projector Kiosk owner lease lifetime")
 LIVE_BRIEF_TTL_MINUTES = _limit("LIVE_BRIEF_TTL_MINUTES", 15, minimum=1, maximum=60, group="ai", description="Prepared Live research brief TTL")
@@ -199,6 +203,28 @@ AI_COACH_MATCH_LIMIT = _limit("AI_COACH_MATCH_LIMIT", 500, minimum=50, maximum=5
 LLM_CONTENT_MAX_CHARS = _limit("LLM_CONTENT_MAX_CHARS", 20_000, minimum=1_000, maximum=20_000, group="ai", description="Characters per LLM training submission")
 LLM_SUBMISSION_MAX_TOTAL = _limit("LLM_SUBMISSION_MAX_TOTAL", 5_000, minimum=100, maximum=5_000, group="ai", description="LLM submissions retained")
 LLM_REVIEW_CONCURRENCY = _limit("LLM_REVIEW_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent LLM reviews")
+AI_FACTORY_SOURCE_MAX_CHARS = _limit("AI_FACTORY_SOURCE_MAX_CHARS", 20_000, minimum=1_000, maximum=20_000, group="ai", description="Characters in one immutable data-factory source snapshot")
+AI_FACTORY_SOURCE_NOTE_MAX_CHARS = _limit("AI_FACTORY_SOURCE_NOTE_MAX_CHARS", 1_000, minimum=100, maximum=1_000, group="ai", description="Rights and provenance note characters on one data-factory source")
+AI_FACTORY_INSTRUCTION_MAX_CHARS = _limit("AI_FACTORY_INSTRUCTION_MAX_CHARS", 500, minimum=0, maximum=500, group="ai", description="Manager instruction characters per data-factory job")
+AI_FACTORY_CANDIDATE_DEFAULT = _limit("AI_FACTORY_CANDIDATE_DEFAULT", 3, minimum=1, maximum=5, group="ai", description="Default generated candidates per data-factory job")
+AI_FACTORY_CANDIDATE_MAX = _limit("AI_FACTORY_CANDIDATE_MAX", 5, minimum=1, maximum=5, group="ai", description="Maximum generated candidates per data-factory job")
+AI_FACTORY_RAG_CONTENT_MAX_CHARS = _limit("AI_FACTORY_RAG_CONTENT_MAX_CHARS", 3_000, minimum=500, maximum=3_000, group="ai", description="Characters in one reviewed RAG card")
+AI_FACTORY_RAG_CLAIM_MAX = _limit("AI_FACTORY_RAG_CLAIM_MAX", 8, minimum=1, maximum=8, group="ai", description="Claims in one argument-decomposition RAG card")
+AI_FACTORY_SFT_USER_MAX_CHARS = _limit("AI_FACTORY_SFT_USER_MAX_CHARS", 4_000, minimum=500, maximum=4_000, group="ai", description="User-message characters in one SFT item")
+AI_FACTORY_SFT_ASSISTANT_MAX_CHARS = _limit("AI_FACTORY_SFT_ASSISTANT_MAX_CHARS", 6_000, minimum=500, maximum=6_000, group="ai", description="Assistant-message characters in one SFT item")
+AI_FACTORY_PREVIEW_TTL_SECONDS = _limit("AI_FACTORY_PREVIEW_TTL_SECONDS", 900, minimum=60, maximum=900, group="ai", description="Lifetime of an exact provider-bound data-factory preview")
+AI_FACTORY_ATTEMPT_MAX = _limit("AI_FACTORY_ATTEMPT_MAX", 3, minimum=1, maximum=3, group="ai", description="Manual provider attempts allowed per data-factory job")
+AI_FACTORY_CONCURRENCY = _limit("AI_FACTORY_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent data-factory provider calls")
+AI_FACTORY_MANAGER_CONCURRENCY = _limit("AI_FACTORY_MANAGER_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent data-factory provider calls per manager")
+AI_FACTORY_TOPIC_TAG_MAX = _limit("AI_FACTORY_TOPIC_TAG_MAX", 5, minimum=1, maximum=5, group="ai", description="Approved custom topic tags attached to one factory item")
+AI_FACTORY_TOPIC_TAG_MAX_CHARS = _limit("AI_FACTORY_TOPIC_TAG_MAX_CHARS", 40, minimum=1, maximum=40, group="ai", description="Characters in one custom data-factory topic tag")
+AI_FACTORY_RELEASE_MAX_ITEMS = _limit("AI_FACTORY_RELEASE_MAX_ITEMS", 500, minimum=1, maximum=500, group="ai", description="Items in one immutable RAG or SFT release")
+AI_FACTORY_RELEASE_MAX_BYTES = _limit("AI_FACTORY_RELEASE_MAX_BYTES", 5 * MIB, minimum=KIB, maximum=5 * MIB, group="ai", description="Bytes in one immutable data-factory JSONL release")
+AI_FACTORY_SOURCE_MAX_TOTAL = _limit("AI_FACTORY_SOURCE_MAX_TOTAL", 2_000, minimum=100, maximum=2_000, group="database", description="Data-factory source snapshots retained for admin workflows")
+AI_FACTORY_JOB_MAX_TOTAL = _limit("AI_FACTORY_JOB_MAX_TOTAL", 10_000, minimum=100, maximum=10_000, group="database", description="Data-factory jobs retained for admin workflows")
+AI_FACTORY_ITEM_MAX_TOTAL = _limit("AI_FACTORY_ITEM_MAX_TOTAL", 50_000, minimum=500, maximum=50_000, group="database", description="Generated data-factory items retained for review and release")
+AI_FACTORY_TOPIC_TAG_MAX_TOTAL = _limit("AI_FACTORY_TOPIC_TAG_MAX_TOTAL", 500, minimum=10, maximum=500, group="database", description="Custom data-factory topic tags retained")
+AI_FACTORY_RELEASE_MAX_TOTAL = _limit("AI_FACTORY_RELEASE_MAX_TOTAL", 200, minimum=10, maximum=200, group="database", description="Immutable data-factory releases retained")
 DATASET_SNAPSHOT_MAX_ITEMS = _limit("DATASET_SNAPSHOT_MAX_ITEMS", 500, minimum=1, maximum=500, group="ai", description="Items per dataset snapshot")
 DATASET_SNAPSHOT_MAX_COUNT = _limit("DATASET_SNAPSHOT_MAX_COUNT", 200, minimum=10, maximum=200, group="ai", description="Dataset snapshots retained")
 RECORDING_MANIFEST_MAX_ROWS = _limit("RECORDING_MANIFEST_MAX_ROWS", 2_000, minimum=1, maximum=2_000, group="ai", description="Rows in recording manifests")
@@ -218,6 +244,7 @@ AI_TRAINING_ADMIN_PAGE_SIZE = _limit("AI_TRAINING_ADMIN_PAGE_SIZE", 5, minimum=1
 AI_TRAINING_READINESS_GROUP_LIMIT = _limit("AI_TRAINING_READINESS_GROUP_LIMIT", 200, minimum=1, maximum=200, group="ai", description="Readiness aggregate groups")
 AI_SUGGESTION_BATCH_MAX = _limit("AI_SUGGESTION_BATCH_MAX", 50, minimum=1, maximum=500, group="ai", description="AI script suggestions applied per request")
 AI_PROVIDER_PROMPT_MAX_CHARS = _limit("AI_PROVIDER_PROMPT_MAX_CHARS", 60_000, minimum=4_000, maximum=60_000, group="ai", description="Provider prompt characters")
+AI_PROVIDER_OUTPUT_MAX_TOKENS = _limit("AI_PROVIDER_OUTPUT_MAX_TOKENS", 65_536, minimum=1_000, maximum=65_536, group="ai", description="Hard output-token ceiling when an AI feature supplies a per-call bound")
 OPENROUTER_WEB_SEARCH_MAX_RESULTS = _limit("OPENROUTER_WEB_SEARCH_MAX_RESULTS", 5, minimum=1, maximum=10, group="ai", description="OpenRouter results returned per web-search call")
 OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS = _limit("OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS", 15, minimum=1, maximum=25, group="ai", description="OpenRouter cumulative web-search results per request")
 AI_PROVIDER_SOURCE_LIMIT = _limit("AI_PROVIDER_SOURCE_LIMIT", 20, minimum=1, maximum=20, group="ai", description="Grounded sources returned")
@@ -259,7 +286,7 @@ PHOTO_THUMBNAIL_MAX_DIMENSION = _limit("PHOTO_THUMBNAIL_MAX_DIMENSION", 480, min
 ACCOUNT_INVENTORY_LIMIT = _limit("ACCOUNT_INVENTORY_LIMIT", 1_000, minimum=100, maximum=1_000, group="database", description="Accounts retained")
 ACCOUNT_LIST_LIMIT = _limit("ACCOUNT_LIST_LIMIT", 1_000, minimum=100, maximum=1_000, group="database", description="Accounts loaded per list")
 MATCH_INVENTORY_LIMIT = _limit("MATCH_INVENTORY_LIMIT", 500, minimum=100, maximum=500, group="database", description="Matches retained/loaded")
-JUDGE_MAX_PER_MATCH = _limit("JUDGE_MAX_PER_MATCH", 50, minimum=5, maximum=50, group="database", description="Judges per match")
+JUDGE_MAX_PER_MATCH = _limit("JUDGE_MAX_PER_MATCH", 51, minimum=51, maximum=51, group="database", description="Total human and official AI score sheets per match")
 REGISTRATION_MAX_PER_EDITION = _limit("REGISTRATION_MAX_PER_EDITION", 500, minimum=1, maximum=500, group="database", description="Registrations per edition")
 REGISTRATION_EDITION_HISTORY_LIMIT = _limit("REGISTRATION_EDITION_HISTORY_LIMIT", 100, minimum=1, maximum=100, group="database", description="Registration editions listed")
 OPEN_DB_MAX_TOPICS = _limit("OPEN_DB_MAX_TOPICS", 2_000, minimum=100, maximum=2_000, group="database", description="Public topic-bank rows")
@@ -308,6 +335,14 @@ SCHEDULE_MAX_TEAM_NAME_CHARS = _limit("SCHEDULE_MAX_TEAM_NAME_CHARS", 100, minim
 
 
 def _validate_relationships() -> None:
+    if AI_FACTORY_CANDIDATE_DEFAULT > AI_FACTORY_CANDIDATE_MAX:
+        raise RuntimeError(
+            "AI_FACTORY_CANDIDATE_DEFAULT cannot exceed AI_FACTORY_CANDIDATE_MAX"
+        )
+    if AI_FACTORY_MANAGER_CONCURRENCY > AI_FACTORY_CONCURRENCY:
+        raise RuntimeError(
+            "AI_FACTORY_MANAGER_CONCURRENCY cannot exceed AI_FACTORY_CONCURRENCY"
+        )
     if not (
         LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT
         <= LOGIN_RATE_MAX_PER_CLIENT

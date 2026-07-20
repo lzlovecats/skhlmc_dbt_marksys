@@ -38,6 +38,14 @@ def test_score_sheet_confirmation_versions_shared_assets_and_is_private():
     assert "__APP_VERSION__" not in html
 
 
+def test_ai_training_versions_shared_vote_ui_without_placeholder():
+    response = asyncio.run(proxy.ai_training_page())
+    html = response.body.decode("utf-8")
+
+    assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
+    assert "__APP_VERSION__" not in html
+
+
 def test_match_photos_html_versions_metadata_editor_script():
     response = asyncio.run(proxy.match_photos_page())
     html = response.body.decode("utf-8")

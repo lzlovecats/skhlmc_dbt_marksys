@@ -102,6 +102,38 @@ AI_MODEL_OPTIONS = {
     },
 }
 
+# The data factory may additionally use OpenRouter's explicit free-only router.
+# Keep it factory-scoped: its random, rate-limited model selection is useful for
+# producing human-reviewed candidates, but is not a suitable implicit choice
+# for judging, coaching or other interactive features.
+AI_FACTORY_FREE_MODEL_OPTIONS = {
+    "OpenRouter Free": {
+        "provider": "openrouter",
+        "model": "openrouter/free",
+        "api_key": "OPENROUTER_API_KEY",
+        "supports_audio": False,
+        "supports_web_search": False,
+        "billing_mode": "free_only",
+        "pricing_label": "免費",
+        "selection_label": "免費候選",
+        "pricing_note": (
+            "Provider: OpenRouter Free Models Router；每次由可用免費模型中選擇，"
+            "供應、速度及輸出質素可能不同。"
+        ),
+        "paid_rate_note": "Free-only route；input 及 output 單價均為 US$0。",
+        "input_price_per_million": 0,
+        "audio_input_price_per_million": 0,
+        "output_price_per_million": 0,
+        "web_search_price_per_call": 0,
+        "is_premium": False,
+    },
+}
+
+AI_FACTORY_MODEL_OPTIONS = {
+    **AI_MODEL_OPTIONS,
+    **AI_FACTORY_FREE_MODEL_OPTIONS,
+}
+
 NON_MANUAL_DEFAULT_AI_MODEL = "Gemini 3.5 Flash"
 
 NON_MANUAL_MODEL_OPTIONS = {
@@ -401,6 +433,12 @@ def resolve_interactive_model_settings(enabled_providers=None, default_model=Non
 # Backwards-compatible public name used by the room runtime and existing tests.
 ROOM_JUDGEMENT_MODEL_LABELS = AI_FEATURE_MODEL_FALLBACK_LABELS["room_judgement"]
 
+# Official third-judge choices deliberately reuse the same central model list
+# as AI辯論易.  The UI defaults to Gemini 3.5 Flash, while competition staff
+# may select any listed model and switch to a different one for the sole retry.
+OFFICIAL_AI_JUDGE_DEFAULT_MODEL = "Gemini 3.5 Flash"
+OFFICIAL_AI_JUDGE_MODEL_LABELS = tuple(AI_MODEL_OPTIONS)
+
 
 def model_slugs_for_labels(labels):
     return tuple(
@@ -432,6 +470,14 @@ def get_feature_model(feature):
         raise KeyError(f"AI feature {feature_key} selects unknown model: {label}")
     _validate_feature_model(feature_key, label, config)
     return label, config
+
+
+def get_official_ai_judge_model(label):
+    """Resolve one model shared with the existing AI debate feature."""
+    selected = str(label or "").strip()
+    if selected not in OFFICIAL_AI_JUDGE_MODEL_LABELS:
+        raise ValueError("正式 AI 評判只可使用系統提供的 AI 模型。")
+    return selected, dict(AI_MODEL_OPTIONS[selected])
 
 
 def model_slugs_for_feature(feature):

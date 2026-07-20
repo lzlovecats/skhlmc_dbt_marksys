@@ -535,9 +535,11 @@
             tts_review: "AI訓練·錄音檢查",
             tts_script_analysis: "AI訓練·句庫分析",
             llm_review: "AI訓練·文字審查",
+            data_factory_generation: "辯論LLM資料工廠·生成",
             tts: "粵語語音合成",
             kiosk_match_review: "AI評判易（Kiosk）",
             kiosk_match_review_tts: "AI評判易·粵語讀出",
+            official_ai_judge: "正式 AI 第三評判",
           },
           operationStageLabels = {
             transcription: "逐字稿",
@@ -786,7 +788,7 @@
           $("settingsInstruction").value = st.payment_instruction;
           const budget = data.monthly_budget,
             providerNames = {
-              google: "Google AI Studio（外部 cap 為分配 90%）",
+              google: "Google AI Studio",
               openrouter: "OpenRouter",
               azure: "Azure",
               other: "其他 provider",
@@ -818,8 +820,7 @@
             document.querySelectorAll("[data-budget-provider]").forEach((box) => {
               const amount = Math.max(0, Number(box.querySelector(".budget-amount").value || 0));
               total += amount;
-              const factor = box.dataset.budgetProvider === "google" ? 0.9 : 1;
-              const cap = fx > 0 ? amount / fx * factor : 0;
+              const cap = fx > 0 ? amount / fx : 0;
               box.querySelector(".budget-cap").textContent =
                 `外部 spending cap 上限：US$${cap.toFixed(4)}`;
             });

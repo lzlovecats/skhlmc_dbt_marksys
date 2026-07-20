@@ -73,6 +73,16 @@
         flex: 1;
         margin: 0;
       }
+      .ai-actions {
+        display: flex;
+        align-items: end;
+        gap: 0.75rem;
+        margin-top: 0.85rem;
+      }
+      .ai-actions .field {
+        flex: 1;
+        margin: 0;
+      }
       .metrics {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -135,8 +145,13 @@
           flex-direction: column;
         }
         .toolbar button,
-        .app-actions button {
+        .app-actions button,
+        .ai-actions button {
           width: 100%;
+        }
+        .ai-actions {
+          align-items: stretch;
+          flex-direction: column;
         }
       }
     </style>
@@ -195,6 +210,20 @@
             <p id="judgeCount" class="caption"></p>
           </section>
           <section class="card">
+            <h2>正式 AI 評判</h2>
+            <p class="caption">
+              真人評判數目為雙數時，可用完整比賽逐字稿產生一張正式 AI 分紙；分數、票數及最佳辯論員排名都會計入賽果。
+            </p>
+            <div id="aiJudgeStatus"></div>
+            <div id="aiJudgeActions" class="ai-actions hidden">
+              <div class="field">
+                <label for="aiJudgeModel">選擇 AI 模型</label>
+                <select id="aiJudgeModel"></select>
+              </div>
+              <button id="aiJudgeSubmit" class="primary" type="button"></button>
+            </div>
+          </section>
+          <section class="card">
             <h2>勝負判定</h2>
             <p id="topic"></p>
             <div id="metrics" class="metrics"></div>
@@ -220,6 +249,7 @@
       (() => {
         const $ = (id) => document.getElementById(id);
         let state = null;
+        let loadGeneration = 0;
         const esc = (value) =>
           String(value ?? "").replace(
             /[&<>"']/g,
@@ -239,6 +269,7 @@
             : "";
         };
         async function load(matchId = "") {
+          const generation = ++loadGeneration;
           const response = await fetch(
             `/api/management/data${matchId ? `?match_id=${encodeURIComponent(matchId)}` : ""}`,
             { credentials: "same-origin" },
@@ -250,6 +281,7 @@
           }
           const data = await response.json();
           if (!response.ok) throw new Error(data.detail || "載入失敗。");
+          if (generation !== loadGeneration) return;
           state = data;
           render();
         }
@@ -269,7 +301,8 @@
           $("statusTitle").textContent =
             `場次 ${state.selected_match_id} 評分狀況`;
           $("judgeCount").textContent =
-            `目前已有 ${state.judge_count} 位評判提交分數。`;
+            `目前已有 ${state.judge_count} 張正式分紙（真人 ${state.human_judge_count} 張、AI ${state.ai_judge_count} 張）。`;
+          renderAiJudge();
           $("topic").innerHTML = `<strong>辯題：</strong> ${esc(state.topic)}`;
           $("metrics").innerHTML = [
             [`正方(${state.pro_team})得票`, `${state.pro_votes} 票`],
@@ -318,11 +351,111 @@
                   .join("")
               : '<div class="notice ok">所有評判評分無明顯異常。</div>';
         }
+        function renderAiJudge() {
+          const ai = state.official_ai_judge || {};
+          const status = ai.status || "";
+          const run = ai.run || {};
+          const expected = ai.expected_human_judge_count;
+          const actions = $("aiJudgeActions");
+          const submit = $("aiJudgeSubmit");
+          const select = $("aiJudgeModel");
+          let message = "";
+          let kind = "warn";
+          let showActions = false;
+          if (status === "succeeded") {
+            message = `正式 AI 分紙已完成：${run.final_judge_name || ai.ai_judge_names?.[0] || "AI 評判"}。此分紙已計入勝負及最佳辯論員。`;
+            kind = "ok";
+          } else if (status === "fallback") {
+            message = "兩次 AI 評分均失敗；本場只按真人評判分紙照常公布。";
+          } else if (status === "processing") {
+            message = `正在使用 ${run.current_model_label || "AI 模型"} 產生正式分紙，請勿重複提交。`;
+          } else if (status === "retryable") {
+            message = "第一次 AI 評分失敗。請選擇另一個模型重試一次；再失敗便只採用真人賽果。";
+            showActions = ai.transcript_available;
+          } else if (status === "ready") {
+            message = ai.transcript_available
+              ? `原定 ${expected} 位真人評判已全部提交，並有可用完整逐字稿，可以產生正式 AI 分紙。`
+              : `原定 ${expected} 位真人評判已全部提交，但未有可用完整比賽逐字稿，或兩小時私人保存期限已過。`;
+            showActions = ai.transcript_available;
+          } else if (status === "missing_expected_count") {
+            message = "尚未設定原定真人評判數目。請先到場次管理設定，並在任何評判開始填寫分紙前儲存。";
+          } else if (status === "waiting_humans") {
+            message = `原定 ${expected} 位真人評判，目前已提交 ${ai.human_judge_count || 0} 份。全部交齊前不能產生正式 AI 分紙。`;
+          } else if (status === "judge_count_mismatch") {
+            message = `真人分紙數目不符。原定 ${expected} 位，目前已有 ${ai.human_judge_count || 0} 份，請交賽會負責人核查。`;
+          } else if (status === "not_applicable") {
+            message = `原定 ${expected} 位真人評判，數目為單數，本場不加入正式 AI 評判。`;
+          } else if (status === "at_capacity") {
+            message = "本場分紙已達系統保護上限，沒有空間再加入正式 AI 分紙。";
+          } else {
+            message = `目前有 ${ai.human_judge_count || 0} 張真人分紙；最少兩位真人評判提交，並維持雙數後才可使用。`;
+          }
+          $("aiJudgeStatus").innerHTML = `<div class="notice ${kind}">${esc(message)}</div>`;
+          actions.classList.toggle("hidden", !showActions);
+          if (!showActions) return;
+          const previous = status === "retryable" ? String(run.current_model_label || "") : "";
+          const options = (ai.model_options || []).map((model) => {
+            const blocked = !model.available || model.label === previous;
+            const detail = [model.selection_label, model.pricing_label]
+              .filter(Boolean)
+              .join("／");
+            const suffix = !model.available
+              ? "（未設定）"
+              : model.label === previous
+                ? "（上次已用）"
+                : detail
+                  ? `（${detail}）`
+                  : "";
+            return `<option value="${esc(model.label)}" ${blocked ? "disabled" : ""}>${esc(model.label + suffix)}</option>`;
+          });
+          select.innerHTML = options.join("");
+          const available = (ai.model_options || []).filter(
+            (model) => model.available && model.label !== previous,
+          );
+          const preferred = available.find(
+            (model) => model.label === ai.default_model_label,
+          ) || available[0];
+          if (preferred) select.value = preferred.label;
+          submit.disabled = !preferred;
+          submit.textContent = status === "retryable"
+            ? "轉模型重試一次"
+            : "產生正式 AI 分紙";
+        }
         $("match").addEventListener("change", () => {
           busy(true);
           load($("match").value)
             .catch((error) => VoteUI.toast($("toast"), error.message))
             .finally(() => busy(false));
+        });
+        $("aiJudgeSubmit").addEventListener("click", async () => {
+          const model = $("aiJudgeModel").value;
+          const requestedMatch = state.selected_match_id;
+          if (!model) return;
+          busy(true);
+          try {
+            const response = await fetch("/api/management/ai-judge/attempt", {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                match_id: requestedMatch,
+                model_label: model,
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || "AI 評分未能開始。");
+            VoteUI.toast(
+              $("toast"),
+              data.ok ? `${data.judge_name} 分紙已正式計入賽果。` : data.message,
+            );
+            if (state.selected_match_id === requestedMatch) {
+              await load(requestedMatch);
+            }
+          } catch (error) {
+            VoteUI.toast($("toast"), error.message);
+          } finally {
+            busy(false);
+          }
         });
         $("loginForm").addEventListener("submit", (event) => {
           event.preventDefault();

@@ -112,7 +112,9 @@ def consume_live_brief(brief_id, user_id):
 
     db = get_vote_db()
     key = str(brief_id or "")
-    now_text = datetime.now().isoformat(sep=" ", timespec="seconds")
+    now_text = datetime.now(ZoneInfo("UTC")).isoformat(
+        sep=" ", timespec="seconds",
+    )
     with db.transaction() as conn:
         conn.execute(
             text(f"DELETE FROM {_LIVE_BRIEF_TABLE} WHERE expires_at<:now"),
@@ -1041,7 +1043,7 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
         brief=""
         provider_error=AI_PROVIDER_PUBLIC_ERROR
     _usage(__import__('deploy.proxy',fromlist=['get_vote_db']).get_vote_db(),user_id,"web_research",model_label,config,bool(brief),provider_error,actual=actual)
-    key=secrets.token_urlsafe(18);now=datetime.now()
+    key=secrets.token_urlsafe(18);now=datetime.now(ZoneInfo("UTC"))
     db.execute(f"DELETE FROM {_LIVE_BRIEF_TABLE} WHERE expires_at<:now", {"now": now.isoformat(sep=" ",timespec="seconds")})
     db.execute(f"INSERT INTO {_LIVE_BRIEF_TABLE}(brief_id,user_id,brief,expires_at,created_at) VALUES(:key,:user,:brief,:expires,:created)",{"key":key,"user":user_id,"brief":brief[:LIVE_BRIEF_MAX_CHARS],"expires":(now+timedelta(minutes=LIVE_BRIEF_TTL_MINUTES)).isoformat(sep=" ",timespec="seconds"),"created":now.isoformat(sep=" ",timespec="seconds")})
     return JSONResponse(

@@ -36,6 +36,8 @@ window.VoteUI = Object.freeze({
     },
     resetPage(element) { if (element) element._voteUiPage = 1; },
     async serverPaged(element, url, renderItems, page = 1) {
+        const requestGeneration = Number(element._voteServerRequestGeneration || 0) + 1;
+        element._voteServerRequestGeneration = requestGeneration;
         element._voteServerSpec = {url, renderItems, page};
         element._voteServerObserver?.disconnect();
         if (!element._voteServerObserver) {
@@ -51,8 +53,19 @@ window.VoteUI = Object.freeze({
         }
         const target = new URL(url, location.origin);
         target.searchParams.set("page", Math.max(1, Number(page || 1)));
-        const response = await fetch(target, {credentials: "same-origin"});
+        let response;
+        try {
+            response = await fetch(target, {credentials: "same-origin"});
+        } catch (error) {
+            if (element._voteServerRequestGeneration !== requestGeneration) {
+                return {stale: true};
+            }
+            throw error;
+        }
         const data = await response.json().catch(() => ({}));
+        if (element._voteServerRequestGeneration !== requestGeneration) {
+            return {...data, stale: true};
+        }
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         element._voteServerRendering = true;
         element.innerHTML = renderItems(data.items || [], data);

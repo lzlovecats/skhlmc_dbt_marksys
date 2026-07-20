@@ -13,9 +13,9 @@ from core.vote_logic import _resolve_db
 from debate_timing import DEBATE_FORMATS
 from schema import (
     TABLE_DEBATERS, TABLE_MATCHES,
-    TABLE_MATCH_ROSTER_LINKS, TABLE_TOPICS,
+    TABLE_MATCH_ROSTER_LINKS, TABLE_SCORE_DRAFTS, TABLE_SCORES, TABLE_TOPICS,
 )
-from system_limits import MATCH_INVENTORY_LIMIT
+from system_limits import JUDGE_MAX_PER_MATCH, MATCH_INVENTORY_LIMIT
 
 HKT = ZoneInfo("Asia/Hong_Kong")
 TIME_SLOTS = [f"{hour:02d}:{minute:02d}" for hour in range(15, 19) for minute in range(0, 60, 10) if hour < 18 or minute == 0]
@@ -38,7 +38,7 @@ def _free_debate_minutes(value):
 
 
 def _match_records(db, detail_match_id=None, compact=False):
-    matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, debate_format, free_debate_minutes, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
+    matches = db.query(f"SELECT match_id, match_date, match_time, topic_text, pro_team, con_team, debate_format, free_debate_minutes, expected_human_judge_count, access_code_hash, review_password_hash FROM {TABLE_MATCHES} ORDER BY match_id LIMIT :limit", {"limit": MATCH_INVENTORY_LIMIT})
     match_ids = matches["match_id"].astype(str).tolist() if "match_id" in matches.columns else []
     requested = _clean(detail_match_id)
     detail_id = requested if requested in match_ids else (match_ids[0] if match_ids else "")
@@ -61,7 +61,12 @@ def _match_records(db, detail_match_id=None, compact=False):
         debate_format = _clean(row.get("debate_format"))
         if debate_format not in DEBATE_FORMATS:
             debate_format = DEBATE_FORMATS[0]
-        record = {"match_id": _clean(row["match_id"]), "match_date": _date(row.get("match_date")), "match_time": _time(row.get("match_time")), "topic_text": _clean(row.get("topic_text")), "pro_team": _clean(row.get("pro_team")), "con_team": _clean(row.get("con_team")), "debate_format": debate_format, "free_debate_minutes": _free_debate_minutes(row.get("free_debate_minutes")) if debate_format == "聯中" else None, "has_access_code": _has(row.get("access_code_hash")), "has_review_password": _has(row.get("review_password_hash"))}
+        expected_count = row.get("expected_human_judge_count")
+        try:
+            expected_count = int(expected_count) if _has(expected_count) else None
+        except (TypeError, ValueError, OverflowError):
+            expected_count = None
+        record = {"match_id": _clean(row["match_id"]), "match_date": _date(row.get("match_date")), "match_time": _time(row.get("match_time")), "topic_text": _clean(row.get("topic_text")), "pro_team": _clean(row.get("pro_team")), "con_team": _clean(row.get("con_team")), "debate_format": debate_format, "free_debate_minutes": _free_debate_minutes(row.get("free_debate_minutes")) if debate_format == "聯中" else None, "expected_human_judge_count": expected_count, "has_access_code": _has(row.get("access_code_hash")), "has_review_password": _has(row.get("review_password_hash"))}
         for side in ("pro", "con"):
             for pos in range(1, 5):
                 record[f"{side}_{pos}"] = debater_lookup.get((record["match_id"], side, pos), "")
@@ -121,6 +126,7 @@ def match_admin_data(selected_match_id=None, db=None, compact=False):
             "debate_formats": list(DEBATE_FORMATS),
             "default_debate_format": DEBATE_FORMATS[0],
             "default_free_debate_minutes": 5,
+            "max_human_judge_count": JUDGE_MAX_PER_MATCH - 1,
             "time_slots": TIME_SLOTS, "difficulties": [{"value": key, "label": value} for key, value in DIFFICULTY_OPTIONS.items()]}
 
 
@@ -156,6 +162,23 @@ def save_match(data, db=None):
         return {"ok": False, "message": "請輸入有效的比賽日期。"}
     if match_time and match_time not in TIME_SLOTS:
         return {"ok": False, "message": "請選擇有效的比賽時間。"}
+    raw_expected_human_judges = data.get("expected_human_judge_count")
+    try:
+        numeric_expected_human_judges = float(raw_expected_human_judges)
+    except (TypeError, ValueError, OverflowError):
+        return {"ok": False, "message": "請輸入原定真人評判數目。"}
+    if (
+        isinstance(raw_expected_human_judges, bool)
+        or not math.isfinite(numeric_expected_human_judges)
+        or not numeric_expected_human_judges.is_integer()
+    ):
+        return {"ok": False, "message": "原定真人評判數目必須是整數。"}
+    expected_human_judges = int(numeric_expected_human_judges)
+    if not 1 <= expected_human_judges < JUDGE_MAX_PER_MATCH:
+        return {
+            "ok": False,
+            "message": f"原定真人評判數目必須介乎 1 至 {JUDGE_MAX_PER_MATCH - 1}。",
+        }
     debate_format = _clean(data.get("debate_format")) or DEBATE_FORMATS[0]
     if debate_format not in DEBATE_FORMATS:
         return {"ok": False, "message": "請選擇有效的賽制。"}
@@ -178,21 +201,41 @@ def save_match(data, db=None):
     new_access_hash = hash_password(raw_access) if raw_access else None
     new_review_hash = hash_password(raw_review) if raw_review else None
     with db.transaction() as session:
-        exists = session.execute(text(f"SELECT access_code_hash, review_password_hash, topic_text FROM {TABLE_MATCHES} WHERE match_id = :id FOR UPDATE"), {"id": match_id}).fetchone()
+        session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {
+            "lock_key": f"judge_submit:{match_id}",
+        })
+        exists = session.execute(text(f"""SELECT access_code_hash,
+                review_password_hash,topic_text,expected_human_judge_count,
+                EXISTS(
+                    SELECT 1 FROM {TABLE_SCORES} s
+                    WHERE s.match_id={TABLE_MATCHES}.match_id
+                ) OR EXISTS(
+                    SELECT 1 FROM {TABLE_SCORE_DRAFTS} d
+                    WHERE d.match_id={TABLE_MATCHES}.match_id
+                ) AS has_score_data
+            FROM {TABLE_MATCHES}
+            WHERE match_id=:id FOR UPDATE"""), {"id": match_id}).fetchone()
         if not exists: return {"ok": False, "message": "場次不存在。"}
+        prior_expected = exists._mapping.get("expected_human_judge_count")
+        prior_expected = int(prior_expected) if prior_expected is not None else None
+        if bool(exists._mapping.get("has_score_data")) and prior_expected != expected_human_judges:
+            return {
+                "ok": False,
+                "message": "已有評判分紙資料，不能更改原定真人評判數目。",
+            }
         access, review = exists._mapping["access_code_hash"], exists._mapping["review_password_hash"]
         access = None if data.get("clear_access_code") else new_access_hash or access
         review = None if data.get("clear_review_password") else new_review_hash or review
         # topic_text is server-owned: it remains blank while candidates are
         # pending and is written only when match_topic_release makes one final.
-        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(exists._mapping.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "format": debate_format, "free_minutes": free_minutes, "access": access, "review": review}
+        params = {"id": match_id, "date": match_date or None, "time": match_time or None, "topic": _clean(exists._mapping.get("topic_text")), "pro": _clean(data.get("pro_team")), "con": _clean(data.get("con_team")), "format": debate_format, "free_minutes": free_minutes, "expected_human_judges": expected_human_judges, "access": access, "review": review}
         from core.match_topic_release import validate_active_release_update
         release_error = validate_active_release_update(
             session, match_id, params["date"], params["time"],
         )
         if release_error:
             return {"ok": False, "message": release_error}
-        session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, debate_format=:format, free_debate_minutes=:free_minutes, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
+        session.execute(text(f"UPDATE {TABLE_MATCHES} SET match_date=:date, match_time=:time, topic_text=:topic, pro_team=:pro, con_team=:con, debate_format=:format, free_debate_minutes=:free_minutes, expected_human_judge_count=:expected_human_judges, access_code_hash=:access, review_password_hash=:review WHERE match_id=:id"), params)
         debater_params = [
             {"id": match_id, "side": side, "pos": pos, "name": _clean(data.get(f"{side}_{pos}"))}
             for side in ("pro", "con")

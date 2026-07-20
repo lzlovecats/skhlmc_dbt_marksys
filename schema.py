@@ -69,6 +69,14 @@ TABLE_AI_EVAL_RUNS = "ai_eval_runs"
 TABLE_RAG_DOCUMENTS = "rag_documents"
 TABLE_RAG_CHUNKS = "rag_chunks"
 TABLE_AI_TRAINING_AUDIT = "ai_training_audit"
+TABLE_AI_FACTORY_SOURCES = "ai_factory_sources"
+TABLE_AI_FACTORY_JOBS = "ai_factory_jobs"
+TABLE_AI_FACTORY_ATTEMPTS = "ai_factory_attempts"
+TABLE_AI_FACTORY_ITEMS = "ai_factory_items"
+TABLE_AI_FACTORY_TOPIC_TAGS = "ai_factory_topic_tags"
+TABLE_AI_FACTORY_ITEM_TAGS = "ai_factory_item_tags"
+TABLE_AI_FACTORY_RELEASES = "ai_factory_releases"
+TABLE_AI_FACTORY_RELEASE_ITEMS = "ai_factory_release_items"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
@@ -86,6 +94,8 @@ TABLE_PROJECTOR_AI_SESSIONS = "projector_ai_sessions"
 TABLE_PROJECTOR_AI_CONTROLS = "projector_ai_controls"
 TABLE_PROJECTOR_AI_MARKERS = "projector_ai_markers"
 TABLE_PROJECTOR_KIOSK_DEVICES = "projector_kiosk_devices"
+TABLE_OFFICIAL_AI_JUDGE_RUNS = "official_ai_judge_runs"
+TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS = "official_ai_judge_attempts"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
@@ -98,12 +108,14 @@ VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 # Legacy plaintext passwords are still accepted at login (see _verify_password) until migrated.
 CREATE_ACCOUNTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
-    user_id             TEXT    PRIMARY KEY,
-    password_hash       TEXT,
-    account_status      TEXT    DEFAULT 'inactive',
+    user_id             VARCHAR(50)  PRIMARY KEY,
+    password_hash       VARCHAR(255) NOT NULL,
+    account_status      CHAR(10)     NOT NULL DEFAULT 'inactive',
     active_since        DATE    DEFAULT CURRENT_DATE,
     last_login_at       TIMESTAMP,
-    account_disabled    BOOLEAN DEFAULT FALSE
+    account_disabled    BOOLEAN DEFAULT FALSE,
+    CONSTRAINT accounts_status_check
+        CHECK (BTRIM(account_status) IN ('admin', 'active', 'inactive'))
 );
 """
 
@@ -111,15 +123,16 @@ CREATE TABLE IF NOT EXISTS {TABLE_ACCOUNTS} (
 # Stores debate match metadata. Debater names live in DEBATERS.
 CREATE_MATCHES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_MATCHES} (
-    match_id               TEXT    PRIMARY KEY,
+    match_id               VARCHAR(255) PRIMARY KEY,
     match_date             DATE,
     match_time             TIME,
-    topic_text             TEXT,
-    pro_team               TEXT,
-    con_team               TEXT,
+    topic_text             VARCHAR(255),
+    pro_team               VARCHAR(255),
+    con_team               VARCHAR(255),
     debate_format          TEXT    NOT NULL DEFAULT '校園隨想',
     free_debate_minutes    NUMERIC(4,1),
-    access_code_hash       TEXT,
+    expected_human_judge_count SMALLINT,
+    access_code_hash       VARCHAR(255),
     review_password_hash   TEXT,
     CONSTRAINT matches_debate_format_check
         CHECK (debate_format IN ('校園隨想', '聯中', '星島', '基本法盃')),
@@ -130,6 +143,11 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCHES} (
                 debate_format = '聯中'
                 AND free_debate_minutes BETWEEN 2 AND 10
             )
+        ),
+    CONSTRAINT matches_expected_human_judge_count_check
+        CHECK (
+            expected_human_judge_count IS NULL
+            OR expected_human_judge_count BETWEEN 1 AND 50
         )
 );
 """
@@ -138,10 +156,14 @@ CREATE TABLE IF NOT EXISTS {TABLE_MATCHES} (
 # The approved debate topic bank.
 CREATE_TOPICS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPICS} (
-    topic_text  TEXT    PRIMARY KEY,
-    author      TEXT,
-    category    TEXT,
-    difficulty  INTEGER
+    topic_text  VARCHAR(255) PRIMARY KEY,
+    author      VARCHAR(50),
+    category    VARCHAR(50),
+    difficulty  INTEGER,
+    CONSTRAINT difficulty_range_check
+        CHECK (difficulty BETWEEN 1 AND 3),
+    CONSTRAINT topics_author_fkey
+        FOREIGN KEY (author) REFERENCES {TABLE_ACCOUNTS}(user_id)
 );
 """
 
@@ -165,11 +187,11 @@ CREATE TABLE IF NOT EXISTS {TABLE_DEBATERS} (
 # Stores finalised judge scoresheets (immutable after submission).
 # pro_name / con_name removed — derive from matches via JOIN.
 # Individual debater scores moved to DEBATER_SCORES.
-# One row per (match_id, judge_name) — enforced by UNIQUE constraint.
+# One row per (match_id, judge_name) — enforced by the composite primary key.
 CREATE_SCORES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_SCORES} (
-    match_id                 TEXT,
-    judge_name               TEXT,
+    match_id                 VARCHAR(255) NOT NULL,
+    judge_name               VARCHAR(100) NOT NULL,
     pro_total_score          INTEGER,
     con_total_score          INTEGER,
     submitted_time           TIME,
@@ -179,7 +201,9 @@ CREATE TABLE IF NOT EXISTS {TABLE_SCORES} (
     con_deduction_points     INTEGER,
     pro_coherence_score      INTEGER,
     con_coherence_score      INTEGER,
-    UNIQUE (match_id, judge_name),
+    judge_kind               TEXT NOT NULL DEFAULT 'human'
+                                CHECK (judge_kind IN ('human', 'ai')),
+    PRIMARY KEY (match_id, judge_name),
     CONSTRAINT fk_scores_match
         FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
         ON DELETE CASCADE
@@ -228,14 +252,13 @@ CREATE TABLE IF NOT EXISTS {TABLE_BEST_DEBATER_RANKINGS} (
 # `score_payload` stores the validated scoring state as structured JSON.
 CREATE_SCORE_DRAFTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_SCORE_DRAFTS} (
-    match_id        TEXT,
-    judge_name      TEXT,
-    side            TEXT,
-    score_payload   JSONB,
+    match_id        VARCHAR(255) NOT NULL,
+    judge_name      VARCHAR(255) NOT NULL,
+    side            CHAR(10) NOT NULL,
+    score_payload   JSONB NOT NULL,
     is_final        BOOLEAN DEFAULT FALSE,
     updated_at      TIMESTAMP,
-    CONSTRAINT score_drafts_match_judge_side_key
-        UNIQUE (match_id, judge_name, side),
+    PRIMARY KEY (match_id, judge_name, side),
     CONSTRAINT fk_score_drafts_match
         FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
         ON DELETE CASCADE
@@ -367,14 +390,20 @@ END $$;
 # Per-voter ballots live in TOPIC_VOTE_BALLOTS.
 CREATE_TOPIC_VOTES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_VOTES} (
-    topic_text          TEXT    PRIMARY KEY,
-    proposer_user_id    TEXT,
-    status              TEXT    DEFAULT 'pending',
-    created_at          TIMESTAMP,
+    topic_text          VARCHAR(255) PRIMARY KEY,
+    proposer_user_id    VARCHAR(50),
+    status              VARCHAR(20) DEFAULT 'pending',
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deadline_date       DATE,
-    approval_threshold  INTEGER,
-    category            TEXT,
+    approval_threshold  INTEGER NOT NULL,
+    category            VARCHAR(50),
     difficulty          INTEGER,
+    CONSTRAINT topic_votes_status_check
+        CHECK (status IN ('pending', 'passed', 'rejected')),
+    CONSTRAINT topic_votes_threshold_check
+        CHECK (approval_threshold > 0),
+    CONSTRAINT topic_votes_pending_deadline_check
+        CHECK (status <> 'pending' OR deadline_date IS NOT NULL),
     CONSTRAINT fk_topic_votes_proposer_user
         FOREIGN KEY (proposer_user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
@@ -388,7 +417,8 @@ CREATE_TOPIC_VOTE_BALLOTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_VOTE_BALLOTS} (
     topic_text          TEXT,
     user_id             TEXT,
-    vote_choice         TEXT    CHECK (vote_choice IN ('agree', 'against')),
+    vote_choice         TEXT    NOT NULL
+                                CHECK (vote_choice IN ('agree', 'against')),
     against_reasons     JSONB   DEFAULT '[]',
     PRIMARY KEY (topic_text, user_id),
     CONSTRAINT fk_topic_vote_ballots_topic
@@ -407,13 +437,21 @@ CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_VOTE_BALLOTS} (
 # status: 'pending' | 'passed' | 'rejected'  (mirrors topic_votes lifecycle)
 CREATE_TOPIC_REMOVAL_VOTES = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTES} (
-    topic_text          TEXT    PRIMARY KEY,
-    proposer_user_id    TEXT,
-    status              TEXT    DEFAULT 'pending',
-    removal_reasons     JSONB   DEFAULT '[]',
-    created_at          TIMESTAMP,
+    topic_text          VARCHAR(255) PRIMARY KEY,
+    proposer_user_id    VARCHAR(255),
+    status              CHAR(20) DEFAULT 'pending',
+    removal_reasons     JSONB NOT NULL DEFAULT '[]',
+    created_at          TIMESTAMP NOT NULL,
     deadline_date       DATE,
-    approval_threshold  INTEGER,
+    approval_threshold  INTEGER NOT NULL,
+    CONSTRAINT topic_removal_votes_status_check
+        CHECK (BTRIM(status) IN ('pending', 'passed', 'rejected')),
+    CONSTRAINT topic_removal_votes_threshold_check
+        CHECK (approval_threshold > 0),
+    CONSTRAINT topic_removal_votes_pending_deadline_check
+        CHECK (BTRIM(status) <> 'pending' OR deadline_date IS NOT NULL),
+    CONSTRAINT topic_removal_votes_reasons_array_check
+        CHECK (jsonb_typeof(removal_reasons) = 'array'),
     -- Deliberately no FK to topics: a passed removal deletes the bank row but
     -- the resolved motion and its ballots remain as governance history.
     CONSTRAINT fk_topic_removal_votes_proposer_user
@@ -429,7 +467,8 @@ CREATE_TOPIC_REMOVAL_VOTE_BALLOTS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (
     topic_text      TEXT,
     user_id         TEXT,
-    vote_choice     TEXT    CHECK (vote_choice IN ('agree', 'against')),
+    vote_choice     TEXT    NOT NULL
+                            CHECK (vote_choice IN ('agree', 'against')),
     PRIMARY KEY (topic_text, user_id),
     CONSTRAINT fk_topic_removal_vote_ballots_topic
         FOREIGN KEY (topic_text) REFERENCES {TABLE_TOPIC_REMOVAL_VOTES}(topic_text)
@@ -444,8 +483,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} (
 # Audit log for all logins (committee personal accounts, admin, score review).
 # login_type: 'committee' | 'admin' | 'score_review'
 CREATE_LOGIN_RECORDS = f"""
+CREATE SEQUENCE IF NOT EXISTS login_record_id_seq AS INTEGER;
 CREATE TABLE IF NOT EXISTS {TABLE_LOGIN_RECORDS} (
-    id              SERIAL      PRIMARY KEY,
+    id              INTEGER     PRIMARY KEY
+                                DEFAULT nextval('login_record_id_seq'),
     user_id         TEXT,
     login_type      TEXT,
     logged_in_at    TIMESTAMP,
@@ -453,6 +494,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_LOGIN_RECORDS} (
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
 );
+ALTER SEQUENCE login_record_id_seq
+    OWNED BY {TABLE_LOGIN_RECORDS}.id;
 """
 
 # Table: NOTIFICATION_READS
@@ -470,7 +513,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_NOTIFICATION_READS} (
     PRIMARY KEY (notification_id, user_id),
     CONSTRAINT fk_notification_reads_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE CASCADE
 );
 """
 
@@ -878,7 +920,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_COMPETITION_PREP_AI_RUNS} (
 );
 CREATE INDEX IF NOT EXISTS idx_competition_prep_projects_expiry ON {TABLE_COMPETITION_PREP_PROJECTS}(expires_at, id);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_members_user ON {TABLE_COMPETITION_PREP_MEMBERS}(user_id, project_id);
-CREATE INDEX IF NOT EXISTS idx_competition_prep_manuscripts_project ON {TABLE_COMPETITION_PREP_MANUSCRIPTS}(project_id, slot);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_strategy_project ON {TABLE_COMPETITION_PREP_STRATEGY_CARDS}(project_id, sort_order, id);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_evidence_project ON {TABLE_COMPETITION_PREP_EVIDENCE_CARDS}(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_competition_prep_weakness_project ON {TABLE_COMPETITION_PREP_WEAKNESSES}(project_id, status, priority, id);
@@ -1234,12 +1275,31 @@ CREATE TABLE IF NOT EXISTS {TABLE_R2_UPLOAD_INTENTS} (
     intent_id       TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL,
     media_kind      TEXT NOT NULL,
-    object_keys     TEXT NOT NULL,
+    object_keys     JSONB NOT NULL,
     intent_metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     declared_bytes  BIGINT NOT NULL CHECK (declared_bytes > 0),
     status          TEXT NOT NULL DEFAULT 'issued',
     created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMP,
+    CONSTRAINT r2_upload_intents_object_keys_check
+        CHECK (
+            jsonb_typeof(object_keys)='array'
+            AND jsonb_array_length(object_keys)>0
+        ),
+    CONSTRAINT r2_upload_intents_status_check
+        CHECK (
+            status IN (
+                'issued', 'completed', 'processing', 'consumed',
+                'orphan_deleted'
+            )
+        ),
+    CONSTRAINT r2_upload_intents_completion_check
+        CHECK (
+            (status IN ('issued', 'processing') AND completed_at IS NULL)
+            OR
+            (status IN ('completed', 'consumed', 'orphan_deleted')
+                AND completed_at IS NOT NULL)
+        ),
     CONSTRAINT fk_r2_upload_intent_user
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE CASCADE
@@ -1421,6 +1481,84 @@ CREATE TABLE IF NOT EXISTS {TABLE_PROJECTOR_AI_MARKERS} (
 );
 """
 
+CREATE_OFFICIAL_AI_JUDGE = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_OFFICIAL_AI_JUDGE_RUNS} (
+    match_id             TEXT PRIMARY KEY,
+    projector_session_id TEXT NOT NULL,
+    operation_id         TEXT NOT NULL UNIQUE,
+    status               TEXT NOT NULL
+        CHECK (status IN ('ready','processing','retryable','succeeded','fallback')),
+    attempt_count        SMALLINT NOT NULL DEFAULT 0
+        CHECK (attempt_count BETWEEN 0 AND 2),
+    current_model_label  TEXT,
+    final_model_label    TEXT,
+    final_judge_name     TEXT,
+    last_error           TEXT NOT NULL DEFAULT '',
+    current_claim_token  TEXT,
+    claim_expires_at     TIMESTAMPTZ,
+    created_by           TEXT NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at         TIMESTAMPTZ,
+    CONSTRAINT fk_official_ai_judge_run_match
+        FOREIGN KEY (match_id) REFERENCES {TABLE_MATCHES}(match_id)
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_official_ai_judge_run_session
+        FOREIGN KEY (projector_session_id) REFERENCES {TABLE_PROJECTOR_AI_SESSIONS}(session_id)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS {TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS} (
+    id                 BIGSERIAL PRIMARY KEY,
+    match_id           TEXT NOT NULL,
+    attempt_no         SMALLINT NOT NULL CHECK (attempt_no BETWEEN 1 AND 2),
+    model_label        TEXT NOT NULL,
+    provider           TEXT NOT NULL,
+    human_judge_count  SMALLINT NOT NULL CHECK (human_judge_count >= 2 AND MOD(human_judge_count, 2) = 0),
+    pro_deduction      INTEGER NOT NULL CHECK (pro_deduction >= 0),
+    con_deduction      INTEGER NOT NULL CHECK (con_deduction >= 0),
+    status             TEXT NOT NULL DEFAULT 'claimed'
+        CHECK (status IN ('claimed','running','succeeded','failed')),
+    provider_attempted BOOLEAN NOT NULL DEFAULT FALSE,
+    error_message      TEXT NOT NULL DEFAULT '',
+    result_payload     JSONB,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    provider_attempted_at TIMESTAMPTZ,
+    completed_at       TIMESTAMPTZ,
+    CONSTRAINT fk_official_ai_judge_attempt_run
+        FOREIGN KEY (match_id) REFERENCES {TABLE_OFFICIAL_AI_JUDGE_RUNS}(match_id)
+        ON DELETE CASCADE,
+    UNIQUE (match_id, attempt_no),
+    UNIQUE (match_id, model_label)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_one_official_ai_judge
+    ON {TABLE_SCORES}(match_id) WHERE judge_kind='ai';
+CREATE INDEX IF NOT EXISTS idx_official_ai_judge_attempts_match_created
+    ON {TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS}(match_id, created_at DESC);
+"""
+
+LOCK_OFFICIAL_AI_JUDGE_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE
+    {TABLE_OFFICIAL_AI_JUDGE_RUNS}, {TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS}
+    FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS}_id_seq
+    FROM PUBLIC;
+DO $$
+DECLARE role_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE {TABLE_OFFICIAL_AI_JUDGE_RUNS}, {TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS} FROM '
+            || quote_ident(role_name);
+        EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE {TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS}_id_seq FROM '
+            || quote_ident(role_name);
+    END LOOP;
+END $$;
+"""
+
 # Results, transcripts, speaker markers and TTS audio are backend-only even
 # though the payload columns are authenticated-encrypted at rest.
 LOCK_PROJECTOR_AI_PRIVILEGES = f"""
@@ -1452,8 +1590,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_COACH_LIVE_BRIEFS} (
     brief_id   TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL,
     brief      TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ai_coach_live_briefs_expiry_check
+        CHECK (expires_at > created_at)
 );
 """
 
@@ -1576,6 +1716,619 @@ BEGIN
 END $$;
 """
 
+# Versioned, fail-closed V0 debate data factory. These relations retain
+# immutable source/provider/release lineage without provisioning pgvector,
+# model-registry or evaluation bundles.
+CREATE_AI_DATA_FACTORY = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_SOURCES} (
+    id                    TEXT        PRIMARY KEY,
+    source_group_id       TEXT        NOT NULL,
+    revision_no           INTEGER     NOT NULL CHECK (revision_no > 0),
+    supersedes_source_id  TEXT,
+    source_kind           TEXT        NOT NULL
+        CHECK (source_kind IN ('llm_submission', 'admin_paste')),
+    origin_submission_id  INTEGER,
+    data_type             TEXT        NOT NULL,
+    title                 TEXT,
+    topic_text            TEXT,
+    side                  TEXT,
+    source_note           TEXT,
+    language_code         TEXT        NOT NULL
+        CHECK (language_code IN (
+            'yue-Hant-HK', 'zh-Hant', 'en', 'mixed', 'other'
+        )),
+    rights_basis          TEXT        NOT NULL
+        CHECK (rights_basis IN (
+            'submission_confirmed', 'own_work', 'permission',
+            'open_license', 'public_domain', 'other'
+        )),
+    rights_confirmed_by   TEXT        NOT NULL,
+    rights_confirmed_at   TIMESTAMPTZ NOT NULL,
+    content_text          TEXT        NOT NULL,
+    content_sha256        TEXT        NOT NULL,
+    created_by            TEXT        NOT NULL,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    withdrawn_by          TEXT,
+    withdrawn_at          TIMESTAMPTZ,
+    withdrawal_reason     TEXT,
+    CONSTRAINT ai_factory_sources_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_sources_group_length
+        CHECK (char_length(source_group_id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_sources_revision_link
+        CHECK (
+            (revision_no = 1 AND supersedes_source_id IS NULL)
+            OR (revision_no > 1 AND supersedes_source_id IS NOT NULL)
+        ),
+    CONSTRAINT ai_factory_sources_origin_kind
+        CHECK (
+            (source_kind = 'llm_submission'
+                AND origin_submission_id IS NOT NULL
+                AND rights_basis = 'submission_confirmed')
+            OR
+            (source_kind = 'admin_paste'
+                AND origin_submission_id IS NULL
+                AND rights_basis <> 'submission_confirmed')
+        ),
+    CONSTRAINT ai_factory_sources_metadata_lengths
+        CHECK (
+            char_length(data_type) BETWEEN 1 AND 80
+            AND (title IS NULL OR char_length(title) <= 500)
+            AND (topic_text IS NULL OR char_length(topic_text) <= 2000)
+            AND (side IS NULL OR char_length(side) <= 80)
+            AND (source_note IS NULL OR char_length(source_note) <= 1000)
+            AND char_length(language_code) BETWEEN 2 AND 35
+            AND char_length(rights_confirmed_by) BETWEEN 1 AND 200
+            AND char_length(created_by) BETWEEN 1 AND 200
+        ),
+    CONSTRAINT ai_factory_sources_content_length
+        CHECK (char_length(content_text) BETWEEN 1 AND 20000),
+    CONSTRAINT ai_factory_sources_content_hash
+        CHECK (
+            char_length(content_sha256) = 64
+            AND content_sha256 = lower(content_sha256)
+            AND content_sha256 ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT ai_factory_sources_withdrawal_fields
+        CHECK (
+            (withdrawn_at IS NULL
+                AND withdrawn_by IS NULL
+                AND withdrawal_reason IS NULL)
+            OR
+            (withdrawn_at IS NOT NULL
+                AND char_length(withdrawn_by) BETWEEN 1 AND 200
+                AND char_length(withdrawal_reason) BETWEEN 1 AND 1000)
+        ),
+    CONSTRAINT fk_ai_factory_sources_submission
+        FOREIGN KEY (origin_submission_id)
+        REFERENCES {TABLE_LLM_TRAINING_SUBMISSIONS}(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_ai_factory_sources_superseded
+        FOREIGN KEY (supersedes_source_id)
+        REFERENCES {TABLE_AI_FACTORY_SOURCES}(id) ON DELETE RESTRICT,
+    UNIQUE (source_group_id, revision_no)
+);
+
+COMMENT ON TABLE {TABLE_AI_FACTORY_SOURCES} IS
+    'skhlmc-feature:data_factory:20260720_0001';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_factory_sources_submission
+    ON {TABLE_AI_FACTORY_SOURCES}(origin_submission_id)
+    WHERE origin_submission_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_factory_sources_supersedes
+    ON {TABLE_AI_FACTORY_SOURCES}(supersedes_source_id)
+    WHERE supersedes_source_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ai_factory_sources_active_created
+    ON {TABLE_AI_FACTORY_SOURCES}(created_at DESC)
+    WHERE withdrawn_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_JOBS} (
+    id                      TEXT        PRIMARY KEY,
+    source_id               TEXT        NOT NULL,
+    recipe_key              TEXT        NOT NULL
+        CHECK (recipe_key IN (
+            'rag_knowledge_card_v1',
+            'rag_argument_decomposition_v1',
+            'sft_speech_critique_v1',
+            'sft_attack_defence_v1'
+        )),
+    requested_count         SMALLINT    NOT NULL DEFAULT 3
+        CHECK (requested_count BETWEEN 1 AND 5),
+    instruction_text        TEXT        NOT NULL DEFAULT '',
+    status                  TEXT        NOT NULL DEFAULT 'draft'
+        CHECK (status IN (
+            'draft', 'processing', 'awaiting_review',
+            'reviewed', 'failed', 'invalidated'
+        )),
+    preview_model_label     TEXT,
+    preview_provider        TEXT,
+    preview_provider_model  TEXT,
+    preview_prompt_sha256   TEXT,
+    preview_input_sha256    TEXT,
+    preview_sha256          TEXT,
+    preview_expires_at      TIMESTAMPTZ,
+    created_by              TEXT        NOT NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    invalidated_by          TEXT,
+    invalidated_at          TIMESTAMPTZ,
+    invalidation_reason     TEXT,
+    CONSTRAINT ai_factory_jobs_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_jobs_instruction_length
+        CHECK (char_length(instruction_text) <= 500),
+    CONSTRAINT ai_factory_jobs_actor_length
+        CHECK (char_length(created_by) BETWEEN 1 AND 200),
+    CONSTRAINT ai_factory_jobs_preview_bundle
+        CHECK (
+            (preview_model_label IS NULL
+                AND preview_provider IS NULL
+                AND preview_provider_model IS NULL
+                AND preview_prompt_sha256 IS NULL
+                AND preview_input_sha256 IS NULL
+                AND preview_sha256 IS NULL
+                AND preview_expires_at IS NULL)
+            OR
+            (char_length(preview_model_label) BETWEEN 1 AND 200
+                AND char_length(preview_provider) BETWEEN 1 AND 80
+                AND char_length(preview_provider_model) BETWEEN 1 AND 200
+                AND char_length(preview_prompt_sha256) = 64
+                AND preview_prompt_sha256 = lower(preview_prompt_sha256)
+                AND preview_prompt_sha256 ~ '^[0-9a-f]+$'
+                AND char_length(preview_input_sha256) = 64
+                AND preview_input_sha256 = lower(preview_input_sha256)
+                AND preview_input_sha256 ~ '^[0-9a-f]+$'
+                AND char_length(preview_sha256) = 64
+                AND preview_sha256 = lower(preview_sha256)
+                AND preview_sha256 ~ '^[0-9a-f]+$'
+                AND preview_expires_at IS NOT NULL)
+        ),
+    CONSTRAINT ai_factory_jobs_invalidation_fields
+        CHECK (
+            (status <> 'invalidated'
+                AND invalidated_at IS NULL
+                AND invalidated_by IS NULL
+                AND invalidation_reason IS NULL)
+            OR
+            (status = 'invalidated'
+                AND invalidated_at IS NOT NULL
+                AND char_length(invalidated_by) BETWEEN 1 AND 200
+                AND char_length(invalidation_reason) BETWEEN 1 AND 1000)
+        ),
+    CONSTRAINT fk_ai_factory_jobs_source
+        FOREIGN KEY (source_id)
+        REFERENCES {TABLE_AI_FACTORY_SOURCES}(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_jobs_source_created
+    ON {TABLE_AI_FACTORY_JOBS}(source_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_factory_jobs_status_updated
+    ON {TABLE_AI_FACTORY_JOBS}(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_factory_jobs_preview_expiry
+    ON {TABLE_AI_FACTORY_JOBS}(preview_expires_at)
+    WHERE preview_expires_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_ATTEMPTS} (
+    id                        TEXT        PRIMARY KEY,
+    job_id                    TEXT        NOT NULL,
+    attempt_no                SMALLINT    NOT NULL
+        CHECK (attempt_no BETWEEN 1 AND 3),
+    operation_id              TEXT        NOT NULL,
+    model_label               TEXT        NOT NULL,
+    provider                  TEXT        NOT NULL,
+    provider_model            TEXT        NOT NULL,
+    recipe_key                TEXT        NOT NULL
+        CHECK (recipe_key IN (
+            'rag_knowledge_card_v1',
+            'rag_argument_decomposition_v1',
+            'sft_speech_critique_v1',
+            'sft_attack_defence_v1'
+        )),
+    recipe_version            TEXT        NOT NULL,
+    candidate_count           SMALLINT    NOT NULL
+        CHECK (candidate_count BETWEEN 1 AND 5),
+    estimated_cost_hkd        NUMERIC(12, 8) NOT NULL DEFAULT 0
+        CHECK (estimated_cost_hkd BETWEEN 0 AND 9999),
+    budget_provider_name      TEXT,
+    budget_period_month       DATE,
+    budget_window_start       TIMESTAMP,
+    source_sha256             TEXT        NOT NULL,
+    prompt_sha256             TEXT        NOT NULL,
+    input_sha256              TEXT        NOT NULL,
+    preview_sha256            TEXT        NOT NULL,
+    previewed_at              TIMESTAMPTZ NOT NULL,
+    preview_expires_at        TIMESTAMPTZ NOT NULL,
+    confirmation_version      TEXT        NOT NULL,
+    anonymization_confirmed   BOOLEAN     NOT NULL,
+    rights_confirmed          BOOLEAN     NOT NULL,
+    third_party_confirmed     BOOLEAN     NOT NULL,
+    pii_warning_count         SMALLINT    NOT NULL DEFAULT 0
+        CHECK (pii_warning_count BETWEEN 0 AND 20),
+    pii_override_reason       TEXT,
+    confirmed_by              TEXT        NOT NULL,
+    confirmed_at              TIMESTAMPTZ NOT NULL,
+    status                    TEXT        NOT NULL DEFAULT 'claimed'
+        CHECK (status IN (
+            'claimed', 'running', 'succeeded', 'failed', 'discarded'
+        )),
+    provider_attempted_at     TIMESTAMPTZ,
+    provider_request_id       TEXT,
+    resolved_provider_model   TEXT,
+    response_sha256           TEXT,
+    response_bytes            INTEGER,
+    error_code                TEXT,
+    completed_at              TIMESTAMPTZ,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ai_factory_attempts_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_attempts_operation_is_job
+        CHECK (operation_id = job_id),
+    CONSTRAINT ai_factory_attempts_identity_lengths
+        CHECK (
+            char_length(model_label) BETWEEN 1 AND 200
+            AND char_length(provider) BETWEEN 1 AND 80
+            AND char_length(provider_model) BETWEEN 1 AND 200
+            AND char_length(recipe_version) BETWEEN 1 AND 80
+            AND char_length(confirmation_version) BETWEEN 1 AND 80
+            AND char_length(confirmed_by) BETWEEN 1 AND 200
+            AND (provider_request_id IS NULL
+                OR char_length(provider_request_id) <= 300)
+            AND (resolved_provider_model IS NULL
+                OR char_length(resolved_provider_model) BETWEEN 1 AND 200)
+        ),
+    CONSTRAINT ai_factory_attempts_budget_reservation
+        CHECK (
+            (estimated_cost_hkd = 0
+                AND budget_provider_name IS NULL
+                AND budget_period_month IS NULL
+                AND budget_window_start IS NULL)
+            OR
+            (estimated_cost_hkd > 0
+                AND char_length(budget_provider_name) BETWEEN 1 AND 80
+                AND budget_period_month IS NOT NULL
+                AND budget_window_start IS NOT NULL)
+        ),
+    CONSTRAINT ai_factory_attempts_hashes
+        CHECK (
+            char_length(source_sha256) = 64
+            AND source_sha256 = lower(source_sha256)
+            AND source_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(prompt_sha256) = 64
+            AND prompt_sha256 = lower(prompt_sha256)
+            AND prompt_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(input_sha256) = 64
+            AND input_sha256 = lower(input_sha256)
+            AND input_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(preview_sha256) = 64
+            AND preview_sha256 = lower(preview_sha256)
+            AND preview_sha256 ~ '^[0-9a-f]+$'
+            AND (response_sha256 IS NULL
+                OR (
+                    char_length(response_sha256) = 64
+                    AND response_sha256 = lower(response_sha256)
+                    AND response_sha256 ~ '^[0-9a-f]+$'
+                ))
+        ),
+    CONSTRAINT ai_factory_attempts_confirmation
+        CHECK (
+            anonymization_confirmed = TRUE
+            AND rights_confirmed = TRUE
+            AND third_party_confirmed = TRUE
+            AND confirmed_at >= previewed_at
+            AND confirmed_at <= preview_expires_at
+            AND (provider_attempted_at IS NULL
+                OR provider_attempted_at >= confirmed_at)
+        ),
+    CONSTRAINT ai_factory_attempts_pii_confirmation
+        CHECK (
+            (pii_warning_count = 0
+                AND pii_override_reason IS NULL)
+            OR
+            (pii_warning_count > 0
+                AND char_length(pii_override_reason) BETWEEN 1 AND 1000)
+        ),
+    CONSTRAINT ai_factory_attempts_response_size
+        CHECK (response_bytes IS NULL OR response_bytes BETWEEN 0 AND 102400),
+    CONSTRAINT ai_factory_attempts_status_fields
+        CHECK (
+            (status = 'claimed'
+                AND provider_attempted_at IS NULL
+                AND completed_at IS NULL
+                AND error_code IS NULL)
+            OR
+            (status = 'running'
+                AND provider_attempted_at IS NOT NULL
+                AND completed_at IS NULL
+                AND error_code IS NULL)
+            OR
+            (status = 'succeeded'
+                AND provider_attempted_at IS NOT NULL
+                AND completed_at IS NOT NULL
+                AND response_sha256 IS NOT NULL
+                AND response_bytes IS NOT NULL
+                AND response_bytes > 0
+                AND error_code IS NULL)
+            OR
+            (status IN ('failed', 'discarded')
+                AND completed_at IS NOT NULL
+                AND char_length(error_code) BETWEEN 1 AND 120)
+        ),
+    CONSTRAINT ai_factory_attempts_completion_order
+        CHECK (completed_at IS NULL OR completed_at >= provider_attempted_at),
+    CONSTRAINT fk_ai_factory_attempts_job
+        FOREIGN KEY (job_id)
+        REFERENCES {TABLE_AI_FACTORY_JOBS}(id) ON DELETE RESTRICT,
+    UNIQUE (id, job_id),
+    UNIQUE (job_id, attempt_no)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_factory_attempts_one_success
+    ON {TABLE_AI_FACTORY_ATTEMPTS}(job_id)
+    WHERE status = 'succeeded';
+CREATE INDEX IF NOT EXISTS idx_ai_factory_attempts_job_created
+    ON {TABLE_AI_FACTORY_ATTEMPTS}(job_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_factory_attempts_processing
+    ON {TABLE_AI_FACTORY_ATTEMPTS}(provider_attempted_at)
+    WHERE status IN ('claimed', 'running');
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_ITEMS} (
+    id                    TEXT        PRIMARY KEY,
+    job_id                TEXT        NOT NULL,
+    attempt_id            TEXT        NOT NULL,
+    ordinal               SMALLINT    NOT NULL CHECK (ordinal BETWEEN 1 AND 5),
+    original_json         JSONB       NOT NULL,
+    original_sha256       TEXT        NOT NULL,
+    reviewed_json         JSONB,
+    reviewed_sha256       TEXT,
+    review_status         TEXT        NOT NULL DEFAULT 'pending'
+        CHECK (review_status IN ('pending', 'approved', 'rejected')),
+    review_note           TEXT,
+    reviewed_by           TEXT,
+    reviewed_at           TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    invalidated_by        TEXT,
+    invalidated_at        TIMESTAMPTZ,
+    invalidation_reason   TEXT,
+    CONSTRAINT ai_factory_items_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_items_original_object
+        CHECK (jsonb_typeof(original_json) = 'object'),
+    CONSTRAINT ai_factory_items_reviewed_object
+        CHECK (reviewed_json IS NULL OR jsonb_typeof(reviewed_json) = 'object'),
+    CONSTRAINT ai_factory_items_hashes
+        CHECK (
+            char_length(original_sha256) = 64
+            AND original_sha256 = lower(original_sha256)
+            AND original_sha256 ~ '^[0-9a-f]+$'
+            AND (
+                (reviewed_json IS NULL AND reviewed_sha256 IS NULL)
+                OR
+                (reviewed_json IS NOT NULL
+                    AND char_length(reviewed_sha256) = 64
+                    AND reviewed_sha256 = lower(reviewed_sha256)
+                    AND reviewed_sha256 ~ '^[0-9a-f]+$')
+            )
+        ),
+    CONSTRAINT ai_factory_items_review_fields
+        CHECK (
+            (review_status = 'pending'
+                AND reviewed_json IS NULL
+                AND reviewed_sha256 IS NULL
+                AND reviewed_by IS NULL
+                AND reviewed_at IS NULL)
+            OR
+            (review_status = 'approved'
+                AND reviewed_json IS NOT NULL
+                AND reviewed_sha256 IS NOT NULL
+                AND char_length(reviewed_by) BETWEEN 1 AND 200
+                AND reviewed_at IS NOT NULL)
+            OR
+            (review_status = 'rejected'
+                AND char_length(reviewed_by) BETWEEN 1 AND 200
+                AND reviewed_at IS NOT NULL)
+        ),
+    CONSTRAINT ai_factory_items_note_length
+        CHECK (review_note IS NULL OR char_length(review_note) <= 2000),
+    CONSTRAINT ai_factory_items_invalidation_fields
+        CHECK (
+            (invalidated_at IS NULL
+                AND invalidated_by IS NULL
+                AND invalidation_reason IS NULL)
+            OR
+            (invalidated_at IS NOT NULL
+                AND char_length(invalidated_by) BETWEEN 1 AND 200
+                AND char_length(invalidation_reason) BETWEEN 1 AND 1000)
+        ),
+    CONSTRAINT fk_ai_factory_items_attempt_job
+        FOREIGN KEY (attempt_id, job_id)
+        REFERENCES {TABLE_AI_FACTORY_ATTEMPTS}(id, job_id) ON DELETE RESTRICT,
+    UNIQUE (job_id, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_items_attempt
+    ON {TABLE_AI_FACTORY_ITEMS}(attempt_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_ai_factory_items_review_queue
+    ON {TABLE_AI_FACTORY_ITEMS}(created_at)
+    WHERE review_status = 'pending' AND invalidated_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_factory_items_approved_hash
+    ON {TABLE_AI_FACTORY_ITEMS}(reviewed_sha256)
+    WHERE review_status = 'approved';
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_TOPIC_TAGS} (
+    id                TEXT        PRIMARY KEY,
+    label             TEXT        NOT NULL,
+    normalized_label  TEXT        NOT NULL UNIQUE,
+    approved_by       TEXT        NOT NULL,
+    approved_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    retired_by        TEXT,
+    retired_at        TIMESTAMPTZ,
+    CONSTRAINT ai_factory_topic_tags_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_topic_tags_label_length
+        CHECK (
+            char_length(label) BETWEEN 1 AND 40
+            AND char_length(normalized_label) BETWEEN 1 AND 40
+            AND char_length(approved_by) BETWEEN 1 AND 200
+        ),
+    CONSTRAINT ai_factory_topic_tags_retirement_fields
+        CHECK (
+            (retired_at IS NULL AND retired_by IS NULL)
+            OR
+            (retired_at IS NOT NULL
+                AND char_length(retired_by) BETWEEN 1 AND 200)
+        )
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_topic_tags_active
+    ON {TABLE_AI_FACTORY_TOPIC_TAGS}(normalized_label)
+    WHERE retired_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_ITEM_TAGS} (
+    item_id      TEXT        NOT NULL,
+    tag_id       TEXT        NOT NULL,
+    assigned_by  TEXT        NOT NULL,
+    assigned_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ai_factory_item_tags_actor_length
+        CHECK (char_length(assigned_by) BETWEEN 1 AND 200),
+    CONSTRAINT fk_ai_factory_item_tags_item
+        FOREIGN KEY (item_id)
+        REFERENCES {TABLE_AI_FACTORY_ITEMS}(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_ai_factory_item_tags_tag
+        FOREIGN KEY (tag_id)
+        REFERENCES {TABLE_AI_FACTORY_TOPIC_TAGS}(id) ON DELETE RESTRICT,
+    PRIMARY KEY (item_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_item_tags_tag
+    ON {TABLE_AI_FACTORY_ITEM_TAGS}(tag_id, item_id);
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_RELEASES} (
+    id                    TEXT        PRIMARY KEY,
+    release_kind          TEXT        NOT NULL
+        CHECK (release_kind IN ('rag', 'sft')),
+    version_no            INTEGER     NOT NULL CHECK (version_no > 0),
+    schema_version        TEXT        NOT NULL,
+    jsonl_text            TEXT        NOT NULL,
+    jsonl_sha256          TEXT        NOT NULL,
+    jsonl_bytes           INTEGER     NOT NULL,
+    manifest_json         JSONB       NOT NULL,
+    manifest_sha256       TEXT        NOT NULL,
+    item_count            INTEGER     NOT NULL,
+    published_by          TEXT        NOT NULL,
+    published_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    invalidated_by        TEXT,
+    invalidated_at        TIMESTAMPTZ,
+    invalidation_reason   TEXT,
+    CONSTRAINT ai_factory_releases_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_releases_metadata_lengths
+        CHECK (
+            char_length(schema_version) BETWEEN 1 AND 80
+            AND char_length(published_by) BETWEEN 1 AND 200
+        ),
+    CONSTRAINT ai_factory_releases_bounds
+        CHECK (
+            item_count BETWEEN 1 AND 500
+            AND jsonl_bytes BETWEEN 1 AND 5242880
+            AND jsonl_bytes = octet_length(jsonl_text)
+        ),
+    CONSTRAINT ai_factory_releases_json_object
+        CHECK (jsonb_typeof(manifest_json) = 'object'),
+    CONSTRAINT ai_factory_releases_hashes
+        CHECK (
+            char_length(jsonl_sha256) = 64
+            AND jsonl_sha256 = lower(jsonl_sha256)
+            AND jsonl_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(manifest_sha256) = 64
+            AND manifest_sha256 = lower(manifest_sha256)
+            AND manifest_sha256 ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT ai_factory_releases_invalidation_fields
+        CHECK (
+            (invalidated_at IS NULL
+                AND invalidated_by IS NULL
+                AND invalidation_reason IS NULL)
+            OR
+            (invalidated_at IS NOT NULL
+                AND char_length(invalidated_by) BETWEEN 1 AND 200
+                AND char_length(invalidation_reason) BETWEEN 1 AND 1000)
+        ),
+    UNIQUE (release_kind, version_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_releases_active
+    ON {TABLE_AI_FACTORY_RELEASES}(release_kind, version_no DESC)
+    WHERE invalidated_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_RELEASE_ITEMS} (
+    release_id         TEXT     NOT NULL,
+    item_id            TEXT     NOT NULL,
+    ordinal            INTEGER  NOT NULL CHECK (ordinal BETWEEN 1 AND 500),
+    item_sha256        TEXT     NOT NULL,
+    jsonl_line_sha256  TEXT     NOT NULL,
+    CONSTRAINT ai_factory_release_items_hashes
+        CHECK (
+            char_length(item_sha256) = 64
+            AND item_sha256 = lower(item_sha256)
+            AND item_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(jsonl_line_sha256) = 64
+            AND jsonl_line_sha256 = lower(jsonl_line_sha256)
+            AND jsonl_line_sha256 ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT fk_ai_factory_release_items_release
+        FOREIGN KEY (release_id)
+        REFERENCES {TABLE_AI_FACTORY_RELEASES}(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_ai_factory_release_items_item
+        FOREIGN KEY (item_id)
+        REFERENCES {TABLE_AI_FACTORY_ITEMS}(id) ON DELETE RESTRICT,
+    PRIMARY KEY (release_id, item_id),
+    UNIQUE (release_id, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_release_items_item
+    ON {TABLE_AI_FACTORY_RELEASE_ITEMS}(item_id, release_id);
+"""
+
+LOCK_AI_DATA_FACTORY_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE
+    {TABLE_AI_FACTORY_SOURCES},
+    {TABLE_AI_FACTORY_JOBS},
+    {TABLE_AI_FACTORY_ATTEMPTS},
+    {TABLE_AI_FACTORY_ITEMS},
+    {TABLE_AI_FACTORY_TOPIC_TAGS},
+    {TABLE_AI_FACTORY_ITEM_TAGS},
+    {TABLE_AI_FACTORY_RELEASES},
+    {TABLE_AI_FACTORY_RELEASE_ITEMS}
+FROM PUBLIC;
+DO $$
+DECLARE
+    role_name TEXT;
+    table_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        FOREACH table_name IN ARRAY ARRAY[
+            '{TABLE_AI_FACTORY_SOURCES}',
+            '{TABLE_AI_FACTORY_JOBS}',
+            '{TABLE_AI_FACTORY_ATTEMPTS}',
+            '{TABLE_AI_FACTORY_ITEMS}',
+            '{TABLE_AI_FACTORY_TOPIC_TAGS}',
+            '{TABLE_AI_FACTORY_ITEM_TAGS}',
+            '{TABLE_AI_FACTORY_RELEASES}',
+            '{TABLE_AI_FACTORY_RELEASE_ITEMS}'
+        ]
+        LOOP
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON TABLE %I FROM %I',
+                table_name,
+                role_name
+            );
+        END LOOP;
+    END LOOP;
+END $$;
+"""
+
 # Table: MATCH_ROSTER_LINKS
 # Unguessable per-side links for teams to submit their own roster.
 CREATE_MATCH_ROSTER_LINKS = f"""
@@ -1620,11 +2373,9 @@ CREATE TABLE IF NOT EXISTS {TABLE_MOTION_COMMENTS} (
 CREATE_AI_FUND_TRANSACTIONS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
     id                  SERIAL      PRIMARY KEY,
-    transaction_type    TEXT        NOT NULL
-                                CHECK (transaction_type IN ('member_deposit', 'provider_topup', 'provider_refund', 'member_refund', 'adjustment')),
+    transaction_type    TEXT        NOT NULL,
     status              TEXT        DEFAULT 'pending'
                                 CHECK (status IN ('pending', 'confirmed', 'rejected')),
-    provider            TEXT,
     amount_hkd          NUMERIC(10, 2) NOT NULL,
     payment_method      TEXT,
     reference_no        TEXT,
@@ -1636,6 +2387,14 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
     rejected_by         TEXT,
     rejected_at         TIMESTAMP,
     status_note         TEXT,
+    provider            TEXT,
+    CONSTRAINT chk_ai_fund_transaction_type
+        CHECK (
+            transaction_type IN (
+                'member_deposit', 'provider_topup', 'provider_refund',
+                'member_refund', 'adjustment'
+            )
+        ),
     CONSTRAINT fk_ai_fund_tx_created_by
         FOREIGN KEY (created_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL,
@@ -1655,7 +2414,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts', 'data_factory_generation', 'official_ai_judge')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
@@ -1767,115 +2526,72 @@ CREATE TABLE IF NOT EXISTS {TABLE_BUG_REPORTS} (
 CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW = f"""
 DROP VIEW IF EXISTS {VIEW_COMMITTEE_VOTE_ACTIVITY};
 CREATE VIEW {VIEW_COMMITTEE_VOTE_ACTIVITY} AS
-WITH tv_events AS (
-    SELECT DISTINCT tv.topic_text, tv.created_at
-    FROM {TABLE_TOPIC_VOTES} tv
-    WHERE EXISTS (
-        SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-        WHERE b.topic_text = tv.topic_text
-    )
-),
-tdv_events AS (
-    SELECT DISTINCT tdv.topic_text, tdv.created_at
-    FROM {TABLE_TOPIC_REMOVAL_VOTES} tdv
-    WHERE EXISTS (
-        SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-        WHERE b.topic_text = tdv.topic_text
-    )
-),
-all_events AS (
-    SELECT topic_text, created_at, 'tv' AS vote_source FROM tv_events
-    UNION ALL
-    SELECT topic_text, created_at, 'tdv' AS vote_source FROM tdv_events
-),
-combined_ballots AS (
-    SELECT
-        b.user_id,
-        b.vote_choice,
-        tv.created_at
-    FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-    JOIN {TABLE_TOPIC_VOTES} tv ON tv.topic_text = b.topic_text
-    UNION ALL
-    SELECT
-        b.user_id,
-        b.vote_choice,
-        tdv.created_at
-    FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-    JOIN {TABLE_TOPIC_REMOVAL_VOTES} tdv ON tdv.topic_text = b.topic_text
-),
-ballot_summary AS (
-    SELECT
-        a.user_id,
-        COUNT(cb.vote_choice) AS total_ballots,
-        COUNT(cb.vote_choice) FILTER (WHERE cb.vote_choice = 'agree') AS agree_ballots
+WITH eligible_accounts AS (
+    SELECT a.user_id, a.account_status, a.active_since
     FROM {TABLE_ACCOUNTS} a
-    LEFT JOIN combined_ballots cb
-      ON cb.user_id = a.user_id
-     AND (a.active_since IS NULL OR cb.created_at::date >= a.active_since)
-    GROUP BY a.user_id
-),
-base_stats AS (
-    SELECT
-        a.user_id,
-        a.account_status,
-        (
-            SELECT COUNT(*) FROM all_events ae
-            WHERE a.active_since IS NULL
-               OR ae.created_at::date >= a.active_since
-        ) AS total_votes,
-        (
-            SELECT COUNT(*) FROM all_events ae
-            WHERE (a.active_since IS NULL OR ae.created_at::date >= a.active_since)
-              AND (
-                  (
-                      ae.vote_source = 'tv'
-                      AND EXISTS (
-                          SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-                          WHERE b.topic_text = ae.topic_text
-                            AND b.user_id = a.user_id
-                      )
-                  ) OR (
-                      ae.vote_source = 'tdv'
-                      AND EXISTS (
-                          SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-                          WHERE b.topic_text = ae.topic_text
-                            AND b.user_id = a.user_id
-                      )
-                  )
-              )
-        ) AS participated_votes,
-        (
-            SELECT COUNT(*) FROM (
-                SELECT ae.topic_text, ae.vote_source
-                FROM all_events ae
-                WHERE a.active_since IS NULL
-                   OR ae.created_at::date >= a.active_since
-                ORDER BY ae.created_at DESC
-                LIMIT 10
-            ) p
-            WHERE (
-                p.vote_source = 'tv'
-                AND EXISTS (
-                    SELECT 1 FROM {TABLE_TOPIC_VOTE_BALLOTS} b
-                    WHERE b.topic_text = p.topic_text
-                      AND b.user_id = a.user_id
-                )
-            ) OR (
-                p.vote_source = 'tdv'
-                AND EXISTS (
-                    SELECT 1 FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} b
-                    WHERE b.topic_text = p.topic_text
-                      AND b.user_id = a.user_id
-                )
-            )
-        ) AS last10_participated,
-        COALESCE(bs.total_ballots, 0) AS total_ballots,
-        COALESCE(bs.agree_ballots, 0) AS agree_ballots
-    FROM {TABLE_ACCOUNTS} a
-    LEFT JOIN ballot_summary bs ON bs.user_id = a.user_id
     WHERE LOWER(a.user_id) NOT IN ({sql_account_id_literals(NON_MEMBER_ACCOUNT_DB_KEYS)})
       AND a.user_id != ''
       AND COALESCE(a.account_disabled, FALSE) = FALSE
+),
+all_events AS (
+    SELECT tv.topic_text, tv.created_at, 'tv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_VOTES} tv
+    JOIN (
+        SELECT DISTINCT topic_text FROM {TABLE_TOPIC_VOTE_BALLOTS}
+    ) ballots ON ballots.topic_text = tv.topic_text
+    UNION ALL
+    SELECT removal.topic_text, removal.created_at, 'tdv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_REMOVAL_VOTES} removal
+    JOIN (
+        SELECT DISTINCT topic_text FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS}
+    ) ballots ON ballots.topic_text = removal.topic_text
+),
+event_ballots AS (
+    SELECT ballot.topic_text, ballot.user_id, ballot.vote_choice,
+           'tv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_VOTE_BALLOTS} ballot
+    UNION ALL
+    SELECT ballot.topic_text, ballot.user_id, ballot.vote_choice,
+           'tdv'::TEXT AS vote_source
+    FROM {TABLE_TOPIC_REMOVAL_VOTE_BALLOTS} ballot
+),
+eligible_activity AS (
+    SELECT
+        account.user_id,
+        event.topic_text,
+        event.vote_source,
+        event.created_at,
+        ballot.vote_choice,
+        ROW_NUMBER() OVER (
+            PARTITION BY account.user_id
+            ORDER BY event.created_at DESC
+        ) AS event_recency
+    FROM eligible_accounts account
+    JOIN all_events event
+      ON account.active_since IS NULL
+      OR event.created_at::DATE >= account.active_since
+    LEFT JOIN event_ballots ballot
+      ON ballot.topic_text = event.topic_text
+     AND ballot.vote_source = event.vote_source
+     AND ballot.user_id = account.user_id
+),
+base_stats AS (
+    SELECT
+        account.user_id,
+        account.account_status,
+        COUNT(activity.topic_text) AS total_votes,
+        COUNT(activity.vote_choice) AS participated_votes,
+        COUNT(activity.vote_choice) FILTER (
+            WHERE activity.event_recency <= 10
+        ) AS last10_participated,
+        COUNT(activity.vote_choice) AS total_ballots,
+        COUNT(activity.vote_choice) FILTER (
+            WHERE activity.vote_choice = 'agree'
+        ) AS agree_ballots
+    FROM eligible_accounts account
+    LEFT JOIN eligible_activity activity
+      ON activity.user_id = account.user_id
+    GROUP BY account.user_id, account.account_status
 )
 SELECT
     user_id,
@@ -2005,10 +2721,23 @@ CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at
     ON {TABLE_LOGIN_RECORDS}(logged_in_at);
 CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at
     ON {TABLE_NOTIFICATION_READS}(read_at);
+CREATE INDEX IF NOT EXISTS idx_llm_training_status_created
+    ON {TABLE_LLM_TRAINING_SUBMISSIONS}(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_training_submitter_created
+    ON {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_monthly_resource_limits_updated
+    ON {TABLE_MONTHLY_RESOURCE_LIMITS}(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
+    ON {TABLE_TTS_SCRIPTS}(script_type, manuscript_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
     ON {TABLE_AI_TRAINING_AUDIT}(created_at)
     WHERE action NOT IN (
-        'consent_granted', 'consent_withdrawn', 'submission_withdrawn'
+        'consent_granted', 'consent_withdrawn', 'submission_withdrawn',
+        'factory_source_created', 'factory_source_withdrawn',
+        'factory_item_reviewed', 'factory_item_withdrawn',
+        'factory_item_invalidated',
+        'factory_topic_tag_approved', 'factory_topic_tag_retired',
+        'factory_release_published', 'factory_release_invalidated'
     );
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
     ON {TABLE_AI_FUND_TRANSACTIONS}(status);
@@ -2032,6 +2761,111 @@ CREATE INDEX IF NOT EXISTS idx_bug_reports_status_created
     ON {TABLE_BUG_REPORTS}(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_reporter_created
     ON {TABLE_BUG_REPORTS}(reporter_user_id, created_at DESC);
+"""
+
+# Final empty-database privilege contract.  Browser roles never receive direct
+# catalog access; a deployment may later grant app_backend to one secret login.
+LOCK_APPLICATION_PRIVILEGES = """
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+
+DO $bootstrap$
+DECLARE
+    role_name TEXT;
+    object_name TEXT;
+    object_kind "char";
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM '
+            || quote_ident(role_name);
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public '
+            || 'REVOKE ALL PRIVILEGES ON TABLES FROM '
+            || quote_ident(role_name);
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public '
+            || 'REVOKE ALL PRIVILEGES ON SEQUENCES FROM '
+            || quote_ident(role_name);
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public '
+            || 'REVOKE EXECUTE ON FUNCTIONS FROM '
+            || quote_ident(role_name);
+
+        FOR object_name, object_kind IN
+            SELECT c.relname, c.relkind
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public'
+              AND c.relkind IN ('r','p','v','m','f')
+        LOOP
+            EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.'
+                || quote_ident(object_name)
+                || ' FROM ' || quote_ident(role_name);
+        END LOOP;
+
+        FOR object_name IN
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relkind='S'
+        LOOP
+            EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE public.'
+                || quote_ident(object_name)
+                || ' FROM ' || quote_ident(role_name);
+        END LOOP;
+    END LOOP;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname='app_backend'
+    ) THEN
+        CREATE ROLE app_backend
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+            NOINHERIT NOBYPASSRLS;
+    END IF;
+
+    FOR object_name, object_kind IN
+        SELECT c.relname, c.relkind
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public'
+          AND c.relkind IN ('r','p','v','m','f')
+          AND c.relname<>'schema_migrations'
+    LOOP
+        IF object_kind IN ('v','m') THEN
+            EXECUTE 'GRANT SELECT ON TABLE public.'
+                || quote_ident(object_name) || ' TO app_backend';
+        ELSE
+            EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.'
+                || quote_ident(object_name) || ' TO app_backend';
+        END IF;
+    END LOOP;
+
+    FOR object_name IN
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relkind='S'
+    LOOP
+        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.'
+            || quote_ident(object_name) || ' TO app_backend';
+    END LOOP;
+END
+$bootstrap$;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_backend;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO app_backend;
+
+GRANT USAGE ON SCHEMA public TO app_backend;
 """
 
 # Typed, namespaced application configuration.  ``value`` retains its native
@@ -2109,6 +2943,8 @@ ALL_SCHEMAS = [
     CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
     CREATE_AI_TRAINING_AUDIT,
     LOCK_AI_TRAINING_AUDIT_PRIVILEGES,
+    CREATE_AI_DATA_FACTORY,           # → LLM submissions; internal lineage
+    LOCK_AI_DATA_FACTORY_PRIVILEGES,
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
@@ -2127,10 +2963,13 @@ ALL_SCHEMAS = [
     CREATE_PROJECTOR_AI_CONTROLS,        # cross-device command + ACK state
     CREATE_PROJECTOR_AI_MARKERS,         # server-time projector segment events
     LOCK_PROJECTOR_AI_PRIVILEGES,
+    CREATE_OFFICIAL_AI_JUDGE,            # durable official third-judge state
+    LOCK_OFFICIAL_AI_JUDGE_PRIVILEGES,
     CREATE_AI_COACH_LIVE_BRIEFS,        # short-lived AI coach state
     CREATE_APP_CONFIG,                  # typed runtime configuration
     CREATE_COMMITTEE_VOTE_ACTIVITY_VIEW, # after all tables
     CREATE_INDICES,                      # after all tables
+    LOCK_APPLICATION_PRIVILEGES,          # final database-wide ACL contract
 ]
 
 

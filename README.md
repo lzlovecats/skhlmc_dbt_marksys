@@ -149,6 +149,7 @@ Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](d
 ./venv/bin/python tools/manage_db_migrations.py status
 ./venv/bin/python tools/manage_db_migrations.py apply
 ./venv/bin/python tools/reconcile_db_schema.py
+./venv/bin/python tools/audit_db_access.py
 ```
 
 ## 發布前驗證
@@ -182,6 +183,8 @@ Production資料分為：
 
 Production exact baseline、drift及indexes／FK現況屬時間敏感資料，以 migration status、
 `tools/audit_db_schema.py` 及 `tools/reconcile_db_schema.py` 的即時read-only輸出為準。
+Fresh bootstrap同migrated staging可用`tools/compare_db_catalogs.py`比較語意catalog；
+權限封口及runtime role readiness以`tools/audit_db_access.py`為準。
 
 ## 營運文件
 

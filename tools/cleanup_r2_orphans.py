@@ -14,7 +14,6 @@ sys.path.insert(0, str(ROOT))
 
 from core import r2_storage
 from core.db_runtime import get_runtime_db
-from schema import CREATE_R2_UPLOAD_INTENTS
 from system_limits import R2_ORPHAN_DRY_RUN_DISPLAY_LIMIT, R2_ORPHAN_MIN_AGE_HOURS
 
 
@@ -33,16 +32,19 @@ def _referenced_keys(db) -> set[str]:
 
 
 def _issued_intents(db) -> dict[str, dict]:
-    db.execute(CREATE_R2_UPLOAD_INTENTS)
     rows = db.query("""SELECT intent_id,object_keys,created_at
         FROM r2_upload_intents WHERE status IN ('issued','processing')""")
     intents: dict[str, dict] = {}
     for _, row in rows.iterrows():
         intent_id = str(row["intent_id"])
-        try:
-            keys = [str(key) for key in json.loads(str(row["object_keys"] or "[]"))]
-        except Exception:
-            keys = []
+        raw_keys = row["object_keys"]
+        if isinstance(raw_keys, list):
+            keys = [str(key) for key in raw_keys]
+        else:
+            try:
+                keys = [str(key) for key in json.loads(str(raw_keys or "[]"))]
+            except Exception:
+                keys = []
         intents[intent_id] = {"keys": keys, "created_at": row.get("created_at")}
     return intents
 

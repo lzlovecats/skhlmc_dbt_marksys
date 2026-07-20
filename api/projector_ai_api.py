@@ -539,6 +539,49 @@ def _open_json(ciphertext) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def load_official_ai_judge_evidence(
+    match_id: str,
+    *,
+    session_id: str = "",
+    db=None,
+) -> dict:
+    """Load one unexpired encrypted full-match transcript for staff scoring."""
+    executor = db or _db()
+    now = _now()
+    _prune_expired(executor, now)
+    requested_session = str(session_id or "").strip()
+    session_filter = "AND session_id=:session" if requested_session else ""
+    rows = executor.query(
+        f"""SELECT session_id,match_id,status,result_ciphertext,result_expires_at
+            FROM {TABLE_SESSIONS}
+            WHERE match_id=:match_id {session_filter}
+              AND status IN ('ready','published')
+              AND result_ciphertext IS NOT NULL
+              AND result_expires_at>:now
+            ORDER BY created_at DESC LIMIT 1""",
+        {
+            "match_id": str(match_id or ""),
+            "session": requested_session,
+            "now": now,
+        },
+    )
+    if rows.empty:
+        raise ValueError("未有可用的完整比賽逐字稿，或兩小時私人保存期限已過。")
+    row = rows.iloc[0]
+    private = _open_json(row.get("result_ciphertext"))
+    transcript = str(private.get("transcript") or "").strip()
+    if not transcript or not bool(private.get("recording_deleted")):
+        raise ValueError("完整比賽逐字稿未完成私隱處理，暫不可用作正式 AI 分紙。")
+    return {
+        "session_id": str(row.get("session_id") or ""),
+        "match_id": str(row.get("match_id") or ""),
+        "transcript": transcript,
+        "result_expires_at": str(row.get("result_expires_at") or ""),
+        "source_model_label": str(private.get("model_label") or ""),
+        "recording_deleted": True,
+    }
+
+
 def _seal_bytes(payload: bytes) -> bytes:
     return _fernet().encrypt(bytes(payload))
 
@@ -1170,14 +1213,20 @@ def start_session(body: StartBody, request: Request):
         raise HTTPException(404, "找不到所選正式場次。")
     if not match.get("topic") or not match.get("pro_team") or not match.get("con_team"):
         raise HTTPException(400, "正式場次的辯題及正反方資料未完整。")
-    current = db.query(
-        "SELECT match_id FROM projector_state WHERE display_key=:display",
-        {"display": display},
-    )
-    if current.empty or str(current.iloc[0].get("match_id") or "") != match["match_id"]:
-        raise HTTPException(409, "投影控制所選場次與 AI評判易場次不一致。")
     session_id = uuid.uuid4().hex
     with db.transaction() as conn:
+        current = conn.execute(
+            text(
+                """SELECT match_id FROM projector_state
+                    WHERE display_key=:display FOR UPDATE"""
+            ),
+            {"display": display},
+        ).fetchone()
+        if (
+            current is None
+            or str(current._mapping.get("match_id") or "") != match["match_id"]
+        ):
+            raise HTTPException(409, "投影控制所選場次與 AI評判易場次不一致。")
         _ensure_control(conn, display, now)
         control = conn.execute(
             text(
@@ -1726,6 +1775,16 @@ def claim_kiosk_lease(
             owner_device == str(device["device_id"])
             and owner_client == client
         )
+        session_pinned = (
+            str(values.get("current_session_status") or "")
+            in ACTIVE_RECORDING_STATES
+        )
+        credentialless_reload = (
+            same_owner
+            and not str(request.headers.get(LEASE_TOKEN_HEADER) or "").strip()
+            and request.headers.get(LEASE_GENERATION_HEADER) is None
+            and body.lease_generation == 0
+        )
         can_claim = _lease_can_claim(
             owner_device_id=owner_device,
             owner_client_id=owner_client,
@@ -1735,7 +1794,7 @@ def claim_kiosk_lease(
             session_status=str(values.get("current_session_status") or ""),
             now=now,
         )
-        if same_owner:
+        if same_owner and not credentialless_reload:
             _assert_lease_mapping(
                 values,
                 request,
@@ -1765,7 +1824,7 @@ def claim_kiosk_lease(
                     "now": now,
                 },
             )
-        elif can_claim:
+        elif can_claim and not (same_owner and session_pinned):
             token = secrets.token_urlsafe(32)
             generation = int(values.get("lease_generation") or 0) + 1
             conn.execute(
@@ -1797,7 +1856,6 @@ def claim_kiosk_lease(
             )
         else:
             response.headers["Cache-Control"] = "no-store"
-            pinned = str(values.get("current_session_status") or "") in ACTIVE_RECORDING_STATES
             return {
                 "ok": True,
                 "role": "standby",
@@ -1811,7 +1869,7 @@ def claim_kiosk_lease(
                     "generation": int(values.get("lease_generation") or 0),
                     "expires_at": str(values.get("lease_expires_at") or ""),
                 },
-                "reason": "active_session_pinned" if pinned else "lease_held",
+                "reason": "active_session_pinned" if session_pinned else "lease_held",
                 "lease_ttl_seconds": PROJECTOR_KIOSK_LEASE_TTL_SECONDS,
             }
     response.headers["Cache-Control"] = "no-store"

@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime as dt
+import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -88,6 +89,23 @@ def test_developer_ui_groups_roles_and_bypass_under_accounts_and_has_schedule_co
     assert 'id="featureSuspensionEnd"' in source
     assert 'id="saveFeatureSuspension"' in source
     assert 'id="clearFeatureSuspension"' in source
+
+
+def test_temporary_bypass_uses_checkbox_picker_for_true_multi_select():
+    source = (ROOT / "frontend" / "dev_settings" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<select id="bypassUsers"' not in source
+    assert 'id="bypassUsersSearch"' in source
+    assert 'id="bypassUsersOptions" class="account-options"' in source
+    assert 'id="bypassUsersSummary" class="caption"' in source
+    assert re.search(
+        r'renderAccountPicker\(\s*"bypassUsers",\s*\[\],\s*'
+        r'data\.inactive_accounts\s*\|\|\s*\[\]\s*,?\s*\)',
+        source,
+    )
+    assert 'const users = selectedAccounts("bypassUsers");' in source
 
 
 def test_feature_pages_have_server_gate_calls_and_versioned_shells():

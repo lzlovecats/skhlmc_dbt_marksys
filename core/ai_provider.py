@@ -10,7 +10,8 @@ import math
 import httpx
 from system_limits import (
     AI_PROVIDER_GEMINI_TIMEOUT_SECONDS, AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS,
-    AI_PROVIDER_PROMPT_MAX_CHARS, AI_PROVIDER_RESPONSE_MAX_BYTES,
+    AI_PROVIDER_OUTPUT_MAX_TOKENS, AI_PROVIDER_PROMPT_MAX_CHARS,
+    AI_PROVIDER_RESPONSE_MAX_BYTES,
     AI_PROVIDER_SOURCE_LIMIT,
     OPENROUTER_WEB_SEARCH_MAX_RESULTS,
     OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS,
@@ -20,6 +21,14 @@ from system_limits import (
 _DEFAULT_TEMPERATURE = object()
 _MAX_PROMPT_CHARS_PER_CALL = 250_000
 _MAX_TIMEOUT_SECONDS_PER_CALL = 300
+
+
+class AIProviderResponseError(ValueError):
+    """A provider returned a terminal response whose usage must be settled."""
+
+    def __init__(self, message, usage):
+        super().__init__(message)
+        self.usage = dict(usage or {})
 
 
 def _read(mapping, *names, default=None):
@@ -46,7 +55,9 @@ def _append_sources(text, sources):
     return text.rstrip() + "\n\n## 可核查來源\n" + "\n".join(lines)
 
 
-def _gemini_text(data, web_search=False, require_complete=False):
+def _gemini_text(
+    data, web_search=False, require_complete=False, preserve_text=False,
+):
     candidates = data.get("candidates") or []
     if not candidates:
         raise ValueError("AI 未有回傳可讀結果")
@@ -56,9 +67,10 @@ def _gemini_text(data, web_search=False, require_complete=False):
     if require_complete and finish_reason != "STOP":
         raise ValueError("AI provider response was incomplete")
     parts = _read(candidates[0].get("content") or {}, "parts", default=[]) or []
-    text = "".join(str(part.get("text") or "") for part in parts).strip()
-    if not text:
+    raw_text = "".join(str(part.get("text") or "") for part in parts)
+    if not raw_text.strip():
         raise ValueError("AI 未有回傳可讀結果")
+    text = raw_text if preserve_text else raw_text.strip()
     if not web_search:
         return text
     metadata = _read(candidates[0], "groundingMetadata", "grounding_metadata", default={}) or {}
@@ -71,22 +83,33 @@ def _gemini_text(data, web_search=False, require_complete=False):
     return _append_sources(text, sources)
 
 
-def _openrouter_text(data, web_search=False):
+def _openrouter_text(
+    data, web_search=False, require_complete=False, preserve_text=False,
+):
     choices = data.get("choices") or []
     if not choices:
         raise ValueError("AI 未有回傳可讀結果")
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    finish_reason = str(_read(
+        choice, "finish_reason", "finishReason", default="",
+    ) or "").upper()
+    if require_complete and finish_reason != "STOP":
+        raise ValueError("AI provider response was incomplete")
+    message = choice.get("message") or {}
     content = message.get("content") or ""
     if isinstance(content, list):
-        text = "".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+        raw_text = "".join(
+            str(part.get("text") or "")
+            for part in content if isinstance(part, dict)
+        )
         annotations = [annotation for part in content if isinstance(part, dict)
                        for annotation in (part.get("annotations") or [])]
     else:
-        text = str(content)
+        raw_text = str(content)
         annotations = message.get("annotations") or []
-    text = text.strip()
-    if not text:
+    if not raw_text.strip():
         raise ValueError("AI 未有回傳可讀結果")
+    text = raw_text if preserve_text else raw_text.strip()
     if not web_search:
         return text
     sources = []
@@ -99,6 +122,24 @@ def _openrouter_text(data, web_search=False):
 
 
 def _usage(data, provider, web_search=False):
+    def metadata(*names, maximum):
+        value = str(_read(data, *names, default="") or "").strip()
+        return value[:maximum]
+
+    provider_request_id = metadata(
+        "responseId", "response_id", "id", maximum=300,
+    )
+    resolved_provider_model = metadata(
+        "modelVersion", "model_version", "model", maximum=200,
+    )
+
+    def with_provider_metadata(result):
+        if provider_request_id:
+            result["provider_request_id"] = provider_request_id
+        if resolved_provider_model:
+            result["resolved_provider_model"] = resolved_provider_model
+        return result
+
     raw = data.get("usageMetadata") if provider == "gemini" else data.get("usage")
     raw = raw or {}
     if provider == "gemini":
@@ -109,9 +150,11 @@ def _usage(data, provider, web_search=False):
         for detail in _read(raw, "promptTokensDetails", "prompt_tokens_details", default=[]) or []:
             if "AUDIO" in str(_read(detail, "modality", default="")).upper():
                 audio += int(_read(detail, "tokenCount", "token_count", default=0) or 0)
-        return {"input_tokens": max(0, prompt - audio), "output_tokens": output,
-                "audio_tokens": audio, "search_calls": int(web_search),
-                "cost_source": "gemini_usage_metadata"}
+        return with_provider_metadata({
+            "input_tokens": max(0, prompt - audio), "output_tokens": output,
+            "audio_tokens": audio, "search_calls": int(web_search),
+            "cost_source": "gemini_usage_metadata",
+        })
     server_tools = _read(raw, "server_tool_use", "serverToolUse", default={}) or {}
     try:
         search_calls = int(_read(
@@ -119,10 +162,16 @@ def _usage(data, provider, web_search=False):
         ) or 0)
     except (TypeError, ValueError):
         search_calls = 0
-    return {"input_tokens": int(_read(raw, "prompt_tokens", "promptTokens", default=0) or 0),
-            "output_tokens": int(_read(raw, "completion_tokens", "completionTokens", default=0) or 0),
-            "audio_tokens": 0, "search_calls": max(0, search_calls),
-            "cost_source": "openrouter_response_usage"}
+    return with_provider_metadata({
+        "input_tokens": int(_read(
+            raw, "prompt_tokens", "promptTokens", default=0,
+        ) or 0),
+        "output_tokens": int(_read(
+            raw, "completion_tokens", "completionTokens", default=0,
+        ) or 0),
+        "audio_tokens": 0, "search_calls": max(0, search_calls),
+        "cost_source": "openrouter_response_usage",
+    })
 
 
 async def post_json_bounded(client, url, *, max_bytes=AI_PROVIDER_RESPONSE_MAX_BYTES,
@@ -195,9 +244,28 @@ async def generate_text(
     timeout_seconds=None,
     temperature=_DEFAULT_TEMPERATURE,
     require_complete=False,
+    structured_json=False,
+    preserve_text=False,
+    max_response_bytes=None,
+    max_output_tokens=None,
+    on_provider_attempt=None,
 ):
     system, user = _bounded_prompt_pair(system, user, max_prompt_chars)
     selected_temperature = _bounded_temperature(temperature, web_search)
+    # A structured artifact must never be accepted from a token-truncated
+    # response.  Preserve the provider's exact message text so its audit hash
+    # is computed before any JSON parsing or canonicalization.
+    require_complete = bool(require_complete or structured_json)
+    preserve_text = bool(preserve_text or structured_json)
+    output_token_limit = (
+        _bounded_integer(
+            max_output_tokens,
+            AI_PROVIDER_OUTPUT_MAX_TOKENS,
+            AI_PROVIDER_OUTPUT_MAX_TOKENS,
+        )
+        if max_output_tokens is not None
+        else None
+    )
     if config["provider"] in ("openrouter", "custom"):
         if audio_file_uri:
             raise ValueError("所選 provider 不支援 Google Files URI")
@@ -206,6 +274,10 @@ async def generate_text(
         ]}
         if selected_temperature is not None:
             payload["temperature"] = selected_temperature
+        if output_token_limit is not None:
+            payload["max_tokens"] = output_token_limit
+        if structured_json:
+            payload["response_format"] = {"type": "json_object"}
         if web_search and config["provider"] == "openrouter":
             payload["tools"] = [{"type": "openrouter:web_search",
                                  "parameters": {
@@ -219,10 +291,30 @@ async def generate_text(
             AI_PROVIDER_OPENROUTER_TIMEOUT_SECONDS,
             _MAX_TIMEOUT_SECONDS_PER_CALL,
         )
+        response_kwargs = {}
+        if max_response_bytes is not None:
+            response_kwargs["max_bytes"] = _bounded_integer(
+                max_response_bytes,
+                AI_PROVIDER_RESPONSE_MAX_BYTES,
+                AI_PROVIDER_RESPONSE_MAX_BYTES,
+            )
         async with httpx.AsyncClient(timeout=timeout) as client:
+            if on_provider_attempt is not None:
+                on_provider_attempt()
             data = await post_json_bounded(client, endpoint,
-                headers={"Authorization": f"Bearer {api_key}"}, json=payload)
-        return _openrouter_text(data, web_search), _usage(data, "openrouter", web_search)
+                headers={"Authorization": f"Bearer {api_key}"}, json=payload,
+                **response_kwargs)
+        usage = _usage(data, "openrouter", web_search)
+        try:
+            output = _openrouter_text(
+                data,
+                web_search,
+                require_complete=require_complete,
+                preserve_text=preserve_text,
+            )
+        except ValueError as exc:
+            raise AIProviderResponseError(str(exc), usage) from exc
+        return output, usage
 
     parts = [{"text": user}]
     if audio_base64:
@@ -236,6 +328,10 @@ async def generate_text(
     generation_config = {}
     if selected_temperature is not None:
         generation_config["temperature"] = selected_temperature
+    if output_token_limit is not None:
+        generation_config["maxOutputTokens"] = output_token_limit
+    if structured_json:
+        generation_config["responseMimeType"] = "application/json"
     if generation_config:
         payload["generationConfig"] = generation_config
     if web_search:
@@ -246,10 +342,28 @@ async def generate_text(
         AI_PROVIDER_GEMINI_TIMEOUT_SECONDS,
         _MAX_TIMEOUT_SECONDS_PER_CALL,
     )
+    response_kwargs = {}
+    if max_response_bytes is not None:
+        response_kwargs["max_bytes"] = _bounded_integer(
+            max_response_bytes,
+            AI_PROVIDER_RESPONSE_MAX_BYTES,
+            AI_PROVIDER_RESPONSE_MAX_BYTES,
+        )
     async with httpx.AsyncClient(timeout=timeout) as client:
+        if on_provider_attempt is not None:
+            on_provider_attempt()
         data = await post_json_bounded(
             client, url, headers={"x-goog-api-key": api_key}, json=payload,
+            **response_kwargs,
         )
-    return _gemini_text(
-        data, web_search, require_complete=require_complete,
-    ), _usage(data, "gemini", web_search)
+    usage = _usage(data, "gemini", web_search)
+    try:
+        output = _gemini_text(
+            data,
+            web_search,
+            require_complete=require_complete,
+            preserve_text=preserve_text,
+        )
+    except ValueError as exc:
+        raise AIProviderResponseError(str(exc), usage) from exc
+    return output, usage

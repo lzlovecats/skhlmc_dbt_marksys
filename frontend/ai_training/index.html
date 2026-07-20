@@ -60,9 +60,95 @@
         height: 100%;
         background: var(--accent);
       }
+      .factory-subpane {
+        display: none;
+      }
+      .factory-subpane.active {
+        display: block;
+      }
+      .factory-grid,
+      .factory-review-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .factory-source-list,
+      .factory-list {
+        display: grid;
+        gap: 0.75rem;
+        margin: 0.75rem 0;
+      }
+      .factory-source-card,
+      .factory-item-card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding: 0.85rem;
+      }
+      .factory-source-card.selected {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+      .factory-source-card label {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.65rem;
+      }
+      .factory-source-card input,
+      .factory-release-choice input,
+      .factory-tag-choice input {
+        width: auto;
+        flex: 0 0 auto;
+      }
+      .factory-meta {
+        color: var(--muted);
+        font-size: 0.86rem;
+        overflow-wrap: anywhere;
+      }
+      .factory-preview,
+      .factory-json-editor {
+        width: 100%;
+        min-height: 18rem;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .factory-preview {
+        max-height: 22rem;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding: 0.85rem;
+      }
+      .factory-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.6rem 0;
+      }
+      .factory-tag-choice,
+      .factory-release-choice {
+        display: flex;
+        gap: 0.45rem;
+        align-items: flex-start;
+      }
+      #factoryPreviewDialog {
+        width: min(70rem, calc(100vw - 2rem));
+        max-height: calc(100vh - 2rem);
+      }
+      #factoryPreviewDialog .dialog-scroll {
+        max-height: calc(100vh - 8rem);
+        overflow: auto;
+      }
       @media (max-width: 760px) {
-        .split {
+        .split,
+        .factory-grid,
+        .factory-review-grid {
           grid-template-columns: minmax(0, 1fr);
+        }
+        #factoryPreviewDialog {
+          width: calc(100vw - 1rem);
+          margin: 0.5rem;
         }
       }
     </style>
@@ -308,7 +394,8 @@
             ><button data-admin="scripts">🗂️ 句庫管理</button
             ><button data-admin="manuscripts">📄 完整稿管理</button
             ><button data-admin="lexicon">📖 讀音字典管理</button
-            ><button data-admin="llm-review">📝 LLM 資料審核 / Export</button>
+            ><button data-admin="llm-review">📝 LLM 資料審核 / Export</button
+            ><button data-admin="factory">資料工廠</button>
           </nav>
           <section id="recordings" class="admin-pane active">
             <section class="card">
@@ -410,8 +497,23 @@
           </section>
           <section id="llm-review" class="admin-pane">
             <section class="card">
-              <h2>LLM 資料審核 / Export</h2>
+              <h2>LLM 資料狀態統計</h2>
               <div id="llmStats"></div>
+              <div class="split">
+                <label
+                  >狀態<select id="llmFilter">
+                    <option value="all">全部</option>
+                    <option value="pending">待審核</option>
+                    <option value="accepted">已接受</option>
+                    <option value="rejected">已拒絕</option>
+                    <option value="withdrawn">已撤回</option>
+                  </select></label
+                ><label
+                  >提交者<select id="llmSubmitterFilter">
+                    <option value="">全部提交者</option>
+                  </select></label
+                >
+              </div>
               <div id="adminLlm"></div>
               <details>
                 <summary>LLM 審核準則（管理員必讀）</summary>
@@ -420,9 +522,198 @@
                   AI 預檢 JSON 及原文。
                 </p>
               </details>
-              <a class="button" href="/api/ai-training/export/llm.jsonl"
-                >匯出 accepted LLM JSONL</a
+              <a
+                id="llmExport"
+                class="button"
+                href="/api/ai-training/export/llm.jsonl"
+                >按提交者匯出 accepted LLM JSONL</a
               >
+            </section>
+          </section>
+          <section id="factory" class="admin-pane">
+            <section class="card">
+              <h2>辯論 LLM 資料工廠</h2>
+              <p class="caption">
+                將已批准文字或管理員貼上的資料，轉成可人工審核、版本化及下載的 RAG / SFT 資料。
+                每次傳給第三方 AI 前，都會先完整預覽文字。
+              </p>
+              <div id="factoryReadiness" class="notice">載入資料工廠設定中…</div>
+            </section>
+            <nav class="tabs" id="factoryTabs">
+              <button class="active" data-factory-pane="factory-create">建立工作</button
+              ><button data-factory-pane="factory-review">待審核</button
+              ><button data-factory-pane="factory-approved">已批准資料</button>
+            </nav>
+
+            <section id="factory-create" class="factory-subpane active">
+              <div class="factory-grid">
+                <section class="card">
+                  <h3>1. 選擇一份來源</h3>
+                  <div class="split">
+                    <label>來源類型
+                      <select id="factorySourceKind">
+                        <option value="all">全部</option>
+                        <option value="submission">已批准提交</option>
+                        <option value="paste">管理員貼上資料</option>
+                      </select>
+                    </label>
+                    <label>搜尋
+                      <input id="factorySourceSearch" placeholder="標題、辯題或來源" />
+                    </label>
+                  </div>
+                  <div class="actions">
+                    <button id="factorySourceSearchBtn" type="button">搜尋</button>
+                    <button id="factorySourcePrev" type="button">上一頁</button>
+                    <span id="factorySourcePage" class="caption"></span>
+                    <button id="factorySourceNext" type="button">下一頁</button>
+                  </div>
+                  <div id="factorySources" class="factory-source-list"></div>
+                  <details>
+                    <summary>新增一份貼上資料</summary>
+                    <form id="factoryPasteForm">
+                      <label>標題<input id="factoryPasteTitle" maxlength="200" required /></label>
+                      <label>辯題／主題<input id="factoryPasteTopic" maxlength="500" /></label>
+                      <label>立場
+                        <select id="factoryPasteSide">
+                          <option value="not_applicable" selected>不適用</option>
+                          <option value="pro">正方</option>
+                          <option value="con">反方</option>
+                          <option value="neutral">中立</option>
+                        </select>
+                      </label>
+                      <label>來源說明<textarea id="factoryPasteSourceNote" maxlength="1000" required></textarea></label>
+                      <label>來源語言
+                        <select id="factoryPasteLanguage" required>
+                          <option value="yue-Hant-HK" selected>香港粵語繁體中文</option>
+                          <option value="zh-Hant">繁體中文</option>
+                          <option value="en">英文</option>
+                          <option value="mixed">混合語言</option>
+                          <option value="other">其他</option>
+                        </select>
+                      </label>
+                      <label>權利依據
+                        <select id="factoryPasteRightsBasis" required>
+                          <option value="own_work">自撰</option>
+                          <option value="permission">已取得權利人許可</option>
+                          <option value="open_license">開放授權</option>
+                          <option value="public_domain">公有領域</option>
+                          <option value="other">其他（請在來源說明交代）</option>
+                        </select>
+                      </label>
+                      <label>文字內容<textarea id="factoryPasteContent" rows="12" required></textarea></label>
+                      <p class="caption">生成輸出語言固定為香港粵語繁體中文（yue-Hant-HK）。</p>
+                      <button id="factoryPasteSubmit" class="primary">儲存來源</button>
+                    </form>
+                  </details>
+                </section>
+
+                <form id="factoryJobForm" class="card">
+                  <h3>2. 選擇產品及模型</h3>
+                  <p id="factorySelectedSource" class="notice">尚未選擇來源。</p>
+                  <button id="factoryCancelRetry" class="hidden" type="button">取消重試，建立新工作</button>
+                  <label>產品<select id="factoryRecipe" required></select></label>
+                  <p class="caption">攻防演練只可使用已標示正方或反方的來源。</p>
+                  <label>AI 模型<select id="factoryModel" required></select></label>
+                  <p class="caption">
+                    Free Provider 不扣 AI Fund，但可用模型、速度、輸出質素及限額可能會變，候選資料仍須人工審核。
+                  </p>
+                  <label>生成數量
+                    <input id="factoryCount" type="number" min="1" max="5" value="3" required />
+                  </label>
+                  <label>管理員補充指示（可選）
+                    <textarea id="factoryManagerInstruction" maxlength="500" rows="4"></textarea>
+                  </label>
+                  <fieldset>
+                    <legend>已批准主題標籤（可選）</legend>
+                    <div id="factoryTopicTags" class="factory-tags"></div>
+                  </fieldset>
+                  <p class="caption">
+                    系統不會自動重試、轉用其他模型或另外呼叫評論模型。
+                  </p>
+                  <button id="factoryPreviewBtn" class="primary" disabled>預覽傳送內容</button>
+                </form>
+              </div>
+
+              <section class="card">
+                <h3>工作紀錄</h3>
+                <p class="caption">失敗工作不會自動重試；如要再做，請重新預覽及確認。</p>
+                <div id="factoryJobs" class="factory-list"></div>
+                <div class="actions">
+                  <button id="factoryJobsPrev" type="button">上一頁</button>
+                  <span id="factoryJobsPage" class="caption"></span>
+                  <button id="factoryJobsNext" type="button">下一頁</button>
+                </div>
+              </section>
+            </section>
+
+            <section id="factory-review" class="factory-subpane">
+              <section class="card">
+                <h3>待審核</h3>
+                <p class="caption">每次只審核一項。你可以修正結構化 JSON；系統仍會保留 AI 原稿。</p>
+                <div id="factoryReviewEmpty" class="notice hidden">現時沒有待審核資料。</div>
+                <div id="factoryReviewWorkspace" class="hidden">
+                  <div class="factory-review-grid">
+                    <div>
+                      <h4>來源原文</h4>
+                      <div id="factoryReviewSourceMeta" class="factory-meta"></div>
+                      <pre id="factoryReviewSource" class="factory-preview"></pre>
+                    </div>
+                    <div>
+                      <h4>候選資料（可修正）</h4>
+                      <div id="factoryReviewCandidateMeta" class="factory-meta"></div>
+                      <textarea id="factoryReviewPayload" class="factory-json-editor" spellcheck="false"></textarea>
+                    </div>
+                  </div>
+                  <label>審核備註<textarea id="factoryReviewNote" maxlength="2000"></textarea></label>
+                  <div class="actions">
+                    <button id="factoryReviewReject" class="danger" type="button">拒絕</button>
+                    <button id="factoryReviewApprove" class="primary" type="button">批准</button>
+                  </div>
+                </div>
+                <div class="actions">
+                  <button id="factoryReviewPrevItem" type="button">上一項</button>
+                  <span id="factoryReviewPosition" class="caption"></span>
+                  <button id="factoryReviewNextItem" type="button">下一項</button>
+                  <button id="factoryReviewPrevPage" type="button">上一頁</button>
+                  <button id="factoryReviewNextPage" type="button">下一頁</button>
+                </div>
+              </section>
+            </section>
+
+            <section id="factory-approved" class="factory-subpane">
+              <div class="factory-grid">
+                <section class="card">
+                  <h3>已批准資料</h3>
+                  <p class="caption">手動勾選要放入新版本的資料；RAG 與 SFT 不可混合發佈。</p>
+                  <div id="factoryApprovedItems" class="factory-list"></div>
+                  <div class="actions">
+                    <button id="factoryApprovedPrev" type="button">上一頁</button>
+                    <span id="factoryApprovedPage" class="caption"></span>
+                    <button id="factoryApprovedNext" type="button">下一頁</button>
+                  </div>
+                </section>
+                <form id="factoryReleaseForm" class="card">
+                  <h3>發佈不可改寫版本</h3>
+                  <label>版本類型
+                    <select id="factoryReleaseKind">
+                      <option value="rag">RAG</option>
+                      <option value="sft">SFT</option>
+                    </select>
+                  </label>
+                  <label>版本備註<textarea id="factoryReleaseNote" maxlength="2000"></textarea></label>
+                  <p id="factoryReleaseSelection" class="notice">尚未選擇資料。</p>
+                  <button id="factoryReleaseSubmit" class="primary" disabled>發佈新版本</button>
+                </form>
+              </div>
+              <section class="card">
+                <h3>版本紀錄及下載</h3>
+                <div id="factoryReleases" class="factory-list"></div>
+                <div class="actions">
+                  <button id="factoryReleasesPrev" type="button">上一頁</button>
+                  <span id="factoryReleasesPage" class="caption"></span>
+                  <button id="factoryReleasesNext" type="button">下一頁</button>
+                </div>
+              </section>
             </section>
           </section>
         </section>
@@ -432,6 +723,39 @@
     <div id="busy" class="busy">
       <div class="busy-pill"><i class="spinner"></i>處理中…</div>
     </div>
+    <dialog id="factoryPreviewDialog">
+      <div class="card dialog-scroll">
+        <h2>確認傳給第三方 AI 的內容</h2>
+        <div id="factoryPreviewMeta" class="notice"></div>
+        <div id="factoryPiiWarning" class="notice warn hidden">
+          <strong>可能包含個人資料</strong>
+          <ul id="factoryPiiWarnings"></ul>
+          <label>覆寫理由
+            <textarea id="factoryPiiOverrideReason" maxlength="1000"></textarea>
+          </label>
+        </div>
+        <h3>System prompt</h3>
+        <pre id="factorySystemPrompt" class="factory-preview"></pre>
+        <h3>User prompt</h3>
+        <pre id="factoryUserPrompt" class="factory-preview"></pre>
+        <label class="check">
+          <input id="factoryRightsConfirmed" type="checkbox" />
+          我確認有權將上述文字用作內部 RAG／SFT 資料。
+        </label>
+        <label class="check">
+          <input id="factoryAnonymizedConfirmed" type="checkbox" />
+          我已核對內容已匿名化。
+        </label>
+        <label class="check">
+          <input id="factoryThirdPartyConfirmed" type="checkbox" />
+          <span id="factoryThirdPartyWarningText">我明白以上完整文字會傳給所選第三方 AI provider。</span>
+        </label>
+        <div class="actions">
+          <button id="factoryPreviewCancel" type="button">取消</button>
+          <button id="factoryGenerateBtn" class="primary" type="button">確認並生成</button>
+        </div>
+      </div>
+    </dialog>
     <dialog id="confirmDialog">
       <form method="dialog" class="card">
         <h2 id="confirmTitle">確認操作</h2>
@@ -442,7 +766,7 @@
         </div>
       </form>
     </dialog>
-    <script src="/shared/vote-ui.js"></script>
+    <script src="/shared/vote-ui.js?v=__APP_VERSION__"></script>
     <script src="/ai-training/app.js?v=__APP_VERSION__"></script>
   </body>
 </html>
