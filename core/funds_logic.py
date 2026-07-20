@@ -513,11 +513,10 @@ def ai_budget_data(db, now=None) -> dict:
         row = next((item for item in values if item["limit_key"] == f"provider:{name}"), {})
         allocated = _float(row.get("allocated_hkd"))
         fx = _float(row.get("fx_hkd_per_usd"), 7.8) or 7.8
-        factor = 0.9 if name == "google" else 1.0
         providers.append({
             "name": name,
             "allocated_hkd": allocated,
-            "external_cap_usd": round(allocated / fx * factor, 4) if allocated else 0,
+            "external_cap_usd": round(allocated / fx, 4) if allocated else 0,
             "external_cap_confirmed": bool(row.get("external_cap_confirmed")),
             "external_cap_confirmed_by": row.get("external_cap_confirmed_by") or "",
             "external_cap_confirmed_at": row.get("external_cap_confirmed_at") or "",
@@ -620,7 +619,7 @@ def save_ai_budget(user_id, payload, db=None, now=None):
         })
         for name in AI_BUDGET_PROVIDERS:
             amount = allocations[name]
-            cap = amount / fx * (0.9 if name == "google" else 1.0)
+            cap = amount / fx
             session.execute(text(f"""INSERT INTO {TABLE_MONTHLY_RESOURCE_LIMITS}
                 (period_month,limit_key,unit,hard_value,allocated_hkd,fx_hkd_per_usd,
                  external_cap_confirmed,external_cap_confirmed_by,

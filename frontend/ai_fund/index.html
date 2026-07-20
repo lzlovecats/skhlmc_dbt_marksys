@@ -786,7 +786,7 @@
           $("settingsInstruction").value = st.payment_instruction;
           const budget = data.monthly_budget,
             providerNames = {
-              google: "Google AI Studio（外部 cap 為分配 90%）",
+              google: "Google AI Studio",
               openrouter: "OpenRouter",
               azure: "Azure",
               other: "其他 provider",
@@ -818,8 +818,7 @@
             document.querySelectorAll("[data-budget-provider]").forEach((box) => {
               const amount = Math.max(0, Number(box.querySelector(".budget-amount").value || 0));
               total += amount;
-              const factor = box.dataset.budgetProvider === "google" ? 0.9 : 1;
-              const cap = fx > 0 ? amount / fx * factor : 0;
+              const cap = fx > 0 ? amount / fx : 0;
               box.querySelector(".budget-cap").textContent =
                 `外部 spending cap 上限：US$${cap.toFixed(4)}`;
             });

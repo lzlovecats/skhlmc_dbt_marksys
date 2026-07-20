@@ -410,8 +410,23 @@
           </section>
           <section id="llm-review" class="admin-pane">
             <section class="card">
-              <h2>LLM 資料審核 / Export</h2>
+              <h2>LLM 資料狀態統計</h2>
               <div id="llmStats"></div>
+              <div class="split">
+                <label
+                  >狀態<select id="llmFilter">
+                    <option value="all">全部</option>
+                    <option value="pending">待審核</option>
+                    <option value="accepted">已接受</option>
+                    <option value="rejected">已拒絕</option>
+                    <option value="withdrawn">已撤回</option>
+                  </select></label
+                ><label
+                  >提交者<select id="llmSubmitterFilter">
+                    <option value="">全部提交者</option>
+                  </select></label
+                >
+              </div>
               <div id="adminLlm"></div>
               <details>
                 <summary>LLM 審核準則（管理員必讀）</summary>
@@ -420,8 +435,11 @@
                   AI 預檢 JSON 及原文。
                 </p>
               </details>
-              <a class="button" href="/api/ai-training/export/llm.jsonl"
-                >匯出 accepted LLM JSONL</a
+              <a
+                id="llmExport"
+                class="button"
+                href="/api/ai-training/export/llm.jsonl"
+                >按提交者匯出 accepted LLM JSONL</a
               >
             </section>
           </section>

@@ -105,32 +105,7 @@
     );
     if (data.is_admin) {
       loadRecordings();
-      paged(
-        "adminLlm",
-        "/api/ai-training/collection/submissions",
-        (rows) =>
-          table(
-            rows,
-            [
-              ["提交者", (r) => r.submitted_by],
-              ["類型", (r) => r.data_type],
-              ["標題", (r) => r.title || ""],
-              ["AI", (r) => r.ai_review_status],
-              [
-                "內容",
-                (r) =>
-                  `<details><summary>原文 / 預檢</summary><p>${esc(r.content_text)}</p></details>`,
-                true,
-              ],
-              ["狀態", (r) => r.status],
-            ],
-            (r) =>
-              r.status === "pending"
-                ? `<textarea class="review-note" data-note="llm-${r.id}" placeholder="審核備註"></textarea><button data-review="llm" data-id="${r.id}" data-status="accepted">接受</button><button data-review="llm" data-id="${r.id}" data-status="rejected" class="danger">拒絕</button>`
-                : "",
-          ),
-        true,
-      );
+      loadLlmSubmissions();
       paged("lexiconTable", "/api/ai-training/collection/lexicon", (rows) => {
         window.lexPage = Object.fromEntries(rows.map((x) => [x.id, x]));
         return table(
@@ -180,11 +155,47 @@
       !resetPage,
     );
   }
+  function loadLlmSubmissions(resetPage = false) {
+    const status = $("llmFilter").value,
+      submitter = $("llmSubmitterFilter").value;
+    paged(
+      "adminLlm",
+      `/api/ai-training/admin/submissions?status=${encodeURIComponent(status)}&submitter=${encodeURIComponent(submitter)}`,
+      (rows) =>
+        table(
+          rows,
+          [
+            ["提交者", (r) => r.submitted_by],
+            ["類型", (r) => r.data_type],
+            ["標題", (r) => r.title || ""],
+            ["AI 預檢", (r) => r.ai_review_status || "未檢查"],
+            ["狀態", (r) => r.status],
+            [
+              "內容",
+              (r) =>
+                `<details><summary>原文 / 預檢</summary><p><b>立場／角色：</b>${esc(r.side || "不適用")}</p><p><b>辯題／情境：</b>${esc(r.topic_text || "不適用")}</p><p><b>來源／備註：</b>${esc(r.source_note || "沒有提供")}</p><p><b>原文：</b></p><p>${esc(r.content_text)}</p><p><b>AI 預檢：</b></p><pre class="json">${esc(r.ai_review_json || "沒有 AI 預檢 JSON")}</pre></details>`,
+              true,
+            ],
+          ],
+          (r) =>
+            r.status === "pending"
+              ? `<textarea class="review-note" data-note="llm-${r.id}" placeholder="審核備註"></textarea><button data-review="llm" data-id="${r.id}" data-status="accepted">接受</button><button data-review="llm" data-id="${r.id}" data-status="rejected" class="danger">拒絕</button>`
+              : "",
+        ),
+      !resetPage,
+    );
+  }
   function syncRecordingExport() {
     const speaker = $("speakerFilter").value.trim();
     $("recordExport").href =
       "/api/ai-training/export/recordings.json" +
       (speaker ? "?speaker=" + encodeURIComponent(speaker) : "");
+  }
+  function syncLlmExport() {
+    const submitter = $("llmSubmitterFilter").value.trim();
+    $("llmExport").href =
+      "/api/ai-training/export/llm.jsonl" +
+      (submitter ? "?submitter=" + encodeURIComponent(submitter) : "");
   }
   function chooseScript() {
     const mode = $("scriptType").value,
@@ -355,6 +366,24 @@
       ? selectedSpeaker
       : "";
     syncRecordingExport();
+    const llmSubmitterFilter = $("llmSubmitterFilter"),
+      selectedSubmitter = llmSubmitterFilter.value,
+      submitters = (stats.llm_submitters || []).map((row) =>
+        String(row.submitted_by || "").trim(),
+      ),
+      submitterOptions = submitters
+        .filter(Boolean)
+        .map(
+          (submitter) =>
+            `<option value="${esc(submitter)}">${esc(submitter)}</option>`,
+        )
+        .join("");
+    llmSubmitterFilter.innerHTML =
+      '<option value="">全部提交者</option>' + submitterOptions;
+    llmSubmitterFilter.value = submitters.includes(selectedSubmitter)
+      ? selectedSubmitter
+      : "";
+    syncLlmExport();
     $("readinessSummary").innerHTML =
       `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}｜固定Eval：${evalStatus}</p>${speakerStatus || "<p>暫無聲線資料。</p>"}`;
     window.inventory = inv;
@@ -666,6 +695,16 @@
     const url = new URL($("recordExport").href, location.origin);
     url.searchParams.set("_fresh", String(Date.now()));
     $("recordExport").href = url.pathname + url.search;
+  };
+  $("llmFilter").onchange = () => loadLlmSubmissions(true);
+  $("llmSubmitterFilter").onchange = () => {
+    syncLlmExport();
+    loadLlmSubmissions(true);
+  };
+  $("llmExport").onclick = () => {
+    const url = new URL($("llmExport").href, location.origin);
+    url.searchParams.set("_fresh", String(Date.now()));
+    $("llmExport").href = url.pathname + url.search;
   };
   $("lexiconForm").onsubmit = (e) =>
     saveForm(e, "/api/ai-training/lexicon", {
