@@ -10,6 +10,12 @@ from core.db_migrations import browser_privilege_revokes, created_table_names
 ROOT = Path(__file__).resolve().parents[1]
 UP_PATH = ROOT / "migrations/20260720_0001_provision_ai_data_factory.up.sql"
 DOWN_PATH = ROOT / "migrations/20260720_0001_provision_ai_data_factory.down.sql"
+BUDGET_GATE_UP_PATH = (
+    ROOT / "migrations/20260720_0008_remove_ai_factory_budget_gate.up.sql"
+)
+BUDGET_GATE_DOWN_PATH = (
+    ROOT / "migrations/20260720_0008_remove_ai_factory_budget_gate.down.sql"
+)
 
 FACTORY_TABLES = {
     "ai_factory_sources",
@@ -105,8 +111,45 @@ def test_factory_bootstrap_table_definitions_match_the_migration():
 
     migrated = definitions(UP_PATH.read_text(encoding="utf-8"))
     bootstrapped = definitions(schema.CREATE_AI_DATA_FACTORY)
+    legacy_budget_constraint = " ".join(
+        """CONSTRAINT ai_factory_attempts_budget_reservation
+        CHECK (
+            (estimated_cost_hkd = 0
+                AND budget_provider_name IS NULL
+                AND budget_period_month IS NULL
+                AND budget_window_start IS NULL)
+            OR
+            (estimated_cost_hkd > 0
+                AND char_length(budget_provider_name) BETWEEN 1 AND 80
+                AND budget_period_month IS NOT NULL
+                AND budget_window_start IS NOT NULL)
+        ),""".split()
+    )
+    assert legacy_budget_constraint in migrated["ai_factory_attempts"]
+    migrated["ai_factory_attempts"] = migrated["ai_factory_attempts"].replace(
+        legacy_budget_constraint, ""
+    )
+    migrated["ai_factory_attempts"] = " ".join(
+        migrated["ai_factory_attempts"].split()
+    )
     assert migrated == bootstrapped
     assert set(migrated) == FACTORY_TABLES
+
+
+def test_factory_head_removes_only_the_ai_fund_budget_gate():
+    up = BUDGET_GATE_UP_PATH.read_text(encoding="utf-8")
+    down = BUDGET_GATE_DOWN_PATH.read_text(encoding="utf-8")
+    bootstrap = schema.CREATE_AI_DATA_FACTORY
+
+    assert "DROP CONSTRAINT ai_factory_attempts_budget_reservation" in up
+    assert "monthly_resource_limits" not in up
+    assert "ai_fund_usage_logs" not in up
+    assert "DROP COLUMN" not in up
+    assert "estimated_cost_hkd" not in up
+    assert "ai_factory_attempts_budget_reservation" not in bootstrap
+    assert "estimated_cost_hkd" in bootstrap
+    assert "ADD CONSTRAINT ai_factory_attempts_budget_reservation" in down
+    assert "NOT VALID" in down
 
 
 def test_factory_down_refuses_used_bundle_and_drops_in_dependency_order():

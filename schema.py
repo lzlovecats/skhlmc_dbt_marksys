@@ -1975,18 +1975,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_ATTEMPTS} (
             AND (resolved_provider_model IS NULL
                 OR char_length(resolved_provider_model) BETWEEN 1 AND 200)
         ),
-    CONSTRAINT ai_factory_attempts_budget_reservation
-        CHECK (
-            (estimated_cost_hkd = 0
-                AND budget_provider_name IS NULL
-                AND budget_period_month IS NULL
-                AND budget_window_start IS NULL)
-            OR
-            (estimated_cost_hkd > 0
-                AND char_length(budget_provider_name) BETWEEN 1 AND 80
-                AND budget_period_month IS NOT NULL
-                AND budget_window_start IS NOT NULL)
-        ),
     CONSTRAINT ai_factory_attempts_hashes
         CHECK (
             char_length(source_sha256) = 64

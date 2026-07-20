@@ -20,7 +20,7 @@ FACTORY_SCRIPT = SCRIPT.split("const factoryRows", 1)[1].split(
 def test_factory_is_one_preserved_admin_tab_with_three_exact_sections():
     assert PAGE.count('data-admin="factory"') == 1
     tab = re.search(r'<button data-admin="factory">([^<]+)</button>', PAGE)
-    assert tab and tab.group(1) == "資料工廠"
+    assert tab and tab.group(1) == "🏭 資料工廠"
 
     assert 'data-admin="recordings"' in PAGE
     assert 'data-admin="scripts"' in PAGE

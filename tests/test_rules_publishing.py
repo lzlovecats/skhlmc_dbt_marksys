@@ -20,13 +20,13 @@ def test_rules_asset_contains_full_sections_and_confirmed_event_roles():
     assert "Kiosk" in rules
     assert "標準競賽排名" in rules
     assert "`1、1、3`" in rules
-    assert "由過半數真人評判決定" in rules
-    assert "原定真人評判數目為雙數" in rules
-    assert "必須在所有原定真人評判正式提交電子分紙後加入一名正式 AI 評判" in rules
+    assert "由過半數評判決定" in rules
+    assert "原定評判數目為雙數" in rules
+    assert "必須在所有原定評判正式提交電子分紙後加入一名正式 AI 評判" in rules
     assert "系統的核心評分或計分功能故障" in rules
     assert "如只有正式 AI 評判或其他 AI 功能無法運作" in rules
     assert "主席不得在宣讀賽果前手動計分" in rules
-    assert "主席宣讀正式賽果及真人評判完成評語後" in rules
+    assert "主席宣讀正式賽果及評判完成評語後" in rules
     assert "專用核對連結傳送予該方代表" in rules
 
 
@@ -42,7 +42,7 @@ def test_new_rules_provisions_do_not_use_chinese_semicolons():
     new_provisions = [
         line for line in rules.splitlines()
         if any(marker in line for marker in (
-            "由過半數真人評判決定",
+            "由過半數評判決定",
             "正式 AI 評判",
             "電子系統故障及後備分紙",
             "核分流程",

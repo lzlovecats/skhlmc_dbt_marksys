@@ -71,7 +71,6 @@ from schema import (
     TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_SOURCES,
     TABLE_AI_FACTORY_TOPIC_TAGS,
-    TABLE_AI_FUND_USAGE_LOGS,
     TABLE_LLM_TRAINING_SUBMISSIONS,
 )
 from system_limits import (
@@ -402,52 +401,6 @@ def _preview_secret() -> str:
     if not secret:
         raise HTTPException(503, "伺服器簽署設定未完成，暫時不可生成")
     return str(secret)
-
-
-def _provider_budget_name(provider: str) -> str:
-    return {"gemini": "google", "openrouter": "openrouter"}.get(provider, "other")
-
-
-def _require_provider_budget(db, provider: str, estimate: dict) -> dict:
-    estimated = max(0.0, float(estimate.get("estimated_cost_hkd") or 0))
-    if estimated <= 0:
-        return {"estimated_cost_hkd": 0.0, "remaining_hkd": None, "free": True}
-    from core.funds_logic import ai_budget_cycle, ai_budget_data
-
-    budget = ai_budget_data(db)
-    if not budget.get("configured"):
-        raise HTTPException(409, "AI Fund 尚未設定本期 provider 預算")
-    budget_name = _provider_budget_name(provider)
-    provider_row = next(
-        (item for item in budget.get("providers", []) if item.get("name") == budget_name),
-        None,
-    )
-    if not provider_row or float(provider_row.get("allocated_hkd") or 0) <= 0:
-        raise HTTPException(409, "所選 provider 本期未獲分配 AI Fund 預算")
-    if not provider_row.get("external_cap_confirmed"):
-        raise HTTPException(409, "所選 provider 尚未確認外部 spending cap")
-    cycle = ai_budget_cycle()
-    usage_start = cycle["window_end"].replace(tzinfo=None)
-    frame = db.query(
-        f"""SELECT COALESCE(SUM(estimated_cost_hkd),0) AS spent
-            FROM {TABLE_AI_FUND_USAGE_LOGS}
-            WHERE created_at>=:start AND provider=:provider""",
-        {"start": usage_start, "provider": str(provider)},
-    )
-    spent_value = 0 if frame.empty else json_safe(frame.iloc[0]["spent"])
-    spent = float(spent_value or 0)
-    remaining = max(0.0, float(provider_row["allocated_hkd"]) - spent)
-    if estimated > remaining + 1e-9:
-        raise HTTPException(429, "所選 provider 嘅本期 AI Fund 餘額不足")
-    return {
-        "estimated_cost_hkd": estimated,
-        "remaining_hkd": remaining,
-        "free": False,
-        "budget_provider_name": budget_name,
-        "budget_period_month": cycle["budget_month"],
-        # Usage-ledger timestamps are stored as naive Hong Kong wall time.
-        "budget_window_start": usage_start,
-    }
 
 
 def _actual_usage(
@@ -945,7 +898,6 @@ async def generate_job(job_id: str, body: FactoryGenerateBody, request: Request)
         raise HTTPException(409, "模型價格或成本估算已改變，請重新預覽")
     if signed.get("prompt_version") != prompt.prompt_version:
         raise HTTPException(409, "Prompt 版本已更新，請重新預覽")
-    reservation = _require_provider_budget(db, str(config["provider"]), estimate)
     attempt = _store_call(
         claim_attempt,
         db,
@@ -966,10 +918,7 @@ async def generate_job(job_id: str, body: FactoryGenerateBody, request: Request)
         third_party_confirmed=body.third_party_confirmed,
         pii_warning_count=len(warnings),
         pii_override_reason=body.pii_override_reason,
-        estimated_cost_hkd=reservation["estimated_cost_hkd"],
-        budget_provider_name=reservation.get("budget_provider_name", ""),
-        budget_period_month=reservation.get("budget_period_month"),
-        budget_window_start=reservation.get("budget_window_start"),
+        estimated_cost_hkd=estimate["estimated_cost_hkd"],
     )
     attempt_id = str(attempt["id"])
     attempt_no = int(attempt["attempt_no"])
