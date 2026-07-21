@@ -33,8 +33,6 @@ from account_access import (
 )
 from schema import (
     TABLE_ACCOUNTS,
-    TABLE_AI_DATASET_SNAPSHOTS,
-    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_FUND_USAGE_LOGS,
     TABLE_AI_MODEL_VERSIONS,
     TABLE_BANDWIDTH_USAGE_LOGS,
@@ -105,6 +103,7 @@ from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
 from api.community_api import router as community_router
 from api.lmc_ai_api import router as lmc_ai_router
+from api.lmc_ai_eval_api import router as lmc_ai_eval_router
 from api.access import (
     has_developer_session,
     interactive_features_suspension,
@@ -113,7 +112,12 @@ from api.access import (
     require_page_user,
 )
 from version import APP_VERSION
-from ai_name import LMC_AI_EMOJI, LMC_AI_MODEL_LABEL, LMC_AI_NAME
+from ai_name import (
+    LMC_AI_EMOJI,
+    LMC_AI_MENTION_TAG,
+    LMC_AI_MODEL_LABEL,
+    LMC_AI_NAME,
+)
 from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from system_limits import (
     BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
@@ -394,6 +398,7 @@ app.include_router(kiosk_router)
 app.include_router(projector_ai_router)
 app.include_router(community_router)
 app.include_router(lmc_ai_router)
+app.include_router(lmc_ai_eval_router)
 logger = logging.getLogger("skh_proxy")
 
 
@@ -1334,11 +1339,7 @@ def _model_is_deployable(model_id: str, model_type: str) -> bool:
         from core.schema_features import READY, feature_bundle_state
 
         db = get_vote_db()
-        if feature_bundle_state(db, "dataset_model", (
-            TABLE_AI_DATASET_SNAPSHOTS,
-            TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-            TABLE_AI_MODEL_VERSIONS,
-        )) != READY:
+        if feature_bundle_state(db, "dataset_model") != READY:
             return False
         engine = _get_db_engine()
         with engine.connect() as conn:
@@ -2135,6 +2136,9 @@ async def vote_page(request: Request):
     return Response(
         html.replace("__APP_VERSION__", APP_VERSION).replace(
             "__LMC_AI_MODEL_LABEL__", xml_escape(LMC_AI_MODEL_LABEL)
+        ).replace(
+            "__LMC_AI_MENTION_TAG_JSON__",
+            json.dumps(LMC_AI_MENTION_TAG, ensure_ascii=False).replace("<", "\\u003c"),
         ).replace(
             "__VOTE_GEMINI_MODEL_LABEL__",
             xml_escape(NON_MANUAL_DEFAULT_AI_MODEL),

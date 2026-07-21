@@ -52,9 +52,7 @@ def rag_schema_ready(db, *, force: bool = False) -> bool:
             return bool(_RAG_SCHEMA_CACHE["ready"])
         ready = False
         try:
-            tables_ready = feature_bundle_state(
-                db, "rag", (TABLE_RAG_DOCUMENTS, TABLE_RAG_CHUNKS)
-            ) == READY
+            tables_ready = feature_bundle_state(db, "rag") == READY
             if tables_ready:
                 status = db.query(
                     """SELECT

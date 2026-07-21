@@ -200,7 +200,10 @@ def test_vote_page_exposes_local_or_gemini_choice_on_every_ai_request():
     assert '<option value="local">__LMC_AI_MODEL_LABEL__</option>' in page
     assert '<option value="gemini">__VOTE_GEMINI_MODEL_LABEL__</option>' in page
     assert page.count("ai_model: voteAiChoice()") == 3
+    assert 'const LOCAL_AI_MENTION_TAG = __LMC_AI_MENTION_TAG_JSON__;' in page
     assert '"__LMC_AI_MODEL_LABEL__", xml_escape(LMC_AI_MODEL_LABEL)' in proxy
+    assert '"__LMC_AI_MENTION_TAG_JSON__"' in proxy
+    assert "json.dumps(LMC_AI_MENTION_TAG, ensure_ascii=False)" in proxy
     assert '"__VOTE_GEMINI_MODEL_LABEL__"' in proxy
 
 
@@ -237,11 +240,13 @@ def test_vote_status_gate_requires_selected_online_complex_mode(monkeypatch):
 
 def test_vote_page_polls_and_disables_local_ai_actions_when_unavailable():
     page = (ROOT / "frontend/vote/index.html").read_text("utf-8")
+    assert 'id="voteLocalAiDetails"' in page
     assert 'id="voteAiStatus"' in page
     assert 'fetch("/api/vote/ai-status"' in page
     assert "localOption.disabled = !complexMode?.available" in page
     assert "selectedVoteAiAvailable" in page
     assert "requireSelectedVoteAi" in page
+    assert 'localDetails.hidden = voteAiChoice() !== "local"' in page
     assert "setInterval(refreshLocalAiStatus, 10000)" in page
 
 

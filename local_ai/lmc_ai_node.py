@@ -38,6 +38,7 @@ from ai_model_config import (  # noqa: E402
     LMC_AI_CONTEXT_LENGTH as CONTEXT_LENGTH,
     LMC_AI_DEEP_MODEL as DEEP_MODEL,
     LMC_AI_DEFAULT_MODEL as DEFAULT_MODEL,
+    LMC_AI_MODEL_PROFILE_VERSION as MODEL_PROFILE_VERSION,
 )
 from system_limits import (  # noqa: E402
     LMC_AI_HEARTBEAT_INTERVAL_SECONDS as HEARTBEAT_SECONDS,
@@ -56,7 +57,6 @@ AUTO_SUSPEND_TIMER = "skhlmc-lmc-ai-auto-suspend.timer"
 AUTO_RESUME_SERVICE = "skhlmc-lmc-ai-auto-resume.service"
 AUTO_RESUME_TIMER = "skhlmc-lmc-ai-auto-resume.timer"
 DEFAULT_CONFIG = Path.home() / ".config" / "skhlmc-lmc-ai" / "node.json"
-MODEL_PROFILE_VERSION = 2
 AUTO_POWER_TIMEZONE = "Asia/Hong_Kong"
 AUTO_POWER_DRAIN_AT = "23:55"
 AUTO_POWER_SUSPEND_AT = "00:00"
@@ -161,6 +161,9 @@ def configure(args) -> int:
             "available_models": (
                 existing.get("available_models", []) if profile_current else []
             ),
+            "model_digests": (
+                existing.get("model_digests", {}) if profile_current else {}
+            ),
             "model_profile_version": MODEL_PROFILE_VERSION,
             "preflight_ready": bool(
                 profile_current
@@ -199,15 +202,30 @@ def _verify_local_binding() -> None:
         raise RuntimeError("Ollama 11434 似乎對外監聽；請改為只綁 localhost。")
 
 
-def _installed_models() -> set[str]:
+def _installed_models() -> dict[str, str]:
     with httpx.Client(timeout=10) as client:
         response = client.get(f"{OLLAMA_URL}/api/tags")
         response.raise_for_status()
-        return {
-            str(item.get("name") or "")
-            for item in response.json().get("models", [])
-            if isinstance(item, dict)
-        }
+        result = {}
+        for item in response.json().get("models", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            digest = str(item.get("digest") or "").lower()
+            if name and re.fullmatch(r"[0-9a-f]{64}", digest):
+                result[name] = digest
+        return result
+
+
+def _model_digest_profile_valid(config: dict) -> bool:
+    models = {
+        str(value) for value in (config.get("available_models") or []) if str(value)
+    }
+    digests = config.get("model_digests")
+    return bool(models) and isinstance(digests, dict) and set(digests) == models and all(
+        re.fullmatch(r"[0-9a-f]{64}", str(digests.get(model) or ""))
+        for model in models
+    )
 
 
 def _gpu_offload_percent(model: str) -> int:
@@ -255,7 +273,8 @@ def preflight(args) -> int:
         _verify_local_binding()
         checks.append("Ollama localhost binding：OK")
         installed = _installed_models()
-        if DEFAULT_MODEL not in installed:
+        installed_names = set(installed)
+        if DEFAULT_MODEL not in installed_names:
             raise RuntimeError("未下載日常預設 model：" + DEFAULT_MODEL)
         checks.append("日常預設 model：已安裝")
     except Exception as exc:
@@ -264,6 +283,7 @@ def preflight(args) -> int:
             preflight_at="",
             effective_model="",
             available_models=[],
+            model_digests={},
             model_profile_version=MODEL_PROFILE_VERSION,
         )
         _save(args.config, config)
@@ -282,12 +302,13 @@ def preflight(args) -> int:
             preflight_at="",
             effective_model="",
             available_models=[],
+            model_digests={},
             model_profile_version=MODEL_PROFILE_VERSION,
         )
         _save(args.config, config)
         raise SystemExit(f"日常預設 model 未能通過 preflight：{exc}") from exc
 
-    if DEEP_MODEL in installed:
+    if DEEP_MODEL in installed_names:
         try:
             print(f"測試深入思考 {DEEP_MODEL}…")
             _model_probe(DEEP_MODEL)
@@ -301,6 +322,10 @@ def preflight(args) -> int:
         preflight_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         effective_model=DEFAULT_MODEL,
         available_models=available_models,
+        model_digests={
+            model: installed[model] for model in available_models
+            if isinstance(installed, dict) and model in installed
+        },
         model_profile_version=MODEL_PROFILE_VERSION,
     )
     _save(args.config, config)
@@ -411,6 +436,7 @@ def install_service(args) -> int:
     if (
         not config.get("preflight_ready")
         or config.get("model_profile_version") != MODEL_PROFILE_VERSION
+        or not _model_digest_profile_valid(config)
     ):
         raise SystemExit("請先完成 preflight。")
     if _auto_power_config(config)["enabled"] and not shutil.which("rtcwake"):
@@ -493,6 +519,7 @@ class NodeClient:
                     "models": config.get("available_models") or [
                         config.get("effective_model")
                     ],
+                    "model_digests": config.get("model_digests") or {},
                 }
             )
 
@@ -616,6 +643,7 @@ class NodeClient:
             or config.get("model_profile_version") != MODEL_PROFILE_VERSION
             or config.get("effective_model") != DEFAULT_MODEL
             or DEFAULT_MODEL not in (config.get("available_models") or [])
+            or not _model_digest_profile_valid(config)
         ):
             raise RuntimeError("preflight not ready")
         headers = {"Authorization": f"Bearer {config['token']}"}
@@ -631,11 +659,13 @@ class NodeClient:
                 {
                     "type": "hello",
                     "protocol": 1,
+                    "model_profile_version": MODEL_PROFILE_VERSION,
                     "name": config["name"],
                     "runtime": "ollama",
                     "runtime_version": _run_checked(["ollama", "--version"], timeout=10).strip()[:80],
                     "model": config["effective_model"],
                     "models": config["available_models"],
+                    "model_digests": config.get("model_digests") or {},
                     "ready": True,
                     "draining": bool(config.get("draining")),
                     "capabilities": {
@@ -697,6 +727,7 @@ def run(args) -> int:
     if (
         not config.get("preflight_ready")
         or config.get("model_profile_version") != MODEL_PROFILE_VERSION
+        or not _model_digest_profile_valid(config)
     ):
         raise SystemExit("Preflight 未完成或已失效。")
     asyncio.run(run_forever(args.config))

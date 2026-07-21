@@ -367,6 +367,10 @@
 - 每段對話固定使用同一回答模式；已有內容時切換模式會先要求確認，確認後清除目前裝置上的該段對話並開始新對話。
 - 對話紀錄只保存在目前瀏覽器及帳戶的本機儲存空間，不會保存到網站資料庫；「新對話」或「刪除對話」會清除該帳戶在目前裝置的紀錄，其他裝置不會同步。
 - AI 電腦、模型或 persona 更新後，舊對話仍可在本機查看，但不可沿用舊 context，須開始新對話。較長對話的早期內容亦可能只保留於畫面而不再送入模型。
+- 「A/B Test」分頁使用固定30題比較4B日常、4B Thinking及9B Thinking。AI管理員／Developer可建立campaign，並在AI電腦完全空閒時逐題按「生成下一題」；系統不會自動連續生成或轉交外部AI。90個答案全部成功且身份一致後先可開放盲評。
+- 每個盲評reservation保留24小時；到期後自動停止佔用票數名額。AI管理員可在不查看評核人身份下提早釋放未提交reservation。最多保留10個campaign；已完成或作廢campaign必須先下載audit JSON，再輸入完整campaign ID及原因才可清除，系統不會自動刪除。
+- 個人委員每次只會看到題目、評核重點及匿名答案A／B；須分別評核整體、香港粵語、論證、實用、事實及私隱安全。每組比較由3名不同委員完成，提交後不可修改。Developer只可preview，不能提交正式票。
+- Campaign結果只供AI管理員／Developer查看及下載不含reviewer身份的audit JSON；普通委員只見自己進度。結果不會自動宣布winner、改production預設、啟用RAG或成為微調資料。
 - 目前只支援文字對話；RAG、Fine-tune、圖片、工具及上網尚未啟用。回覆屬 AI 生成內容，只供訓練及思考參考，重要事實應另行核對。
 
 #### K. 遲到罰款基金
@@ -393,7 +397,7 @@
 - 提交者可播放自己的錄音、查看AI預檢及審核狀態，亦可撤回同意。撤回會在同一個資料庫transaction把現有錄音標示為withdrawn並寫入不可由browser讀取的audit；資料不再進入新dataset export／重訓。
 - AI管理員可管理句庫及讀音字典、試聽和審核錄音、審核LLM文字，以及查看coverage/readiness。「資料工廠」有五個產品：四種產品可把已接受LLM文字或管理員貼上的來源交由所選模型產生候選資料；「完整逐字稿結構拆分」則把有權儲存的完整比賽逐字稿分視窗處理，再逐段核對辯位、立場及環節。每次傳送第三方 AI 前必須預覽完整prompt、確認使用權／匿名化／第三方傳送警告；逐字稿工作中斷後可由原建立者繼續處理，人工審核時原文起止位置鎖定，只可修改分類資料，批准後才會建立一般來源快照。
 - 資料工廠的「已批准資料」就是人工整理的 curated library；AI管理員手動勾選後可分開發布RAG或SFT JSONL版本。撤回來源、完整逐字稿或已批准項目時必須填寫原因；系統會保留原文、lineage及決定作內部audit，但所有相關工作、審核段落、衍生來源及發布版本會即時失效，撤回後亦不再經API顯示完整逐字稿原文。已送到第三方provider的進行中請求無法取消，完成後只會結算用量並丟棄回覆。
-- V0只建立可審核及版本化的RAG資料，尚未建立vector database或embedding index；Dataset/model registry、固定eval worker及線上RAG retrieval仍未正式啟用，系統亦不會因一次request自動建表或消耗embedding API。
+- V0只建立可審核及版本化的RAG資料，尚未建立vector database或embedding index；Dataset/model registry及線上RAG retrieval仍未正式啟用。自家AI固定三模式eval已獨立在「自家AI專區 → A/B Test」啟用，但結果只作證據及Phase 3輸入，不會自動建立dataset、微調模型或消耗embedding API。
 - AI預檢只供初篩，accepted仍需人手確認；上載、播放、export及AI分析都有大小、數量及費用上限。
 
 #### O. 比賽相片及Bug回報

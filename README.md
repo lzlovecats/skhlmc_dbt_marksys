@@ -148,8 +148,7 @@ Production使用[`deploy/Dockerfile`](deploy/Dockerfile)及[`deploy/start.sh`](d
 ```bash
 ./venv/bin/python tools/manage_db_migrations.py status
 ./venv/bin/python tools/manage_db_migrations.py apply
-./venv/bin/python tools/reconcile_db_schema.py
-./venv/bin/python tools/audit_db_access.py
+./venv/bin/python tools/database_health.py --fail-on-issues
 ```
 
 ## 發布前驗證
@@ -178,13 +177,15 @@ Production資料分為：
 - competition/scoring：registration、matches、rosters、drafts、scores及rankings；
 - topic governance：topic bank、proposals/removals、ballots及comments；
 - media：video metadata/activity及R2-backed photos；
-- AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions及private audit；eval/RAG/model lifecycle仍未provision；
+- AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions、fixed eval及private audit；RAG/model lifecycle仍未provision；
 - finance/operations：AI fund、lateness fund、bug reports及resource accounting。
 
-Production exact baseline、drift及indexes／FK現況屬時間敏感資料，以 migration status、
-`tools/audit_db_schema.py` 及 `tools/reconcile_db_schema.py` 的即時read-only輸出為準。
+Production exact baseline、drift、feature readiness、table activity、R2 metadata coverage、
+typed config分類及權限現況屬時間敏感資料，以`tools/database_health.py`的即時read-only輸出為準。
+各optional feature的migration marker、table bundle及lifecycle集中在`core/schema_features.py`；
+個別`audit_db_schema.py`、`reconcile_db_schema.py`及`audit_db_access.py`工具仍可作深入檢查。
 Fresh bootstrap同migrated staging可用`tools/compare_db_catalogs.py`比較語意catalog；
-權限封口及runtime role readiness以`tools/audit_db_access.py`為準。
+release要求的最低schema migration由`version.py`明確指定，database可在受控staged rollout期間先行升級。
 
 ## 營運文件
 

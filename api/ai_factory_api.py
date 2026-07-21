@@ -41,7 +41,6 @@ from core.ai_data_factory import (
     validate_factory_output,
 )
 from core.ai_factory_store import (
-    FACTORY_TABLES,
     RIGHTS_BASES,
     SOURCE_LANGUAGES,
     FactoryStoreError,
@@ -244,7 +243,7 @@ def _manager(request: Request):
 
 def _factory_state(db) -> str:
     try:
-        return feature_bundle_state(db, "data_factory", FACTORY_TABLES)
+        return feature_bundle_state(db, "data_factory")
     except Exception as exc:
         raise HTTPException(503, "資料工廠 schema 狀態暫時無法驗證") from exc
 

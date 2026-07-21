@@ -50,7 +50,24 @@
       .node-card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:.85rem; }
       .node-card h2 { margin:0 0 .4rem; font-size:1rem; }
       .node-meta { display:flex; flex-wrap:wrap; gap:.45rem; color:var(--muted); font-size:.86rem; }
+      .ab-card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:1rem; margin:.8rem 0; }
+      .ab-card h2,.ab-card h3 { margin:.1rem 0 .6rem; }
+      .ab-progress { display:grid; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); gap:.6rem; margin:.8rem 0; }
+      .ab-metric { border:1px solid var(--border); border-radius:9px; padding:.7rem; }
+      .ab-metric strong { display:block; font-size:1.25rem; }
+      .comparison { display:grid; grid-template-columns:1fr 1fr; gap:.8rem; }
+      .answer-card { border:1px solid var(--border); border-radius:10px; padding:.85rem; min-width:0; overflow-wrap:anywhere; }
+      .answer-card h3 { color:#c4b5fd; }
+      .review-grid { display:grid; gap:.7rem; margin-top:.9rem; }
+      .review-row { border:1px solid var(--border); border-radius:9px; padding:.7rem; }
+      .review-row legend { font-weight:700; padding:0 .3rem; }
+      .review-options { display:flex; gap:.75rem; flex-wrap:wrap; }
+      .review-options label { display:inline-flex; align-items:center; gap:.3rem; }
+      .review-options input { width:auto; }
+      .summary-table { width:100%; border-collapse:collapse; }
+      .summary-table th,.summary-table td { border-bottom:1px solid var(--border); padding:.55rem; text-align:left; }
       @media (max-width:640px) { .message{max-width:94%} header{display:block}.header-actions{margin-top:.6rem}.mode-picker .caption{display:none} }
+      @media (max-width:640px) { .comparison{grid-template-columns:1fr}.tabs{display:flex;overflow:auto}.tab{white-space:nowrap} }
     </style>
   </head>
   <body>
@@ -67,9 +84,10 @@
         </div>
       </header>
       <div>
-        <div class="tabs">
-          <button class="tab active" data-panel="chatPanel" type="button">對話</button>
-          <button class="tab" data-panel="operationsPanel" type="button">AI運作情況</button>
+        <div class="tabs" role="tablist" aria-label="自家 AI 功能">
+          <button id="chatTab" class="tab active" data-panel="chatPanel" role="tab" aria-controls="chatPanel" aria-selected="true" tabindex="0" type="button">對話</button>
+          <button id="operationsTab" class="tab" data-panel="operationsPanel" role="tab" aria-controls="operationsPanel" aria-selected="false" tabindex="-1" type="button">AI運作情況</button>
+          <button id="abTestTab" class="tab" data-panel="abTestPanel" role="tab" aria-controls="abTestPanel" aria-selected="false" tabindex="-1" type="button">A/B Test</button>
         </div>
         <div class="status-row" style="margin-top:.65rem">
           <span class="pill"><span id="statusDot" class="dot"></span><span id="serviceStatus">正在檢查服務…</span></span>
@@ -82,12 +100,52 @@
         <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密碼" />
         <div class="actions"><button id="loginButton" class="primary" type="button">登入</button><span id="loginError" class="caption"></span></div>
       </section>
-      <section id="chatPanel" class="panel">
+      <section id="chatPanel" class="panel" role="tabpanel" aria-labelledby="chatTab">
         <section id="conversation" aria-live="polite"></section>
       </section>
-      <section id="operationsPanel" class="panel hidden">
+      <section id="operationsPanel" class="panel hidden" role="tabpanel" aria-labelledby="operationsTab">
         <p class="muted">顯示所有已登記 AI 電腦；實際工作只會送到 Developer 目前選用的一部。</p>
         <div id="nodeGrid" class="node-grid" aria-live="polite"></div>
+      </section>
+      <section id="abTestPanel" class="panel hidden" role="tabpanel" aria-labelledby="abTestTab">
+        <div id="abNotice" class="notice" aria-live="polite"></div>
+        <article class="ab-card">
+          <h2>固定三模式盲評</h2>
+          <p id="abStatus" class="muted">正在載入 campaign…</p>
+          <div id="abProgress" class="ab-progress"></div>
+          <div id="abManagerActions" class="actions hidden">
+            <button id="abCreate" class="primary" type="button">建立固定 campaign</button>
+            <button id="abGenerate" class="primary" type="button">生成下一題</button>
+            <button id="abOpenReview" type="button">開放盲評</button>
+            <button id="abClose" type="button">關閉並建立摘要</button>
+            <button id="abInvalidate" class="danger" type="button">Invalidate</button>
+            <button id="abExport" class="hidden" type="button">下載 audit JSON</button>
+            <button id="abPurge" class="danger hidden" type="button">清除已匯出 campaign</button>
+          </div>
+        </article>
+        <article id="abManagerPanel" class="ab-card hidden">
+          <h2>Campaign 管理</h2>
+          <p class="muted">最多保留10個。已完成或作廢項目必須先下載 audit JSON，先可以清除。</p>
+          <div id="abCampaignHistory"></div>
+          <h3>未提交 reservations</h3>
+          <p class="muted">只顯示不含評核人身份的 reservation；過期項目會自動停止佔用名額。</p>
+          <div id="abPendingAssignments"></div>
+        </article>
+        <article id="abReviewCard" class="ab-card hidden">
+          <h2 id="abCaseTitle">盲評比較</h2>
+          <p id="abCaseInput"></p>
+          <p><strong>評核重點：</strong><span id="abReference"></span></p>
+          <div class="comparison">
+            <section class="answer-card"><h3>答案 A</h3><div id="abLeftAnswer"></div></section>
+            <section class="answer-card"><h3>答案 B</h3><div id="abRightAnswer"></div></section>
+          </div>
+          <form id="abReviewForm" class="review-grid">
+            <div id="abReviewQuestions"></div>
+            <label>補充備註（選填，最多500字）<textarea id="abReviewNote" maxlength="500"></textarea></label>
+            <div class="actions"><button id="abSubmitReview" class="primary" type="submit">提交並鎖定呢票</button></div>
+          </form>
+        </article>
+        <article id="abResults" class="ab-card hidden"></article>
       </section>
       <section id="composer" class="composer">
         <div id="contextNotice" class="notice"></div>

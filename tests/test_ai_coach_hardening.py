@@ -178,6 +178,7 @@ def test_ai_coach_browser_disables_offline_local_and_unavailable_9b_mode():
     assert 'api("/api/ai-coach/local-status")' in source
     assert "localOption.disabled = !meta?.local_ai?.available" in source
     assert "option.disabled = !Boolean(" in source
+    assert '$("localAiStatus").classList.toggle("hidden", !model.local_node)' in source
     assert "selectedModelStatus" in source
     assert 'setInterval(refreshLocalAiStatus, 10000)' in source
     assert "AICoachSelectedModelStatus" in prep

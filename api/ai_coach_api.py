@@ -41,8 +41,6 @@ from prompts import (
 )
 from schema import (
     TABLE_AI_COACH_LIVE_BRIEFS,
-    TABLE_AI_DATASET_SNAPSHOTS,
-    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_MODEL_VERSIONS,
 )
 from system_limits import (
@@ -201,11 +199,7 @@ def _config(label, db=None):
 
             try:
                 model_schema_ready = feature_bundle_state(
-                    db, "dataset_model", (
-                        TABLE_AI_DATASET_SNAPSHOTS,
-                        TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-                        TABLE_AI_MODEL_VERSIONS,
-                    )
+                    db, "dataset_model"
                 ) == READY
             except Exception as exc:
                 raise HTTPException(503, "自家LLM模型schema狀態暫時無法驗證") from exc

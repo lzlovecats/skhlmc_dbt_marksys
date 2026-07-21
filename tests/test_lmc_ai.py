@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+import ai_model_config
 import ai_name
 import schema
 import system_limits
@@ -57,6 +58,7 @@ NODE_SOURCE = (ROOT / "local_ai/lmc_ai_node.py").read_text("utf-8")
 def test_identity_and_persona_have_one_runtime_source():
     assert ai_name.LMC_AI_NAME
     assert ai_name.LMC_AI_EMOJI
+    assert ai_name.LMC_AI_MENTION_TAG == f"@{ai_name.LMC_AI_NAME}".casefold()
     assert ai_name.LMC_AI_NAME in SYSTEM_PROMPT
     assert ai_name.LMC_AI_EMOJI in SYSTEM_PROMPT
     assert "{{" not in SYSTEM_PROMPT
@@ -67,9 +69,11 @@ def test_identity_and_persona_have_one_runtime_source():
 
     runtime_files = (
         ROOT / "frontend/lmc_ai/index.html",
+        ROOT / "frontend/vote/index.html",
         ROOT / "frontend/home/index.html",
         ROOT / "api/lmc_ai_api.py",
         ROOT / "core/lmc_ai_runtime.py",
+        ROOT / "core/vote_ai.py",
     )
     for path in runtime_files:
         source = path.read_text("utf-8")
@@ -159,6 +163,7 @@ def _hello(**overrides):
     value = {
         "type": "hello",
         "protocol": 1,
+        "model_profile_version": ai_model_config.LMC_AI_MODEL_PROFILE_VERSION,
         "name": "PopOS AI 01",
         "runtime": "ollama",
         "runtime_version": "0.12",
@@ -576,6 +581,25 @@ def test_node_hello_refuses_future_or_unsafe_capabilities():
                 capabilities={"chat": True, "rag": False, "fine_tuned": False}
             )
         )
+
+
+def test_node_hello_requires_current_model_profile_and_mandatory_4b():
+    assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 2
+    assert LocalAIRuntime.validate_hello(_hello())["ready"] is True
+
+    missing_profile = _hello()
+    missing_profile.pop("model_profile_version")
+    with pytest.raises(ValueError, match="model profile"):
+        LocalAIRuntime.validate_hello(missing_profile)
+    with pytest.raises(ValueError, match="model profile"):
+        LocalAIRuntime.validate_hello(_hello(model_profile_version=1))
+    with pytest.raises(ValueError, match="default model"):
+        LocalAIRuntime.validate_hello(_hello(
+            model=LMC_AI_FALLBACK_MODEL,
+            models=[LMC_AI_FALLBACK_MODEL],
+        ))
+
+    assert '"model_profile_version": MODEL_PROFILE_VERSION' in NODE_SOURCE
 
 
 def test_pending_node_cannot_serve_or_activate_after_concurrent_revocation():

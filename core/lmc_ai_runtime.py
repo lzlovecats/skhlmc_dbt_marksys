@@ -9,12 +9,15 @@ import hashlib
 import json
 from pathlib import Path
 import secrets
+import re
 import time
 from typing import Awaitable, Callable
 
 from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
+    LMC_AI_DEFAULT_MODEL,
     LMC_AI_MODE_OPTIONS,
+    LMC_AI_MODEL_PROFILE_VERSION,
 )
 from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
 from system_limits import (
@@ -30,6 +33,7 @@ PERSONA_DIR = Path(__file__).resolve().parents[1] / "local_ai" / "persona"
 PERSONA_FILES = ("AGENTS.md", "SOUL.md", "IDENTITY.md")
 PROTOCOL_VERSION = 1
 FinishCallback = Callable[["ChatJob", bool, dict, str], Awaitable[None]]
+StartCallback = Callable[["ChatJob"], Awaitable[None]]
 
 
 def compile_persona() -> tuple[str, str]:
@@ -55,10 +59,10 @@ SYSTEM_PROMPT, PERSONA_VERSION = compile_persona()
 
 
 def backend_fingerprint(
-    node_id: str, model: str, thinking_enabled: bool = False
+    node_id: str, model: str, thinking_enabled: bool = False, *, model_digest: str = ""
 ) -> str:
     thinking_mode = "thinking" if thinking_enabled else "non-thinking"
-    material = f"{node_id}\n{model}\n{PERSONA_VERSION}\n{thinking_mode}".encode("utf-8")
+    material = f"{node_id}\n{model}\n{model_digest}\n{PERSONA_VERSION}\n{thinking_mode}".encode("utf-8")
     return hashlib.sha256(material).hexdigest()
 
 
@@ -73,11 +77,14 @@ class ChatJob:
     model: str
     has_history: bool
     thinking_enabled: bool
+    output_max_bytes: int
     finish_callback: FinishCallback
+    start_callback: StartCallback | None
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     created_monotonic: float = field(default_factory=time.monotonic)
     provider_attempted: bool = False
     output_bytes: int = 0
+    collected_text: str = ""
     cancelled: bool = False
     forced_error: str = ""
     finished: bool = False
@@ -95,6 +102,7 @@ class ConnectedNode:
     runtime_version: str
     model: str
     models: tuple[str, ...]
+    model_digests: dict[str, str]
     capabilities: dict
     ready: bool
     draining: bool
@@ -107,7 +115,9 @@ class ConnectedNode:
 
     @property
     def fingerprint(self) -> str:
-        return backend_fingerprint(self.node_id, self.model)
+        return backend_fingerprint(
+            self.node_id, self.model, model_digest=self.model_digests.get(self.model, "")
+        )
 
 
 class QueueFullError(RuntimeError):
@@ -139,6 +149,8 @@ class LocalAIRuntime:
             raise ValueError("first node message must be hello")
         if payload.get("protocol") != PROTOCOL_VERSION:
             raise ValueError("unsupported node protocol")
+        if payload.get("model_profile_version") != LMC_AI_MODEL_PROFILE_VERSION:
+            raise ValueError("unsupported node model profile")
         capabilities = payload.get("capabilities")
         required = {
             "chat": True,
@@ -174,12 +186,29 @@ class LocalAIRuntime:
             or any(item not in allowed_models for item in models)
         ):
             raise ValueError("node advertised an unsupported model set")
+        if model != LMC_AI_DEFAULT_MODEL or LMC_AI_DEFAULT_MODEL not in models:
+            raise ValueError("node model profile is missing required default model")
+        raw_digests = payload.get("model_digests")
+        if raw_digests is None:
+            model_digests = {}
+        elif isinstance(raw_digests, dict):
+            model_digests = {
+                str(key): str(value).lower()
+                for key, value in raw_digests.items()
+                if str(key) in models
+                and re.fullmatch(r"[0-9a-fA-F]{64}", str(value or ""))
+            }
+            if set(model_digests) != set(raw_digests) or set(model_digests) != set(models):
+                raise ValueError("node model digests do not match advertised models")
+        else:
+            raise ValueError("node model digests must be an object")
         return {
             "name": name,
             "runtime": str(payload.get("runtime") or "")[:80],
             "runtime_version": str(payload.get("runtime_version") or "")[:80],
             "model": model[:200],
             "models": tuple(item[:200] for item in models),
+            "model_digests": model_digests,
             "capabilities": required,
             "ready": bool(payload.get("ready")),
             "draining": bool(payload.get("draining")),
@@ -290,6 +319,7 @@ class LocalAIRuntime:
                 "runtime_version": node.runtime_version,
                 "model": node.model,
                 "models": list(node.models),
+                "model_digests": dict(node.model_digests),
                 "capabilities": dict(node.capabilities),
                 "fingerprint": node.fingerprint,
                 "last_heartbeat_seconds": max(
@@ -316,6 +346,10 @@ class LocalAIRuntime:
         has_history: bool = False,
         model: str = "",
         thinking_enabled: bool = False,
+        operation_id: str = "",
+        require_idle: bool = False,
+        output_max_bytes: int = LMC_AI_OUTPUT_MAX_BYTES,
+        start_callback: StartCallback | None = None,
     ) -> tuple[ChatJob, int]:
         async with self._lock:
             node = self._nodes.get(node_id)
@@ -329,15 +363,18 @@ class LocalAIRuntime:
             selected_model = str(model or node.model)
             if selected_model not in node.models:
                 raise NodeUnavailableError("所選回答模式未能喺目前 AI 電腦使用。")
+            if require_idle and (node.active is not None or node.queue):
+                raise NodeUnavailableError("AI 電腦必須完全空閒先可以開始固定評估。")
             fingerprint = backend_fingerprint(
-                node.node_id, selected_model, thinking_enabled
+                node.node_id, selected_model, thinking_enabled,
+                model_digest=node.model_digests.get(selected_model, ""),
             )
             if expected_fingerprint and expected_fingerprint != fingerprint:
                 raise BackendChangedError("AI 設定已更新，請開始新對話。")
             if node.active is not None and len(node.queue) >= LMC_AI_QUEUE_MAX:
                 raise QueueFullError("自家 AI 而家排隊已滿，請稍後再試。")
             job = ChatJob(
-                operation_id=secrets.token_hex(16),
+                operation_id=str(operation_id or secrets.token_hex(16))[:200],
                 actor_id=actor_id,
                 usage_user_id=usage_user_id,
                 operation_stage=operation_stage,
@@ -346,7 +383,9 @@ class LocalAIRuntime:
                 model=selected_model,
                 has_history=bool(has_history),
                 thinking_enabled=bool(thinking_enabled),
+                output_max_bytes=max(1, min(int(output_max_bytes), LMC_AI_OUTPUT_MAX_BYTES)),
                 finish_callback=finish_callback,
+                start_callback=start_callback,
             )
             if node.active is None:
                 node.active = job
@@ -428,6 +467,7 @@ class LocalAIRuntime:
             node.draining = bool(payload.get("draining"))
             reported_model = str(payload.get("model") or "").strip()
             reported_models = payload.get("models")
+            reported_digests = payload.get("model_digests")
             clean_models = node.models
             allowed_models = {
                 str(config["model"]) for config in LMC_AI_MODE_OPTIONS.values()
@@ -444,13 +484,27 @@ class LocalAIRuntime:
                 if not candidate or (reported_model and reported_model not in candidate):
                     raise ValueError("node reported an invalid model set")
                 clean_models = candidate
+            clean_digests = node.model_digests
+            if reported_digests is not None:
+                if not isinstance(reported_digests, dict):
+                    raise ValueError("node reported invalid model digests")
+                clean_digests = {
+                    str(key): str(value).lower()
+                    for key, value in reported_digests.items()
+                    if str(key) in clean_models
+                    and re.fullmatch(r"[0-9a-fA-F]{64}", str(value or ""))
+                }
+                if set(clean_digests) != set(clean_models):
+                    raise ValueError("node reported incomplete model digests")
             backend_changed = bool(
                 (reported_model and reported_model[:200] != node.model)
                 or clean_models != node.models
+                or clean_digests != node.model_digests
             )
             if reported_model:
                 node.model = reported_model[:200]
             node.models = clean_models
+            node.model_digests = clean_digests
             if backend_changed or node.draining or not node.ready:
                 await self._fail_queued(
                     node,
@@ -464,7 +518,16 @@ class LocalAIRuntime:
         if job is None or operation_id != job.operation_id:
             return  # stale completion from a replaced/cancelled request
         if message_type == "chat.started":
-            job.provider_attempted = True
+            if not job.provider_attempted:
+                job.provider_attempted = True
+                if job.start_callback is not None:
+                    try:
+                        await job.start_callback(job)
+                    except Exception:
+                        await self._force_cancel_active(
+                            node, job, "未能保存 AI 評估 attempt，已停止生成。"
+                        )
+                        return
             await job.events.put(("status", {"state": "generating"}))
             return
         if message_type == "chat.delta":
@@ -474,12 +537,13 @@ class LocalAIRuntime:
             if not text:
                 return
             encoded = text.encode("utf-8")
-            if job.output_bytes + len(encoded) > LMC_AI_OUTPUT_MAX_BYTES:
+            if job.output_bytes + len(encoded) > job.output_max_bytes:
                 await self._force_cancel_active(
                     node, job, "AI 回覆超過安全輸出上限。"
                 )
                 return
             job.output_bytes += len(encoded)
+            job.collected_text += text
             await job.events.put(("delta", {"text": text}))
             return
         if message_type == "chat.complete":

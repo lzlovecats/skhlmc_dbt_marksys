@@ -126,7 +126,7 @@ sudo -iu <AI_ACCOUNT> /path/to/repo/local_ai/.venv/bin/python /path/to/repo/loca
 
 - Rotate token：Developer console 操作後，舊 socket 即時斷線；再以 `configure` 輸入新 token，restart service。
 - Revoke：即時取消該 node 嘅進行中工作並令 token 失效；metadata/usage 仍保留。
-- 更新 code/dependencies：先 drain，更新 repo，同一 venv 重新安裝 pinned requirements，重新執行 `preflight` 同 `install-service`，最後 resume。模型 profile version 更新時，舊 preflight 會刻意失效。
+- 更新 code/dependencies：先 drain，更新 repo，同一 venv 重新安裝 pinned requirements，重新執行 `preflight` 同 `install-service`，最後 resume。模型 profile version 更新時，舊 preflight 會刻意失效；server handshake 亦會拒絕舊 profile 或缺少必要 4B model 嘅 node。
 - 網站支援受控 Thinking 後，node hello 必須聲明 `thinking_control` capability；未更新的舊 node 會被 server 拒絕連線。部署網站版本前，先按上一項同步更新 AI 電腦程式並 restart service。
 - 檢查：
 
