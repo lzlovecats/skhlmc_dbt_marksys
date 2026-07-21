@@ -24,17 +24,20 @@ from core.lmc_ai_runtime import (
     NodeUnavailableError,
     QueueFullError,
     RUNTIME,
+    backend_fingerprint,
 )
 from core.lmc_ai_store import (
     authenticate_node,
     create_node,
     get_active_node_id,
+    get_thinking_enabled,
     list_node_rows,
     mark_node_disconnected,
     require_lmc_ai_schema,
     revoke_node,
     rotate_node_token,
     set_active_node_id,
+    set_thinking_enabled,
     update_node_hello,
 )
 from system_limits import (
@@ -84,7 +87,11 @@ class NodeCreate(BaseModel):
 
 
 class NodeSelection(BaseModel):
-    node_id: str = Field(min_length=1, max_length=64)
+    node_id: str = Field(max_length=64)
+
+
+class ThinkingSetting(BaseModel):
+    enabled: bool
 
 
 def _validated_messages(body: ChatRequest) -> list[dict]:
@@ -112,10 +119,17 @@ def _validated_messages(body: ChatRequest) -> list[dict]:
     return messages
 
 
-async def _active_service(db) -> tuple[str, dict | None]:
+async def _active_service(db) -> tuple[str, dict | None, bool]:
     active_node_id = get_active_node_id(db)
+    thinking_enabled = get_thinking_enabled(db)
     snapshot = await RUNTIME.snapshot(active_node_id) if active_node_id else None
-    return active_node_id, snapshot
+    if snapshot:
+        snapshot["fingerprint"] = backend_fingerprint(
+            active_node_id,
+            str(snapshot.get("model") or ""),
+            thinking_enabled,
+        )
+    return active_node_id, snapshot, thinking_enabled
 
 
 def _public_status(active_node_id: str, snapshot: dict | None) -> dict:
@@ -144,7 +158,7 @@ async def lmc_ai_bootstrap(request: Request):
     db = _db()
     try:
         require_lmc_ai_schema(db)
-        active_node_id, snapshot = await _active_service(db)
+        active_node_id, snapshot, _thinking_enabled = await _active_service(db)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
     status = _public_status(active_node_id, snapshot)
@@ -211,7 +225,7 @@ async def lmc_ai_chat(body: ChatRequest, request: Request):
     db = _db()
     try:
         require_lmc_ai_schema(db)
-        active_node_id, _snapshot = await _active_service(db)
+        active_node_id, _snapshot, thinking_enabled = await _active_service(db)
         job, _position = await RUNTIME.submit(
             node_id=active_node_id,
             expected_fingerprint=body.expected_fingerprint,
@@ -220,6 +234,7 @@ async def lmc_ai_chat(body: ChatRequest, request: Request):
             operation_stage="developer_chat" if actor_id == "developer" else "member_chat",
             messages=messages,
             has_history=body.has_history,
+            thinking_enabled=thinking_enabled,
             finish_callback=_record_usage,
         )
     except QueueFullError as exc:
@@ -260,6 +275,7 @@ async def developer_lmc_ai_nodes(request: Request):
     try:
         rows = list_node_rows(db)
         active_node_id = get_active_node_id(db)
+        thinking_enabled = get_thinking_enabled(db)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
     live = await RUNTIME.all_snapshots()
@@ -277,7 +293,11 @@ async def developer_lmc_ai_nodes(request: Request):
                 "online": bool(runtime),
             }
         )
-    return {"nodes": nodes, "active_node_id": active_node_id}
+    return {
+        "nodes": nodes,
+        "active_node_id": active_node_id,
+        "thinking_enabled": thinking_enabled,
+    }
 
 
 @router.post("/api/developer/lmc-ai/nodes")
@@ -320,25 +340,52 @@ async def developer_revoke_lmc_ai_node(node_id: str, request: Request):
 async def developer_select_lmc_ai_node(body: NodeSelection, request: Request):
     _developer_required(request)
     db = _db()
+    previous_node_id = ""
+    selected_node_id = str(body.node_id or "").strip()
+    blocked_previous = False
     try:
         require_lmc_ai_schema(db)
         previous_node_id = get_active_node_id(db)
-        snapshot = await RUNTIME.snapshot(body.node_id)
-        if not snapshot or not snapshot.get("online") or not snapshot.get("ready"):
-            raise HTTPException(409, "只可選擇已連線並完成 preflight 嘅 AI 電腦。")
-        if snapshot.get("draining"):
-            raise HTTPException(409, "AI 電腦正在 drain，暫時唔可以選用。")
-        set_active_node_id(db, body.node_id)
+        if selected_node_id:
+            snapshot = await RUNTIME.snapshot(selected_node_id)
+            if not snapshot or not snapshot.get("online") or not snapshot.get("ready"):
+                raise HTTPException(409, "只可選擇已連線並完成 preflight 嘅 AI 電腦。")
+            if snapshot.get("draining"):
+                raise HTTPException(409, "AI 電腦正在 drain，暫時唔可以選用。")
+        if previous_node_id and previous_node_id != selected_node_id:
+            await RUNTIME.block_new_jobs(previous_node_id)
+            blocked_previous = True
+        set_active_node_id(db, selected_node_id)
     except LookupError as exc:
+        if blocked_previous:
+            await RUNTIME.allow_new_jobs(previous_node_id)
         raise HTTPException(404, str(exc)) from exc
     except RuntimeError as exc:
+        if blocked_previous:
+            await RUNTIME.allow_new_jobs(previous_node_id)
         raise HTTPException(503, str(exc)) from exc
-    if previous_node_id and previous_node_id != body.node_id:
+    except Exception:
+        if blocked_previous:
+            await RUNTIME.allow_new_jobs(previous_node_id)
+        raise
+    if selected_node_id:
+        await RUNTIME.allow_new_jobs(selected_node_id)
+    if previous_node_id and previous_node_id != selected_node_id:
         await RUNTIME.fail_queued(
             previous_node_id,
-            "Developer 已切換 AI 電腦，請用新對話再試。",
+            "Developer 已取消或切換 AI 電腦，請用新對話再試。",
         )
-    return {"ok": True}
+    return {"ok": True, "active_node_id": selected_node_id}
+
+
+@router.post("/api/developer/lmc-ai/thinking")
+async def developer_set_lmc_ai_thinking(body: ThinkingSetting, request: Request):
+    _developer_required(request)
+    try:
+        set_thinking_enabled(_db(), body.enabled)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"ok": True, "thinking_enabled": body.enabled}
 
 
 @router.websocket("/api/lmc-ai/nodes/connect")

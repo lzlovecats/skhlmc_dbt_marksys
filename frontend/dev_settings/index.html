@@ -74,6 +74,16 @@
       .account-picker .caption {
         margin-top: 0.4rem;
       }
+      .lmc-thinking-toggle {
+        display: inline-flex;
+        gap: 0.5rem;
+        align-items: center;
+        margin: 0;
+      }
+      .lmc-thinking-toggle input {
+        width: auto;
+        margin: 0;
+      }
       dialog.card {
         width: min(32rem, calc(100% - 2rem));
         max-height: calc(100dvh - 2rem);
@@ -221,6 +231,15 @@
           <section class="card">
             <h2>自家 AI 電腦</h2>
             <p class="caption">每部電腦用獨立 token 由外向系統連線；只會使用你手動選擇而且已完成 preflight 嘅一部。選中後離線唔會自動轉機。</p>
+            <div class="actions">
+              <button id="refreshLmcNodes" type="button">🔄 重新整理</button>
+              <button id="clearLmcSelection" class="danger" type="button" disabled>取消選用所有電腦</button>
+            </div>
+            <div class="actions">
+              <label class="lmc-thinking-toggle"><input id="lmcThinkingEnabled" type="checkbox" />開啟 Thinking</label>
+              <button id="saveLmcThinking" type="button">儲存 Thinking 設定</button>
+            </div>
+            <p id="lmcThinkingState" class="caption">正在讀取 Thinking 設定…</p>
             <form id="lmcNodeForm" class="actions">
               <label style="flex:1">新電腦名稱<input id="lmcNodeName" placeholder="例如：辯論室 AI 01" required /></label>
               <button class="primary" type="submit">建立電腦 token</button>
@@ -320,6 +339,7 @@
                 })[c],
             );
         let data;
+        let lmcLoadGeneration = 0;
         const api = async (u, o = {}) => {
           let r = await fetch(u, {
               credentials: "same-origin",
@@ -542,11 +562,32 @@
           ]);
         }
         async function loadLmcNodes() {
-          const result = await api("/api/developer/lmc-ai/nodes");
+          const loadGeneration = ++lmcLoadGeneration;
+          let result;
+          try {
+            result = await api("/api/developer/lmc-ai/nodes");
+          } catch (error) {
+            if (loadGeneration !== lmcLoadGeneration) return false;
+            $("lmcNodes").innerHTML = '<p class="caption">自家 AI 電腦資料暫時未能讀取；其他開發者設定仍可使用。</p>';
+            $("lmcThinkingState").textContent = "Thinking 設定暫時未能讀取。";
+            $("lmcThinkingEnabled").disabled = true;
+            $("saveLmcThinking").disabled = true;
+            $("clearLmcSelection").disabled = true;
+            throw error;
+          }
+          if (loadGeneration !== lmcLoadGeneration) return false;
+          const thinkingEnabled = result.thinking_enabled === true;
+          $("lmcThinkingEnabled").disabled = false;
+          $("saveLmcThinking").disabled = false;
+          $("lmcThinkingEnabled").checked = thinkingEnabled;
+          $("lmcThinkingState").textContent = thinkingEnabled
+            ? "Thinking 已開啟；只會向隊員顯示最終答案。"
+            : "Thinking 已關閉。";
+          $("clearLmcSelection").disabled = !result.active_node_id;
           const nodes = result.nodes || [];
           if (!nodes.length) {
             $("lmcNodes").innerHTML = '<p class="caption">尚未登記 AI 電腦。</p>';
-            return;
+            return true;
           }
           $("lmcNodes").innerHTML = nodes.map((node) => {
             const state = !node.enabled ? "已撤銷" : !node.online ? "離線" : node.draining ? "Draining" : !node.ready ? "未完成 preflight" : node.busy ? `忙碌（排隊 ${Number(node.queue_length || 0)}）` : "在線";
@@ -554,6 +595,7 @@
             const model = node.model || node.last_model || "—";
             return `<article class="card"><div class="actions"><strong>${esc(node.display_name)}</strong><span class="caption">#${esc(node.short_id)}・${esc(state)}${node.selected ? "・已選用" : ""}</span></div><p class="caption">Runtime：${esc(runtime)}<br>實際模型：${esc(model)}<br>最後連線：${esc(node.last_connected_at || "—")}</p><div class="actions">${node.enabled && node.online && node.ready && !node.draining && !node.selected ? `<button type="button" data-lmc-select="${esc(node.node_id)}">選用呢部</button>` : ""}${node.enabled ? `<button type="button" data-lmc-rotate="${esc(node.node_id)}">Rotate token</button><button type="button" class="danger" data-lmc-revoke="${esc(node.node_id)}">Revoke</button>` : ""}</div></article>`;
           }).join("");
+          return true;
         }
         async function load() {
           busy(true);
@@ -673,6 +715,62 @@
             toast("✅ Token 已複製。");
           } catch (_) {
             toast("⚠️ 未能自動複製，請手動選取 token。");
+          }
+        };
+        $("refreshLmcNodes").onclick = async () => {
+          busy(true);
+          try {
+            await loadLmcNodes();
+            toast("✅ AI 電腦狀態已重新整理。");
+          } catch (error) {
+            toast("⚠️ " + error.message);
+          } finally {
+            busy(false);
+          }
+        };
+        $("clearLmcSelection").onclick = async () => {
+          const confirmed = await askAction(
+            "取消選用所有 AI 電腦？",
+            "系統會停止接收新工作並取消排隊工作；目前正在生成嘅回覆可以完成。",
+          );
+          if (!confirmed) return;
+          busy(true);
+          try {
+            await api("/api/developer/lmc-ai/active-node", {
+              method: "POST",
+              body: JSON.stringify({ node_id: "" }),
+            });
+            await loadLmcNodes();
+            toast("✅ 已取消選用所有 AI 電腦。");
+          } catch (error) {
+            toast("⚠️ " + error.message);
+          } finally {
+            busy(false);
+          }
+        };
+        $("saveLmcThinking").onclick = async () => {
+          const enabled = $("lmcThinkingEnabled").checked;
+          const confirmed = await askAction(
+            `${enabled ? "開啟" : "關閉"} Thinking？`,
+            "設定只影響之後提交嘅工作；目前生成會完成，已有對話下次發問時會要求開始新對話。",
+          );
+          if (!confirmed) {
+            await loadLmcNodes().catch((error) => toast("⚠️ " + error.message));
+            return;
+          }
+          busy(true);
+          try {
+            await api("/api/developer/lmc-ai/thinking", {
+              method: "POST",
+              body: JSON.stringify({ enabled }),
+            });
+            await loadLmcNodes();
+            toast(`✅ Thinking 已${enabled ? "開啟" : "關閉"}。`);
+          } catch (error) {
+            toast("⚠️ " + error.message);
+            await loadLmcNodes().catch(() => {});
+          } finally {
+            busy(false);
           }
         };
         $("saveFeatureSuspension").onclick = () => {

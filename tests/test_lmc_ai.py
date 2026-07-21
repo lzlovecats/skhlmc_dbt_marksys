@@ -17,7 +17,7 @@ from ai_model_config import (
     LMC_AI_FALLBACK_MODEL,
     LMC_AI_PRIMARY_MODEL,
 )
-from core import funds_logic, lmc_ai_runtime as lmc_runtime, schema_features
+from core import config_store, funds_logic, lmc_ai_runtime as lmc_runtime, schema_features
 from core.db_migrations import browser_privilege_revokes, created_table_names
 from core.lmc_ai_runtime import (
     LocalAIRuntime,
@@ -68,6 +68,7 @@ def test_backend_fingerprint_is_opaque_and_tracks_node_model_and_persona():
     assert len(first) == 64
     assert first != backend_fingerprint("node-b", LMC_AI_PRIMARY_MODEL)
     assert first != backend_fingerprint("node-a", LMC_AI_FALLBACK_MODEL)
+    assert first != backend_fingerprint("node-a", LMC_AI_PRIMARY_MODEL, True)
 
 
 def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
@@ -134,7 +135,12 @@ def _hello(**overrides):
         "model": LMC_AI_PRIMARY_MODEL,
         "ready": True,
         "draining": False,
-        "capabilities": {"chat": True, "rag": False, "fine_tuned": False},
+        "capabilities": {
+            "chat": True,
+            "rag": False,
+            "fine_tuned": False,
+            "thinking_control": True,
+        },
     }
     value.update(overrides)
     return value
@@ -196,6 +202,80 @@ def test_runtime_enforces_fifo_capacity_and_server_owned_prompt():
         )
         assert socket.sent[1]["operation_id"] == jobs[1].operation_id
         assert socket.sent[1]["allow_model_fallback"] is False
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_runtime_sends_server_selected_thinking_mode_to_the_node():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _hello())
+        job, position = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=backend_fingerprint(
+                "node-1", LMC_AI_PRIMARY_MODEL, True
+            ),
+            actor_id="member-1",
+            usage_user_id="member-1",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "reason carefully"}],
+            finish_callback=_noop_finish,
+            thinking_enabled=True,
+        )
+
+        assert position == 0
+        assert job.thinking_enabled is True
+        assert socket.sent[0]["think"] is True
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_clearing_selection_keeps_active_generation_and_fails_only_queue():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _hello())
+        active, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-1",
+            usage_user_id="member-1",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "active"}],
+            finish_callback=_noop_finish,
+        )
+        queued, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-2",
+            usage_user_id="member-2",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "queued"}],
+            finish_callback=_noop_finish,
+        )
+
+        await runtime.block_new_jobs("node-1")
+        await runtime.fail_queued("node-1", "selection cleared")
+
+        assert node.active is active
+        assert list(node.queue) == []
+        assert queued.finished is True
+        assert await queued.events.get() == ("queued", {"position": 1})
+        assert await queued.events.get() == ("error", {"message": "selection cleared"})
+        assert not any(item.get("type") == "chat.cancel" for item in socket.sent)
+        with pytest.raises(lmc_runtime.NodeUnavailableError):
+            await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=node.fingerprint,
+                actor_id="member-3",
+                usage_user_id="member-3",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "late arrival"}],
+                finish_callback=_noop_finish,
+            )
         await runtime.unregister(node, "test cleanup")
 
     asyncio.run(scenario())
@@ -272,6 +352,12 @@ def test_node_hello_refuses_future_or_unsafe_capabilities():
         LocalAIRuntime.validate_hello(
             _hello(capabilities={"chat": True, "rag": True, "fine_tuned": False})
         )
+    with pytest.raises(ValueError):
+        LocalAIRuntime.validate_hello(
+            _hello(
+                capabilities={"chat": True, "rag": False, "fine_tuned": False}
+            )
+        )
 
 
 def test_pending_node_cannot_serve_or_activate_after_concurrent_revocation():
@@ -327,6 +413,26 @@ def test_node_hello_revalidates_the_current_token_before_registration(monkeypatc
     assert db.params["token_hash"] == lmc_ai_store._token_digest("old-token")
 
 
+def test_thinking_setting_is_typed_and_uses_the_config_store(monkeypatch):
+    writes = []
+    monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
+    monkeypatch.setattr(
+        lmc_ai_store,
+        "get_config",
+        lambda _db, key, default: key == "lmc_ai_thinking_enabled",
+    )
+    monkeypatch.setattr(
+        lmc_ai_store,
+        "set_config",
+        lambda _db, key, value: writes.append((key, value)),
+    )
+
+    assert config_store.CONFIG_SPECS["lmc_ai_thinking_enabled"].value_type == "boolean"
+    assert lmc_ai_store.get_thinking_enabled(object()) is True
+    lmc_ai_store.set_thinking_enabled(object(), False)
+    assert writes == [("lmc_ai_thinking_enabled", False)]
+
+
 def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking():
     assert 'role == "system"' in API_SOURCE
     assert '"provider": "custom"' in API_SOURCE
@@ -335,7 +441,7 @@ def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking
     assert '"X-Accel-Buffering": "no"' in API_SOURCE
     assert 'websocket.query_params.get("token")' in API_SOURCE
     assert 'websocket.headers.get("authorization")' in API_SOURCE
-    assert "thinking" not in API_SOURCE
+    assert "thinking_trace" not in API_SOURCE
     assert "tool_calls" not in API_SOURCE
 
     assert "SafeMarkdown.render" in SCRIPT
@@ -374,9 +480,28 @@ def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
     assert "自家 AI 電腦資料暫時未能讀取" in load_block
 
 
+def test_developer_can_refresh_clear_selection_and_set_global_thinking():
+    assert 'id="refreshLmcNodes"' in DEV_SETTINGS
+    assert 'id="clearLmcSelection"' in DEV_SETTINGS
+    assert 'id="lmcThinkingEnabled"' in DEV_SETTINGS
+    assert "let lmcLoadGeneration = 0" in DEV_SETTINGS
+    assert "loadGeneration !== lmcLoadGeneration" in DEV_SETTINGS
+    assert 'JSON.stringify({ node_id: "" })' in DEV_SETTINGS
+    assert '"/api/developer/lmc-ai/thinking"' in DEV_SETTINGS
+    assert '"/api/developer/lmc-ai/active-node"' in DEV_SETTINGS
+
+    assert "class ThinkingSetting" in API_SOURCE
+    assert "node_id: str = Field(max_length=64)" in API_SOURCE
+    assert "set_thinking_enabled" in API_SOURCE
+    assert "thinking_enabled=thinking_enabled" in API_SOURCE
+
+
 def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(tmp_path):
     assert "ollama pull" not in NODE_SOURCE
     assert '"think": False' in NODE_SOURCE
+    assert 'thinking_enabled = payload.get("think") is True' in NODE_SOURCE
+    assert '"think": thinking_enabled' in NODE_SOURCE
+    assert '"thinking_control": True' in NODE_SOURCE
     assert '"num_ctx": CONTEXT_LENGTH' in NODE_SOURCE
     assert "num_predict" not in NODE_SOURCE
     assert "max_tokens" not in NODE_SOURCE

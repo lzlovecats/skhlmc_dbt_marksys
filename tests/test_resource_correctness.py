@@ -178,6 +178,53 @@ def test_get_head_and_explicit_empty_requests_bypass_body_slots():
     assert asyncio.run(scenario()) == 20
 
 
+def test_buffered_post_replay_reaches_real_disconnect_without_busy_loop():
+    """Streaming responses must not spin on synthetic empty request messages."""
+
+    async def scenario():
+        source_receives = 0
+
+        async def handler(_scope, receive, _send):
+            assert (await receive()) == {
+                "type": "http.request",
+                "body": b"hello",
+                "more_body": False,
+            }
+            for _ in range(3):
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+            raise AssertionError("post-body receive replayed empty requests forever")
+
+        async def receive():
+            nonlocal source_receives
+            source_receives += 1
+            if source_receives == 1:
+                return {
+                    "type": "http.request",
+                    "body": b"hello",
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        async def send(_message):
+            return None
+
+        middleware = proxy.RequestBodyLimitMiddleware(handler, max_bytes=8)
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"content-length", b"5")],
+            },
+            receive,
+            send,
+        )
+        assert source_receives == 2
+
+    asyncio.run(scenario())
+
+
 def test_startup_contract_is_named_and_includes_uvicorn_queue():
     output = subprocess.run(
         [sys.executable, "system_limits.py", "--startup"],
