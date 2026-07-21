@@ -117,6 +117,7 @@ from system_limits import (
     AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS,
     AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS,
     AI_PROVIDER_OUTPUT_MAX_TOKENS,
+    AI_TRAINING_ADMIN_PAGE_SIZE,
     AI_TRAINING_JSON_MAX_BYTES,
     AI_TRAINING_PROVIDER_TIMEOUT_SECONDS,
 )
@@ -629,11 +630,17 @@ def bootstrap(request: Request):
 def sources(request: Request, page: int = 1, kind: str = "all", search: str = ""):
     _user, db = _manager(request)
     _require_ready(db)
-    page, _, offset = bounds(page)
+    page = max(1, int(page or 1))
+    source_page_size = AI_TRAINING_ADMIN_PAGE_SIZE
+    offset = (page - 1) * source_page_size
     if kind not in ("all", "submission", "paste"):
         raise HTTPException(400, "來源類型不正確")
     search = str(search or "").strip()[:200]
-    params = {"search": f"%{search}%", "limit": PAGE_SIZE, "offset": offset}
+    params = {
+        "search": f"%{search}%",
+        "limit": source_page_size,
+        "offset": offset,
+    }
     kind_clause = ""
     if kind == "submission":
         kind_clause = "AND source_kind='llm_submission'"
@@ -672,7 +679,13 @@ def sources(request: Request, page: int = 1, kind: str = "all", search: str = ""
             ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset""",
         params,
     )
-    return payload([dict(row) for row in frame.to_dict("records")], page, total)
+    return {
+        "items": json_safe([dict(row) for row in frame.to_dict("records")]),
+        "page": page,
+        "page_size": source_page_size,
+        "total": total,
+        "total_pages": max(1, (total + source_page_size - 1) // source_page_size),
+    }
 
 
 @router.post("/sources")

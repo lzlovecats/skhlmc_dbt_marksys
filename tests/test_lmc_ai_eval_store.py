@@ -106,9 +106,9 @@ def test_expired_assignment_submission_rolls_back_instead_of_counting_vote():
     db.conn.assert_done()
 
 
-def _campaign(exported_at):
+def _campaign(exported_at, *, status="closed"):
     return {
-        "campaign_id": "campaign-1", "status": "closed", "suite_id": "suite",
+        "campaign_id": "campaign-1", "status": status, "suite_id": "suite",
         "suite_version": 1, "suite_hash": "a" * 64, "prompt_hash": "b" * 64,
         "persona_hash": "c" * 64, "model_profile_version": 2,
         "summary_hash": "d" * 64, "exported_at": exported_at,
@@ -116,7 +116,7 @@ def _campaign(exported_at):
     }
 
 
-def test_purge_fails_closed_until_export_has_been_recorded():
+def test_closed_campaign_purge_fails_until_export_has_been_recorded():
     db = _Db([
         ("FROM ai_eval_campaigns", _Result(row=_campaign(None))),
     ])
@@ -128,6 +128,28 @@ def test_purge_fails_closed_until_export_has_been_recorded():
 
     assert not any("DELETE FROM" in sql for sql, _params in db.conn.calls)
     assert db.rollback_count == 1
+    db.conn.assert_done()
+
+
+def test_invalidated_campaign_purges_without_a_prior_export_and_keeps_audit_first():
+    db = _Db([
+        ("FROM ai_eval_campaigns", _Result(row=_campaign(None, status="invalidated"))),
+        ("SELECT (SELECT COUNT(*) FROM ai_eval_outputs", _Result(row={"outputs": 90, "reviews": 0})),
+        ("INSERT INTO ai_training_audit", _Result()),
+        ("DELETE FROM ai_eval_reviews", _Result()),
+        ("DELETE FROM ai_eval_outputs", _Result()),
+        ("DELETE FROM ai_eval_campaigns", _Result()),
+    ])
+
+    result = store.purge_campaign(
+        db, "campaign-1", "manager", "campaign-1", "invalidated run is no longer needed",
+    )
+
+    sql = [statement for statement, _params in db.conn.calls]
+    assert sql.index(next(item for item in sql if "INSERT INTO ai_training_audit" in item)) < sql.index(
+        next(item for item in sql if "DELETE FROM ai_eval_reviews" in item)
+    )
+    assert result == {"campaign_id": "campaign-1", "outputs": 90, "reviews": 0}
     db.conn.assert_done()
 
 

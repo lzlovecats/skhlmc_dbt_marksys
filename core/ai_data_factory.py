@@ -135,7 +135,10 @@ _RECIPE_DEFINITIONS = {
         "temperature": 0.2,
         "instruction": AI_DATA_FACTORY_RAG_KNOWLEDGE_INSTRUCTION,
         "sft_message_count": None,
-        "estimated_output_tokens_per_candidate": 1_000,
+        # This value is both the confirmed cost budget and the provider hard
+        # cap. Keep headroom above the typical ~1,000-token card so structured
+        # JSON can close cleanly instead of ending with finish_reason=length.
+        "estimated_output_tokens_per_candidate": 2_000,
     },
     RAG_ARGUMENT_DECOMPOSITION_RECIPE: {
         "artifact_kind": "rag_argument_decomposition",

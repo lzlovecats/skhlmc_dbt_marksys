@@ -494,7 +494,7 @@ def test_attack_defence_requires_seven_messages_and_synthetic_opponent_provenanc
         _validate(unanchored, factory.SFT_ATTACK_DEFENCE_RECIPE)
 
 
-def test_cost_estimate_uses_fixed_recipe_output_budget_and_no_search():
+def test_cost_estimate_reserves_structured_rag_output_headroom_and_no_search():
     prompt = factory.build_factory_prompt(
         factory.RAG_KNOWLEDGE_CARD_RECIPE,
         source_text=SOURCE,
@@ -509,7 +509,10 @@ def test_cost_estimate_uses_fixed_recipe_output_budget_and_no_search():
         "output_price_per_million": 9.0,
     }, prompt, requested_count=2, model_label="Gemini 3.5 Flash")
     assert estimate["input_tokens"] > 0
-    assert estimate["output_tokens"] == 2_000
+    # The conservative preflight budget must exceed the typical 1,000-token
+    # content estimate per card. Production proved that treating 2 x 1,000 as
+    # a hard cap truncates a valid structured response at finish_reason=length.
+    assert estimate["output_tokens"] == 4_000
     assert estimate["search_calls"] == 0
     assert estimate["estimated_cost_usd"] > 0
     assert estimate["estimated_cost_hkd"] > estimate["estimated_cost_usd"]

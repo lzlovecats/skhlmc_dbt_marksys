@@ -223,7 +223,9 @@ def test_ai_training_has_separate_local_ai_eval_manager_tab_and_workflow():
     ):
         assert route in js
     assert 'b.dataset.admin === "local-ai-eval"' in js
-    assert "先下載完整紀錄，清除按鈕先會開放" in js
+    assert 'item.status === "closed" && !item.exported_at' in js
+    assert "已完成測試要先下載完整紀錄，清除按鈕先會開放" in js
+    assert "已作廢測試可以直接清除" in js
     assert 'confirmationInput.setCustomValidity("");' in js
 
 
@@ -246,7 +248,7 @@ def test_api_routes_and_export_privacy_contract_are_present():
     assert '"reviews"' in export_select
 
 
-def test_store_expires_abandoned_assignments_and_requires_export_before_purge():
+def test_store_expires_assignments_and_only_requires_export_for_closed_purge():
     store = (ROOT / "core/lmc_ai_eval_store.py").read_text(encoding="utf-8")
     assignment = store.split("def next_assignment", 1)[1].split("def preview_assignment", 1)[0]
     assert "expires_at>NOW()" in assignment
@@ -255,6 +257,6 @@ def test_store_expires_abandoned_assignments_and_requires_export_before_purge():
     assert "def list_pending_assignments" in store
     assert "reviewer_user_id" not in store.split("def list_pending_assignments", 1)[1].split("def ", 1)[0]
     purge = store.split("def purge_campaign", 1)[1]
-    assert "exported_at" in purge
+    assert 'campaign["status"] == "closed" and campaign["exported_at"] is None' in purge
     assert "DELETE FROM" in purge
     assert "eval_campaign_purged" in purge
