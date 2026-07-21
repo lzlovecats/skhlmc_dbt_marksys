@@ -377,6 +377,7 @@ class NodeClient:
     async def generate(self, payload: dict) -> None:
         operation_id = str(payload.get("operation_id") or "")
         messages = payload.get("messages")
+        thinking_enabled = payload.get("think") is True
         if not operation_id or not isinstance(messages, list):
             return
         config = self.reload()
@@ -400,7 +401,7 @@ class NodeClient:
                                 "model": model,
                                 "messages": messages,
                                 "stream": True,
-                                "think": False,
+                                "think": thinking_enabled,
                                 "options": {"num_ctx": CONTEXT_LENGTH},
                             },
                         ) as response:
@@ -483,7 +484,12 @@ class NodeClient:
                     "model": config["effective_model"],
                     "ready": True,
                     "draining": bool(config.get("draining")),
-                    "capabilities": {"chat": True, "rag": False, "fine_tuned": False},
+                    "capabilities": {
+                        "chat": True,
+                        "rag": False,
+                        "fine_tuned": False,
+                        "thinking_control": True,
+                    },
                 }
             )
             accepted = json.loads(await asyncio.wait_for(websocket.recv(), timeout=20))

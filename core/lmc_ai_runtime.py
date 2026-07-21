@@ -51,8 +51,11 @@ def compile_persona() -> tuple[str, str]:
 SYSTEM_PROMPT, PERSONA_VERSION = compile_persona()
 
 
-def backend_fingerprint(node_id: str, model: str) -> str:
-    material = f"{node_id}\n{model}\n{PERSONA_VERSION}".encode("utf-8")
+def backend_fingerprint(
+    node_id: str, model: str, thinking_enabled: bool = False
+) -> str:
+    thinking_mode = "thinking" if thinking_enabled else "non-thinking"
+    material = f"{node_id}\n{model}\n{PERSONA_VERSION}\n{thinking_mode}".encode("utf-8")
     return hashlib.sha256(material).hexdigest()
 
 
@@ -66,6 +69,7 @@ class ChatJob:
     fingerprint: str
     model: str
     has_history: bool
+    thinking_enabled: bool
     finish_callback: FinishCallback
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     created_monotonic: float = field(default_factory=time.monotonic)
@@ -117,6 +121,7 @@ class NodeUnavailableError(RuntimeError):
 class LocalAIRuntime:
     def __init__(self):
         self._nodes: dict[str, ConnectedNode] = {}
+        self._blocked_new_jobs: set[str] = set()
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -126,7 +131,12 @@ class LocalAIRuntime:
         if payload.get("protocol") != PROTOCOL_VERSION:
             raise ValueError("unsupported node protocol")
         capabilities = payload.get("capabilities")
-        required = {"chat": True, "rag": False, "fine_tuned": False}
+        required = {
+            "chat": True,
+            "rag": False,
+            "fine_tuned": False,
+            "thinking_control": True,
+        }
         if not isinstance(capabilities, dict) or any(
             capabilities.get(key) is not value for key, value in required.items()
         ):
@@ -212,6 +222,14 @@ class LocalAIRuntime:
         if node is not None:
             await self._fail_queued(node, reason)
 
+    async def block_new_jobs(self, node_id: str) -> None:
+        async with self._lock:
+            self._blocked_new_jobs.add(str(node_id))
+
+    async def allow_new_jobs(self, node_id: str) -> None:
+        async with self._lock:
+            self._blocked_new_jobs.discard(str(node_id))
+
     async def _heartbeat_monitor(self, node: ConnectedNode) -> None:
         try:
             while True:
@@ -264,12 +282,20 @@ class LocalAIRuntime:
         messages: list[dict],
         finish_callback: FinishCallback,
         has_history: bool = False,
+        thinking_enabled: bool = False,
     ) -> tuple[ChatJob, int]:
         async with self._lock:
             node = self._nodes.get(node_id)
-            if node is None or not node.ready or node.draining:
+            if (
+                node is None
+                or node_id in self._blocked_new_jobs
+                or not node.ready
+                or node.draining
+            ):
                 raise NodeUnavailableError("自家 AI 暫時未能提供服務。")
-            fingerprint = node.fingerprint
+            fingerprint = backend_fingerprint(
+                node.node_id, node.model, thinking_enabled
+            )
             if expected_fingerprint and expected_fingerprint != fingerprint:
                 raise BackendChangedError("AI 設定已更新，請開始新對話。")
             if node.active is not None and len(node.queue) >= LMC_AI_QUEUE_MAX:
@@ -283,6 +309,7 @@ class LocalAIRuntime:
                 fingerprint=fingerprint,
                 model=node.model,
                 has_history=bool(has_history),
+                thinking_enabled=bool(thinking_enabled),
                 finish_callback=finish_callback,
             )
             if node.active is None:
@@ -313,7 +340,7 @@ class LocalAIRuntime:
                     "type": "chat.start",
                     "operation_id": job.operation_id,
                     "messages": job.messages,
-                    "think": False,
+                    "think": job.thinking_enabled,
                     "context_length": LMC_AI_CONTEXT_LENGTH,
                     "allow_model_fallback": not job.has_history,
                 },

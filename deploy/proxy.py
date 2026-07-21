@@ -286,9 +286,7 @@ class RequestBodyLimitMiddleware:
                         if not replayed:
                             replayed = True
                             return first
-                        return {
-                            "type": "http.request", "body": b"", "more_body": False,
-                        }
+                        return await receive()
 
                     await self.inner(scope, replay_empty, send)
                     return
@@ -322,7 +320,7 @@ class RequestBodyLimitMiddleware:
                     message = buffered[index]
                     index += 1
                     return message
-                return {"type": "http.request", "body": b"", "more_body": False}
+                return await receive()
 
             await self.inner(scope, replay_receive, send)
         finally:

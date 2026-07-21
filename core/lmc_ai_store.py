@@ -20,6 +20,7 @@ from system_limits import LMC_AI_NODE_MAX, LMC_AI_NODE_NAME_MAX_CHARS
 
 
 ACTIVE_NODE_CONFIG_KEY = "lmc_ai_active_node_id"
+THINKING_ENABLED_CONFIG_KEY = "lmc_ai_thinking_enabled"
 
 
 def require_lmc_ai_schema(db) -> None:
@@ -215,3 +216,13 @@ def set_active_node_id(db, node_id: str) -> None:
         if row.empty or not bool(row.iloc[0]["enabled"]):
             raise LookupError("找不到已啟用嘅 AI 電腦。")
     set_config(db, ACTIVE_NODE_CONFIG_KEY, node_id)
+
+
+def get_thinking_enabled(db) -> bool:
+    require_lmc_ai_schema(db)
+    return bool(get_config(db, THINKING_ENABLED_CONFIG_KEY, False))
+
+
+def set_thinking_enabled(db, enabled: bool) -> None:
+    require_lmc_ai_schema(db)
+    set_config(db, THINKING_ENABLED_CONFIG_KEY, bool(enabled))

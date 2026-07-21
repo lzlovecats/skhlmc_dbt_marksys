@@ -62,7 +62,9 @@ local_ai/.venv/bin/python local_ai/lmc_ai_node.py status
 
 Preflight 會驗證 `nvidia-smi`、Ollama、localhost binding 同兩個 models；先以 `think=false`、4K context 測試 9B。60 秒內失敗、load/OOM 或 CPU offload 超過 10% 就測 4B；兩者都失敗則唔會宣告 ready。RTX 3060 最終結果以真機 preflight 為準。
 
-Node online/ready 後，返 Developer console 手動按「選用呢部」。選中電腦離線或 drain 時，服務會停低，唔會自動轉到另一部。
+Node online/ready 後，返 Developer console 手動按「選用呢部」。`🔄 重新整理`只更新電腦狀態；「取消選用所有電腦」會停止新工作、取消排隊工作，但容許目前生成完成。選中電腦離線或 drain 時，服務會停低，唔會自動轉到另一部。
+
+Developer console 可全系統開關 Thinking。Qwen 3.5 經 Ollama 使用 boolean `think=true/false`，不提供 `low`／`medium`／`high` 強度；推理 stream 只在 node 內消耗，網站只轉送最終答案。切換只影響之後提交的工作，並會令現有 browser 對話在下次發問時要求開始新對話。
 
 ## 5. 日常 account 要大量用 GPU
 
@@ -83,6 +85,7 @@ sudo -iu <AI_ACCOUNT> /path/to/repo/local_ai/.venv/bin/python /path/to/repo/loca
 - Rotate token：Developer console 操作後，舊 socket 即時斷線；再以 `configure` 輸入新 token，restart service。
 - Revoke：即時取消該 node 嘅進行中工作並令 token 失效；metadata/usage 仍保留。
 - 更新 code/dependencies：先 drain，更新 repo，同一 venv 重新安裝 pinned requirements，再 `sudo systemctl restart skhlmc-lmc-ai-node.service`，最後 resume。
+- 加入受控 Thinking 後，node hello 必須聲明 `thinking_control` capability；未更新的舊 node 會被 server 拒絕連線。部署網站版本前，先按上一項同步更新 AI 電腦程式並 restart service。
 - 檢查：
 
 ```bash
