@@ -179,6 +179,28 @@ def test_factory_operations_fail_closed_until_schema_is_ready(monkeypatch, state
     assert db.queries == []
 
 
+def test_factory_source_picker_uses_compact_five_item_pages(monkeypatch):
+    db = _Db([
+        _frame({"total": 7}),
+        _frame({"id": "source-6", "title": "第六份來源"}),
+    ])
+    monkeypatch.setattr(api, "_manager", lambda _request: ("manager", db))
+    monkeypatch.setattr(api, "_require_ready", lambda _db: None)
+    monkeypatch.setattr(api, "AI_TRAINING_ADMIN_PAGE_SIZE", 5)
+
+    result = api.sources(None, page=2)
+
+    assert result["page"] == 2
+    assert result["page_size"] == 5
+    assert result["total"] == 7
+    assert result["total_pages"] == 2
+    assert result["items"] == [{"id": "source-6", "title": "第六份來源"}]
+    assert db.queries[0][1]["limit"] == 5
+    assert db.queries[0][1]["offset"] == 5
+    assert db.queries[1][1]["limit"] == 5
+    assert db.queries[1][1]["offset"] == 5
+
+
 def test_bootstrap_defaults_to_gemini_35_without_internal_data_marker(monkeypatch):
     db = _Db()
     monkeypatch.setattr(api, "_manager", lambda _request: ("manager", db))

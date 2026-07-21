@@ -568,7 +568,7 @@ def purge_campaign(
             raise LookupError("找不到campaign。")
         if campaign["status"] not in {"closed", "invalidated"}:
             raise ValueError("只可以清除已完成或已作廢campaign。")
-        if campaign["exported_at"] is None:
+        if campaign["status"] == "closed" and campaign["exported_at"] is None:
             raise ValueError("必須先下載audit export，先可以清除campaign。")
         counts = conn.execute(text(f"""SELECT
             (SELECT COUNT(*) FROM {TABLE_AI_EVAL_OUTPUTS} WHERE campaign_id=:campaign) outputs,
@@ -581,7 +581,10 @@ def purge_campaign(
             "prompt_hash": campaign["prompt_hash"], "persona_hash": campaign["persona_hash"],
             "model_profile_version": campaign["model_profile_version"],
             "summary_hash": campaign["summary_hash"],
-            "exported_at": str(campaign["exported_at"]),
+            "exported_at": (
+                str(campaign["exported_at"])
+                if campaign["exported_at"] is not None else None
+            ),
             "exported_by": campaign["exported_by"], "outputs": int(counts["outputs"]),
             "reviews": int(counts["reviews"]), "reason": reason,
         }

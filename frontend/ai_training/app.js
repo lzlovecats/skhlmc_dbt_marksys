@@ -2121,18 +2121,24 @@
       const actions = document.createElement("div");
       actions.className = "actions";
       if (["closed", "invalidated"].includes(item.status)) {
+        const requiresExport = item.status === "closed" && !item.exported_at;
         actions.append(localEvalButton("下載完整紀錄", () => downloadLocalEval(item.campaign_id)));
-        actions.append(localEvalButton("清除資料", () => purgeLocalEval(item.campaign_id), {
+        actions.append(localEvalButton("清除資料", () => purgeLocalEval(item.campaign_id, item.status), {
           className: "danger",
-          disabled: !item.exported_at,
+          disabled: requiresExport,
         }));
       }
       header.append(summary, actions);
       row.append(header);
-      if (["closed", "invalidated"].includes(item.status) && !item.exported_at) {
+      if (item.status === "closed" && !item.exported_at) {
         const hint = document.createElement("p");
         hint.className = "caption";
-        hint.textContent = "先下載完整紀錄，清除按鈕先會開放。";
+        hint.textContent = "已完成測試要先下載完整紀錄，清除按鈕先會開放。";
+        row.append(hint);
+      } else if (item.status === "invalidated" && !item.exported_at) {
+        const hint = document.createElement("p");
+        hint.className = "caption";
+        hint.textContent = "已作廢測試可以直接清除；完整紀錄仍可按需要先下載。";
         row.append(hint);
       }
       list.append(row);
@@ -2343,10 +2349,12 @@
     }
   }
 
-  async function purgeLocalEval(campaignId) {
+  async function purgeLocalEval(campaignId, status) {
     const answer = await askLocalEvalAction({
       title: "清除評測資料",
-      text: "清除後只會保留審計記錄，回答及回饋資料不能復原。",
+      text: status === "invalidated"
+        ? "已作廢測試毋須先下載。清除後只會保留最小審計記錄，回答及回饋資料不能復原。"
+        : "清除後只會保留最小審計記錄，回答及回饋資料不能復原。",
       reason: true,
       confirmation: campaignId,
       danger: true,
