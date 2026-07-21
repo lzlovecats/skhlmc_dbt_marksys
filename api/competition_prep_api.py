@@ -89,6 +89,7 @@ class WeaknessStatusBody(BaseModel):
 class AiRunBody(BaseModel):
     run_type: Literal["team_audit", "strategy_attack"]
     model_label: str = Field(default="", max_length=120)
+    local_mode: Literal["daily", "complex", "deep"] = "daily"
     operation_id: str = Field(min_length=16, max_length=200)
 
 
@@ -236,9 +237,11 @@ async def ai_run(project_id: int, body: AiRunBody, request: Request):
     }
     labels = {"team_audit": "全隊稿件審查", "strategy_attack": "AI模擬攻擊"}
     enabled_providers, runtime_default = coach._runtime_model_settings(db)
-    model_label = body.model_label or runtime_default
+    from ai_name import LMC_AI_MODEL_LABEL
+    model_label = body.model_label or LMC_AI_MODEL_LABEL
     config = coach._config(model_label, db)
     coach._require_enabled_model(model_label, config, enabled_providers)
+    await coach._require_local_model_available(config, db, body.local_mode)
     operation_id = body.operation_id
     snapshot = {
         "project_revision": bundle["project"]["revision"],
@@ -261,7 +264,11 @@ async def ai_run(project_id: int, body: AiRunBody, request: Request):
         nonlocal provider_attempted
         provider_attempted = True
 
-    provider_body = coach.CoachRequest(feature="strategy", model_label=model_label)
+    provider_body = coach.CoachRequest(
+        feature="strategy",
+        model_label=model_label,
+        local_mode=body.local_mode,
+    )
     try:
         markdown, actual = await coach._generate(
             config, systems[body.run_type],

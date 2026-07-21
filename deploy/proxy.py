@@ -113,7 +113,8 @@ from api.access import (
     require_page_user,
 )
 from version import APP_VERSION
-from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
+from ai_name import LMC_AI_EMOJI, LMC_AI_MODEL_LABEL, LMC_AI_NAME
+from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from system_limits import (
     BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
     BANDWIDTH_LOG_RETENTION_DAYS, BANDWIDTH_STOP_LIVE_BYTES,
@@ -2132,7 +2133,12 @@ async def vote_page(request: Request):
         encoding="utf-8"
     )
     return Response(
-        html.replace("__APP_VERSION__", APP_VERSION),
+        html.replace("__APP_VERSION__", APP_VERSION).replace(
+            "__LMC_AI_MODEL_LABEL__", xml_escape(LMC_AI_MODEL_LABEL)
+        ).replace(
+            "__VOTE_GEMINI_MODEL_LABEL__",
+            xml_escape(NON_MANUAL_DEFAULT_AI_MODEL),
+        ),
         media_type="text/html",
         headers=_cache_headers(CACHE_HTML),
     )
@@ -2451,7 +2457,11 @@ async def developer_settings_page():
     )
     html = html.replace("__APP_VERSION__", APP_VERSION)
     return Response(
-        content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
+        content=html,
+        media_type="text/html",
+        # The 4.9.4 inline UI removes a legacy API control. Revalidate the
+        # tightly coupled shell while the server keeps one-release fallback.
+        headers=_cache_headers(CACHE_NO_CACHE),
     )
 
 

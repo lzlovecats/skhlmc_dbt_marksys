@@ -1,23 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import os
 from pathlib import Path
+import threading
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 import ai_name
 import schema
 import system_limits
+from api import lmc_ai_api as lmc_api
+from api.lmc_ai_api import ChatRequest, _resolve_thinking_enabled
 from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
+    LMC_AI_DEFAULT_MODE,
     LMC_AI_FALLBACK_MODEL,
+    LMC_AI_MODE_OPTIONS,
     LMC_AI_PRIMARY_MODEL,
 )
-from core import config_store, funds_logic, lmc_ai_runtime as lmc_runtime, schema_features
+from core import (
+    config_store,
+    funds_logic,
+    lmc_ai_client,
+    lmc_ai_runtime as lmc_runtime,
+    schema_features,
+)
 from core.db_migrations import browser_privilege_revokes, created_table_names
 from core.lmc_ai_runtime import (
     LocalAIRuntime,
@@ -102,8 +116,14 @@ def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
 
 
 def test_limits_and_models_are_centralized_at_the_decided_values():
-    assert LMC_AI_PRIMARY_MODEL == "qwen3.5:9b"
-    assert LMC_AI_FALLBACK_MODEL == "qwen3.5:4b"
+    assert LMC_AI_PRIMARY_MODEL == "qwen3.5:4b"
+    assert LMC_AI_FALLBACK_MODEL == "qwen3.5:9b"
+    assert LMC_AI_DEFAULT_MODE == "daily"
+    assert LMC_AI_MODE_OPTIONS == {
+        "daily": {"label": "日常預設", "model": "qwen3.5:4b", "thinking": False},
+        "complex": {"label": "複雜問題", "model": "qwen3.5:4b", "thinking": True},
+        "deep": {"label": "深入思考", "model": "qwen3.5:9b", "thinking": True},
+    }
     assert LMC_AI_CONTEXT_LENGTH == 4096
     assert system_limits.LMC_AI_NODE_MAX == 8
     assert system_limits.LMC_AI_QUEUE_MAX == 2
@@ -143,6 +163,7 @@ def _hello(**overrides):
         "runtime": "ollama",
         "runtime_version": "0.12",
         "model": LMC_AI_PRIMARY_MODEL,
+        "models": [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL],
         "ready": True,
         "draining": False,
         "capabilities": {
@@ -194,7 +215,8 @@ def test_runtime_enforces_fifo_capacity_and_server_owned_prompt():
         assert start["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
         assert start["think"] is False
         assert start["context_length"] == 4096
-        assert start["allow_model_fallback"] is True
+        assert start["allow_model_fallback"] is False
+        assert start["model"] == LMC_AI_PRIMARY_MODEL
         assert "num_predict" not in start
         assert "max_tokens" not in start
 
@@ -241,6 +263,192 @@ def test_runtime_sends_server_selected_thinking_mode_to_the_node():
         await runtime.unregister(node, "test cleanup")
 
     asyncio.run(scenario())
+
+
+def test_runtime_routes_deep_mode_to_9b_and_refuses_it_on_a_4b_only_node():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _hello())
+        job, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=backend_fingerprint(
+                "node-1", LMC_AI_FALLBACK_MODEL, True
+            ),
+            actor_id="member-1",
+            usage_user_id="member-1",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "deep"}],
+            finish_callback=_noop_finish,
+            model=LMC_AI_FALLBACK_MODEL,
+            thinking_enabled=True,
+        )
+        assert job.model == LMC_AI_FALLBACK_MODEL
+        assert socket.sent[0]["model"] == LMC_AI_FALLBACK_MODEL
+        assert socket.sent[0]["think"] is True
+        await runtime.unregister(node, "test cleanup")
+
+        limited = LocalAIRuntime()
+        limited_socket = _FakeWebSocket()
+        limited_node = await limited.register(
+            "node-2", limited_socket,
+            _hello(models=[LMC_AI_PRIMARY_MODEL]),
+        )
+        with pytest.raises(lmc_runtime.NodeUnavailableError, match="回答模式"):
+            await limited.submit(
+                node_id="node-2",
+                expected_fingerprint="",
+                actor_id="member-1",
+                usage_user_id="member-1",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "deep"}],
+                finish_callback=_noop_finish,
+                model=LMC_AI_FALLBACK_MODEL,
+                thinking_enabled=True,
+            )
+        await limited.unregister(limited_node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_shared_availability_requires_selected_ready_node_and_tracks_modes(monkeypatch):
+    runtime = LocalAIRuntime()
+    monkeypatch.setattr(lmc_ai_client, "RUNTIME", runtime)
+    monkeypatch.setattr(lmc_ai_client, "require_lmc_ai_schema", lambda _db: None)
+    selected = {"node_id": ""}
+    monkeypatch.setattr(
+        lmc_ai_client, "get_active_node_id", lambda _db: selected["node_id"],
+    )
+
+    async def scenario():
+        missing = await lmc_ai_client.local_ai_availability(object())
+        assert missing["available"] is False
+        assert missing["selected"] is False
+        assert "尚未選用" in missing["message"]
+
+        selected["node_id"] = "node-1"
+        offline = await lmc_ai_client.local_ai_availability(object())
+        assert offline["state"] == "offline"
+        assert "離線" in offline["message"]
+
+        socket = _FakeWebSocket()
+        node = await runtime.register(
+            "node-1", socket,
+            _hello(models=[LMC_AI_PRIMARY_MODEL]),
+        )
+        node.active = object()
+        busy = await lmc_ai_client.local_ai_availability(object())
+        assert busy["available"] is True
+        assert busy["state"] == "busy"
+        modes = {item["id"]: item for item in busy["modes"]}
+        assert modes["daily"]["available"] is True
+        assert modes["complex"]["available"] is True
+        assert modes["deep"]["available"] is False
+        assert "未提供「深入思考」" in modes["deep"]["message"]
+
+        node.queue.extend([object()] * system_limits.LMC_AI_QUEUE_MAX)
+        full = await lmc_ai_client.local_ai_availability(object())
+        assert full["available"] is False
+        assert full["state"] == "full"
+        assert "排隊已滿" in full["message"]
+        node.queue.clear()
+
+        node.active = None
+        node.draining = True
+        draining = await lmc_ai_client.local_ai_availability(object())
+        assert draining["available"] is False
+        assert draining["state"] == "draining"
+        assert "暫停接單" in draining["message"]
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_shared_local_client_bridges_sync_worker_loop_to_runtime_owner(monkeypatch):
+    runtime = LocalAIRuntime()
+    owner_loop = asyncio.new_event_loop()
+    owner_ready = threading.Event()
+    holder = {}
+
+    class _ReplyingWebSocket(_FakeWebSocket):
+        async def send_text(self, raw):
+            await super().send_text(raw)
+            payload = self.sent[-1]
+            if payload.get("type") != "chat.start":
+                return
+            operation_id = payload["operation_id"]
+            node = holder["node"]
+            await runtime.handle_node_message(node, {
+                "type": "chat.started",
+                "operation_id": operation_id,
+                "model": payload["model"],
+            })
+            await runtime.handle_node_message(node, {
+                "type": "chat.delta",
+                "operation_id": operation_id,
+                "text": "跨 loop 回覆",
+            })
+            await runtime.handle_node_message(node, {
+                "type": "chat.complete",
+                "operation_id": operation_id,
+                "model": payload["model"],
+                "usage": {
+                    "input_tokens": 6,
+                    "output_tokens": 4,
+                    "duration_ms": 25,
+                },
+            })
+
+    def run_owner_loop():
+        asyncio.set_event_loop(owner_loop)
+
+        async def register():
+            socket = _ReplyingWebSocket()
+            holder["socket"] = socket
+            holder["node"] = await runtime.register(
+                "node-1", socket, _hello(models=[LMC_AI_PRIMARY_MODEL]),
+            )
+
+        owner_loop.run_until_complete(register())
+        owner_ready.set()
+        owner_loop.run_forever()
+
+    thread = threading.Thread(target=run_owner_loop, daemon=True)
+    thread.start()
+    assert owner_ready.wait(timeout=2)
+    monkeypatch.setattr(lmc_ai_client, "RUNTIME", runtime)
+    monkeypatch.setattr(lmc_ai_client, "require_lmc_ai_schema", lambda _db: None)
+    monkeypatch.setattr(lmc_ai_client, "get_active_node_id", lambda _db: "node-1")
+    attempts = []
+    try:
+        text, usage = asyncio.run(lmc_ai_client.generate_local_text(
+            object(),
+            actor_id="vote-ai",
+            system_prompt="system",
+            user_prompt="user",
+            mode="complex",
+            operation_stage="vote_review",
+            on_provider_attempt=lambda: attempts.append(True),
+        ))
+        assert text == "跨 loop 回覆"
+        assert usage["input_tokens"] == 6
+        assert usage["output_tokens"] == 4
+        assert usage["cost_source"] == "local_zero_cost"
+        assert attempts == [True]
+        start = next(
+            item for item in holder["socket"].sent if item.get("type") == "chat.start"
+        )
+        assert start["model"] == LMC_AI_PRIMARY_MODEL
+        assert start["think"] is True
+    finally:
+        async def cleanup():
+            await runtime.unregister(holder["node"], "test cleanup")
+            await asyncio.sleep(0)
+
+        asyncio.run_coroutine_threadsafe(cleanup(), owner_loop).result(timeout=2)
+        owner_loop.call_soon_threadsafe(owner_loop.stop)
+        thread.join(timeout=2)
+        owner_loop.close()
 
 
 def test_clearing_selection_keeps_active_generation_and_fails_only_queue():
@@ -423,7 +631,24 @@ def test_node_hello_revalidates_the_current_token_before_registration(monkeypatc
     assert db.params["token_hash"] == lmc_ai_store._token_digest("old-token")
 
 
-def test_thinking_setting_is_typed_and_uses_the_config_store(monkeypatch):
+def test_chat_mode_is_allowlisted_and_legacy_requests_remain_distinguishable():
+    request = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "expected_fingerprint": "0" * 64,
+        "has_history": False,
+    }
+    assert ChatRequest(**request).mode is None
+    assert ChatRequest(**request, mode="thinking").mode == "thinking"
+    assert ChatRequest(**request, mode="fast").mode == "fast"
+    assert _resolve_thinking_enabled(None, True) is True
+    assert _resolve_thinking_enabled(None, False) is False
+    assert _resolve_thinking_enabled("thinking", False) is True
+    assert _resolve_thinking_enabled("fast", True) is False
+    with pytest.raises(ValidationError):
+        ChatRequest(**request, mode="unlimited")
+
+
+def test_legacy_thinking_setting_stays_typed_for_cached_pre_mode_clients(monkeypatch):
     writes = []
     monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
     monkeypatch.setattr(
@@ -443,7 +668,99 @@ def test_thinking_setting_is_typed_and_uses_the_config_store(monkeypatch):
     assert writes == [("lmc_ai_thinking_enabled", False)]
 
 
-def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking():
+def test_cached_pre_mode_api_contract_remains_functional(monkeypatch):
+    monkeypatch.setattr(lmc_api, "_developer_required", lambda _request: None)
+    monkeypatch.setattr(lmc_api, "_db", lambda: object())
+    monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [])
+    monkeypatch.setattr(lmc_api, "get_active_node_id", lambda _db: "")
+    monkeypatch.setattr(lmc_api, "get_thinking_enabled", lambda _db: True)
+    writes = []
+    monkeypatch.setattr(
+        lmc_api,
+        "set_thinking_enabled",
+        lambda _db, enabled: writes.append(enabled),
+    )
+
+    async def snapshots():
+        return {}
+
+    monkeypatch.setattr(lmc_api.RUNTIME, "all_snapshots", snapshots)
+    nodes = asyncio.run(lmc_api.developer_lmc_ai_nodes(object()))
+    saved = asyncio.run(
+        lmc_api.developer_set_lmc_ai_thinking(
+            lmc_api.ThinkingSetting(enabled=False), object()
+        )
+    )
+
+    assert nodes["thinking_enabled"] is True
+    assert saved == {"ok": True, "thinking_enabled": False}
+    assert writes == [False]
+
+
+def test_member_operation_status_lists_every_registered_node_without_ids(monkeypatch):
+    monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [
+        {"node_id": "node-a", "display_name": "AI 01"},
+        {"node_id": "node-b", "display_name": "AI 02"},
+    ])
+
+    async def snapshots():
+        return {
+            "node-a": {
+                "name": "AI 01", "ready": True, "busy": True,
+                "queue_length": 1,
+                "models": [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL],
+            }
+        }
+
+    monkeypatch.setattr(lmc_api.RUNTIME, "all_snapshots", snapshots)
+    result = asyncio.run(lmc_api._public_nodes(object(), "node-a"))
+
+    assert [item["name"] for item in result] == ["AI 01", "AI 02"]
+    assert result[0]["state"] == "busy" and result[0]["selected"] is True
+    assert result[1]["state"] == "offline" and result[1]["selected"] is False
+    assert all("node_id" not in item for item in result)
+
+
+def test_cached_pre_mode_bootstrap_uses_the_legacy_global_fingerprint(monkeypatch):
+    monkeypatch.setattr(
+        lmc_api,
+        "require_page_user_or_developer",
+        lambda _request, _page: "member-1",
+    )
+    monkeypatch.setattr(lmc_api, "_db", lambda: object())
+    monkeypatch.setattr(lmc_api, "require_lmc_ai_schema", lambda _db: None)
+    monkeypatch.setattr(
+        lmc_api,
+        "interactive_features_suspension",
+        lambda _request: {"active": False},
+    )
+
+    async def active_service(_db):
+        return "node-1", {"online": True, "ready": True}, True, {
+            "daily": "f" * 64,
+            "complex": "t" * 64,
+            "fast": "f" * 64,
+            "thinking": "t" * 64,
+        }
+
+    monkeypatch.setattr(lmc_api, "_active_service", active_service)
+
+    async def public_nodes(_db, _active_node_id):
+        return []
+
+    monkeypatch.setattr(lmc_api, "_public_nodes", public_nodes)
+    result = asyncio.run(lmc_api.lmc_ai_bootstrap(object()))
+
+    assert result["backend_fingerprint"] == "t" * 64
+    assert result["backend_fingerprints"] == {
+        "daily": "f" * 64,
+        "complex": "t" * 64,
+        "fast": "f" * 64,
+        "thinking": "t" * 64,
+    }
+
+
+def test_member_api_and_browser_contract_keep_node_metadata_and_thinking_trace_private():
     assert 'role == "system"' in API_SOURCE
     assert '"provider": "custom"' in API_SOURCE
     assert 'usage_user_id=None if actor_id == "developer"' in API_SOURCE
@@ -469,6 +786,23 @@ def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking
     assert "effective_model" not in SCRIPT
 
 
+def test_browser_offers_three_conversation_scoped_model_modes_and_node_status():
+    assert 'id="thinkingMode"' in PAGE
+    assert '<option value="daily">日常預設（4B）</option>' in PAGE
+    assert '<option value="complex">複雜問題（4B Thinking）</option>' in PAGE
+    assert '<option value="deep">深入思考（9B Thinking）</option>' in PAGE
+    assert 'data-panel="operationsPanel"' in PAGE
+    assert 'id="nodeGrid"' in PAGE
+    assert "backend_fingerprints" in API_SOURCE
+    assert "_resolve_thinking_enabled" in API_SOURCE
+    assert "mode: conversation.mode" in SCRIPT
+    assert "normalizeMode" in SCRIPT
+    assert "switchConversationMode" in SCRIPT
+    assert "切換回答模式" in SCRIPT
+    assert "conversation.messages.length && !confirm(" in SCRIPT
+    assert "conversation.mode" in SCRIPT
+
+
 def test_browser_clear_invalidates_and_aborts_an_inflight_conversation():
     assert "let conversationGeneration = 0" in SCRIPT
     assert "const requestGeneration = conversationGeneration" in SCRIPT
@@ -490,20 +824,23 @@ def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
     assert "自家 AI 電腦資料暫時未能讀取" in load_block
 
 
-def test_developer_can_refresh_clear_selection_and_set_global_thinking():
+def test_new_developer_ui_hides_global_thinking_but_keeps_cached_page_api_compatibility():
     assert 'id="refreshLmcNodes"' in DEV_SETTINGS
     assert 'id="clearLmcSelection"' in DEV_SETTINGS
-    assert 'id="lmcThinkingEnabled"' in DEV_SETTINGS
+    assert 'id="lmcThinkingEnabled"' not in DEV_SETTINGS
+    assert 'id="saveLmcThinking"' not in DEV_SETTINGS
     assert "let lmcLoadGeneration = 0" in DEV_SETTINGS
     assert "loadGeneration !== lmcLoadGeneration" in DEV_SETTINGS
     assert 'JSON.stringify({ node_id: "" })' in DEV_SETTINGS
-    assert '"/api/developer/lmc-ai/thinking"' in DEV_SETTINGS
     assert '"/api/developer/lmc-ai/active-node"' in DEV_SETTINGS
+    assert '"/api/developer/lmc-ai/thinking"' not in DEV_SETTINGS
 
     assert "class ThinkingSetting" in API_SOURCE
     assert "node_id: str = Field(max_length=64)" in API_SOURCE
     assert "set_thinking_enabled" in API_SOURCE
-    assert "thinking_enabled=thinking_enabled" in API_SOURCE
+    assert "get_thinking_enabled" in API_SOURCE
+    assert '"thinking_enabled": thinking_enabled' in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/thinking")' in API_SOURCE
 
 
 def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(tmp_path):
@@ -537,7 +874,7 @@ def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(
     assert "secret" not in json.dumps(lmc_ai_node._public_config(lmc_ai_node._load(path)))
 
 
-def test_node_preflight_falls_back_to_4b_and_refuses_two_failures(tmp_path, monkeypatch):
+def test_node_preflight_requires_4b_and_treats_9b_as_optional(tmp_path, monkeypatch):
     path = tmp_path / "node.json"
     lmc_ai_node._save(
         path,
@@ -559,22 +896,24 @@ def test_node_preflight_falls_back_to_4b_and_refuses_two_failures(tmp_path, monk
         lambda: {LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL},
     )
 
-    def fallback_probe(model):
-        if model == LMC_AI_PRIMARY_MODEL:
+    def optional_deep_probe(model):
+        if model == LMC_AI_FALLBACK_MODEL:
             raise RuntimeError("out of memory")
 
-    monkeypatch.setattr(lmc_ai_node, "_model_probe", fallback_probe)
+    monkeypatch.setattr(lmc_ai_node, "_model_probe", optional_deep_probe)
     assert lmc_ai_node.preflight(SimpleNamespace(config=path)) == 0
     selected = lmc_ai_node._load(path)
     assert selected["preflight_ready"] is True
-    assert selected["effective_model"] == LMC_AI_FALLBACK_MODEL
+    assert selected["effective_model"] == LMC_AI_PRIMARY_MODEL
+    assert selected["available_models"] == [LMC_AI_PRIMARY_MODEL]
+    assert selected["model_profile_version"] == lmc_ai_node.MODEL_PROFILE_VERSION
 
     monkeypatch.setattr(
         lmc_ai_node,
         "_model_probe",
         lambda model: (_ for _ in ()).throw(RuntimeError(f"{model} failed")),
     )
-    with pytest.raises(SystemExit, match="兩個 models"):
+    with pytest.raises(SystemExit, match="日常預設 model"):
         lmc_ai_node.preflight(SimpleNamespace(config=path))
     refused = lmc_ai_node._load(path)
     assert refused["preflight_ready"] is False
@@ -594,3 +933,27 @@ def test_node_systemd_unit_runs_as_ai_account_and_depends_on_ollama(tmp_path):
     assert "Restart=always" in unit
     assert "NoNewPrivileges=true" in unit
     assert " run\n" in unit
+
+    units = lmc_ai_node._service_files(
+        "debate-ai",
+        Path("/opt/lmc-ai/venv/bin/python"),
+        Path("/opt/lmc-ai/lmc_ai_node.py"),
+        tmp_path / "node.json",
+    )
+    assert "23:55:00 Asia/Hong_Kong" in units[lmc_ai_node.AUTO_DRAIN_TIMER]
+    assert "00:00:00 Asia/Hong_Kong" in units[lmc_ai_node.AUTO_SUSPEND_TIMER]
+    assert "08:00:00 Asia/Hong_Kong" in units[lmc_ai_node.AUTO_RESUME_TIMER]
+    assert "scheduled-suspend" in units[lmc_ai_node.AUTO_SUSPEND_SERVICE]
+    assert "User=debate-ai" not in units[lmc_ai_node.AUTO_SUSPEND_SERVICE]
+
+
+def test_auto_power_wake_timestamp_is_next_0800_hong_kong():
+    zone = ZoneInfo("Asia/Hong_Kong")
+    after_midnight = datetime(2026, 7, 21, 0, 0, tzinfo=zone)
+    after_wake = datetime(2026, 7, 21, 12, 0, tzinfo=zone)
+    assert datetime.fromtimestamp(
+        lmc_ai_node._next_wake_timestamp(after_midnight), zone
+    ) == datetime(2026, 7, 21, 8, 0, tzinfo=zone)
+    assert datetime.fromtimestamp(
+        lmc_ai_node._next_wake_timestamp(after_wake), zone
+    ) == datetime(2026, 7, 22, 8, 0, tzinfo=zone)

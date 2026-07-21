@@ -368,13 +368,17 @@
   function syncEmbeddedForms() {
     const project = state.bundle?.project;
     const enabled = Boolean(project && canEdit());
+    const selectedModel = window.AICoachSelectedModelStatus?.() || {
+      available: true,
+    };
+    const aiEnabled = enabled && selectedModel.available;
     const side = project?.our_side === "con" ? "反方" : "正方";
     if ($("strategyTopic")) {
       $("strategyTopic").value = project?.topic_text || "";
       $("strategySide").value = side;
       $("strategyFormat").value = project?.debate_format || "校園隨想";
       ["strategyTopic", "strategySide", "strategyFormat"].forEach((id) => $(id).disabled = true);
-      $("strategyForm").querySelector("button.primary").disabled = !enabled;
+      $("strategyForm").querySelector("button.primary").disabled = !aiEnabled;
     }
     const manuscriptId = Number($("prepManuscriptId")?.value || 0);
     const manuscript = state.bundle?.manuscripts.find((item) => Number(item.id) === manuscriptId);
@@ -397,14 +401,16 @@
       }
       ["reviewTopic", "reviewSide", "reviewPosition", "reviewFormat"]
         .forEach((id) => $(id).disabled = true);
-      $("reviewSubmit").disabled = !(enabled && manuscript && positions[manuscript.slot]);
+      $("reviewSubmit").disabled = !(
+        aiEnabled && manuscript && positions[manuscript.slot]
+      );
     }
     ["prepManuscriptForm", "prepStrategyCardForm", "prepEvidenceForm", "prepWeaknessForm"]
       .forEach((id) => $(id)?.querySelectorAll("input,textarea,select,button").forEach((item) => {
         item.disabled = !enabled;
       }));
-    $("prepTeamAudit").disabled = !enabled;
-    $("prepAttack").disabled = !enabled;
+    $("prepTeamAudit").disabled = !aiEnabled;
+    $("prepAttack").disabled = !aiEnabled;
   }
 
   function renderMembers() {
@@ -627,6 +633,12 @@
 
   async function runPrepAi(runType, outputId) {
     if (!state.projectId) return toast("⚠️ 請先選擇項目。");
+    const selectedModel = window.AICoachSelectedModelStatus?.() || {
+      available: true,
+      message: "",
+    };
+    if (!selectedModel.available)
+      return toast(`⚠️ ${selectedModel.message || "所選 AI 模型暫時不可用。"}`);
     const projectId = state.projectId;
     const generation = state.loadGeneration;
     const operationKey = `${projectId}:${runType}`;
@@ -639,6 +651,7 @@
         method: "POST",
         body: JSON.stringify({
           run_type: runType, model_label: $("globalModel").value,
+          local_mode: $("localMode").value,
           operation_id: operationId,
         }),
       });
@@ -872,6 +885,7 @@
     });
     $("prepTeamAudit").addEventListener("click", () => runPrepAi("team_audit", "prepAuditResult"));
     $("prepAttack").addEventListener("click", () => runPrepAi("strategy_attack", "prepAttackResult"));
+    document.addEventListener("ai-coach-model-status", syncEmbeddedForms);
     $("prepOpenResearch").addEventListener("click", () => {
       $("researchTopic").value = state.bundle?.project.topic_text || "";
       $("researchNeed").value = "請為我方主線尋找可引用數據、案例、反例及可靠來源。";

@@ -46,6 +46,14 @@ def test_ai_training_versions_shared_vote_ui_without_placeholder():
     assert "__APP_VERSION__" not in html
 
 
+def test_developer_settings_revalidates_during_inline_api_contract_transition():
+    response = asyncio.run(proxy.developer_settings_page())
+    html = response.body.decode("utf-8")
+
+    assert response.headers["cache-control"] == "no-cache"
+    assert "__APP_VERSION__" not in html
+
+
 def test_match_photos_html_versions_metadata_editor_script():
     response = asyncio.run(proxy.match_photos_page())
     html = response.body.decode("utf-8")

@@ -681,6 +681,16 @@
         <button class="tab" data-tab="account">🔐 帳戶</button>
       </div>
 
+      <div class="card" style="margin-top:.8rem">
+        <label for="voteAiModel"><b>AI 功能使用模型</b></label>
+        <select id="voteAiModel">
+          <option value="local">__LMC_AI_MODEL_LABEL__</option>
+          <option value="gemini">__VOTE_GEMINI_MODEL_LABEL__</option>
+        </select>
+        <div id="voteAiStatus" class="sub" style="margin-top:.45rem" aria-live="polite">正在檢查自家 AI 狀態…</div>
+        <div class="sub" style="margin-top:.25rem">自家 AI 不可用時不會自動轉用 Gemini；你可以在此手動切換。</div>
+      </div>
+
       <details class="guide">
         <summary>ℹ️ 首次使用指南</summary>
         <div class="sub">
@@ -717,7 +727,17 @@
         const tabsEl = document.getElementById("tabs");
 
         // Client-side input limits mirror the server contract.
-        const AI_COMMENT_USER = "Gemini"; // AI_COMMENT_USER_ID — replies rendered as markdown
+        const AI_COMMENT_USER = "Gemini"; // legacy AI_COMMENT_USER_ID — replies rendered as markdown
+        const LOCAL_AI_LABEL = "__LMC_AI_MODEL_LABEL__";
+        const VOTE_GEMINI_LABEL = "__VOTE_GEMINI_MODEL_LABEL__";
+        const VOTE_AI_STORAGE_KEY = "vote-ai-model:v1";
+        let LOCAL_AI_STATUS = {
+          available: false,
+          selected: false,
+          state: "checking",
+          message: "正在檢查自家 AI 狀態…",
+          modes: [],
+        };
         const REJECTION_REASONS = [
           "表述或界定不清",
           "正反責任失衡",
@@ -770,6 +790,84 @@
         let openReasonFor = null; // topic_text with an open against-reason panel (topic vote)
         const CACHE_TTL = 20000;
         const CACHE = Object.create(null);
+
+        function voteAiChoice() {
+          return document.getElementById("voteAiModel").value === "gemini"
+            ? "gemini"
+            : "local";
+        }
+
+        function selectedAiLabel() {
+          return voteAiChoice() === "gemini" ? VOTE_GEMINI_LABEL : LOCAL_AI_LABEL;
+        }
+
+        function selectedVoteAiAvailable() {
+          const complexMode = LOCAL_AI_STATUS.modes?.find(
+            (item) => item.id === "complex",
+          );
+          return voteAiChoice() === "gemini" || Boolean(complexMode?.available);
+        }
+
+        function selectedVoteAiMessage() {
+          if (voteAiChoice() !== "local") return "";
+          const complexMode = LOCAL_AI_STATUS.modes?.find(
+            (item) => item.id === "complex",
+          );
+          return complexMode?.message
+            || LOCAL_AI_STATUS.message
+            || "自家 AI 暫時未準備好。";
+        }
+
+        function syncVoteAiAvailability() {
+          const select = document.getElementById("voteAiModel");
+          const localOption = select.querySelector('option[value="local"]');
+          const complexMode = LOCAL_AI_STATUS.modes?.find(
+            (item) => item.id === "complex",
+          );
+          localOption.disabled = !complexMode?.available;
+          const status = document.getElementById("voteAiStatus");
+          const localMessage = complexMode?.available
+            ? LOCAL_AI_STATUS.message
+            : complexMode?.message || LOCAL_AI_STATUS.message;
+          status.textContent = `自家 AI：${localMessage || "狀態不明。"}`;
+          status.style.color = complexMode?.available
+            ? "var(--muted)"
+            : "var(--against)";
+          const blocked = !selectedVoteAiAvailable();
+          content.querySelectorAll(
+            '[data-act="ai-review-topic"], [data-act="comment-ai"], [data-act="ai-analysis"]',
+          ).forEach((button) => {
+            button.disabled = blocked;
+          });
+        }
+
+        function requireSelectedVoteAi() {
+          if (selectedVoteAiAvailable()) return true;
+          toast(`⚠️ ${selectedVoteAiMessage()}`);
+          return false;
+        }
+
+        async function refreshLocalAiStatus() {
+          try {
+            const response = await fetch("/api/vote/ai-status", {
+              credentials: "same-origin",
+              cache: "no-store",
+              headers: { Accept: "application/json" },
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+            LOCAL_AI_STATUS = data;
+          } catch (error) {
+            LOCAL_AI_STATUS = {
+              available: false,
+              selected: false,
+              state: "unavailable",
+              message: error.message || "未能讀取自家 AI 狀態。",
+              modes: [],
+            };
+          }
+          syncVoteAiAvailability();
+        }
 
         function esc(s) {
           return String(s == null ? "" : s).replace(
@@ -1040,10 +1138,10 @@
             <details class="discussion" data-motion-type="${motionType}" data-motion-key="${key}">
                 <summary>${esc(label)}</summary>
                 <div class="comments"><div class="sub" style="padding:.55rem 0">尚未載入。</div></div>
-                <textarea rows="2" placeholder="就此議案發表意見。如要問 AI，可加「@Gemini 你的問題」，或按 Tag Gemini 取得中立分析。"></textarea>
+                <textarea rows="2" placeholder="就此議案發表意見。如要問 AI，可加「@AI 你的問題」，或按 Tag AI 取得中立分析。"></textarea>
                 <div class="row">
                     <button data-act="comment-post">發表</button>
-                    <button data-act="comment-ai">Tag Gemini</button>
+                    <button data-act="comment-ai">Tag AI（${esc(selectedAiLabel())}）</button>
                 </div>
             </details>`;
         }
@@ -1065,7 +1163,7 @@
                   .map(
                     (c) => `
                 <div class="comment">
-                    <div class="by"><b>${esc(c.user_id)}</b>　${esc(c.created_at)}</div>
+                    <div class="by"><b>${esc(c.user_id === AI_COMMENT_USER ? "AI" : c.user_id)}</b>　${esc(c.created_at)}</div>
                     ${c.user_id === AI_COMMENT_USER ? `<div class="ai-box">${md(c.comment_text)}</div>` : `<div>${esc(c.comment_text)}</div>`}
                 </div>`,
                   )
@@ -1585,6 +1683,7 @@
             }
             checkNotification();
             schedulePushReconcile();
+            syncVoteAiAvailability();
           } catch (e) {
             content.innerHTML =
               '<div class="card err"><div class="topic">載入失敗</div>' +
@@ -1757,6 +1856,7 @@
 
         async function aiReviewTopic() {
           if (BUSY) return;
+          if (!requireSelectedVoteAi()) return;
           const topic = document.getElementById("propTopic").value.trim();
           const category = document.getElementById("propCategory").value;
           const difficulty = parseInt(
@@ -1776,12 +1876,13 @@
               topic,
               category,
               difficulty,
+              ai_model: voteAiChoice(),
             });
             if (!res.ok) {
               box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">${esc(data.detail || "AI 審查失敗")}</div>`;
               return;
             }
-            box.innerHTML = `<details open><summary>AI 審查結果</summary><div class="ai-box">${md(data.review)}</div></details>`;
+            box.innerHTML = `<details open><summary>AI 審查結果（${esc(data.model_label || selectedAiLabel())}）</summary><div class="ai-box">${md(data.review)}</div></details>`;
           } catch (e) {
             box.innerHTML = `<div class="sub" style="color:var(--against);margin-top:.7rem">AI 審查失敗：${esc(e.message)}</div>`;
           } finally {
@@ -1794,6 +1895,8 @@
           const box = btn.closest(".discussion");
           const textEl = box.querySelector("textarea");
           const text = textEl.value.trim();
+          const asksAi = tagAi || /@(ai|gemini|辯才天呂)/i.test(text);
+          if (asksAi && !requireSelectedVoteAi()) return;
           if (!text && !tagAi) {
             toast("⚠️ 請輸入內容。");
             return;
@@ -1805,6 +1908,7 @@
               motion_key: box.dataset.motionKey,
               text,
               tag_ai: !!tagAi,
+              ai_model: voteAiChoice(),
             });
             if (!res.ok) {
               toast("⚠️ " + (data.detail || "錯誤 " + res.status));
@@ -1812,6 +1916,8 @@
             }
             if (data.status === "ai_failed")
               toast("⚠️ 留言已儲存，但 AI 回應失敗。");
+            else if (data.status === "failed")
+              toast(data.message || "⚠️ AI 回應失敗，未有新增留言。");
             else toast(data.ai_replied ? "☑️ AI 已回覆討論" : "☑️ 已成功留言");
             textEl.value = "";
             invalidateCache();
@@ -1825,11 +1931,13 @@
 
         async function runAnalysis(kind) {
           if (BUSY) return;
+          if (!requireSelectedVoteAi()) return;
           setBusy(true);
           toast("⏳ AI 正在分析，請稍候…");
           try {
             const { res, data } = await postJSON("/api/vote/analysis/ai", {
               kind,
+              ai_model: voteAiChoice(),
             });
             if (!res.ok) {
               toast("⚠️ " + (data.detail || "AI 分析失敗"));
@@ -2243,6 +2351,18 @@
           load();
         });
 
+        const voteAiModel = document.getElementById("voteAiModel");
+        const savedAiModel = localStorage.getItem(VOTE_AI_STORAGE_KEY);
+        voteAiModel.value = savedAiModel === "gemini" ? "gemini" : "local";
+        voteAiModel.addEventListener("change", () => {
+          localStorage.setItem(VOTE_AI_STORAGE_KEY, voteAiChoice());
+          invalidateCache();
+          syncVoteAiAvailability();
+          load();
+        });
+
+        refreshLocalAiStatus();
+        setInterval(refreshLocalAiStatus, 10000);
         load();
       })();
     </script>

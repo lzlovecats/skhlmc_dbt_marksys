@@ -2,9 +2,10 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const DEFAULT_MODE = "daily";
   let bootstrap = null;
   let storageKey = "";
-  let conversation = { fingerprint: "", messages: [] };
+  let conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
   let abortController = null;
   let provisional = [];
   let backendChanged = false;
@@ -19,8 +20,34 @@
     return `lmc-ai-chat:v1:${encodeURIComponent(identity)}`;
   }
 
+  function normalizeMode(value) {
+    const migrated = { fast: "daily", thinking: "complex" }[value] || value;
+    return ["daily", "complex", "deep"].includes(migrated)
+      ? migrated
+      : DEFAULT_MODE;
+  }
+
+  function fingerprintForMode(mode) {
+    const selected = normalizeMode(mode);
+    const fingerprints = bootstrap?.backend_fingerprints;
+    if (fingerprints && typeof fingerprints[selected] === "string") {
+      return fingerprints[selected];
+    }
+    return selected === DEFAULT_MODE && typeof bootstrap?.backend_fingerprint === "string"
+      ? bootstrap.backend_fingerprint
+      : "";
+  }
+
+  function modeLabel(mode) {
+    return {
+      daily: "日常預設（4B）",
+      complex: "複雜問題（4B Thinking）",
+      deep: "深入思考（9B Thinking）",
+    }[normalizeMode(mode)];
+  }
+
   function loadLocal() {
-    conversation = { fingerprint: "", messages: [] };
+    conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
     try {
       const value = JSON.parse(localStorage.getItem(storageKey) || "null");
       if (value && typeof value.fingerprint === "string" && Array.isArray(value.messages)) {
@@ -29,11 +56,12 @@
         );
         if (messages.length <= bootstrap.history_limits.messages &&
             totalCharacters(messages) <= bootstrap.history_limits.characters) {
-          conversation = { fingerprint: value.fingerprint, messages };
+          let mode = normalizeMode(value.mode);
+          conversation = { fingerprint: value.fingerprint, mode, messages };
         }
       }
     } catch (_) {
-      conversation = { fingerprint: "", messages: [] };
+      conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
     }
   }
 
@@ -92,13 +120,61 @@
     $("identityStatus").textContent = bootstrap.identity.developer
       ? "Developer 試用"
       : `已登入：${bootstrap.identity.id}`;
+    $("thinkingMode").value = conversation.mode;
+    Array.from($("thinkingMode").options).forEach((option) => {
+      option.disabled = !fingerprintForMode(option.value);
+    });
+    const currentFingerprint = fingerprintForMode(conversation.mode);
     backendChanged = Boolean(
       conversation.messages.length && conversation.fingerprint &&
-      bootstrap.backend_fingerprint &&
-      (!conversation.fingerprint || conversation.fingerprint !== bootstrap.backend_fingerprint),
+      currentFingerprint && conversation.fingerprint !== currentFingerprint,
     );
     if (backendChanged) setNotice("AI 電腦、模型或 persona 已更新。舊對話仍可查看，但必須開始新對話先可以繼續。");
+    renderNodes();
     updateControls();
+  }
+
+  function renderNodes() {
+    const grid = $("nodeGrid");
+    const nodes = Array.isArray(bootstrap?.nodes) ? bootstrap.nodes : [];
+    grid.replaceChildren();
+    if (!nodes.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "尚未登記 AI 電腦。";
+      grid.append(empty);
+      return;
+    }
+    const labels = {
+      online: "在線",
+      busy: "生成中",
+      draining: "準備休眠／暫停接單",
+      offline: "離線",
+    };
+    nodes.forEach((node) => {
+      const card = document.createElement("article");
+      card.className = "node-card";
+      const title = document.createElement("h2");
+      title.textContent = `${node.selected ? "★ " : ""}${node.name || "AI 電腦"}`;
+      const meta = document.createElement("div");
+      meta.className = "node-meta";
+      const modelText = Array.isArray(node.models) && node.models.length
+        ? node.models.join("、")
+        : "等待新 node preflight";
+      [
+        `狀態：${labels[node.state] || "未知"}`,
+        node.selected ? "目前選用" : "備用電腦",
+        `模型：${modelText}`,
+        `排隊：${Number(node.queue_length || 0)}`,
+      ].forEach((text) => {
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = text;
+        meta.append(pill);
+      });
+      card.append(title, meta);
+      grid.append(card);
+    });
   }
 
   function updateControls() {
@@ -108,9 +184,11 @@
     const limits = bootstrap.history_limits;
     const capReached = conversation.messages.length + 2 > limits.messages ||
       totalCharacters(conversation.messages) >= limits.characters;
-    $("sendButton").disabled = running || backendChanged || !serviceReady || capReached;
+    const modeReady = Boolean(fingerprintForMode(conversation.mode));
+    $("sendButton").disabled = running || backendChanged || !serviceReady || !modeReady || capReached;
     $("stopButton").disabled = !running;
     $("messageInput").disabled = running || backendChanged;
+    $("thinkingMode").disabled = running;
     if (capReached && !backendChanged) {
       setNotice("本機對話已到保存上限，請先開始新對話或刪除目前對話。舊內容唔會被自動移除。");
     }
@@ -214,7 +292,9 @@
     }
     const context = requestContext(text);
     if (context.trimmed) setNotice("較舊訊息仍然保留喺畫面，但今次未有送入模型 context。要引用舊內容請喺新訊息重點講返。");
-    const fingerprint = conversation.fingerprint || bootstrap.backend_fingerprint;
+    const fingerprint = conversation.messages.length
+      ? conversation.fingerprint
+      : fingerprintForMode(conversation.mode);
     if (!fingerprint) {
       setNotice("自家 AI 暫時未準備好。");
       return;
@@ -238,6 +318,7 @@
           messages: context.messages,
           expected_fingerprint: fingerprint,
           has_history: conversation.messages.length > 0,
+          mode: conversation.mode,
         }),
         signal: requestController.signal,
       });
@@ -294,10 +375,40 @@
     conversationGeneration += 1;
     abortController?.abort();
     localStorage.removeItem(storageKey);
-    conversation = { fingerprint: bootstrap.backend_fingerprint || "", messages: [] };
+    conversation = {
+      fingerprint: fingerprintForMode(conversation.mode),
+      mode: conversation.mode,
+      messages: [],
+    };
+    saveLocal();
     provisional = [];
     backendChanged = false;
     setNotice("");
+    renderMessages();
+    updateControls();
+  }
+
+  function switchConversationMode() {
+    const nextMode = normalizeMode($("thinkingMode").value);
+    const previousMode = conversation.mode;
+    if (nextMode === previousMode) return;
+    if (conversation.messages.length && !confirm(
+      `切換回答模式至「${modeLabel(nextMode)}」？目前對話會被清除並開始新對話，無法還原。`,
+    )) {
+      $("thinkingMode").value = previousMode;
+      return;
+    }
+    conversationGeneration += 1;
+    abortController?.abort();
+    conversation = {
+      fingerprint: fingerprintForMode(nextMode),
+      mode: nextMode,
+      messages: [],
+    };
+    provisional = [];
+    backendChanged = false;
+    saveLocal();
+    setNotice(`已切換至「${modeLabel(nextMode)}」，並開始新對話。`);
     renderMessages();
     updateControls();
   }
@@ -314,6 +425,16 @@
   });
   $("sendButton").onclick = sendMessage;
   $("stopButton").onclick = () => abortController?.abort();
+  $("thinkingMode").onchange = switchConversationMode;
+  document.querySelectorAll("[data-panel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-panel]").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach((panel) => panel.classList.add("hidden"));
+      button.classList.add("active");
+      $(button.dataset.panel).classList.remove("hidden");
+      $("composer").classList.toggle("hidden", button.dataset.panel !== "chatPanel");
+    });
+  });
   $("newChat").onclick = () => clearConversation("開始新對話");
   $("deleteChat").onclick = () => clearConversation("刪除對話");
   $("loginButton").onclick = async () => {
