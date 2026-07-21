@@ -6,14 +6,19 @@ import asyncio
 from concurrent.futures import Future
 from typing import Callable
 
-from ai_model_config import LMC_AI_DEFAULT_MODE, LMC_AI_MODE_OPTIONS
+from ai_model_config import (
+    LMC_AI_DEFAULT_MODE,
+    LMC_AI_MODEL_SETS,
+    lmc_ai_available_model_sets,
+    resolve_lmc_ai_mode_options,
+)
 from core.lmc_ai_runtime import (
     BackendChangedError,
     NodeUnavailableError,
     QueueFullError,
     RUNTIME,
 )
-from core.lmc_ai_store import get_active_node_id, require_lmc_ai_schema
+from core.lmc_ai_store import get_active_node_id, get_model_set, require_lmc_ai_schema
 from system_limits import LMC_AI_QUEUE_MAX
 
 
@@ -29,11 +34,13 @@ LOCAL_AI_NOT_READY_MESSAGE = "目前選用的自家 AI 電腦尚未完成準備�
 LOCAL_AI_DRAINING_MESSAGE = "目前選用的自家 AI 電腦正在暫停接單。"
 
 
-def resolve_mode(mode: str | None) -> tuple[str, dict]:
+def resolve_mode(mode: str | None, model_set: str | None = None) -> tuple[str, dict]:
+    options = resolve_lmc_ai_mode_options(model_set)
     selected = str(mode or LMC_AI_DEFAULT_MODE).strip()
-    if selected not in LMC_AI_MODE_OPTIONS:
+    selected = {"complex": "daily", "thinking": "deep"}.get(selected, selected)
+    if selected not in options:
         raise LocalAIError("不支援的自家 AI 回答模式。")
-    return selected, dict(LMC_AI_MODE_OPTIONS[selected])
+    return selected, dict(options[selected])
 
 
 async def _noop_finish(_job, _success: bool, _usage: dict, _error: str) -> None:
@@ -47,10 +54,11 @@ async def _generate_on_runtime_loop(
     system_prompt: str,
     user_prompt: str,
     mode: str,
+    model_set: str,
     operation_stage: str,
     on_provider_attempt: Callable[[], None] | None,
 ) -> tuple[str, dict]:
-    _selected, mode_config = resolve_mode(mode)
+    _selected, mode_config = resolve_mode(mode, model_set)
     try:
         job, _position = await RUNTIME.submit(
             node_id=node_id,
@@ -117,16 +125,16 @@ async def _await_owner_loop(coroutine):
     return await asyncio.wrap_future(future)
 
 
-def _selected_node(db) -> str:
+def _selected_service(db) -> tuple[str, str]:
     require_lmc_ai_schema(db)
-    return str(get_active_node_id(db) or "")
+    return str(get_active_node_id(db) or ""), get_model_set(db)
 
 
 async def _availability(db) -> tuple[dict, str]:
     """Return a public-safe selected-node status and its private node id."""
 
     try:
-        node_id = await asyncio.to_thread(_selected_node, db)
+        node_id, model_set = await asyncio.to_thread(_selected_service, db)
     except RuntimeError as exc:
         return {
             "available": False,
@@ -137,6 +145,8 @@ async def _availability(db) -> tuple[dict, str]:
             "message": str(exc),
             "modes": [],
         }, ""
+    mode_options = resolve_lmc_ai_mode_options(model_set)
+    model_set_label = str(LMC_AI_MODEL_SETS[model_set]["label"])
     if not node_id:
         return {
             "available": False,
@@ -145,7 +155,19 @@ async def _availability(db) -> tuple[dict, str]:
             "busy": False,
             "queue_length": 0,
             "message": LOCAL_AI_UNSELECTED_MESSAGE,
-            "modes": [],
+            "model_set": model_set,
+            "model_set_label": model_set_label,
+            "modes": [
+                {
+                    "id": mode,
+                    "label": config["label"],
+                    "model": config["model"],
+                    "thinking": bool(config["thinking"]),
+                    "available": False,
+                    "message": LOCAL_AI_UNSELECTED_MESSAGE,
+                }
+                for mode, config in mode_options.items()
+            ],
         }, ""
 
     snapshot = None
@@ -162,6 +184,10 @@ async def _availability(db) -> tuple[dict, str]:
     elif not snapshot.get("ready"):
         state = "unavailable"
         message = LOCAL_AI_NOT_READY_MESSAGE
+        service_available = False
+    elif model_set not in lmc_ai_available_model_sets(snapshot.get("models")):
+        state = "unavailable"
+        message = "目前選用的自家 AI 電腦未完成所選模型組合 preflight。"
         service_available = False
     elif snapshot.get("draining"):
         state = "draining"
@@ -187,7 +213,7 @@ async def _availability(db) -> tuple[dict, str]:
         (snapshot or {}).get("models") or [(snapshot or {}).get("model")]
     )
     modes = []
-    for mode, config in LMC_AI_MODE_OPTIONS.items():
+    for mode, config in mode_options.items():
         mode_available = service_available and config["model"] in available_models
         if not service_available:
             mode_message = message
@@ -213,6 +239,8 @@ async def _availability(db) -> tuple[dict, str]:
         "queue_length": int((snapshot or {}).get("queue_length") or 0),
         "queue_capacity": LMC_AI_QUEUE_MAX,
         "message": message,
+        "model_set": model_set,
+        "model_set_label": model_set_label,
         "modes": modes,
     }, node_id
 
@@ -236,8 +264,9 @@ async def generate_local_text(
 ) -> tuple[str, dict]:
     """Generate on the manually selected node without any cloud fallback."""
 
-    selected_mode, _mode_config = resolve_mode(mode)
     status, node_id = await _availability(db)
+    model_set = str(status.get("model_set") or "")
+    selected_mode, _mode_config = resolve_mode(mode, model_set)
     mode_status = next(
         (item for item in status["modes"] if item["id"] == selected_mode),
         None,
@@ -255,6 +284,7 @@ async def generate_local_text(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         mode=selected_mode,
+        model_set=model_set,
         operation_stage=operation_stage,
         on_provider_attempt=on_provider_attempt,
     ))

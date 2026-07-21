@@ -689,6 +689,7 @@
         </select>
         <div id="voteLocalAiDetails">
           <div id="voteAiStatus" class="sub" style="margin-top:.45rem" aria-live="polite">正在檢查自家 AI 狀態…</div>
+          <div id="voteAiModeLabel" class="sub" style="margin-top:.25rem">正在讀取 Vote Page 回答模式…</div>
           <div class="sub" style="margin-top:.25rem">自家 AI 不可用時不會自動轉用 Gemini，你可以在此手動切換。</div>
         </div>
       </div>
@@ -805,18 +806,18 @@
         }
 
         function selectedVoteAiAvailable() {
-          const complexMode = LOCAL_AI_STATUS.modes?.find(
-            (item) => item.id === "complex",
+          const requiredMode = LOCAL_AI_STATUS.modes?.find(
+            (item) => item.id === LOCAL_AI_STATUS.required_mode,
           );
-          return voteAiChoice() === "gemini" || Boolean(complexMode?.available);
+          return voteAiChoice() === "gemini" || Boolean(requiredMode?.available);
         }
 
         function selectedVoteAiMessage() {
           if (voteAiChoice() !== "local") return "";
-          const complexMode = LOCAL_AI_STATUS.modes?.find(
-            (item) => item.id === "complex",
+          const requiredMode = LOCAL_AI_STATUS.modes?.find(
+            (item) => item.id === LOCAL_AI_STATUS.required_mode,
           );
-          return complexMode?.message
+          return requiredMode?.message
             || LOCAL_AI_STATUS.message
             || "自家 AI 暫時未準備好。";
         }
@@ -824,18 +825,21 @@
         function syncVoteAiAvailability() {
           const select = document.getElementById("voteAiModel");
           const localOption = select.querySelector('option[value="local"]');
-          const complexMode = LOCAL_AI_STATUS.modes?.find(
-            (item) => item.id === "complex",
+          const requiredMode = LOCAL_AI_STATUS.modes?.find(
+            (item) => item.id === LOCAL_AI_STATUS.required_mode,
           );
-          localOption.disabled = !complexMode?.available;
+          localOption.disabled = !requiredMode?.available;
           const status = document.getElementById("voteAiStatus");
           const localDetails = document.getElementById("voteLocalAiDetails");
           localDetails.hidden = voteAiChoice() !== "local";
-          const localMessage = complexMode?.available
+          const localMessage = requiredMode?.available
             ? LOCAL_AI_STATUS.message
-            : complexMode?.message || LOCAL_AI_STATUS.message;
+            : requiredMode?.message || LOCAL_AI_STATUS.message;
           status.textContent = `自家 AI：${localMessage || "狀態不明。"}`;
-          status.style.color = complexMode?.available
+          document.getElementById("voteAiModeLabel").textContent = requiredMode
+            ? `Vote Page 使用「${requiredMode.label}」${requiredMode.thinking ? "（Thinking）" : "（非 Thinking）"}。`
+            : "暫時未能讀取 Vote Page 回答模式。";
+          status.style.color = requiredMode?.available
             ? "var(--muted)"
             : "var(--against)";
           const blocked = !selectedVoteAiAvailable();

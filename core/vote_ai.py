@@ -4,8 +4,9 @@ import logging
 
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, is_non_member_account
 from ai_model_config import (
-    AI_MODEL_OPTIONS, LMC_AI_INTERACTIVE_OPTION, NON_MANUAL_DEFAULT_AI_MODEL,
-    NON_MANUAL_MODEL_OPTIONS, get_feature_model,
+    AI_MODEL_OPTIONS, LMC_AI_INTERACTIVE_OPTION,
+    NON_MANUAL_DEFAULT_AI_MODEL, NON_MANUAL_MODEL_OPTIONS, get_feature_model,
+    get_lmc_ai_feature_mode,
 )
 from ai_name import LMC_AI_MENTION_TAG, LMC_AI_MODEL_LABEL
 from prompts import (
@@ -29,6 +30,7 @@ from system_limits import (
 
 
 logger = logging.getLogger(__name__)
+VOTE_LOCAL_AI_MODE = get_lmc_ai_feature_mode("vote")
 
 CATEGORIES = [
     "國際與時事", "科技與未來", "文化與生活",
@@ -141,7 +143,7 @@ async def generate_general_ai_reply(
                 actor_id="vote-ai",
                 system_prompt=system_prompt,
                 user_prompt=user_text,
-                mode="complex",
+                mode=VOTE_LOCAL_AI_MODE,
                 operation_stage=feature,
             )
             return text, _usage_record(model, actual_usage)

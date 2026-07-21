@@ -177,18 +177,54 @@ def test_eval_generation_rejects_runtime_identity_change(monkeypatch):
         lmc_ai_eval_api._validate_bound_identity(object(), claim, snapshot)
 
 
-def test_frontend_has_accessible_third_tab_blind_form_and_stale_guard():
+def test_member_frontend_has_clear_feedback_tab_without_manager_controls():
     html = (ROOT / "frontend/lmc_ai/index.html").read_text(encoding="utf-8")
     js = (ROOT / "frontend/lmc_ai/app.js").read_text(encoding="utf-8")
     assert 'id="abTestTab"' in html and 'role="tablist"' in html
+    assert '>測試並回饋</button>' in html
     assert 'role="tabpanel"' in html and 'aria-selected="false"' in html
+    assert "匿名回答比較" in html
+    assert "閱讀題目" in html and "完成六項回饋" in html
     assert "abLeftAnswer" in html and "abRightAnswer" in html
     assert "SafeMarkdown.render" in js
     assert "abGeneration" in js and "campaign_id" in js
     assert '$("composer").classList.toggle("hidden", button.dataset.panel !== "chatPanel")' in js
-    assert 'id="abCampaignHistory"' in html
-    assert "can_create_campaign" in js
-    assert "Boolean(campaign)" not in js
+    assert "reviewer_completed" in js
+    for manager_control in (
+        "abCampaignHistory", "abManagerActions", "abCreate", "abGenerate",
+        "abOpenReview", "abClose", "abInvalidate", "abExport", "abPurge",
+    ):
+        assert manager_control not in html
+    assert "/generate-next" not in js
+    assert "/open-review" not in js
+    assert "/invalidate" not in js
+    assert "/export.json" not in js
+    assert "/purge" not in js
+
+
+def test_ai_training_has_separate_local_ai_eval_manager_tab_and_workflow():
+    html = (ROOT / "frontend/ai_training/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "frontend/ai_training/app.js").read_text(encoding="utf-8")
+    assert html.count('data-admin="local-ai-eval"') == 1
+    assert "⚖️ 自家 AI 評測" in html
+    assert 'id="local-ai-eval" class="admin-pane"' in html
+    for label in ("準備回答", "收集回饋", "完成結果"):
+        assert label in html
+    for control in (
+        "localEvalCreate", "localEvalGenerate", "localEvalOpen",
+        "localEvalClose", "localEvalInvalidate", "localEvalHistory",
+        "localEvalAssignments", "localEvalResults",
+    ):
+        assert f'id="{control}"' in html
+        assert control in js
+    for route in (
+        "/generate-next", "/open-review", "/close", "/invalidate",
+        "/assignments", "/export.json", "/purge",
+    ):
+        assert route in js
+    assert 'b.dataset.admin === "local-ai-eval"' in js
+    assert "先下載完整紀錄，清除按鈕先會開放" in js
+    assert 'confirmationInput.setCustomValidity("");' in js
 
 
 def test_api_routes_and_export_privacy_contract_are_present():

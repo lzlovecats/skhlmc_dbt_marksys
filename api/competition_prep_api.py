@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ai_model_config import get_lmc_ai_feature_mode
 from api.access import require_interactive_features_available, require_page_user
 from core import competition_prep_logic as logic
 from system_limits import COMPETITION_PREP_MANUSCRIPT_MAX_CHARS
@@ -89,7 +90,9 @@ class WeaknessStatusBody(BaseModel):
 class AiRunBody(BaseModel):
     run_type: Literal["team_audit", "strategy_attack"]
     model_label: str = Field(default="", max_length=120)
-    local_mode: Literal["daily", "complex", "deep"] = "daily"
+    local_mode: Literal["fast", "daily", "deep", "complex"] = (
+        get_lmc_ai_feature_mode("ai_coach")
+    )
     operation_id: str = Field(min_length=16, max_length=200)
 
 

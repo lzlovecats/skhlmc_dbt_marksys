@@ -32,18 +32,21 @@ python3 -m venv local_ai/.venv
 local_ai/.venv/bin/pip install -r local_ai/requirements-node.txt
 ```
 
-下載日常預設 4B；runtime 唔會自行下載：
+Runtime 唔會自行下載模型。至少準備以下其中一套完整模型組合；Qwen 組合：
 
 ```bash
 ollama pull qwen3.5:4b
-```
-
-需要「深入思考」先另外下載 9B；9B 未安裝或未通過 GPU preflight，
-只會停用該模式，唔會影響 4B 日常服務：
-
-```bash
 ollama pull qwen3.5:9b
 ```
+
+Gemma 4 組合使用較適合 8GB 顯存嘅 QAT tags：
+
+```bash
+ollama pull gemma4:e2b-it-qat
+ollama pull gemma4:e4b-it-qat
+```
+
+可以同時安裝兩套，再由 Developer Settings 切換；亦可以只安裝其中一套。
 
 ## 3. Developer 建立 token 同命名
 
@@ -69,24 +72,33 @@ local_ai/.venv/bin/python local_ai/lmc_ai_node.py install-service
 local_ai/.venv/bin/python local_ai/lmc_ai_node.py status
 ```
 
-Preflight 會驗證 `nvidia-smi`、Ollama、localhost binding，並先以
-`think=false`、4K context 測試 4B。4B 必須在 60 秒內完成，而且 GPU
-offload 至少 90%，否則 node 唔會宣告 ready。已安裝 9B 時會再獨立測試；
-9B load/OOM 或 offload 不合格只會令「深入思考」不可選。RTX 3060 最終結果
-以真機 preflight 為準。
+Preflight 會驗證 `nvidia-smi`、Ollama、localhost binding，並以 8K context
+逐一測試每套組合嘅三個實際模式。每次測試必須在 60 秒內完成、產生正式答案，
+而且 GPU offload 至少 90%。同一套組合只要有一個模式 load/OOM、空白、逾時或
+offload 不合格，成套都唔可選；另一套完整通過時，node 仍然可以 online/ready。
+RTX 3060 最終結果以真機 preflight 為準；唔好移除 8K context 上限或直接設定
+模型標示嘅更大 context。
 
-Node online/ready 後，返 Developer console 手動按「選用呢部」。`🔄 重新整理`只更新電腦狀態；「取消選用所有電腦」會停止新工作、取消排隊工作，但容許目前生成完成。選中電腦離線或 drain 時，服務會停低，唔會自動轉到另一部。
+Node online/ready 後，返 Developer console 手動按「選用呢部」，再揀已完成
+preflight 嘅「Qwen 3.5」或「Gemma 4」模型組合。切換組合只影響新對話及新工作；
+已生成或排隊工作會沿用提交時綁定嘅模型。`🔄 重新整理`只更新電腦狀態；
+「取消選用所有電腦」會停止新工作、取消排隊工作，但容許目前生成完成。選中
+電腦離線或 drain 時，服務會停低，唔會自動轉到另一部。
 
 每位使用者在「自家 AI 專區」或「AI 辯論易」選擇回答模式：
 
-- 日常預設：4B、`think=false`
-- 複雜問題：4B、`think=true`
-- 深入思考：9B、`think=true`
+- 快速回覆：Qwen 4B / Gemma E2B、`think=false`
+- 日常預設：Qwen 4B `think=true` / Gemma E4B `think=false`
+- 深入思考：Qwen 9B / Gemma E4B、`think=true`
 
 每段 browser 對話固定一個模式，已有內容時切換會先確認並清除該段本機
-對話。Qwen 3.5 經 Ollama 使用 boolean `think=true/false`，不提供
+對話。Qwen 3.5 同 Gemma 4 經 Ollama 使用 boolean `think=true/false`，不提供
 `low`／`medium`／`high` 強度；推理 stream 只在 node 內消耗，網站只轉送
-最終答案。「AI運作情況」會列出所有已登記電腦嘅在線、排隊、模型及 active
+最終答案。若推理完成但冇正式答案，node 會回報失敗並保留實際 token usage，
+唔會再將空白答案記成成功。Vote Page 固定使用「快速回覆」；AI Coach 預設
+使用「日常預設」，但仍可由使用者選擇快速回覆或深入思考。實際 model tag、
+Thinking 開關同功能預設全部由 `ai_model_config.py` 統一設定。
+「AI運作情況」會列出所有已登記電腦嘅在線、排隊、模型及 active
 狀態；系統仍然只會將新工作送到 Developer 手動選中嘅一部，離線時唔會自動
 轉另一部或轉雲端。
 
@@ -126,7 +138,7 @@ sudo -iu <AI_ACCOUNT> /path/to/repo/local_ai/.venv/bin/python /path/to/repo/loca
 
 - Rotate token：Developer console 操作後，舊 socket 即時斷線；再以 `configure` 輸入新 token，restart service。
 - Revoke：即時取消該 node 嘅進行中工作並令 token 失效；metadata/usage 仍保留。
-- 更新 code/dependencies：先 drain，更新 repo，同一 venv 重新安裝 pinned requirements，重新執行 `preflight` 同 `install-service`，最後 resume。模型 profile version 更新時，舊 preflight 會刻意失效；server handshake 亦會拒絕舊 profile 或缺少必要 4B model 嘅 node。
+- 更新 code/dependencies：先 drain，更新 repo，同一 venv 重新安裝 pinned requirements，重新執行 `preflight` 同 `install-service`，最後 resume。模型 profile version 更新時，舊 preflight 會刻意失效；server handshake 亦會拒絕舊 profile 或未有任何完整模型組合嘅 node。
 - 網站支援受控 Thinking 後，node hello 必須聲明 `thinking_control` capability；未更新的舊 node 會被 server 拒絕連線。部署網站版本前，先按上一項同步更新 AI 電腦程式並 restart service。
 - 檢查：
 
@@ -137,4 +149,4 @@ ollama ps
 nvidia-smi
 ```
 
-官方參考：[Ollama GPU 支援](https://docs.ollama.com/gpu)、[Linux 服務](https://docs.ollama.com/linux)、[Qwen 9B](https://ollama.com/library/qwen3.5:9b)、[Qwen 4B](https://ollama.com/library/qwen3.5:4b)。
+官方參考：[Ollama GPU 支援](https://docs.ollama.com/gpu)、[Linux 服務](https://docs.ollama.com/linux)、[Qwen 9B](https://ollama.com/library/qwen3.5:9b)、[Qwen 4B](https://ollama.com/library/qwen3.5:4b)、[Gemma 4](https://ollama.com/library/gemma4)。

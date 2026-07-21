@@ -911,6 +911,10 @@
             `<option value="${esc(model.label)}" ${model.label === meta.default_model ? "selected" : ""}>${esc(model.selection_label ? `${model.label}（${model.selection_label}）` : model.label)}</option>`,
         )
         .join("");
+      $("localMode").innerHTML = (meta.local_modes || [])
+        .map((mode) => `<option value="${esc(mode.id)}">${esc(mode.label)}</option>`)
+        .join("");
+      $("localMode").value = meta.local_default_mode || "daily";
       document.querySelectorAll("[data-topic-source]").forEach(topicSource);
       $("login").classList.add("hidden");
       $("app").classList.remove("hidden");

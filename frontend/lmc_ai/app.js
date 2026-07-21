@@ -13,7 +13,6 @@
   let conversationGeneration = 0;
   let abBootstrap = null;
   let abAssignment = null;
-  let abPendingAssignments = [];
   let abGeneration = 0;
   let abBusy = false;
   let activePanel = "chatPanel";
@@ -40,10 +39,12 @@
   }
 
   function normalizeMode(value) {
-    const migrated = { fast: "daily", thinking: "complex" }[value] || value;
-    return ["daily", "complex", "deep"].includes(migrated)
+    const migrated = { complex: "daily", thinking: "deep" }[value] || value;
+    const allowed = (bootstrap?.service?.modes || []).map((item) => item.id);
+    const fallback = bootstrap?.default_mode || DEFAULT_MODE;
+    return (allowed.length ? allowed : ["fast", "daily", "deep"]).includes(migrated)
       ? migrated
-      : DEFAULT_MODE;
+      : fallback;
   }
 
   function fingerprintForMode(mode) {
@@ -58,11 +59,24 @@
   }
 
   function modeLabel(mode) {
-    return {
-      daily: "日常預設（4B）",
-      complex: "複雜問題（4B Thinking）",
-      deep: "深入思考（9B Thinking）",
-    }[normalizeMode(mode)];
+    const selected = normalizeMode(mode);
+    return bootstrap?.service?.modes?.find((item) => item.id === selected)?.label
+      || selected;
+  }
+
+  function renderModeOptions() {
+    const select = $("thinkingMode");
+    const modes = bootstrap?.service?.modes || [];
+    const current = normalizeMode(conversation.mode);
+    select.replaceChildren(...modes.map((mode) => {
+      const option = document.createElement("option");
+      option.value = mode.id;
+      option.textContent = mode.label;
+      option.disabled = !fingerprintForMode(mode.id);
+      return option;
+    }));
+    conversation.mode = current;
+    select.value = current;
   }
 
   function loadLocal() {
@@ -133,16 +147,14 @@
   function renderStatus() {
     const service = bootstrap.service;
     let label = statusLabels[service.state] || "服務狀態未知";
+    if (service.model_set_label) label += `・${service.model_set_label}`;
     if (service.queue_length) label += `・${service.queue_length} 個工作排隊`;
     $("serviceStatus").textContent = label;
     $("statusDot").className = `dot ${service.state === "online" ? "online" : service.state === "busy" ? "busy" : "offline"}`;
     $("identityStatus").textContent = bootstrap.identity.developer
       ? "Developer 試用"
       : `已登入：${bootstrap.identity.id}`;
-    $("thinkingMode").value = conversation.mode;
-    Array.from($("thinkingMode").options).forEach((option) => {
-      option.disabled = !fingerprintForMode(option.value);
-    });
+    renderModeOptions();
     const currentFingerprint = fingerprintForMode(conversation.mode);
     backendChanged = Boolean(
       conversation.messages.length && conversation.fingerprint &&
@@ -233,7 +245,7 @@
     $("abNotice").classList.toggle("show", Boolean(message));
   }
 
-  function metric(label, value) {
+  function metric(label, value, current = 0, maximum = 0) {
     const card = document.createElement("div");
     card.className = "ab-metric";
     const strong = document.createElement("strong");
@@ -242,7 +254,21 @@
     caption.className = "caption";
     caption.textContent = label;
     card.append(strong, caption);
+    if (maximum > 0) {
+      const progress = document.createElement("progress");
+      progress.max = maximum;
+      progress.value = Math.min(maximum, Math.max(0, current));
+      progress.setAttribute("aria-label", label);
+      card.append(progress);
+    }
     return card;
+  }
+
+  function renderAbEmpty(title, message, icon = "🧪") {
+    $("abEmptyState").classList.remove("hidden");
+    $("abEmptyState").querySelector(".empty-icon").textContent = icon;
+    $("abEmptyTitle").textContent = title;
+    $("abEmptyText").textContent = message;
   }
 
   function renderReviewQuestions() {
@@ -283,7 +309,13 @@
     abAssignment = value || null;
     $("abReviewCard").classList.toggle("hidden", !abAssignment);
     if (!abAssignment) return;
-    $("abCaseTitle").textContent = abAssignment.title || "盲評比較";
+    $("abEmptyState").classList.add("hidden");
+    const completed = Number(abBootstrap?.progress?.reviewer_completed || 0);
+    const totalPairs = Number(abBootstrap?.progress?.quorum?.total_pairs || 0);
+    $("abReviewCounter").textContent = abAssignment.preview
+      ? "Developer 預覽"
+      : `第 ${Math.min(totalPairs, completed + 1)} / ${totalPairs} 組`;
+    $("abCaseTitle").textContent = abAssignment.title || "比較兩個回答";
     $("abCaseInput").textContent = formatCaseInput(abAssignment.input);
     $("abCaseInput").style.whiteSpace = "pre-wrap";
     $("abReference").textContent = abAssignment.reference_text || "";
@@ -291,171 +323,67 @@
     $("abRightAnswer").innerHTML = SafeMarkdown.render(String(abAssignment.right_answer || ""));
     $("abReviewForm").reset();
     $("abReviewForm").classList.toggle("hidden", Boolean(abAssignment.preview));
-    if (abAssignment.preview) setAbNotice("Developer preview：呢個比較唔會建立assignment，亦唔可以提交正式票。");
-  }
-
-  function renderResults(summary) {
-    const panel = $("abResults");
-    panel.replaceChildren();
-    panel.classList.toggle("hidden", !summary);
-    if (!summary) return;
-    const heading = document.createElement("h2");
-    heading.textContent = "Campaign 描述性結果";
-    const warning = document.createElement("p");
-    warning.className = "muted";
-    warning.textContent = "結果只比較三個本地模式，唔會自動宣布winner、切換production預設或成為訓練資料。";
-    const table = document.createElement("table");
-    table.className = "summary-table";
-    const head = document.createElement("tr");
-    ["模式", "整體", "粵語", "推理", "實用", "事實", "私隱安全"].forEach((value) => {
-      const th = document.createElement("th"); th.textContent = value; head.append(th);
-    });
-    const thead = document.createElement("thead"); thead.append(head); table.append(thead);
-    const tbody = document.createElement("tbody");
-    const labels = { daily: "4B 日常", complex: "4B Thinking", deep: "9B Thinking" };
-    Object.entries(summary.mode_scores || {}).forEach(([mode, scores]) => {
-      const row = document.createElement("tr");
-      [labels[mode] || mode, scores.overall, scores.cantonese, scores.reasoning, scores.usefulness, scores.factual, scores.privacy].forEach((value, index) => {
-        const cell = document.createElement(index ? "td" : "th");
-        cell.textContent = index ? `${(Number(value || 0) * 100).toFixed(1)}%` : value;
-        row.append(cell);
-      });
-      tbody.append(row);
-    });
-    table.append(tbody);
-    const details = document.createElement("details");
-    const detailTitle = document.createElement("summary");
-    detailTitle.textContent = "按題型分拆同 head-to-head";
-    const taskTable = document.createElement("table");
-    taskTable.className = "summary-table";
-    const taskHead = document.createElement("tr");
-    ["題型", "4B 日常", "4B Thinking", "9B Thinking"].forEach((value) => {
-      const th = document.createElement("th"); th.textContent = value; taskHead.append(th);
-    });
-    const taskThead = document.createElement("thead"); taskThead.append(taskHead); taskTable.append(taskThead);
-    const taskBody = document.createElement("tbody");
-    const taskLabels = { speech_review: "發言評改", strategy: "策略", attack_defence: "攻防", mock_judgement: "模擬評判", cantonese_style: "粵語風格" };
-    Object.entries(summary.task_type_scores || {}).forEach(([task, values]) => {
-      const row = document.createElement("tr");
-      [taskLabels[task] || task, values.daily?.overall, values.complex?.overall, values.deep?.overall].forEach((value, index) => {
-        const cell = document.createElement(index ? "td" : "th");
-        cell.textContent = index ? `${(Number(value || 0) * 100).toFixed(1)}%` : value;
-        row.append(cell);
-      });
-      taskBody.append(row);
-    });
-    taskTable.append(taskBody);
-    const pairList = document.createElement("ul");
-    Object.values(summary.head_to_head || {}).forEach((pair) => {
-      const item = document.createElement("li");
-      item.textContent = `${labels[pair.mode_a] || pair.mode_a} 勝 ${Number(pair.mode_a_wins || 0)}；${labels[pair.mode_b] || pair.mode_b} 勝 ${Number(pair.mode_b_wins || 0)}；相若 ${Number(pair.ties || 0)}；兩個都不合格 ${Number(pair.both_bad || 0)}`;
-      pairList.append(item);
-    });
-    details.append(detailTitle, taskTable, pairList);
-    const risks = document.createElement("p");
-    risks.textContent = `兩個都不合格題目：${(summary.both_bad_cases || []).join("、") || "沒有"}；私隱／安全雙失敗：${(summary.safety_failure_cases || []).join("、") || "沒有"}`;
-    panel.append(heading, warning, table, risks, details);
-  }
-
-  function campaignDate(value) {
-    if (!value) return "—";
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-HK");
-  }
-
-  function historyAction(label, className, handler, disabled = false) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.className = className || "";
-    button.disabled = disabled || abBusy;
-    button.onclick = handler;
-    return button;
-  }
-
-  function renderCampaignHistory() {
-    const panel = $("abManagerPanel");
-    const history = $("abCampaignHistory");
-    const pending = $("abPendingAssignments");
-    const manager = Boolean(abBootstrap?.identity?.manager);
-    panel.classList.toggle("hidden", !manager);
-    history.replaceChildren();
-    pending.replaceChildren();
-    if (!manager) return;
-    const campaigns = Array.isArray(abBootstrap?.campaigns) ? abBootstrap.campaigns : [];
-    if (!campaigns.length) {
-      const empty = document.createElement("p");
-      empty.className = "muted";
-      empty.textContent = "未有 campaign。";
-      history.append(empty);
-    }
-    campaigns.forEach((item) => {
-      const row = document.createElement("div");
-      row.className = "actions";
-      const summary = document.createElement("span");
-      summary.textContent = `${item.campaign_id}・${item.status}・${campaignDate(item.created_at)}`;
-      row.append(summary);
-      if (["closed", "invalidated"].includes(item.status)) {
-        row.append(historyAction("下載", "", () => downloadCampaign(item.campaign_id)));
-        row.append(historyAction(
-          "清除", "danger", () => confirmPurgeCampaign(item.campaign_id), !item.exported_at,
-        ));
-      }
-      history.append(row);
-    });
-    if (!abPendingAssignments.length) {
-      const empty = document.createElement("p");
-      empty.className = "muted";
-      empty.textContent = "沒有未提交 reservation。";
-      pending.append(empty);
-      return;
-    }
-    abPendingAssignments.forEach((item) => {
-      const row = document.createElement("div");
-      row.className = "actions";
-      const summary = document.createElement("span");
-      summary.textContent = `${item.case_id}・${item.pair_key}・${item.expired ? "已過期" : `到期 ${campaignDate(item.expires_at)}`}`;
-      row.append(summary, historyAction("釋放", "danger", () => releaseReservation(item.review_id)));
-      pending.append(row);
-    });
+    if (abAssignment.preview) setAbNotice("Developer 預覽模式：呢組比較唔會記錄或計入正式結果。");
   }
 
   function renderAb() {
     const data = abBootstrap;
     const campaign = data?.campaign;
     const progress = data?.progress;
-    const manager = Boolean(data?.identity?.manager);
-    const actions = $("abManagerActions");
-    actions.classList.toggle("hidden", !manager);
     $("abProgress").replaceChildren();
-    $("abCreate").classList.toggle("hidden", !data?.can_create_campaign);
-    $("abGenerate").classList.toggle("hidden", campaign?.status !== "generating");
-    $("abOpenReview").classList.toggle("hidden", campaign?.status !== "generating");
-    $("abClose").classList.toggle("hidden", campaign?.status !== "reviewing");
-    $("abInvalidate").classList.toggle("hidden", !campaign || campaign.status === "invalidated");
-    const terminal = ["closed", "invalidated"].includes(campaign?.status);
-    $("abExport").classList.toggle("hidden", !terminal);
-    $("abPurge").classList.toggle("hidden", !terminal || !data?.manager?.exported_at);
-    ["abCreate", "abGenerate", "abOpenReview", "abClose", "abInvalidate", "abExport", "abPurge"].forEach((id) => { $(id).disabled = abBusy; });
-    renderCampaignHistory();
     if (!campaign) {
-      $("abStatus").textContent = manager ? "未有 campaign，可以建立固定30題三模式測試。" : "暫未有開放中嘅 A/B Test。";
-      renderAssignment(null); renderResults(null); return;
+      $("abStatusBadge").textContent = "未有測試";
+      $("abStatus").textContent = "暫時未有開放中嘅測試";
+      $("abStatusDetail").textContent = "管理員準備好新一輪測試後，呢度就會出現匿名回答比較。";
+      renderAssignment(null);
+      renderAbEmpty("暫時未有內容", "稍後再返嚟，就可以幫手測試自家 AI。", "💬");
+      return;
     }
-    const labels = { generating: "答案準備中", reviewing: "盲評進行中", closed: "已完成", invalidated: "已作廢" };
-    $("abStatus").textContent = labels[campaign.status] || campaign.status;
-    if (campaign.status === "invalidated" && campaign.invalidation_reason) {
-      setAbNotice(data.manager?.invalidation_reason || campaign.invalidation_reason);
-    }
+    const succeeded = Number(progress?.generation?.succeeded || 0);
+    const submitted = Number(progress?.quorum?.submitted || 0);
+    const required = Number(progress?.quorum?.required || 0);
+    const completed = Number(progress?.reviewer_completed || 0);
+    const answerTotal = Number(progress?.generation?.total || 0);
+    const pairTotal = Number(progress?.quorum?.total_pairs || 0);
     if (progress) {
-      $("abProgress").append(
-        metric("已成功固定答案", `${Number(progress.generation?.succeeded || 0)} / 90`),
-        metric("正式盲評票", `${Number(progress.quorum?.submitted || 0)} / 270`),
-        metric("你已完成", Number(progress.reviewer_completed || 0)),
-      );
+      if (campaign.status === "generating") {
+        $("abProgress").append(metric("已準備回答", `${succeeded} / ${answerTotal}`, succeeded, answerTotal));
+      } else {
+        $("abProgress").append(
+          metric("你已回饋", `${completed} / ${pairTotal} 組`, completed, pairTotal),
+          metric("全體已收集", `${submitted} / ${required} 份`, submitted, required),
+        );
+      }
     }
-    renderResults(campaign.status === "closed" && manager ? data.manager?.summary : null);
-    if (campaign.status !== "reviewing") renderAssignment(null);
+    if (campaign.status === "generating") {
+      $("abStatusBadge").textContent = "準備中";
+      $("abStatus").textContent = "新一輪回答準備中";
+      $("abStatusDetail").textContent = "管理員正逐步準備匿名回答，全部完成後先會開放回饋。";
+      renderAssignment(null);
+      renderAbEmpty("回答準備中", "毋須停留喺呢頁；開放後再返嚟即可。", "⏳");
+      return;
+    }
+    if (campaign.status === "reviewing") {
+      $("abStatusBadge").textContent = "現正開放";
+      $("abStatus").textContent = "可以開始測試並回饋";
+      $("abStatusDetail").textContent = "每次提交一組，系統會自動顯示下一組可比較嘅回答。";
+      if (!abAssignment) {
+        renderAbEmpty("正在準備下一組比較…", "如果暫時未有可派發內容，稍後重新打開呢個分頁即可。", "🔎");
+      }
+      return;
+    }
+    renderAssignment(null);
+    if (campaign.status === "closed") {
+      $("abStatusBadge").textContent = "已完成";
+      $("abStatus").textContent = "今輪測試已完成";
+      $("abStatusDetail").textContent = "多謝你提供回饋，管理員會綜合所有匿名評分檢視結果。";
+      renderAbEmpty("多謝你嘅回饋", completed ? `你今輪完成咗 ${completed} 組比較。` : "今輪已停止收集新回饋。", "✅");
+      return;
+    }
+    $("abStatusBadge").textContent = "已停止";
+    $("abStatus").textContent = "今輪測試已停止";
+    $("abStatusDetail").textContent = "呢輪資料唔會再派發；管理員會另行準備新一輪測試。";
+    renderAbEmpty("今輪不再收集回饋", "稍後有新測試時再返嚟參與。", "⏹️");
   }
 
   async function refreshAb(loadAssignment = true) {
@@ -463,12 +391,10 @@
     try {
       const data = await api("/api/lmc-ai/ab-tests/bootstrap", { method: "GET" });
       if (generation !== abGeneration) return;
+      const previousCampaign = abBootstrap?.campaign?.campaign_id;
       abBootstrap = data;
-      abPendingAssignments = [];
-      if (data.identity.manager && data.campaign?.status === "reviewing") {
-        const reservations = await api(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(data.campaign.campaign_id)}/assignments`, { method: "GET" });
-        if (generation !== abGeneration) return;
-        abPendingAssignments = Array.isArray(reservations.assignments) ? reservations.assignments : [];
+      if (previousCampaign !== data.campaign?.campaign_id || data.campaign?.status !== "reviewing") {
+        renderAssignment(null);
       }
       renderAb();
       const campaign = data.campaign;
@@ -476,74 +402,22 @@
         const next = await api(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaign.campaign_id)}/reviews/next`, { method: "GET" });
         if (generation !== abGeneration || abBootstrap?.campaign?.campaign_id !== campaign.campaign_id) return;
         renderAssignment(next.assignment);
+        if (!next.assignment) {
+          const completed = Number(abBootstrap?.progress?.reviewer_completed || 0);
+          const totalPairs = Number(abBootstrap?.progress?.quorum?.total_pairs || 0);
+          renderAbEmpty(
+            totalPairs > 0 && completed >= totalPairs ? "你已完成今輪全部比較" : "暫時未有可派發嘅比較",
+            totalPairs > 0 && completed >= totalPairs ? `多謝你完成 ${totalPairs} 組回饋。` : "其他評審可能正處理餘下組合，稍後再返嚟即可。",
+            totalPairs > 0 && completed >= totalPairs ? "🎉" : "⏳",
+          );
+        }
       }
     } catch (error) {
-      if (generation === abGeneration) setAbNotice(error.message || "未能載入 A/B Test。 ");
-    }
-  }
-
-  async function abAction(path, options = {}) {
-    if (abBusy) return;
-    abBusy = true; setAbNotice(""); renderAb();
-    try {
-      const result = await api(path, { method: "POST", body: options.body ? JSON.stringify(options.body) : undefined });
-      if (result.error) setAbNotice(result.error);
-      await refreshAb();
-    } catch (error) {
-      setAbNotice(error.message || "A/B Test 動作失敗。");
-    } finally {
-      abBusy = false; renderAb();
-    }
-  }
-
-  async function downloadCampaign(campaignId) {
-    if (abBusy) return;
-    abBusy = true; setAbNotice(""); renderAb();
-    try {
-      const response = await fetch(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/export.json`, {
-        method: "POST", credentials: "same-origin", cache: "no-store",
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || `HTTP ${response.status}`);
+      if (generation === abGeneration) {
+        renderAssignment(null);
+        renderAbEmpty("暫時載入唔到測試", "請稍後再試；如問題持續，請通知管理員。", "⚠️");
+        setAbNotice(error.message || "未能載入測試並回饋。");
       }
-      const blob = await response.blob();
-      const link = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      link.href = url;
-      link.download = `lmc-ai-eval-${campaignId}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      await refreshAb(false);
-    } catch (error) {
-      setAbNotice(error.message || "未能下載 audit JSON。");
-    } finally {
-      abBusy = false; renderAb();
-    }
-  }
-
-  function confirmPurgeCampaign(campaignId) {
-    const confirmation = prompt(`清除後只保留 audit 記錄。請輸入完整 campaign ID：\n${campaignId}`);
-    if (confirmation !== campaignId) {
-      if (confirmation !== null) setAbNotice("確認文字不正確，未有清除資料。");
-      return;
-    }
-    const reason = prompt("請填寫清除原因：");
-    if (reason?.trim()) {
-      abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/purge`, {
-        body: { confirmation, reason: reason.trim() },
-      });
-    }
-  }
-
-  function releaseReservation(reviewId) {
-    const campaignId = abBootstrap?.campaign?.campaign_id;
-    if (!campaignId) return;
-    const reason = prompt("請填寫提早釋放 reservation 原因：");
-    if (reason?.trim()) {
-      abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/assignments/${encodeURIComponent(reviewId)}/release`, {
-        body: { reason: reason.trim() },
-      });
     }
   }
 
@@ -794,16 +668,6 @@
     });
   });
   renderReviewQuestions();
-  $("abCreate").onclick = () => abAction("/api/lmc-ai/ab-tests/campaigns", { body: { note: "" } });
-  $("abGenerate").onclick = () => abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/generate-next`);
-  $("abOpenReview").onclick = () => abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/open-review`);
-  $("abClose").onclick = () => abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/close`);
-  $("abInvalidate").onclick = () => {
-    const reason = prompt("請填寫invalidate原因（資料會保留，不會刪除）：");
-    if (reason?.trim()) abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/invalidate`, { body: { reason: reason.trim() } });
-  };
-  $("abExport").onclick = () => downloadCampaign(abBootstrap.campaign.campaign_id);
-  $("abPurge").onclick = () => confirmPurgeCampaign(abBootstrap.campaign.campaign_id);
   $("abReviewForm").onsubmit = async (event) => {
     event.preventDefault();
     if (!abAssignment || abBusy) return;
@@ -816,7 +680,7 @@
       renderAssignment(null);
       await refreshAb();
     } catch (error) {
-      setAbNotice(error.message || "未能提交盲評。");
+      setAbNotice(error.message || "未能提交回饋。");
     } finally {
       abBusy = false; $("abSubmitReview").disabled = false; renderAb();
     }

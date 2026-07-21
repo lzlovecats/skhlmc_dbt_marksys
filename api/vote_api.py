@@ -41,10 +41,14 @@ def _require_vote_ai_available(choice: str, db) -> None:
     if choice != "local":
         return
     from core.lmc_ai_client import local_ai_availability
+    from core.vote_ai import VOTE_LOCAL_AI_MODE
 
     status = _run_vote_ai(local_ai_availability(db))
     mode_status = next(
-        (item for item in status.get("modes", []) if item.get("id") == "complex"),
+        (
+            item for item in status.get("modes", [])
+            if item.get("id") == VOTE_LOCAL_AI_MODE
+        ),
         None,
     )
     if not status.get("available") or not mode_status or not mode_status.get("available"):
@@ -137,8 +141,10 @@ def _validate_ai_selection(category, difficulty):
 async def ai_status(request: Request):
     _committee_user(request)
     from core.lmc_ai_client import local_ai_availability
+    from core.vote_ai import VOTE_LOCAL_AI_MODE
 
     status = await local_ai_availability(_vote_db())
+    status["required_mode"] = VOTE_LOCAL_AI_MODE
     return JSONResponse(status, headers={"Cache-Control": "no-store"})
 
 

@@ -179,7 +179,8 @@ def test_vote_ai_local_choice_uses_shared_node_runtime_without_cloud_key(monkeyp
 
     assert result == "本地答案"
     assert captured["db"] == "vote-db"
-    assert captured["mode"] == "complex"
+    assert vote_ai.VOTE_LOCAL_AI_MODE == "fast"
+    assert captured["mode"] == "fast"
     assert usage["model_label"] == LMC_AI_MODEL_LABEL
     assert usage["estimated_cost_usd"] == 0
 
@@ -207,7 +208,7 @@ def test_vote_page_exposes_local_or_gemini_choice_on_every_ai_request():
     assert '"__VOTE_GEMINI_MODEL_LABEL__"' in proxy
 
 
-def test_vote_status_gate_requires_selected_online_complex_mode(monkeypatch):
+def test_vote_status_gate_requires_selected_online_fast_mode(monkeypatch):
     from core import lmc_ai_client
 
     async def status(_db):
@@ -216,11 +217,11 @@ def test_vote_status_gate_requires_selected_online_complex_mode(monkeypatch):
             "selected": True,
             "state": "online",
             "message": "自家 AI 已選用並在線。",
-            "modes": [{
-                "id": "complex",
-                "available": False,
-                "message": "目前選用的自家 AI 電腦未提供「複雜問題」模式。",
-            }],
+                "modes": [{
+                    "id": "fast",
+                    "available": False,
+                    "message": "目前選用的自家 AI 電腦未提供「快速回覆」模式。",
+                }],
         }
 
     monkeypatch.setattr(lmc_ai_client, "local_ai_availability", status)
@@ -234,7 +235,7 @@ def test_vote_status_gate_requires_selected_online_complex_mode(monkeypatch):
     with pytest.raises(vote_api.HTTPException) as exc_info:
         vote_api._require_vote_ai_available("local", "vote-db")
     assert exc_info.value.status_code == 503
-    assert "複雜問題" in str(exc_info.value.detail)
+    assert "快速回覆" in str(exc_info.value.detail)
     vote_api._require_vote_ai_available("gemini", "vote-db")
 
 
@@ -243,7 +244,10 @@ def test_vote_page_polls_and_disables_local_ai_actions_when_unavailable():
     assert 'id="voteLocalAiDetails"' in page
     assert 'id="voteAiStatus"' in page
     assert 'fetch("/api/vote/ai-status"' in page
-    assert "localOption.disabled = !complexMode?.available" in page
+    assert "localOption.disabled = !requiredMode?.available" in page
+    assert 'item.id === LOCAL_AI_STATUS.required_mode' in page
+    assert 'id="voteAiModeLabel"' in page
+    assert "requiredMode.label" in page
     assert "selectedVoteAiAvailable" in page
     assert "requireSelectedVoteAi" in page
     assert 'localDetails.hidden = voteAiChoice() !== "local"' in page

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from ai_model_config import LMC_AI_MODE_OPTIONS, LMC_AI_MODEL_PROFILE_VERSION
+from ai_model_config import LMC_AI_MODEL_PROFILE_VERSION
 from api.access import require_interactive_features_available, require_page_user_or_developer
 from api.pagination import json_safe
 from core.lmc_ai_eval import build_eval_prompt, validate_review_payload
@@ -82,7 +82,7 @@ def _context(request: Request) -> tuple[str, object, bool]:
 def _require_manager(request: Request) -> tuple[str, object]:
     actor, db, manager = _context(request)
     if not manager:
-        raise HTTPException(403, "只有 AI 管理員或 Developer 可以管理 A/B Test。")
+        raise HTTPException(403, "只有 AI 管理員或 Developer 可以管理「測試並回饋」。")
     return actor, db
 
 
@@ -98,7 +98,7 @@ def _public_campaign(campaign: dict | None) -> dict | None:
         "created_at": campaign.get("created_at"), "reviewing_at": campaign.get("reviewing_at"),
         "closed_at": campaign.get("closed_at"),
         "invalidation_reason": (
-            "呢個campaign已作廢；資料會保留，但不會再派發盲評。"
+            "呢輪測試已作廢；資料會保留，但不會再派發匿名比較。"
             if campaign["status"] == "invalidated" else ""
         ),
     }
@@ -123,6 +123,10 @@ def bootstrap(request: Request):
     if manager and campaign:
         payload["manager"] = {
             "bound_node_id": campaign["bound_node_id"], "note": campaign.get("note") or "",
+            "mode_labels": {
+                mode: str(config.get("label") or mode)
+                for mode, config in (campaign.get("model_manifest") or {}).items()
+            },
             "summary": campaign.get("summary_json") if campaign["status"] == "closed" else None,
             "summary_hash": campaign.get("summary_hash"),
             "exported_at": campaign.get("exported_at"),

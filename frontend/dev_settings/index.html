@@ -221,6 +221,11 @@
           <section class="card">
             <h2>自家 AI 電腦</h2>
             <p class="caption">每部電腦用獨立 token 由外向系統連線；只會使用你手動選擇而且已完成 preflight 嘅一部。選中後離線唔會自動轉機。</p>
+            <form id="lmcModelSetForm" class="actions">
+              <label style="flex:1">模型組合<select id="lmcModelSet"></select></label>
+              <button id="saveLmcModelSet" class="primary" type="submit" disabled>套用模型組合</button>
+            </form>
+            <p id="lmcModelSetStatus" class="caption">正在讀取模型組合…</p>
             <div class="actions">
               <button id="refreshLmcNodes" type="button">🔄 重新整理</button>
               <button id="clearLmcSelection" class="danger" type="button" disabled>取消選用所有電腦</button>
@@ -555,10 +560,21 @@
             if (loadGeneration !== lmcLoadGeneration) return false;
             $("lmcNodes").innerHTML = '<p class="caption">自家 AI 電腦資料暫時未能讀取；其他開發者設定仍可使用。</p>';
             $("clearLmcSelection").disabled = true;
+            $("saveLmcModelSet").disabled = true;
             throw error;
           }
           if (loadGeneration !== lmcLoadGeneration) return false;
           $("clearLmcSelection").disabled = !result.active_node_id;
+          const modelSets = result.model_sets || [];
+          $("lmcModelSet").innerHTML = modelSets.map((item) =>
+            `<option value="${esc(item.id)}" ${item.available ? "" : "disabled"}>${esc(item.label)}${item.available ? "" : "（未完成 preflight）"}</option>`,
+          ).join("");
+          $("lmcModelSet").value = result.model_set || "qwen";
+          const selectedSet = modelSets.find((item) => item.id === result.model_set);
+          $("saveLmcModelSet").disabled = !selectedSet?.available;
+          $("lmcModelSetStatus").textContent = result.active_node_id
+            ? `目前使用：${selectedSet?.label || result.model_set}。切換只影響新對話及新工作，已提交工作會沿用原本組合。`
+            : "可先揀一套至少有一部在線電腦完整通過嘅模型組合，再選用相容電腦。";
           const nodes = result.nodes || [];
           if (!nodes.length) {
             $("lmcNodes").innerHTML = '<p class="caption">尚未登記 AI 電腦。</p>';
@@ -567,8 +583,9 @@
           $("lmcNodes").innerHTML = nodes.map((node) => {
             const state = !node.enabled ? "已撤銷" : !node.online ? "離線" : node.draining ? "Draining" : !node.ready ? "未完成 preflight" : node.busy ? `忙碌（排隊 ${Number(node.queue_length || 0)}）` : "在線";
             const runtime = node.online ? `${node.runtime || "—"} ${node.runtime_version || ""}` : (node.last_runtime || "—");
-            const model = node.model || node.last_model || "—";
-            return `<article class="card"><div class="actions"><strong>${esc(node.display_name)}</strong><span class="caption">#${esc(node.short_id)}・${esc(state)}${node.selected ? "・已選用" : ""}</span></div><p class="caption">Runtime：${esc(runtime)}<br>實際模型：${esc(model)}<br>最後連線：${esc(node.last_connected_at || "—")}</p><div class="actions">${node.enabled && node.online && node.ready && !node.draining && !node.selected ? `<button type="button" data-lmc-select="${esc(node.node_id)}">選用呢部</button>` : ""}${node.enabled ? `<button type="button" data-lmc-rotate="${esc(node.node_id)}">Rotate token</button><button type="button" class="danger" data-lmc-revoke="${esc(node.node_id)}">Revoke</button>` : ""}</div></article>`;
+            const models = (node.models?.length ? node.models : [node.model || node.last_model || "—"]).join("、");
+            const compatible = (node.compatible_model_sets || []).map((id) => modelSets.find((item) => item.id === id)?.label || id).join("、") || "未有完整組合";
+            return `<article class="card"><div class="actions"><strong>${esc(node.display_name)}</strong><span class="caption">#${esc(node.short_id)}・${esc(state)}${node.selected ? "・已選用" : ""}</span></div><p class="caption">Runtime：${esc(runtime)}<br>已通過模型：${esc(models)}<br>可用組合：${esc(compatible)}<br>最後連線：${esc(node.last_connected_at || "—")}</p><div class="actions">${node.enabled && node.online && node.ready && !node.draining && !node.selected && node.compatible_model_sets?.includes(result.model_set) ? `<button type="button" data-lmc-select="${esc(node.node_id)}">選用呢部</button>` : ""}${node.enabled ? `<button type="button" data-lmc-rotate="${esc(node.node_id)}">Rotate token</button><button type="button" class="danger" data-lmc-revoke="${esc(node.node_id)}">Revoke</button>` : ""}</div></article>`;
           }).join("");
           return true;
         }
@@ -680,6 +697,33 @@
             toast("✅ AI 電腦已建立；請即時保存一次性 token。");
           } catch (e) {
             toast("⚠️ " + e.message);
+          } finally {
+            busy(false);
+          }
+        };
+        $("lmcModelSet").onchange = () => {
+          const option = $("lmcModelSet").selectedOptions[0];
+          $("saveLmcModelSet").disabled = !option || option.disabled;
+        };
+        $("lmcModelSetForm").onsubmit = async (e) => {
+          e.preventDefault();
+          const option = $("lmcModelSet").selectedOptions[0];
+          if (!option || option.disabled) return toast("⚠️ 所選模型組合未完成 preflight。");
+          const confirmed = await askAction(
+            `切換至 ${option.textContent}？`,
+            "新對話及新工作會使用呢套組合；已生成或排隊工作唔會中途轉模型。",
+          );
+          if (!confirmed) return;
+          busy(true);
+          try {
+            await api("/api/developer/lmc-ai/model-set", {
+              method: "POST",
+              body: JSON.stringify({ model_set: $("lmcModelSet").value }),
+            });
+            await loadLmcNodes();
+            toast("✅ 自家 AI 模型組合已更新。");
+          } catch (error) {
+            toast("⚠️ " + error.message);
           } finally {
             busy(false);
           }
