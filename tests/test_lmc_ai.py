@@ -1,0 +1,461 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+
+import ai_name
+import schema
+import system_limits
+from ai_model_config import (
+    LMC_AI_CONTEXT_LENGTH,
+    LMC_AI_FALLBACK_MODEL,
+    LMC_AI_PRIMARY_MODEL,
+)
+from core import funds_logic, lmc_ai_runtime as lmc_runtime, schema_features
+from core.db_migrations import browser_privilege_revokes, created_table_names
+from core.lmc_ai_runtime import (
+    LocalAIRuntime,
+    PERSONA_VERSION,
+    QueueFullError,
+    SYSTEM_PROMPT,
+    backend_fingerprint,
+)
+from core import lmc_ai_store
+from local_ai import lmc_ai_node
+
+
+ROOT = Path(__file__).resolve().parents[1]
+UP = ROOT / "migrations/20260720_0010_add_lmc_ai_nodes.up.sql"
+DOWN = ROOT / "migrations/20260720_0010_add_lmc_ai_nodes.down.sql"
+PAGE = (ROOT / "frontend/lmc_ai/index.html").read_text("utf-8")
+SCRIPT = (ROOT / "frontend/lmc_ai/app.js").read_text("utf-8")
+DEV_SETTINGS = (ROOT / "frontend/dev_settings/index.html").read_text("utf-8")
+API_SOURCE = (ROOT / "api/lmc_ai_api.py").read_text("utf-8")
+NODE_SOURCE = (ROOT / "local_ai/lmc_ai_node.py").read_text("utf-8")
+
+
+def test_identity_and_persona_have_one_runtime_source():
+    assert ai_name.LMC_AI_NAME
+    assert ai_name.LMC_AI_EMOJI
+    assert ai_name.LMC_AI_NAME in SYSTEM_PROMPT
+    assert ai_name.LMC_AI_EMOJI in SYSTEM_PROMPT
+    assert "{{" not in SYSTEM_PROMPT
+    assert "system prompt" in SYSTEM_PROMPT
+    assert "隱藏推理" in SYSTEM_PROMPT
+    assert "RAG：未啟用" in SYSTEM_PROMPT
+    assert len(PERSONA_VERSION) == 64
+
+    runtime_files = (
+        ROOT / "frontend/lmc_ai/index.html",
+        ROOT / "frontend/home/index.html",
+        ROOT / "api/lmc_ai_api.py",
+        ROOT / "core/lmc_ai_runtime.py",
+    )
+    for path in runtime_files:
+        source = path.read_text("utf-8")
+        assert ai_name.LMC_AI_NAME not in source
+        assert ai_name.LMC_AI_EMOJI not in source
+
+
+def test_backend_fingerprint_is_opaque_and_tracks_node_model_and_persona():
+    first = backend_fingerprint("node-a", LMC_AI_PRIMARY_MODEL)
+    assert len(first) == 64
+    assert first != backend_fingerprint("node-b", LMC_AI_PRIMARY_MODEL)
+    assert first != backend_fingerprint("node-a", LMC_AI_FALLBACK_MODEL)
+
+
+def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
+    up = UP.read_text("utf-8")
+    down = DOWN.read_text("utf-8")
+    assert created_table_names(up) == {"lmc_ai_nodes"}
+    assert browser_privilege_revokes(up) == {"lmc_ai_nodes"}
+    assert "skhlmc-feature:lmc_ai:20260720_0010" in up
+    assert "prompt" not in schema.CREATE_LMC_AI_NODES.lower()
+    assert "conversation" not in schema.CREATE_LMC_AI_NODES.lower()
+    assert "lmc_ai_chat" in schema.CREATE_AI_FUND_USAGE_LOGS
+    assert "provider_duration_ms" in schema.CREATE_AI_FUND_USAGE_LOGS
+    assert "ADD COLUMN provider_duration_ms" in up
+    assert schema.TABLE_LMC_AI_NODES == "lmc_ai_nodes"
+    assert schema.CREATE_LMC_AI_NODES in schema.ALL_SCHEMAS
+    assert schema_features.FEATURE_MIGRATION_VERSIONS["lmc_ai"] == "20260720_0010"
+    assert "refusing to remove used local AI node or usage data" in down
+    assert "key = 'lmc_ai_active_node_id'" in down
+    assert "feature = 'lmc_ai_chat'" in down
+    assert down.index("DELETE FROM public.app_config") < down.index("DROP TABLE public.lmc_ai_nodes")
+
+
+def test_limits_and_models_are_centralized_at_the_decided_values():
+    assert LMC_AI_PRIMARY_MODEL == "qwen3.5:9b"
+    assert LMC_AI_FALLBACK_MODEL == "qwen3.5:4b"
+    assert LMC_AI_CONTEXT_LENGTH == 4096
+    assert system_limits.LMC_AI_NODE_MAX == 8
+    assert system_limits.LMC_AI_QUEUE_MAX == 2
+    assert system_limits.LMC_AI_ACTIVE_GENERATIONS == 1
+    assert system_limits.LMC_AI_MESSAGE_MAX_CHARS == 3000
+    assert system_limits.LMC_AI_CONTEXT_MAX_CHARS == 3000
+    assert system_limits.LMC_AI_REQUEST_MESSAGES_MAX == 40
+    assert system_limits.LMC_AI_REQUEST_TIMEOUT_SECONDS == 180
+    assert system_limits.LMC_AI_OUTPUT_MAX_BYTES == 256 * 1024
+    assert system_limits.LMC_AI_BROWSER_HISTORY_MAX_MESSAGES == 100
+    assert system_limits.LMC_AI_BROWSER_HISTORY_MAX_CHARS == 200_000
+    assert "lmc_ai_chat" in funds_logic.AI_USAGE_FEATURES
+    assert funds_logic.AI_FEATURE_LABELS["lmc_ai_chat"]
+
+
+class _FakeWebSocket:
+    def __init__(self):
+        self.sent = []
+        self.closed = []
+
+    async def send_text(self, raw):
+        self.sent.append(json.loads(raw))
+
+    async def close(self, **kwargs):
+        self.closed.append(kwargs)
+
+
+async def _noop_finish(_job, _success, _usage, _error):
+    return None
+
+
+def _hello(**overrides):
+    value = {
+        "type": "hello",
+        "protocol": 1,
+        "name": "PopOS AI 01",
+        "runtime": "ollama",
+        "runtime_version": "0.12",
+        "model": LMC_AI_PRIMARY_MODEL,
+        "ready": True,
+        "draining": False,
+        "capabilities": {"chat": True, "rag": False, "fine_tuned": False},
+    }
+    value.update(overrides)
+    return value
+
+
+def test_runtime_enforces_fifo_capacity_and_server_owned_prompt():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _hello())
+        fingerprint = node.fingerprint
+
+        jobs = []
+        for index in range(3):
+            job, position = await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=fingerprint,
+                actor_id=f"member-{index}",
+                usage_user_id=f"member-{index}",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": f"message {index}"}],
+                finish_callback=_noop_finish,
+                has_history=index > 0,
+            )
+            jobs.append(job)
+            assert position == index
+        with pytest.raises(QueueFullError):
+            await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=fingerprint,
+                actor_id="overflow",
+                usage_user_id="overflow",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "full"}],
+                finish_callback=_noop_finish,
+            )
+
+        start = socket.sent[0]
+        assert start["type"] == "chat.start"
+        assert start["operation_id"] == jobs[0].operation_id
+        assert start["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+        assert start["think"] is False
+        assert start["context_length"] == 4096
+        assert start["allow_model_fallback"] is True
+        assert "num_predict" not in start
+        assert "max_tokens" not in start
+
+        await runtime.handle_node_message(
+            node, {"type": "chat.started", "operation_id": jobs[0].operation_id}
+        )
+        await runtime.handle_node_message(
+            node,
+            {
+                "type": "chat.complete",
+                "operation_id": jobs[0].operation_id,
+                "model": LMC_AI_PRIMARY_MODEL,
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        )
+        assert socket.sent[1]["operation_id"] == jobs[1].operation_id
+        assert socket.sent[1]["allow_model_fallback"] is False
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_forced_timeout_waits_for_node_cancel_ack_before_starting_next_job(
+    monkeypatch,
+):
+    monkeypatch.setattr(lmc_runtime, "LMC_AI_REQUEST_TIMEOUT_SECONDS", 0.01)
+
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _hello())
+        first, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-1",
+            usage_user_id="member-1",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "first"}],
+            finish_callback=_noop_finish,
+        )
+        second, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-2",
+            usage_user_id="member-2",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "second"}],
+            finish_callback=_noop_finish,
+        )
+        second.timeout_task.cancel()
+        await runtime.handle_node_message(
+            node, {"type": "chat.started", "operation_id": first.operation_id}
+        )
+
+        await asyncio.sleep(0.03)
+
+        assert any(
+            item.get("type") == "chat.cancel"
+            and item.get("operation_id") == first.operation_id
+            for item in socket.sent
+        )
+        assert not any(
+            item.get("type") == "chat.start"
+            and item.get("operation_id") == second.operation_id
+            for item in socket.sent
+        )
+
+        await runtime.handle_node_message(
+            node,
+            {
+                "type": "chat.error",
+                "operation_id": first.operation_id,
+                "code": "cancelled",
+            },
+        )
+        assert any(
+            item.get("type") == "chat.start"
+            and item.get("operation_id") == second.operation_id
+            for item in socket.sent
+        )
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_node_hello_refuses_future_or_unsafe_capabilities():
+    assert LocalAIRuntime.validate_hello(_hello())["ready"] is True
+    with pytest.raises(ValueError):
+        LocalAIRuntime.validate_hello(_hello(protocol=2))
+    with pytest.raises(ValueError):
+        LocalAIRuntime.validate_hello(
+            _hello(capabilities={"chat": True, "rag": True, "fine_tuned": False})
+        )
+
+
+def test_pending_node_cannot_serve_or_activate_after_concurrent_revocation():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _hello(), pending=True)
+        assert (await runtime.snapshot("node-1"))["ready"] is False
+
+        await runtime.disconnect_node("node-1", "revoked during hello")
+
+        assert await runtime.activate(node, ready=True, draining=False) is False
+        assert await runtime.snapshot("node-1") is None
+
+    asyncio.run(scenario())
+
+
+def test_node_tokens_are_random_once_and_only_digest_reaches_database(monkeypatch):
+    class Db:
+        params = None
+
+        def query(self, _sql, _params=None):
+            return pd.DataFrame([{"count": 0}])
+
+        def execute(self, _sql, params=None):
+            self.params = params
+
+    monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
+    db = Db()
+    node, token = lmc_ai_store.create_node(db, "PopOS AI 01")
+    assert node["display_name"] == "PopOS AI 01"
+    assert token
+    assert db.params["token_hash"] != token
+    assert len(db.params["token_hash"]) == 64
+    assert token not in json.dumps(db.params)
+
+
+def test_node_hello_revalidates_the_current_token_before_registration(monkeypatch):
+    class Db:
+        sql = ""
+        params = None
+
+        def execute_count(self, sql, params=None):
+            self.sql = sql
+            self.params = params
+            return 0
+
+    monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
+    db = Db()
+    with pytest.raises(LookupError, match="憑證"):
+        lmc_ai_store.update_node_hello(db, "node-1", "old-token", _hello())
+    assert "token_hash=:token_hash" in db.sql
+    assert db.params["token_hash"] == lmc_ai_store._token_digest("old-token")
+
+
+def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking():
+    assert 'role == "system"' in API_SOURCE
+    assert '"provider": "custom"' in API_SOURCE
+    assert 'usage_user_id=None if actor_id == "developer"' in API_SOURCE
+    assert '"duration_ms": usage.get("duration_ms", 0)' in API_SOURCE
+    assert '"X-Accel-Buffering": "no"' in API_SOURCE
+    assert 'websocket.query_params.get("token")' in API_SOURCE
+    assert 'websocket.headers.get("authorization")' in API_SOURCE
+    assert "thinking" not in API_SOURCE
+    assert "tool_calls" not in API_SOURCE
+
+    assert "SafeMarkdown.render" in SCRIPT
+    assert "localStorage" in SCRIPT
+    assert "identity.id" in SCRIPT
+    assert "backendChanged" in SCRIPT
+    assert "context.trimmed" in SCRIPT
+    assert "has_history: conversation.messages.length > 0" in SCRIPT
+    assert "confirm(" in SCRIPT
+    assert "較舊訊息" in SCRIPT
+    assert "RAG 同 Fine-tune 暫未啟用" in PAGE
+    assert "node_id" not in SCRIPT
+    assert "runtime" not in SCRIPT
+    assert "last_model" not in SCRIPT
+    assert "effective_model" not in SCRIPT
+
+
+def test_browser_clear_invalidates_and_aborts_an_inflight_conversation():
+    assert "let conversationGeneration = 0" in SCRIPT
+    assert "const requestGeneration = conversationGeneration" in SCRIPT
+    assert "requestGeneration !== conversationGeneration" in SCRIPT
+    clear_block = SCRIPT.split("function clearConversation", 1)[1].split(
+        '$("messageInput")', 1
+    )[0]
+    assert "conversationGeneration += 1" in clear_block
+    assert "abortController?.abort()" in clear_block
+
+
+def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
+    load_block = DEV_SETTINGS.split("async function load()", 1)[1].split(
+        "async function mutate", 1
+    )[0]
+    assert load_block.index('$("login").classList.remove("hidden")') < load_block.index(
+        "await loadLmcNodes()"
+    )
+    assert "自家 AI 電腦資料暫時未能讀取" in load_block
+
+
+def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(tmp_path):
+    assert "ollama pull" not in NODE_SOURCE
+    assert '"think": False' in NODE_SOURCE
+    assert '"num_ctx": CONTEXT_LENGTH' in NODE_SOURCE
+    assert "num_predict" not in NODE_SOURCE
+    assert "max_tokens" not in NODE_SOURCE
+    assert "async def cancel_active" in NODE_SOURCE
+    assert "await self.cancel_active(" in NODE_SOURCE
+    assert lmc_ai_node.NodeClient._fallback_allowed(
+        [{"role": "system"}, {"role": "user"}], False, True
+    )
+    assert not lmc_ai_node.NodeClient._fallback_allowed(
+        [{"role": "system"}, {"role": "user"}, {"role": "assistant"}, {"role": "user"}],
+        False,
+        True,
+    )
+    assert not lmc_ai_node.NodeClient._fallback_allowed(
+        [{"role": "system"}, {"role": "user"}], True, True
+    )
+    assert not lmc_ai_node.NodeClient._fallback_allowed(
+        [{"role": "system"}, {"role": "user"}], False, False
+    )
+    path = tmp_path / "node.json"
+    lmc_ai_node._save(path, {"token": "secret", "name": "AI 01"})
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert "secret" not in json.dumps(lmc_ai_node._public_config(lmc_ai_node._load(path)))
+
+
+def test_node_preflight_falls_back_to_4b_and_refuses_two_failures(tmp_path, monkeypatch):
+    path = tmp_path / "node.json"
+    lmc_ai_node._save(
+        path,
+        {
+            "server_url": "wss://example.test/api/lmc-ai/nodes/connect",
+            "name": "AI 01",
+            "token": "secret",
+            "effective_model": "",
+            "preflight_ready": False,
+            "preflight_at": "",
+            "draining": False,
+        },
+    )
+    monkeypatch.setattr(lmc_ai_node, "_run_checked", lambda *_args, **_kwargs: "ok")
+    monkeypatch.setattr(lmc_ai_node, "_verify_local_binding", lambda: None)
+    monkeypatch.setattr(
+        lmc_ai_node,
+        "_installed_models",
+        lambda: {LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL},
+    )
+
+    def fallback_probe(model):
+        if model == LMC_AI_PRIMARY_MODEL:
+            raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(lmc_ai_node, "_model_probe", fallback_probe)
+    assert lmc_ai_node.preflight(SimpleNamespace(config=path)) == 0
+    selected = lmc_ai_node._load(path)
+    assert selected["preflight_ready"] is True
+    assert selected["effective_model"] == LMC_AI_FALLBACK_MODEL
+
+    monkeypatch.setattr(
+        lmc_ai_node,
+        "_model_probe",
+        lambda model: (_ for _ in ()).throw(RuntimeError(f"{model} failed")),
+    )
+    with pytest.raises(SystemExit, match="兩個 models"):
+        lmc_ai_node.preflight(SimpleNamespace(config=path))
+    refused = lmc_ai_node._load(path)
+    assert refused["preflight_ready"] is False
+    assert refused["effective_model"] == ""
+
+
+def test_node_systemd_unit_runs_as_ai_account_and_depends_on_ollama(tmp_path):
+    unit = lmc_ai_node._systemd_unit(
+        "debate-ai",
+        Path("/opt/lmc-ai/venv/bin/python"),
+        Path("/opt/lmc-ai/lmc_ai_node.py"),
+        tmp_path / "node.json",
+    )
+    assert "User=debate-ai" in unit
+    assert "Requires=ollama.service" in unit
+    assert "After=network-online.target ollama.service" in unit
+    assert "Restart=always" in unit
+    assert "NoNewPrivileges=true" in unit
+    assert " run\n" in unit

@@ -1,6 +1,13 @@
 import math
 
 
+# Local committee AI node defaults.  The node preflight decides which already
+# installed model is effective; runtime code must never pull a model itself.
+LMC_AI_PRIMARY_MODEL = "qwen3.5:9b"
+LMC_AI_FALLBACK_MODEL = "qwen3.5:4b"
+LMC_AI_CONTEXT_LENGTH = 4096
+
+
 DEFAULT_AI_MODEL = "Gemini 2.5 Flash"
 
 AI_MODEL_OPTIONS = {

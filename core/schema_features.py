@@ -17,6 +17,7 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*")
 # finding legacy/lazy-created relations can never turn a feature on.
 FEATURE_MIGRATION_VERSIONS: dict[str, str | None] = {
     "data_factory": "20260720_0009",
+    "lmc_ai": "20260720_0010",
     "dataset_model": None,
     "eval": None,
     "rag": None,

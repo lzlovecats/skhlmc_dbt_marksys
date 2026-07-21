@@ -67,6 +67,12 @@ def test_system_accounts_are_denied_from_other_authenticated_member_surfaces():
             assert not account_can_access(account_id.swapcase(), page)
 
 
+def test_local_ai_page_is_member_only_with_developer_handled_by_server_bypass():
+    assert account_can_access("member01", "lmc_ai")
+    for account_id in NON_MEMBER_ACCOUNT_IDS:
+        assert not account_can_access(account_id, "lmc_ai")
+
+
 def test_only_the_exact_canonical_kiosk_reserved_id_can_be_provisioned():
     assert account_id_can_be_created("member01")
     assert account_id_can_be_created(KIOSK_ACCOUNT_ID)

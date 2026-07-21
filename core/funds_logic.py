@@ -62,6 +62,7 @@ AI_FEATURE_LABELS = {
     "kiosk_match_review": "AI評判易（Kiosk）",
     "kiosk_match_review_tts": "AI評判易·粵語讀出",
     "official_ai_judge": "正式 AI 第三評判",
+    "lmc_ai_chat": "自家 AI 對話",
 }
 AI_USAGE_FEATURES = (
     "speech_review", "strategy", "competition_prep", "web_research", "fact_check",
@@ -70,6 +71,7 @@ AI_USAGE_FEATURES = (
     "tts_script_analysis", "llm_review",
     "data_factory_generation",
     "kiosk_match_review", "tts", "kiosk_match_review_tts", "official_ai_judge",
+    "lmc_ai_chat",
 )
 TTS_USAGE_FEATURES = frozenset(("tts", "kiosk_match_review_tts"))
 _AI_PRUNE_LOCK = threading.Lock()
@@ -357,6 +359,7 @@ def _ai_usage_insert_params(user_id, feature, success, usage, error_message):
         "audio": _nonnegative_int(usage.get("audio_tokens")),
         "characters": _nonnegative_int(usage.get("billable_characters")),
         "search": _nonnegative_int(usage.get("search_calls")),
+        "duration": _nonnegative_int(usage.get("duration_ms")),
         "operation_id": str(usage.get("operation_id") or "").strip()[:200] or None,
         "operation_stage": (
             str(usage.get("operation_stage") or "").strip()[:80] or None
@@ -373,10 +376,11 @@ def _ai_usage_insert_params(user_id, feature, success, usage, error_message):
 _AI_USAGE_INSERT_SQL = f"""INSERT INTO {TABLE_AI_FUND_USAGE_LOGS}(
     user_id,feature,model_label,provider,estimated_cost_usd,estimated_cost_hkd,
     input_tokens,output_tokens,audio_tokens,billable_characters,search_calls,
-    operation_id,operation_stage,cost_source,status,error_message,created_at
+    provider_duration_ms,operation_id,operation_stage,cost_source,status,
+    error_message,created_at
 ) VALUES(
     :user,:feature,:model,:provider,:usd,:hkd,:input,:output,:audio,:characters,
-    :search,:operation_id,:operation_stage,:source,:status,:error,:now
+    :search,:duration,:operation_id,:operation_stage,:source,:status,:error,:now
 )"""
 
 

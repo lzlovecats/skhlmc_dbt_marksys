@@ -102,6 +102,7 @@ TABLE_PROJECTOR_KIOSK_DEVICES = "projector_kiosk_devices"
 TABLE_OFFICIAL_AI_JUDGE_RUNS = "official_ai_judge_runs"
 TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS = "official_ai_judge_attempts"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
+TABLE_LMC_AI_NODES = "lmc_ai_nodes"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
@@ -2825,7 +2826,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts', 'data_factory_generation', 'official_ai_judge')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts', 'data_factory_generation', 'official_ai_judge', 'lmc_ai_chat')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
@@ -2836,6 +2837,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     billable_characters INTEGER     NOT NULL DEFAULT 0
                                 CHECK (billable_characters >= 0),
     search_calls        INTEGER     DEFAULT 0,
+    provider_duration_ms INTEGER    NOT NULL DEFAULT 0
+                                CHECK (provider_duration_ms >= 0),
     operation_id        TEXT        CHECK (
                                 operation_id IS NULL
                                 OR CHAR_LENGTH(operation_id) BETWEEN 1 AND 200
@@ -2853,6 +2856,60 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
 );
+"""
+
+# Private local-AI computer registry. Conversation content and prompts are
+# deliberately absent; connection/queue state remains process-local memory.
+CREATE_LMC_AI_NODES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_LMC_AI_NODES} (
+    node_id               TEXT        PRIMARY KEY,
+    display_name          TEXT        NOT NULL,
+    token_hash            TEXT        NOT NULL UNIQUE,
+    enabled               BOOLEAN     NOT NULL DEFAULT TRUE,
+    last_runtime          TEXT,
+    last_runtime_version  TEXT,
+    last_model            TEXT,
+    last_capabilities     JSONB,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_connected_at     TIMESTAMPTZ,
+    last_disconnected_at  TIMESTAMPTZ,
+    CONSTRAINT lmc_ai_nodes_id_length
+        CHECK (CHAR_LENGTH(node_id) BETWEEN 1 AND 64),
+    CONSTRAINT lmc_ai_nodes_name_length
+        CHECK (CHAR_LENGTH(display_name) BETWEEN 1 AND 80),
+    CONSTRAINT lmc_ai_nodes_token_hash
+        CHECK (
+            CHAR_LENGTH(token_hash) = 64
+            AND token_hash = LOWER(token_hash)
+            AND token_hash ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT lmc_ai_nodes_capabilities_object
+        CHECK (
+            last_capabilities IS NULL
+            OR JSONB_TYPEOF(last_capabilities) = 'object'
+        )
+);
+CREATE INDEX IF NOT EXISTS idx_lmc_ai_nodes_enabled_created
+    ON {TABLE_LMC_AI_NODES}(enabled, created_at DESC);
+COMMENT ON TABLE {TABLE_LMC_AI_NODES} IS
+    'skhlmc-feature:lmc_ai:20260720_0010';
+
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM PUBLIC;
+DO $lmc_ai_privileges$
+DECLARE
+    role_name TEXT;
+BEGIN
+    FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated']
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+            EXECUTE FORMAT(
+                'REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM %I',
+                role_name
+            );
+        END IF;
+    END LOOP;
+END $lmc_ai_privileges$;
 """
 
 # Table: LATENESS_FUND_RECORDS
@@ -3363,6 +3420,7 @@ ALL_SCHEMAS = [
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
     CREATE_AI_FUND_USAGE_LOGS,        # → accounts
+    CREATE_LMC_AI_NODES,              # private local-AI computer registry
     CREATE_LATENESS_FUND_RECORDS,     # → accounts
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps

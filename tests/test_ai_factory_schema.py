@@ -60,6 +60,7 @@ PERMANENT_FACTORY_AUDIT_ACTIONS = {
 def test_data_factory_feature_is_explicit_and_old_optional_bundles_stay_disabled():
     assert schema_features.FEATURE_MIGRATION_VERSIONS == {
         "data_factory": "20260720_0009",
+        "lmc_ai": "20260720_0010",
         "dataset_model": None,
         "eval": None,
         "rag": None,
