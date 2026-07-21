@@ -20,7 +20,10 @@
       .dot { width:.55rem; height:.55rem; border-radius:50%; background:#94a3b8; }
       .dot.online { background:#34d399; } .dot.busy { background:#fbbf24; } .dot.offline { background:#fb7185; }
       .tabs { border-bottom:1px solid var(--border); }
-      .tab { display:inline-block; padding:.55rem .8rem; border-bottom:2px solid var(--accent); font-weight:700; }
+      .tab { border:0; border-radius:0; background:transparent; display:inline-block; padding:.55rem .8rem; font-weight:700; color:var(--muted); }
+      .tab.active { color:#fff; border-bottom:2px solid var(--accent); }
+      .panel.hidden { display:none; }
+      .hidden { display:none !important; }
       #conversation { min-height:20rem; overflow:auto; display:flex; flex-direction:column; gap:.85rem; padding:.6rem 0; }
       .empty { margin:auto; max-width:34rem; text-align:center; color:var(--muted); }
       .message { max-width:min(88%,48rem); border:1px solid var(--border); background:var(--card); border-radius:14px; padding:.75rem .9rem; overflow-wrap:anywhere; }
@@ -43,6 +46,10 @@
       #loginCard { display:none; border:1px solid var(--border); background:var(--card); border-radius:12px; padding:1rem; }
       #loginCard.show { display:grid; gap:.65rem; }
       .counter { margin-left:auto; }
+      .node-grid { display:grid; gap:.7rem; padding:.8rem 0; }
+      .node-card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:.85rem; }
+      .node-card h2 { margin:0 0 .4rem; font-size:1rem; }
+      .node-meta { display:flex; flex-wrap:wrap; gap:.45rem; color:var(--muted); font-size:.86rem; }
       @media (max-width:640px) { .message{max-width:94%} header{display:block}.header-actions{margin-top:.6rem}.mode-picker .caption{display:none} }
     </style>
   </head>
@@ -60,7 +67,10 @@
         </div>
       </header>
       <div>
-        <div class="tabs"><span class="tab">對話</span></div>
+        <div class="tabs">
+          <button class="tab active" data-panel="chatPanel" type="button">對話</button>
+          <button class="tab" data-panel="operationsPanel" type="button">AI運作情況</button>
+        </div>
         <div class="status-row" style="margin-top:.65rem">
           <span class="pill"><span id="statusDot" class="dot"></span><span id="serviceStatus">正在檢查服務…</span></span>
           <span id="identityStatus" class="caption"></span>
@@ -72,12 +82,18 @@
         <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密碼" />
         <div class="actions"><button id="loginButton" class="primary" type="button">登入</button><span id="loginError" class="caption"></span></div>
       </section>
-      <section id="conversation" aria-live="polite"></section>
-      <section class="composer">
+      <section id="chatPanel" class="panel">
+        <section id="conversation" aria-live="polite"></section>
+      </section>
+      <section id="operationsPanel" class="panel hidden">
+        <p class="muted">顯示所有已登記 AI 電腦；實際工作只會送到 Developer 目前選用的一部。</p>
+        <div id="nodeGrid" class="node-grid" aria-live="polite"></div>
+      </section>
+      <section id="composer" class="composer">
         <div id="contextNotice" class="notice"></div>
         <textarea id="messageInput" placeholder="有咩要 __LMC_AI_NAME__ 幫你？" maxlength="__LMC_AI_MESSAGE_MAX_CHARS__"></textarea>
         <div class="actions" style="margin-top:.55rem">
-          <label class="mode-picker"><span class="caption">回答模式</span><select id="thinkingMode" aria-label="回答模式" disabled><option value="fast">快速回答</option><option value="thinking">深入思考</option></select></label>
+          <label class="mode-picker"><span class="caption">回答模式</span><select id="thinkingMode" aria-label="回答模式" disabled><option value="daily">日常預設（4B）</option><option value="complex">複雜問題（4B Thinking）</option><option value="deep">深入思考（9B Thinking）</option></select></label>
           <button id="sendButton" class="primary" type="button">傳送</button>
           <button id="stopButton" type="button" disabled>停止生成</button>
           <span id="characterCount" class="caption counter">0 / __LMC_AI_MESSAGE_MAX_CHARS__</span>

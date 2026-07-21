@@ -1,11 +1,55 @@
 import math
 
+from ai_name import LMC_AI_MODEL_LABEL
 
-# Local committee AI node defaults.  The node preflight decides which already
-# installed model is effective; runtime code must never pull a model itself.
-LMC_AI_PRIMARY_MODEL = "qwen3.5:9b"
-LMC_AI_FALLBACK_MODEL = "qwen3.5:4b"
+
+# Local committee AI node defaults. Runtime code must never pull a model itself;
+# preflight advertises only models which passed the GPU/offload gate.
+LMC_AI_DEFAULT_MODEL = "qwen3.5:4b"
+LMC_AI_DEEP_MODEL = "qwen3.5:9b"
+# Compatibility names retained for installed node code from the previous
+# profile. New routing never treats 9B as an automatic fallback.
+LMC_AI_PRIMARY_MODEL = LMC_AI_DEFAULT_MODEL
+LMC_AI_FALLBACK_MODEL = LMC_AI_DEEP_MODEL
 LMC_AI_CONTEXT_LENGTH = 4096
+LMC_AI_DEFAULT_MODE = "daily"
+LMC_AI_MODE_OPTIONS = {
+    "daily": {
+        "label": "日常預設",
+        "model": LMC_AI_DEFAULT_MODEL,
+        "thinking": False,
+    },
+    "complex": {
+        "label": "複雜問題",
+        "model": LMC_AI_DEFAULT_MODEL,
+        "thinking": True,
+    },
+    "deep": {
+        "label": "深入思考",
+        "model": LMC_AI_DEEP_MODEL,
+        "thinking": True,
+    },
+}
+
+# This option represents the outbound committee-node runtime, not the separate
+# registry-gated OpenAI-compatible CUSTOM_LLM_OPTION below.
+LMC_AI_INTERACTIVE_OPTION = {
+    "label": LMC_AI_MODEL_LABEL,
+    "provider": "custom",
+    "model": "active-lmc-ai-node",
+    "local_node": True,
+    "supports_audio": False,
+    "supports_web_search": False,
+    "input_price_per_million": 0,
+    "audio_input_price_per_million": 0,
+    "output_price_per_million": 0,
+    "web_search_price_per_call": 0,
+    "pricing_note": "由目前選用的自家 AI 電腦處理；內容不會自動轉交雲端模型。",
+    "paid_rate_note": "沒有按 token 收費；電力及硬件成本另計。",
+    "selection_label": "日常預設",
+    "pricing_label": "自家",
+    "is_premium": False,
+}
 
 
 DEFAULT_AI_MODEL = "Gemini 2.5 Flash"

@@ -12,7 +12,10 @@ import secrets
 import time
 from typing import Awaitable, Callable
 
-from ai_model_config import LMC_AI_CONTEXT_LENGTH
+from ai_model_config import (
+    LMC_AI_CONTEXT_LENGTH,
+    LMC_AI_MODE_OPTIONS,
+)
 from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
 from system_limits import (
     LMC_AI_CONTEXT_MAX_CHARS,
@@ -91,6 +94,7 @@ class ConnectedNode:
     runtime: str
     runtime_version: str
     model: str
+    models: tuple[str, ...]
     capabilities: dict
     ready: bool
     draining: bool
@@ -123,6 +127,11 @@ class LocalAIRuntime:
         self._nodes: dict[str, ConnectedNode] = {}
         self._blocked_new_jobs: set[str] = set()
         self._lock = asyncio.Lock()
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def owner_loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._owner_loop
 
     @staticmethod
     def validate_hello(payload: object) -> dict:
@@ -145,11 +154,32 @@ class LocalAIRuntime:
         model = str(payload.get("model") or "").strip()
         if not name or not model:
             raise ValueError("node name and effective model are required")
+        allowed_models = {
+            str(config["model"]) for config in LMC_AI_MODE_OPTIONS.values()
+        }
+        raw_models = payload.get("models")
+        if raw_models is None:
+            models = (model,)
+        elif isinstance(raw_models, (list, tuple)):
+            models = tuple(dict.fromkeys(
+                str(item or "").strip() for item in raw_models
+                if str(item or "").strip()
+            ))
+        else:
+            raise ValueError("node models must be a list")
+        if (
+            not models
+            or model not in models
+            or len(models) > len(allowed_models)
+            or any(item not in allowed_models for item in models)
+        ):
+            raise ValueError("node advertised an unsupported model set")
         return {
             "name": name,
             "runtime": str(payload.get("runtime") or "")[:80],
             "runtime_version": str(payload.get("runtime_version") or "")[:80],
             "model": model[:200],
+            "models": tuple(item[:200] for item in models),
             "capabilities": required,
             "ready": bool(payload.get("ready")),
             "draining": bool(payload.get("draining")),
@@ -159,6 +189,7 @@ class LocalAIRuntime:
         self, node_id: str, websocket, hello: dict, *, pending: bool = False
     ) -> ConnectedNode:
         clean = self.validate_hello(hello)
+        self._owner_loop = asyncio.get_running_loop()
         if pending:
             clean["ready"] = False
         node = ConnectedNode(
@@ -258,6 +289,7 @@ class LocalAIRuntime:
                 "runtime": node.runtime,
                 "runtime_version": node.runtime_version,
                 "model": node.model,
+                "models": list(node.models),
                 "capabilities": dict(node.capabilities),
                 "fingerprint": node.fingerprint,
                 "last_heartbeat_seconds": max(
@@ -282,6 +314,7 @@ class LocalAIRuntime:
         messages: list[dict],
         finish_callback: FinishCallback,
         has_history: bool = False,
+        model: str = "",
         thinking_enabled: bool = False,
     ) -> tuple[ChatJob, int]:
         async with self._lock:
@@ -293,8 +326,11 @@ class LocalAIRuntime:
                 or node.draining
             ):
                 raise NodeUnavailableError("自家 AI 暫時未能提供服務。")
+            selected_model = str(model or node.model)
+            if selected_model not in node.models:
+                raise NodeUnavailableError("所選回答模式未能喺目前 AI 電腦使用。")
             fingerprint = backend_fingerprint(
-                node.node_id, node.model, thinking_enabled
+                node.node_id, selected_model, thinking_enabled
             )
             if expected_fingerprint and expected_fingerprint != fingerprint:
                 raise BackendChangedError("AI 設定已更新，請開始新對話。")
@@ -307,7 +343,7 @@ class LocalAIRuntime:
                 operation_stage=operation_stage,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
                 fingerprint=fingerprint,
-                model=node.model,
+                model=selected_model,
                 has_history=bool(has_history),
                 thinking_enabled=bool(thinking_enabled),
                 finish_callback=finish_callback,
@@ -340,9 +376,10 @@ class LocalAIRuntime:
                     "type": "chat.start",
                     "operation_id": job.operation_id,
                     "messages": job.messages,
+                    "model": job.model,
                     "think": job.thinking_enabled,
                     "context_length": LMC_AI_CONTEXT_LENGTH,
-                    "allow_model_fallback": not job.has_history,
+                    "allow_model_fallback": False,
                 },
             )
         except Exception:
@@ -390,9 +427,30 @@ class LocalAIRuntime:
             node.ready = bool(payload.get("ready"))
             node.draining = bool(payload.get("draining"))
             reported_model = str(payload.get("model") or "").strip()
-            backend_changed = bool(reported_model and reported_model[:200] != node.model)
+            reported_models = payload.get("models")
+            clean_models = node.models
+            allowed_models = {
+                str(config["model"]) for config in LMC_AI_MODE_OPTIONS.values()
+            }
+            if reported_model and reported_model not in allowed_models:
+                raise ValueError("node reported an unsupported model")
+            if reported_models is not None and not isinstance(reported_models, list):
+                raise ValueError("node reported an invalid model set")
+            if isinstance(reported_models, list):
+                candidate = tuple(dict.fromkeys(
+                    str(item or "").strip()[:200] for item in reported_models
+                    if str(item or "").strip() in allowed_models
+                ))
+                if not candidate or (reported_model and reported_model not in candidate):
+                    raise ValueError("node reported an invalid model set")
+                clean_models = candidate
+            backend_changed = bool(
+                (reported_model and reported_model[:200] != node.model)
+                or clean_models != node.models
+            )
             if reported_model:
                 node.model = reported_model[:200]
+            node.models = clean_models
             if backend_changed or node.draining or not node.ready:
                 await self._fail_queued(
                     node,
@@ -440,6 +498,7 @@ class LocalAIRuntime:
                 "cancelled": "已停止生成。",
                 "model_load": "AI 模型載入失敗，請開始新對話再試。",
                 "out_of_memory": "AI 電腦記憶體不足，請開始新對話再試。",
+                "model_unavailable": "所選回答模式未能喺目前 AI 電腦使用。",
             }.get(code, "AI 電腦未能完成今次回覆。")
             await self._finish(node, job, False, {}, message)
             return
@@ -488,6 +547,7 @@ class LocalAIRuntime:
             {
                 "fingerprint": job.fingerprint,
                 "model_changed": usage.get("model") != job.model,
+                "usage": dict(usage),
             }
             if success
             else {"message": error or "AI 未能完成今次回覆。"}

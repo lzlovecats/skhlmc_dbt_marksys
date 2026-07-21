@@ -9,14 +9,51 @@ domain code stay on one source of truth.
 """
 
 import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from account_access import AI_COMMENT_ACCOUNT_ID
+from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from api.access import require_interactive_features_available, require_page_user
 from system_limits import VOTE_PENDING_MOTION_LIMIT
+from ai_name import LMC_AI_MODEL_LABEL
 
 router = APIRouter(prefix="/api/vote", tags=["vote"])
+
+VOTE_GEMINI_MODEL_LABEL = NON_MANUAL_DEFAULT_AI_MODEL
+
+
+def _vote_ai_model(choice: str) -> str:
+    return (
+        LMC_AI_MODEL_LABEL
+        if choice == "local"
+        else VOTE_GEMINI_MODEL_LABEL
+    )
+
+
+def _labelled_ai_output(text: str, model_label: str) -> str:
+    return f"**AI 模型：{model_label}**\n\n{text}"
+
+
+def _require_vote_ai_available(choice: str, db) -> None:
+    if choice != "local":
+        return
+    from core.lmc_ai_client import local_ai_availability
+
+    status = _run_vote_ai(local_ai_availability(db))
+    mode_status = next(
+        (item for item in status.get("modes", []) if item.get("id") == "complex"),
+        None,
+    )
+    if not status.get("available") or not mode_status or not mode_status.get("available"):
+        raise HTTPException(
+            503,
+            (mode_status or {}).get("message")
+            or status.get("message")
+            or "自家 AI 暫時未準備好。",
+        )
 
 
 # ── dependencies (resolved from the proxy at request time) ────────────────────
@@ -94,6 +131,15 @@ def _validate_ai_selection(category, difficulty):
         raise HTTPException(400, "不支援的辯題類別")
     if difficulty not in DIFFICULTY_OPTIONS:
         raise HTTPException(400, "辯題難度必須為 1、2 或 3")
+
+
+@router.get("/ai-status")
+async def ai_status(request: Request):
+    _committee_user(request)
+    from core.lmc_ai_client import local_ai_availability
+
+    status = await local_ai_availability(_vote_db())
+    return JSONResponse(status, headers={"Cache-Control": "no-store"})
 
 
 # ── serialization ─────────────────────────────────────────────────────────────
@@ -457,6 +503,7 @@ class CommentBody(BaseModel):
     motion_key: str = Field(max_length=500)
     text: str | None = Field(default=None, max_length=2000)
     tag_ai: bool = False
+    ai_model: Literal["local", "gemini"] = "local"
 
 
 def _validate_motion_type(value: str) -> str:
@@ -494,6 +541,13 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
     db = _vote_db()
     _require_pending_motion(motion_type, motion_key, db)
     text = (body.text or "").strip()
+    ai_text = ""
+    should_ai = bool(body.tag_ai)
+    question = vote_ai.extract_gemini_question(text) if text else None
+    if question is not None:
+        should_ai = True
+    if should_ai:
+        _require_vote_ai_available(body.ai_model, db)
     if text:
         try:
             vl.insert_comment(motion_type, motion_key, user_id, text, db=db)
@@ -506,22 +560,19 @@ def post_comment(body: CommentBody, user_id: str = Depends(_committee_user)):
     elif not body.tag_ai:
         raise HTTPException(400, "請輸入內容")
 
-    ai_text = ""
-    should_ai = bool(body.tag_ai)
-    question = vote_ai.extract_gemini_question(text) if text else None
-    if question is not None:
-        should_ai = True
-
     if should_ai:
         vl.ensure_ai_comment_account(db=db)
         existing = vl.fetch_comments(motion_type, motion_key, db=db)
+        model_label = _vote_ai_model(body.ai_model)
         ai_text, usage = _run_vote_ai(vote_ai.discussion_reply(
-            motion_type, motion_key, existing, db, _ai_secrets(), question=question
+            motion_type, motion_key, existing, db, _ai_secrets(), question=question,
+            model_label=model_label,
         ))
         _log_vote_ai(user_id, "vote_discussion", ai_text, usage, db)
         if vote_ai.is_successful_ai_result(ai_text):
             vl.insert_comment(
-                motion_type, motion_key, AI_COMMENT_ACCOUNT_ID, ai_text, db=db
+                motion_type, motion_key, AI_COMMENT_ACCOUNT_ID,
+                _labelled_ai_output(ai_text, model_label), db=db
             )
         else:
             return {
@@ -541,6 +592,7 @@ class AiReviewBody(BaseModel):
     topic: str = Field(max_length=500)
     category: str = Field(max_length=80)
     difficulty: int
+    ai_model: Literal["local", "gemini"] = "local"
 
 
 @router.post("/ai-review")
@@ -552,11 +604,15 @@ def ai_review(body: AiReviewBody, user_id: str = Depends(_committee_user)):
         raise HTTPException(400, "請先輸入完整辯題")
     _validate_ai_selection(body.category, body.difficulty)
     db = _vote_db()
+    _require_vote_ai_available(body.ai_model, db)
+    model_label = _vote_ai_model(body.ai_model)
     text, usage = _run_vote_ai(
-        review_topic(topic, body.category, body.difficulty, db, _ai_secrets())
+        review_topic(
+            topic, body.category, body.difficulty, db, _ai_secrets(), model_label
+        )
     )
     _log_vote_ai(user_id, "vote_review", text, usage, db)
-    return {"status": "ok", "review": text}
+    return {"status": "ok", "review": text, "model_label": model_label}
 
 
 @router.get("/analysis")
@@ -588,6 +644,7 @@ def analysis(user_id: str = Depends(_committee_user)):
 
 class AiAnalysisBody(BaseModel):
     kind: str = Field(max_length=20)
+    ai_model: Literal["local", "gemini"] = "local"
 
 
 @router.post("/analysis/ai")
@@ -596,25 +653,37 @@ def run_analysis(body: AiAnalysisBody, user_id: str = Depends(_committee_user)):
     from core import vote_ai
 
     db = _vote_db()
+    _require_vote_ai_available(body.ai_model, db)
+    model_label = _vote_ai_model(body.ai_model)
     if body.kind == "bank":
         source_signature = vl.analysis_source_signature("bank", db=db)
-        text, usage = _run_vote_ai(vote_ai.analyze_topic_bank(db, _ai_secrets()))
+        text, usage = _run_vote_ai(vote_ai.analyze_topic_bank(
+            db, _ai_secrets(), model_label
+        ))
         if vote_ai.is_successful_ai_result(text):
-            vl.save_analysis("bank", text, user_id, source_signature=source_signature, db=db)
+            vl.save_analysis(
+                "bank", _labelled_ai_output(text, model_label), user_id,
+                source_signature=source_signature, db=db,
+            )
     elif body.kind == "history":
         history_df = vl.fetch_vote_history_analysis_data(db=db)
         source_signature = vl.analysis_source_signature("history", db=db, vote_df=history_df)
         text, usage = _run_vote_ai(
-            vote_ai.analyze_vote_history(history_df, db, _ai_secrets())
+            vote_ai.analyze_vote_history(
+                history_df, db, _ai_secrets(), model_label
+            )
         )
         if vote_ai.is_successful_ai_result(text):
-            vl.save_analysis("history", text, user_id, source_signature=source_signature, db=db)
+            vl.save_analysis(
+                "history", _labelled_ai_output(text, model_label), user_id,
+                source_signature=source_signature, db=db,
+            )
     else:
         raise HTTPException(400, "kind must be 'bank' or 'history'")
     _log_vote_ai(user_id, "vote_analysis", text, usage, db)
     if not vote_ai.is_successful_ai_result(text):
         raise HTTPException(502, text)
-    return {"status": "ok", "analysis": text}
+    return {"status": "ok", "analysis": text, "model_label": model_label}
 
 
 class ProposeBody(BaseModel):

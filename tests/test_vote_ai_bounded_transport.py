@@ -2,13 +2,18 @@
 
 import asyncio
 import inspect
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from ai_name import LMC_AI_MODEL_LABEL
 from api import vote_api
 from core import ai_provider
 from core import vote_ai
 from system_limits import AI_PROVIDER_RESPONSE_MAX_BYTES, VOTE_AI_PROMPT_MAX_CHARS
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_shared_provider_transport_rejects_response_over_two_mib():
@@ -153,6 +158,130 @@ def test_vote_ai_sanitizes_provider_failures(monkeypatch, caplog):
     assert "Vote AI provider request failed" in caplog.text
 
 
+def test_vote_ai_local_choice_uses_shared_node_runtime_without_cloud_key(monkeypatch):
+    from core import lmc_ai_client
+
+    captured = {}
+
+    async def local(db, **kwargs):
+        captured.update(db=db, **kwargs)
+        return "本地答案", {
+            "input_tokens": 12,
+            "output_tokens": 8,
+            "cost_source": "local_zero_cost",
+        }
+
+    monkeypatch.setattr(lmc_ai_client, "generate_local_text", local)
+    result, usage = asyncio.run(vote_ai.generate_general_ai_reply(
+        "system", "user", {}, model_label=LMC_AI_MODEL_LABEL,
+        feature="vote_review", db="vote-db",
+    ))
+
+    assert result == "本地答案"
+    assert captured["db"] == "vote-db"
+    assert captured["mode"] == "complex"
+    assert usage["model_label"] == LMC_AI_MODEL_LABEL
+    assert usage["estimated_cost_usd"] == 0
+
+
+def test_vote_ai_selector_defaults_local_and_rejects_unknown_values():
+    review = vote_api.AiReviewBody(topic="辯題", category="科技與未來", difficulty=2)
+    assert review.ai_model == "local"
+    assert vote_api._vote_ai_model("local") == LMC_AI_MODEL_LABEL
+    assert vote_api._vote_ai_model("gemini") == "Gemini 3.5 Flash"
+    with pytest.raises(ValidationError):
+        vote_api.AiAnalysisBody(kind="bank", ai_model="other")
+
+
+def test_vote_page_exposes_local_or_gemini_choice_on_every_ai_request():
+    page = (ROOT / "frontend/vote/index.html").read_text("utf-8")
+    proxy = (ROOT / "deploy/proxy.py").read_text("utf-8")
+    assert 'id="voteAiModel"' in page
+    assert '<option value="local">__LMC_AI_MODEL_LABEL__</option>' in page
+    assert '<option value="gemini">__VOTE_GEMINI_MODEL_LABEL__</option>' in page
+    assert page.count("ai_model: voteAiChoice()") == 3
+    assert '"__LMC_AI_MODEL_LABEL__", xml_escape(LMC_AI_MODEL_LABEL)' in proxy
+    assert '"__VOTE_GEMINI_MODEL_LABEL__"' in proxy
+
+
+def test_vote_status_gate_requires_selected_online_complex_mode(monkeypatch):
+    from core import lmc_ai_client
+
+    async def status(_db):
+        return {
+            "available": True,
+            "selected": True,
+            "state": "online",
+            "message": "自家 AI 已選用並在線。",
+            "modes": [{
+                "id": "complex",
+                "available": False,
+                "message": "目前選用的自家 AI 電腦未提供「複雜問題」模式。",
+            }],
+        }
+
+    monkeypatch.setattr(lmc_ai_client, "local_ai_availability", status)
+    monkeypatch.setattr(vote_api, "_committee_user", lambda _request: "alice")
+    monkeypatch.setattr(vote_api, "_vote_db", lambda: "vote-db")
+
+    response = asyncio.run(vote_api.ai_status(object()))
+    assert response.headers["cache-control"] == "no-store"
+    assert b'"selected":true' in response.body
+
+    with pytest.raises(vote_api.HTTPException) as exc_info:
+        vote_api._require_vote_ai_available("local", "vote-db")
+    assert exc_info.value.status_code == 503
+    assert "複雜問題" in str(exc_info.value.detail)
+    vote_api._require_vote_ai_available("gemini", "vote-db")
+
+
+def test_vote_page_polls_and_disables_local_ai_actions_when_unavailable():
+    page = (ROOT / "frontend/vote/index.html").read_text("utf-8")
+    assert 'id="voteAiStatus"' in page
+    assert 'fetch("/api/vote/ai-status"' in page
+    assert "localOption.disabled = !complexMode?.available" in page
+    assert "selectedVoteAiAvailable" in page
+    assert "requireSelectedVoteAi" in page
+    assert "setInterval(refreshLocalAiStatus, 10000)" in page
+
+
+def test_vote_page_does_not_report_success_for_tag_only_ai_failure():
+    page = (ROOT / "frontend/vote/index.html").read_text("utf-8")
+    submit_comment = page.split("async function submitComment", 1)[1].split(
+        "async function runAnalysis", 1,
+    )[0]
+
+    assert 'else if (data.status === "failed")' in submit_comment
+    assert 'toast(data.message || "⚠️ AI 回應失敗，未有新增留言。");' in submit_comment
+
+
+def test_vote_checks_local_node_before_saving_a_tagged_comment(monkeypatch):
+    from core import vote_logic
+
+    inserts = []
+    monkeypatch.setattr(vote_api, "_vote_db", lambda: object())
+    monkeypatch.setattr(vote_api, "_require_pending_motion", lambda *_args: None)
+    monkeypatch.setattr(
+        vote_logic, "insert_comment", lambda *args, **kwargs: inserts.append((args, kwargs)),
+    )
+
+    def unavailable(_choice, _db):
+        raise vote_api.HTTPException(503, "目前選用的自家 AI 電腦離線。")
+
+    monkeypatch.setattr(vote_api, "_require_vote_ai_available", unavailable)
+    with pytest.raises(vote_api.HTTPException, match="離線"):
+        vote_api.post_comment(
+            vote_api.CommentBody(
+                motion_type="topic_vote",
+                motion_key="辯題",
+                text="@AI 請分析",
+                ai_model="local",
+            ),
+            user_id="alice",
+        )
+    assert inserts == []
+
+
 def test_vote_api_keeps_sync_worker_boundary_for_blocking_db_dependencies():
     assert not inspect.iscoroutinefunction(vote_api.post_comment)
     assert not inspect.iscoroutinefunction(vote_api.ai_review)
@@ -162,8 +291,8 @@ def test_vote_api_keeps_sync_worker_boundary_for_blocking_db_dependencies():
 def test_vote_api_sync_bridge_awaits_review_transport(monkeypatch):
     calls = []
 
-    async def review(topic, category, difficulty, db, secrets):
-        calls.append((topic, category, difficulty, db, secrets))
+    async def review(topic, category, difficulty, db, secrets, model_label):
+        calls.append((topic, category, difficulty, db, secrets, model_label))
         return "reviewed", {"input_tokens": 1}
 
     fake_db = object()
@@ -177,14 +306,19 @@ def test_vote_api_sync_bridge_awaits_review_transport(monkeypatch):
     response = vote_api.ai_review(
         vote_api.AiReviewBody(
             topic="應否推行政策", category=vote_ai.CATEGORIES[0], difficulty=2,
+            ai_model="gemini",
         ),
         user_id="alice",
     )
 
-    assert response == {"status": "ok", "review": "reviewed"}
+    assert response == {
+        "status": "ok",
+        "review": "reviewed",
+        "model_label": "Gemini 3.5 Flash",
+    }
     assert calls == [(
         "應否推行政策", vote_ai.CATEGORIES[0], 2, fake_db,
-        {"GEMINI_API_KEY": "key"},
+        {"GEMINI_API_KEY": "key"}, "Gemini 3.5 Flash",
     )]
     assert logs == [(
         "alice", "vote_review", "reviewed", {"input_tokens": 1}, fake_db,

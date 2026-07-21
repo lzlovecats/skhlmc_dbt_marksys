@@ -53,9 +53,34 @@
   const modelByLabel = (label) =>
     meta?.models.find((model) => model.label === label);
   const currentModel = () => modelByLabel($("globalModel").value);
+  const localModeStatus = (mode = $("localMode").value) =>
+    meta?.local_ai?.modes?.find((item) => item.id === mode) || null;
+  const selectedModelStatus = () => {
+    const model = currentModel();
+    if (!model) return { available: false, message: "未能載入 AI 模型設定。" };
+    if (!model.local_node) {
+      return {
+        available: Boolean(model.available),
+        message: model.available ? "" : `未設定 ${model.api_key_name}。`,
+      };
+    }
+    if (!meta?.local_ai?.available) {
+      return {
+        available: false,
+        message: meta?.local_ai?.message || "自家 AI 暫時未準備好。",
+      };
+    }
+    const mode = localModeStatus();
+    return {
+      available: Boolean(mode?.available),
+      message: mode?.message || "所選自家 AI 回答模式暫時不可用。",
+    };
+  };
+  window.AICoachSelectedModelStatus = selectedModelStatus;
   const effectiveSearchModel = (model) => {
     if (model?.supports_web_search) return model;
-    const fallback = modelByLabel(meta?.default_model);
+    if (model?.local_node) return null;
+    const fallback = modelByLabel(meta?.external_default_model);
     return fallback?.supports_web_search ? fallback : null;
   };
   const hkd = (amount) => `HKD ${Number(amount || 0).toFixed(4)}`;
@@ -110,6 +135,7 @@
       $("reviewFormat"),
       $("reviewMode"),
       $("globalModel"),
+      $("localMode"),
     ].forEach((element) => {
       element.disabled = locked;
     });
@@ -452,6 +478,11 @@
   }
 
   async function run(feature, payload, outputId, downloadId) {
+    const selectedStatus = selectedModelStatus();
+    if (!selectedStatus.available) {
+      toast(`⚠️ ${selectedStatus.message}`);
+      return null;
+    }
     const prepProjectId = (
       ["strategy", "speech_review"].includes(feature)
       ? Number($("prepProjectId")?.value) : 0
@@ -472,6 +503,7 @@
           ...payload,
           feature,
           model_label: $("globalModel").value,
+          local_mode: $("localMode").value,
           ...(
             ["strategy", "speech_review"].includes(feature)
             && prepProjectId
@@ -502,6 +534,29 @@
   function syncModel() {
     const model = currentModel();
     if (!model) return;
+    $("localModeWrap").classList.toggle("hidden", !model.local_node);
+    const localOption = Array.from($("globalModel").options).find(
+      (option) => modelByLabel(option.value)?.local_node,
+    );
+    if (localOption) localOption.disabled = !meta?.local_ai?.available;
+    Array.from($("localMode").options).forEach((option) => {
+      option.disabled = !Boolean(
+        meta?.local_ai?.modes?.find((item) => item.id === option.value)?.available,
+      );
+    });
+    const selectedStatus = selectedModelStatus();
+    const localStatus = meta?.local_ai || {};
+    const unavailableModeMessages = Array.from(new Set(
+      (localStatus.modes || [])
+        .filter((item) => !item.available && item.message !== localStatus.message)
+        .map((item) => item.message)
+        .filter(Boolean),
+    ));
+    $("localAiStatus").textContent = [
+      `自家 AI：${localStatus.message || "正在檢查狀態…"}`,
+      ...unavailableModeMessages,
+    ].join(" ");
+    $("localAiStatus").classList.toggle("warn", !localStatus.available);
     const searchModel = effectiveSearchModel(model);
     const searchReady = Boolean(searchModel?.available);
     const searchEstimate = (feature) =>
@@ -531,6 +586,8 @@
       warnings.push("你正在使用高級模型。請確保不要濫用，避免資金用盡。");
     if (!model.available)
       warnings.push(`未設定 ${model.api_key_name}，此模型暫時未能使用。`);
+    if (model.local_node && !selectedStatus.available)
+      warnings.push(selectedStatus.message);
     if (meta.fund.balance_hkd < meta.fund.low_balance_hkd)
       warnings.push(
         `AI基金餘額偏低：HKD ${meta.fund.balance_hkd.toFixed(2)}。建議新增資金。`,
@@ -551,7 +608,9 @@
       ? ""
       : searchModel
         ? `<div class="notice warn">⚠️ ${esc(model.label)} 不支援上網搜尋；搵料及 Fact Check 會自動改用 ${esc(searchModel.label)}。下列估算已按替代模型顯示。</div>`
-        : '<div class="notice warn">⚠️ 此不支援上網搜尋，而預設搜尋模型亦不可用。請改選支援搜尋的模型。</div>';
+        : model.local_node
+          ? '<div class="notice warn">⚠️ 自家 AI 暫未支援上網搜尋，亦不會自動轉用雲端；請手動改選支援搜尋的 Gemini 模型。</div>'
+          : '<div class="notice warn">⚠️ 此不支援上網搜尋，而預設搜尋模型亦不可用。請改選支援搜尋的模型。</div>';
     const searchAvailabilityWarning = searchModel?.available
       ? ""
       : searchModel
@@ -563,7 +622,9 @@
       searchWarning + searchAvailabilityWarning;
     const liveProviderWarning = model.label.startsWith("Gemini")
       ? ""
-      : `<div class="notice warn">⚠️ 目前模型為 ${esc(model.label)}，不支援 Live；開始時會改用 Gemini Live。</div>`;
+      : model.local_node
+        ? `<div class="notice warn">⚠️ 目前模型為 ${esc(model.label)}，不支援 Live，亦不會自動轉雲端；請手動改選支援搜尋的 Gemini 模型。</div>`
+        : `<div class="notice warn">⚠️ 目前模型為 ${esc(model.label)}，不支援 Live；開始時會改用 Gemini Live。</div>`;
     const liveResearchWarning = model.supports_web_search
       ? searchAvailabilityWarning
       : searchModel
@@ -603,6 +664,11 @@
       const submit = form.querySelector("button.primary");
       if (submit) submit.disabled = !searchReady;
     });
+    [$("strategyForm").querySelector("button.primary"), $("reviewSubmit")]
+      .forEach((button) => {
+        if (button) button.disabled = model.local_node && !selectedStatus.available;
+      });
+    document.dispatchEvent(new CustomEvent("ai-coach-model-status"));
     $("liveCountryRetry")?.addEventListener("click", () => location.reload());
     $("mockCountryRetry")?.addEventListener("click", () => location.reload());
   }
@@ -619,6 +685,7 @@
           side,
           debate_format: format,
           model_label: $("globalModel").value,
+          local_mode: $("localMode").value,
         }),
       });
       location.href =
@@ -817,7 +884,17 @@
 
   async function boot() {
     try {
-      meta = await api("/api/ai-coach/data");
+      const [data, localStatus] = await Promise.all([
+        api("/api/ai-coach/data"),
+        api("/api/ai-coach/local-status").catch((error) => ({
+          available: false,
+          selected: false,
+          state: "unavailable",
+          message: error.message || "未能讀取自家 AI 狀態。",
+          modes: [],
+        })),
+      ]);
+      meta = { ...data, local_ai: localStatus };
       const budget = meta.bandwidth_budget || {};
       const usedGb = Number(budget.total_bytes || 0) / 1e9;
       const fmtLimit = (bytes) =>
@@ -865,6 +942,22 @@
       if (error.message !== "未登入") toast(`⚠️ ${error.message}`);
       return false;
     }
+  }
+
+  async function refreshLocalAiStatus() {
+    if (!meta) return;
+    try {
+      meta.local_ai = await api("/api/ai-coach/local-status");
+    } catch (error) {
+      meta.local_ai = {
+        available: false,
+        selected: false,
+        state: "unavailable",
+        message: error.message || "未能讀取自家 AI 狀態。",
+        modes: [],
+      };
+    }
+    syncModel();
   }
 
   function startReviewRetake() {
@@ -923,6 +1016,7 @@
     }
   });
   $("globalModel").addEventListener("change", syncModel);
+  $("localMode").addEventListener("change", syncModel);
   $("reviewTopic").addEventListener("input", () =>
     resetReviewCycle("辯題已更改，請重新分析發言。"),
   );
@@ -1181,4 +1275,5 @@
   });
 
   boot();
+  setInterval(refreshLocalAiStatus, 10000);
 })();

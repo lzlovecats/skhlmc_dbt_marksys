@@ -2,7 +2,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const DEFAULT_MODE = "fast";
+  const DEFAULT_MODE = "daily";
   let bootstrap = null;
   let storageKey = "";
   let conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
@@ -21,7 +21,10 @@
   }
 
   function normalizeMode(value) {
-    return value === "thinking" ? "thinking" : DEFAULT_MODE;
+    const migrated = { fast: "daily", thinking: "complex" }[value] || value;
+    return ["daily", "complex", "deep"].includes(migrated)
+      ? migrated
+      : DEFAULT_MODE;
   }
 
   function fingerprintForMode(mode) {
@@ -36,7 +39,11 @@
   }
 
   function modeLabel(mode) {
-    return normalizeMode(mode) === "thinking" ? "深入思考" : "快速回答";
+    return {
+      daily: "日常預設（4B）",
+      complex: "複雜問題（4B Thinking）",
+      deep: "深入思考（9B Thinking）",
+    }[normalizeMode(mode)];
   }
 
   function loadLocal() {
@@ -50,10 +57,6 @@
         if (messages.length <= bootstrap.history_limits.messages &&
             totalCharacters(messages) <= bootstrap.history_limits.characters) {
           let mode = normalizeMode(value.mode);
-          if (value.mode !== "fast" && value.mode !== "thinking" &&
-              value.fingerprint === fingerprintForMode("thinking")) {
-            mode = "thinking";
-          }
           conversation = { fingerprint: value.fingerprint, mode, messages };
         }
       }
@@ -118,13 +121,60 @@
       ? "Developer 試用"
       : `已登入：${bootstrap.identity.id}`;
     $("thinkingMode").value = conversation.mode;
+    Array.from($("thinkingMode").options).forEach((option) => {
+      option.disabled = !fingerprintForMode(option.value);
+    });
     const currentFingerprint = fingerprintForMode(conversation.mode);
     backendChanged = Boolean(
       conversation.messages.length && conversation.fingerprint &&
       currentFingerprint && conversation.fingerprint !== currentFingerprint,
     );
     if (backendChanged) setNotice("AI 電腦、模型或 persona 已更新。舊對話仍可查看，但必須開始新對話先可以繼續。");
+    renderNodes();
     updateControls();
+  }
+
+  function renderNodes() {
+    const grid = $("nodeGrid");
+    const nodes = Array.isArray(bootstrap?.nodes) ? bootstrap.nodes : [];
+    grid.replaceChildren();
+    if (!nodes.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "尚未登記 AI 電腦。";
+      grid.append(empty);
+      return;
+    }
+    const labels = {
+      online: "在線",
+      busy: "生成中",
+      draining: "準備休眠／暫停接單",
+      offline: "離線",
+    };
+    nodes.forEach((node) => {
+      const card = document.createElement("article");
+      card.className = "node-card";
+      const title = document.createElement("h2");
+      title.textContent = `${node.selected ? "★ " : ""}${node.name || "AI 電腦"}`;
+      const meta = document.createElement("div");
+      meta.className = "node-meta";
+      const modelText = Array.isArray(node.models) && node.models.length
+        ? node.models.join("、")
+        : "等待新 node preflight";
+      [
+        `狀態：${labels[node.state] || "未知"}`,
+        node.selected ? "目前選用" : "備用電腦",
+        `模型：${modelText}`,
+        `排隊：${Number(node.queue_length || 0)}`,
+      ].forEach((text) => {
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = text;
+        meta.append(pill);
+      });
+      card.append(title, meta);
+      grid.append(card);
+    });
   }
 
   function updateControls() {
@@ -134,7 +184,8 @@
     const limits = bootstrap.history_limits;
     const capReached = conversation.messages.length + 2 > limits.messages ||
       totalCharacters(conversation.messages) >= limits.characters;
-    $("sendButton").disabled = running || backendChanged || !serviceReady || capReached;
+    const modeReady = Boolean(fingerprintForMode(conversation.mode));
+    $("sendButton").disabled = running || backendChanged || !serviceReady || !modeReady || capReached;
     $("stopButton").disabled = !running;
     $("messageInput").disabled = running || backendChanged;
     $("thinkingMode").disabled = running;
@@ -375,6 +426,15 @@
   $("sendButton").onclick = sendMessage;
   $("stopButton").onclick = () => abortController?.abort();
   $("thinkingMode").onchange = switchConversationMode;
+  document.querySelectorAll("[data-panel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-panel]").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach((panel) => panel.classList.add("hidden"));
+      button.classList.add("active");
+      $(button.dataset.panel).classList.remove("hidden");
+      $("composer").classList.toggle("hidden", button.dataset.panel !== "chatPanel");
+    });
+  });
   $("newChat").onclick = () => clearConversation("開始新對話");
   $("deleteChat").onclick = () => clearConversation("刪除對話");
   $("loginButton").onclick = async () => {

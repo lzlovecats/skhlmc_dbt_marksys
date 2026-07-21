@@ -18,7 +18,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 try:
     import httpx
@@ -34,8 +36,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from ai_model_config import (  # noqa: E402
     LMC_AI_CONTEXT_LENGTH as CONTEXT_LENGTH,
-    LMC_AI_FALLBACK_MODEL as FALLBACK_MODEL,
-    LMC_AI_PRIMARY_MODEL as PRIMARY_MODEL,
+    LMC_AI_DEEP_MODEL as DEEP_MODEL,
+    LMC_AI_DEFAULT_MODEL as DEFAULT_MODEL,
 )
 from system_limits import (  # noqa: E402
     LMC_AI_HEARTBEAT_INTERVAL_SECONDS as HEARTBEAT_SECONDS,
@@ -47,7 +49,18 @@ from system_limits import (  # noqa: E402
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 SERVICE_NAME = "skhlmc-lmc-ai-node.service"
+AUTO_DRAIN_SERVICE = "skhlmc-lmc-ai-auto-drain.service"
+AUTO_DRAIN_TIMER = "skhlmc-lmc-ai-auto-drain.timer"
+AUTO_SUSPEND_SERVICE = "skhlmc-lmc-ai-auto-suspend.service"
+AUTO_SUSPEND_TIMER = "skhlmc-lmc-ai-auto-suspend.timer"
+AUTO_RESUME_SERVICE = "skhlmc-lmc-ai-auto-resume.service"
+AUTO_RESUME_TIMER = "skhlmc-lmc-ai-auto-resume.timer"
 DEFAULT_CONFIG = Path.home() / ".config" / "skhlmc-lmc-ai" / "node.json"
+MODEL_PROFILE_VERSION = 2
+AUTO_POWER_TIMEZONE = "Asia/Hong_Kong"
+AUTO_POWER_DRAIN_AT = "23:55"
+AUTO_POWER_SUSPEND_AT = "00:00"
+AUTO_POWER_WAKE_AT = "08:00"
 
 
 def _load(path: Path) -> dict:
@@ -80,6 +93,19 @@ def _public_config(config: dict) -> dict:
     return {key: value for key, value in config.items() if key != "token"}
 
 
+def _auto_power_config(config: dict) -> dict:
+    value = config.get("auto_power")
+    value = value if isinstance(value, dict) else {}
+    return {
+        "enabled": bool(value.get("enabled", False)),
+        "mode": "suspend_rtc",
+        "timezone": AUTO_POWER_TIMEZONE,
+        "drain_at": AUTO_POWER_DRAIN_AT,
+        "suspend_at": AUTO_POWER_SUSPEND_AT,
+        "wake_at": AUTO_POWER_WAKE_AT,
+    }
+
+
 def _normalise_server(value: str) -> str:
     parsed = urlparse(value.strip().rstrip("/"))
     if parsed.scheme not in {"https", "wss"} or not parsed.netloc:
@@ -95,6 +121,20 @@ def configure(args) -> int:
     name_default = existing.get("name", socket.gethostname())
     server = input(f"System 地址 [{server_default or 'https://example.com'}]: ").strip() or server_default
     name = input(f"AI 電腦名稱 [{name_default}]: ").strip() or name_default
+    existing_auto_power = _auto_power_config(existing)
+    auto_default = "Y" if existing_auto_power["enabled"] else "N"
+    auto_answer = input(
+        "啟用每日 23:55 drain、00:00 休眠、08:00 RTC 喚醒？"
+        f"[y/N；目前 {auto_default}]: "
+    ).strip().lower()
+    if auto_answer in {"y", "yes"}:
+        auto_enabled = True
+    elif auto_answer in {"n", "no"}:
+        auto_enabled = False
+    elif not auto_answer:
+        auto_enabled = existing_auto_power["enabled"]
+    else:
+        raise SystemExit("自動開關機只接受 y 或 n。")
     token = getpass.getpass("Developer 一次性顯示嘅 node token（輸入時不顯示）: ").strip()
     if not token and existing.get("token"):
         keep = input("留空 token；保留現有 token？[y/N]: ").strip().lower()
@@ -108,18 +148,28 @@ def configure(args) -> int:
         raise SystemExit(str(exc)) from exc
     if not name or len(name) > NODE_NAME_MAX_CHARS:
         raise SystemExit(f"AI 電腦名稱必須為 1–{NODE_NAME_MAX_CHARS} 字。")
+    profile_current = existing.get("model_profile_version") == MODEL_PROFILE_VERSION
     _save(
         args.config,
         {
             "server_url": server_url,
             "name": name,
             "token": token,
-            "effective_model": existing.get("effective_model", ""),
-            "preflight_ready": bool(
-                existing.get("preflight_ready") and existing.get("effective_model")
+            "effective_model": (
+                existing.get("effective_model", "") if profile_current else ""
             ),
-            "preflight_at": existing.get("preflight_at", ""),
+            "available_models": (
+                existing.get("available_models", []) if profile_current else []
+            ),
+            "model_profile_version": MODEL_PROFILE_VERSION,
+            "preflight_ready": bool(
+                profile_current
+                and existing.get("preflight_ready")
+                and existing.get("effective_model") == DEFAULT_MODEL
+            ),
+            "preflight_at": existing.get("preflight_at", "") if profile_current else "",
             "draining": bool(existing.get("draining", False)),
+            "auto_power": {**existing_auto_power, "enabled": auto_enabled},
         },
     )
     print(f"已保存 config：{args.config}（mode 600）")
@@ -205,40 +255,60 @@ def preflight(args) -> int:
         _verify_local_binding()
         checks.append("Ollama localhost binding：OK")
         installed = _installed_models()
-        missing = [model for model in (PRIMARY_MODEL, FALLBACK_MODEL) if model not in installed]
-        if missing:
-            raise RuntimeError("未下載 model：" + "、".join(missing))
-        checks.append("兩個 models：OK")
+        if DEFAULT_MODEL not in installed:
+            raise RuntimeError("未下載日常預設 model：" + DEFAULT_MODEL)
+        checks.append("日常預設 model：已安裝")
     except Exception as exc:
-        config.update(preflight_ready=False, preflight_at="", effective_model="")
+        config.update(
+            preflight_ready=False,
+            preflight_at="",
+            effective_model="",
+            available_models=[],
+            model_profile_version=MODEL_PROFILE_VERSION,
+        )
         _save(args.config, config)
         print("\n".join(checks))
         raise SystemExit(f"Preflight 失敗：{exc}") from exc
 
-    selected = ""
+    available_models = []
     errors = []
-    for model in (PRIMARY_MODEL, FALLBACK_MODEL):
-        try:
-            print(f"測試 {model}…")
-            _model_probe(model)
-            selected = model
-            break
-        except Exception as exc:
-            errors.append(f"{model}: {exc}")
-    if not selected:
-        config.update(preflight_ready=False, preflight_at="", effective_model="")
+    try:
+        print(f"測試日常預設 {DEFAULT_MODEL}…")
+        _model_probe(DEFAULT_MODEL)
+        available_models.append(DEFAULT_MODEL)
+    except Exception as exc:
+        config.update(
+            preflight_ready=False,
+            preflight_at="",
+            effective_model="",
+            available_models=[],
+            model_profile_version=MODEL_PROFILE_VERSION,
+        )
         _save(args.config, config)
-        raise SystemExit("兩個 models 都未能通過 preflight：\n- " + "\n- ".join(errors))
+        raise SystemExit(f"日常預設 model 未能通過 preflight：{exc}") from exc
+
+    if DEEP_MODEL in installed:
+        try:
+            print(f"測試深入思考 {DEEP_MODEL}…")
+            _model_probe(DEEP_MODEL)
+            available_models.append(DEEP_MODEL)
+        except Exception as exc:
+            errors.append(f"{DEEP_MODEL}: {exc}")
+    else:
+        errors.append(f"{DEEP_MODEL}: 未安裝；深入思考模式暫停")
     config.update(
         preflight_ready=True,
         preflight_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        effective_model=selected,
+        effective_model=DEFAULT_MODEL,
+        available_models=available_models,
+        model_profile_version=MODEL_PROFILE_VERSION,
     )
     _save(args.config, config)
     print("\n".join(checks))
     for error in errors:
-        print("Fallback 原因：" + error)
-    print(f"Preflight 完成；effective model：{selected}")
+        print("選用模式未啟用：" + error)
+    print("Preflight 完成；日常預設：" + DEFAULT_MODEL)
+    print("可用 models：" + "、".join(available_models))
     return 0
 
 
@@ -267,29 +337,115 @@ WantedBy=multi-user.target
 """
 
 
+def _scheduled_service_unit(
+    description: str,
+    python: Path,
+    script: Path,
+    config: Path,
+    command: str,
+    *,
+    user: str = "",
+) -> str:
+    user_line = f"User={user}\n" if user else ""
+    return f"""[Unit]
+Description={description}
+After=network-online.target
+
+[Service]
+Type=oneshot
+{user_line}ExecStart={_systemd_quote(str(python))} {_systemd_quote(str(script))} --config {_systemd_quote(str(config))} {command}
+NoNewPrivileges=true
+PrivateTmp=true
+"""
+
+
+def _timer_unit(description: str, service: str, calendar: str, *, persistent: bool) -> str:
+    return f"""[Unit]
+Description={description}
+
+[Timer]
+OnCalendar={calendar} {AUTO_POWER_TIMEZONE}
+Unit={service}
+AccuracySec=1min
+Persistent={'true' if persistent else 'false'}
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def _service_files(user: str, python: Path, script: Path, config: Path) -> dict[str, str]:
+    return {
+        SERVICE_NAME: _systemd_unit(user, python, script, config),
+        AUTO_DRAIN_SERVICE: _scheduled_service_unit(
+            "SKHLMC local AI pre-suspend drain", python, script, config,
+            "scheduled-drain", user=user,
+        ),
+        AUTO_DRAIN_TIMER: _timer_unit(
+            "Drain SKHLMC local AI before nightly suspend",
+            AUTO_DRAIN_SERVICE, "*-*-* 23:55:00", persistent=False,
+        ),
+        AUTO_SUSPEND_SERVICE: _scheduled_service_unit(
+            "SKHLMC local AI nightly RTC suspend", python, script, config,
+            "scheduled-suspend",
+        ),
+        AUTO_SUSPEND_TIMER: _timer_unit(
+            "Suspend SKHLMC local AI nightly",
+            AUTO_SUSPEND_SERVICE, "*-*-* 00:00:00", persistent=False,
+        ),
+        AUTO_RESUME_SERVICE: _scheduled_service_unit(
+            "SKHLMC local AI post-wake resume", python, script, config,
+            "scheduled-resume", user=user,
+        ),
+        AUTO_RESUME_TIMER: _timer_unit(
+            "Resume SKHLMC local AI after RTC wake",
+            AUTO_RESUME_SERVICE, "*-*-* 08:00:00", persistent=True,
+        ),
+    }
+
+
 def install_service(args) -> int:
     if os.geteuid() == 0:
         raise SystemExit("請以 AI OS account 執行，唔好直接用 root。")
     config = _load(args.config)
-    if not config.get("preflight_ready"):
+    if (
+        not config.get("preflight_ready")
+        or config.get("model_profile_version") != MODEL_PROFILE_VERSION
+    ):
         raise SystemExit("請先完成 preflight。")
+    if _auto_power_config(config)["enabled"] and not shutil.which("rtcwake"):
+        raise SystemExit("已啟用自動休眠，但系統未安裝 rtcwake（util-linux）。")
     user = pwd.getpwuid(os.getuid()).pw_name
     script = Path(__file__).resolve()
-    unit = _systemd_unit(user, Path(sys.executable), script, args.config)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as stream:
-        stream.write(unit)
-        temporary = stream.name
+    units = _service_files(user, Path(sys.executable), script, args.config)
+    temporary_files = []
     try:
+        for filename, content in units.items():
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", delete=False
+            ) as stream:
+                stream.write(content)
+                temporary_files.append(stream.name)
+            subprocess.run(
+                [
+                    "sudo", "install", "-o", "root", "-g", "root", "-m", "0644",
+                    temporary_files[-1], f"/etc/systemd/system/{filename}",
+                ],
+                check=True,
+            )
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
         subprocess.run(
-            ["sudo", "install", "-o", "root", "-g", "root", "-m", "0644", temporary, f"/etc/systemd/system/{SERVICE_NAME}"],
+            [
+                "sudo", "systemctl", "enable", "--now", SERVICE_NAME,
+                AUTO_DRAIN_TIMER, AUTO_SUSPEND_TIMER, AUTO_RESUME_TIMER,
+            ],
             check=True,
         )
-        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
-        subprocess.run(["sudo", "systemctl", "enable", "--now", SERVICE_NAME], check=True)
     finally:
-        with suppress(FileNotFoundError):
-            os.unlink(temporary)
-    print(f"已安裝並啟動 {SERVICE_NAME}")
+        for temporary in temporary_files:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary)
+    print(f"已安裝並啟動 {SERVICE_NAME} 同自動運作 timers")
     return 0
 
 
@@ -334,6 +490,9 @@ class NodeClient:
                     "ready": bool(config.get("preflight_ready")),
                     "draining": bool(config.get("draining")),
                     "model": config.get("effective_model"),
+                    "models": config.get("available_models") or [
+                        config.get("effective_model")
+                    ],
                 }
             )
 
@@ -384,77 +543,66 @@ class NodeClient:
         if config.get("draining") or not config.get("preflight_ready"):
             await self.send({"type": "chat.error", "operation_id": operation_id, "code": "draining"})
             return
-        model = str(config.get("effective_model") or "")
+        requested_model = str(payload.get("model") or "").strip()
+        available_models = tuple(
+            str(item or "").strip()
+            for item in (config.get("available_models") or [])
+            if str(item or "").strip()
+        )
+        model = requested_model or str(config.get("effective_model") or "")
+        if model not in available_models:
+            await self.send({
+                "type": "chat.error",
+                "operation_id": operation_id,
+                "code": "model_unavailable",
+            })
+            return
         self.operation_id = operation_id
         self.cancel_event = asyncio.Event()
-        emitted = False
-        started_at = time.monotonic()
         _write_runtime_state(self.config_path, connected=True, active=True, model=model)
         try:
-            while True:
-                try:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=10)) as client:
-                        async with client.stream(
-                            "POST",
-                            f"{OLLAMA_URL}/api/chat",
-                            json={
-                                "model": model,
-                                "messages": messages,
-                                "stream": True,
-                                "think": thinking_enabled,
-                                "options": {"num_ctx": CONTEXT_LENGTH},
-                            },
-                        ) as response:
-                            # The HTTP request has now reached Ollama. Only from
-                            # this point may the server record a real attempt.
-                            await self.send({"type": "chat.started", "operation_id": operation_id, "model": model})
-                            response.raise_for_status()
-                            usage = {}
-                            async for line in response.aiter_lines():
-                                if self.cancel_event.is_set():
-                                    raise asyncio.CancelledError
-                                if not line:
-                                    continue
-                                item = json.loads(line)
-                                if item.get("error"):
-                                    raise RuntimeError(str(item["error"]))
-                                # Deliberately ignore message.thinking and tool_calls.
-                                content = str((item.get("message") or {}).get("content") or "")
-                                if content:
-                                    emitted = True
-                                    await self.send({"type": "chat.delta", "operation_id": operation_id, "text": content})
-                                if item.get("done"):
-                                    usage = {
-                                        "input_tokens": int(item.get("prompt_eval_count") or 0),
-                                        "output_tokens": int(item.get("eval_count") or 0),
-                                        "duration_ms": int(item.get("total_duration") or 0) // 1_000_000,
-                                    }
-                            await self.send({"type": "chat.complete", "operation_id": operation_id, "model": model, "usage": usage})
-                            break
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    detail = str(exc)
-                    can_fallback = (
-                        model == PRIMARY_MODEL
-                        and self._load_failure(detail)
-                        and self._fallback_allowed(
-                            messages,
-                            emitted,
-                            bool(payload.get("allow_model_fallback")),
-                        )
-                    )
-                    if can_fallback:
-                        model = FALLBACK_MODEL
-                        config = self.reload()
-                        config["effective_model"] = model
-                        config["preflight_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                        _save(self.config_path, config)
-                        await self.send({"type": "status", "ready": True, "draining": False, "model": model})
-                        continue
-                    code = "out_of_memory" if self._load_failure(detail) else "runtime_error"
-                    await self.send({"type": "chat.error", "operation_id": operation_id, "code": code})
-                    break
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS, connect=10)) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{OLLAMA_URL}/api/chat",
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "stream": True,
+                            "think": thinking_enabled,
+                            "options": {"num_ctx": CONTEXT_LENGTH},
+                        },
+                    ) as response:
+                        # The HTTP request has now reached Ollama. Only from
+                        # this point may the server record a real attempt.
+                        await self.send({"type": "chat.started", "operation_id": operation_id, "model": model})
+                        response.raise_for_status()
+                        usage = {}
+                        async for line in response.aiter_lines():
+                            if self.cancel_event.is_set():
+                                raise asyncio.CancelledError
+                            if not line:
+                                continue
+                            item = json.loads(line)
+                            if item.get("error"):
+                                raise RuntimeError(str(item["error"]))
+                            # Deliberately ignore message.thinking and tool_calls.
+                            content = str((item.get("message") or {}).get("content") or "")
+                            if content:
+                                await self.send({"type": "chat.delta", "operation_id": operation_id, "text": content})
+                            if item.get("done"):
+                                usage = {
+                                    "input_tokens": int(item.get("prompt_eval_count") or 0),
+                                    "output_tokens": int(item.get("eval_count") or 0),
+                                    "duration_ms": int(item.get("total_duration") or 0) // 1_000_000,
+                                }
+                        await self.send({"type": "chat.complete", "operation_id": operation_id, "model": model, "usage": usage})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                code = "out_of_memory" if self._load_failure(str(exc)) else "runtime_error"
+                await self.send({"type": "chat.error", "operation_id": operation_id, "code": code})
         finally:
             _write_runtime_state(self.config_path, connected=True, active=False, model=model)
             self.active_task = None
@@ -463,7 +611,12 @@ class NodeClient:
 
     async def session(self) -> None:
         config = self.reload()
-        if not config.get("preflight_ready") or not config.get("effective_model"):
+        if (
+            not config.get("preflight_ready")
+            or config.get("model_profile_version") != MODEL_PROFILE_VERSION
+            or config.get("effective_model") != DEFAULT_MODEL
+            or DEFAULT_MODEL not in (config.get("available_models") or [])
+        ):
             raise RuntimeError("preflight not ready")
         headers = {"Authorization": f"Bearer {config['token']}"}
         async with websockets.connect(
@@ -482,6 +635,7 @@ class NodeClient:
                     "runtime": "ollama",
                     "runtime_version": _run_checked(["ollama", "--version"], timeout=10).strip()[:80],
                     "model": config["effective_model"],
+                    "models": config["available_models"],
                     "ready": True,
                     "draining": bool(config.get("draining")),
                     "capabilities": {
@@ -540,7 +694,10 @@ async def run_forever(config_path: Path) -> None:
 
 def run(args) -> int:
     config = _load(args.config)
-    if not config.get("preflight_ready"):
+    if (
+        not config.get("preflight_ready")
+        or config.get("model_profile_version") != MODEL_PROFILE_VERSION
+    ):
         raise SystemExit("Preflight 未完成或已失效。")
     asyncio.run(run_forever(args.config))
     return 0
@@ -563,6 +720,58 @@ def set_drain(args, draining: bool) -> int:
                 return 0
             time.sleep(1)
         raise SystemExit("目前工作 180 秒內未完成；仍維持 draining，請用 status 檢查。")
+    return 0
+
+
+def _auto_power_enabled(config: dict) -> bool:
+    return _auto_power_config(config)["enabled"]
+
+
+def scheduled_drain(args) -> int:
+    if not _auto_power_enabled(_load(args.config)):
+        print("自動運作未啟用；略過 scheduled drain。")
+        return 0
+    return set_drain(args, True)
+
+
+def scheduled_resume(args) -> int:
+    config = _load(args.config)
+    if not _auto_power_enabled(config):
+        print("自動運作未啟用；略過 scheduled resume。")
+        return 0
+    config["draining"] = False
+    _save(args.config, config)
+    print("08:00 排程已恢復接收新工作。")
+    return 0
+
+
+def _next_wake_timestamp(now: datetime | None = None) -> int:
+    zone = ZoneInfo(AUTO_POWER_TIMEZONE)
+    current = now.astimezone(zone) if now is not None else datetime.now(zone)
+    wake = current.replace(hour=8, minute=0, second=0, microsecond=0)
+    if wake <= current:
+        wake += timedelta(days=1)
+    return int(wake.timestamp())
+
+
+def scheduled_suspend(args) -> int:
+    config = _load(args.config)
+    if not _auto_power_enabled(config):
+        print("自動運作未啟用；略過 scheduled suspend。")
+        return 0
+    if os.geteuid() != 0:
+        raise SystemExit("scheduled-suspend 必須由 root systemd service 執行。")
+    if not shutil.which("rtcwake"):
+        raise SystemExit("系統未安裝 rtcwake（util-linux）。")
+    wake_timestamp = _next_wake_timestamp()
+    wake_display = datetime.fromtimestamp(
+        wake_timestamp, ZoneInfo(AUTO_POWER_TIMEZONE)
+    ).strftime("%Y-%m-%d %H:%M %Z")
+    print(f"準備休眠；RTC 預定 {wake_display} 喚醒。", flush=True)
+    subprocess.run(
+        ["rtcwake", "--mode", "mem", "--time", str(wake_timestamp)],
+        check=True,
+    )
     return 0
 
 
@@ -592,6 +801,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("status").set_defaults(handler=status)
     sub.add_parser("drain").set_defaults(handler=lambda args: set_drain(args, True))
     sub.add_parser("resume").set_defaults(handler=lambda args: set_drain(args, False))
+    sub.add_parser("scheduled-drain").set_defaults(handler=scheduled_drain)
+    sub.add_parser("scheduled-suspend").set_defaults(handler=scheduled_suspend)
+    sub.add_parser("scheduled-resume").set_defaults(handler=scheduled_resume)
     return value
 
 

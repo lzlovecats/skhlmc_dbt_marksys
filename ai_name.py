@@ -2,3 +2,4 @@
 
 LMC_AI_NAME = "辯才天呂"
 LMC_AI_EMOJI = "🧚🏻‍♀️"
+LMC_AI_MODEL_LABEL = f"{LMC_AI_NAME}（自家模型）"

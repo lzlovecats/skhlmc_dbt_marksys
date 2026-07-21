@@ -55,12 +55,14 @@ def test_ai_coach_ui_prices_search_fallback_with_actual_default_model():
         "async function prepareLive", 1,
     )[0]
 
-    assert "const fallback = modelByLabel(meta?.default_model);" in source
+    assert "const fallback = modelByLabel(meta?.external_default_model);" in source
+    assert "if (model?.local_node) return null;" in source
     assert "const searchModel = effectiveSearchModel(model);" in sync_model
     assert 'searchEstimate("web_research")' in sync_model
     assert 'searchEstimate("fact_check")' in sync_model
     assert "下列估算已按替代模型顯示" in sync_model
     assert "Live 賽前搵料會自動改用" in sync_model
+    assert "亦不會自動轉用雲端" in sync_model
     assert "!country.supported || !searchReady" in sync_model
     assert '$("researchForm"), $("factForm")' in sync_model
 
@@ -87,6 +89,99 @@ def test_speech_review_audio_estimate_includes_representative_audio_tokens():
         "hkd": round(expected_usd * 7.8, 4),
     }
     assert with_audio["usd"] > text_only["usd"]
+
+
+def test_ai_coach_local_model_uses_selected_mode_without_cloud_fallback(monkeypatch):
+    from core import lmc_ai_client
+
+    captured = {}
+
+    async def local(db, **kwargs):
+        captured.update(db=db, **kwargs)
+        kwargs["on_provider_attempt"]()
+        return "自家回覆", {
+            "input_tokens": 5,
+            "output_tokens": 7,
+            "cost_source": "local_zero_cost",
+        }
+
+    monkeypatch.setattr(lmc_ai_client, "generate_local_text", local)
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: "coach-db")
+    attempted = []
+    body = ai_coach_api.CoachRequest(
+        feature="strategy", local_mode="deep",
+    )
+    config = ai_coach_api._config(ai_model_config.LMC_AI_INTERACTIVE_OPTION["label"])
+
+    result, usage = asyncio.run(ai_coach_api._generate(
+        config, "system", "user", body, "alice",
+        on_provider_attempt=lambda: attempted.append(True),
+    ))
+
+    assert result == "自家回覆"
+    assert usage["cost_source"] == "local_zero_cost"
+    assert captured["db"] == "coach-db"
+    assert captured["mode"] == "deep"
+    assert attempted == [True]
+
+
+def test_ai_coach_local_status_and_mode_gate_use_selected_runtime(monkeypatch):
+    from core import lmc_ai_client
+
+    async def status(_db):
+        return {
+            "available": True,
+            "selected": True,
+            "state": "online",
+            "message": "自家 AI 已選用並在線。",
+            "modes": [
+                {
+                    "id": "daily", "available": True,
+                    "message": "自家 AI 已選用並在線。",
+                },
+                {
+                    "id": "deep", "available": False,
+                    "message": "目前選用的自家 AI 電腦未提供「深入思考」模式。",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(lmc_ai_client, "local_ai_availability", status)
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: "coach-db")
+    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
+
+    response = asyncio.run(ai_coach_api.local_status(_request()))
+    payload = json.loads(response.body)
+    assert payload["available"] is True
+    assert payload["selected"] is True
+    assert response.headers["cache-control"] == "no-store"
+
+    config = ai_coach_api._config(
+        ai_model_config.LMC_AI_INTERACTIVE_OPTION["label"]
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(ai_coach_api._require_local_model_available(
+            config, "coach-db", "deep",
+        ))
+    assert exc_info.value.status_code == 503
+    assert "深入思考" in str(exc_info.value.detail)
+
+
+def test_ai_coach_browser_disables_offline_local_and_unavailable_9b_mode():
+    page = (ROOT / "frontend/ai_coach/index.html").read_text(encoding="utf-8")
+    source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
+    prep = (ROOT / "frontend/shared/competition-prep.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="localAiStatus"' in page
+    assert 'api("/api/ai-coach/local-status")' in source
+    assert "localOption.disabled = !meta?.local_ai?.available" in source
+    assert "option.disabled = !Boolean(" in source
+    assert "selectedModelStatus" in source
+    assert 'setInterval(refreshLocalAiStatus, 10000)' in source
+    assert "AICoachSelectedModelStatus" in prep
+    assert 'document.addEventListener("ai-coach-model-status"' in prep
 
 
 def test_speech_review_has_no_application_duration_or_two_mib_limit():
@@ -1339,7 +1434,9 @@ def test_prepare_live_provider_failure_has_safe_ledger_reason_and_no_store(monke
         lambda *args, **kwargs: ledger.append((args, kwargs)),
     )
     response = asyncio.run(ai_coach_api.prepare_live(
-        ai_coach_api.LivePrepareRequest(topic="辯題", mode="free"),
+        ai_coach_api.LivePrepareRequest(
+            topic="辯題", mode="free", model_label="Gemini 2.5 Flash",
+        ),
         _request("US"),
     ))
     payload = json.loads(response.body)

@@ -22,8 +22,12 @@ from ai_model_config import (
     AI_MODEL_OPTIONS,
     CUSTOM_LLM_OPTION,
     DEFAULT_AI_MODEL,
+    LMC_AI_DEFAULT_MODE,
+    LMC_AI_INTERACTIVE_OPTION,
+    LMC_AI_MODE_OPTIONS,
     resolve_interactive_model_settings,
 )
+from ai_name import LMC_AI_MODEL_LABEL
 from api.access import (
     require_interactive_features_available,
     require_page_user,
@@ -82,6 +86,7 @@ class CoachRequest(BaseModel):
     prep_project_id: int | None = Field(default=None, ge=1)
     prep_manuscript_id: int | None = Field(default=None, ge=1)
     operation_id: str = Field(default="", max_length=200)
+    local_mode: Literal["daily", "complex", "deep"] = LMC_AI_DEFAULT_MODE
 
 class LivePrepareRequest(BaseModel):
     topic: str = Field(max_length=500)
@@ -159,7 +164,29 @@ def _require_enabled_model(label, config, enabled_providers):
         raise HTTPException(400, "所選 AI Provider 已由開發者停用")
 
 
+async def _require_local_model_available(config, db, mode: str) -> None:
+    if not config.get("local_node"):
+        return
+    from core.lmc_ai_client import local_ai_availability
+
+    status = await local_ai_availability(db)
+    if not status.get("available"):
+        raise HTTPException(503, status.get("message") or "自家 AI 暫時未準備好。")
+    mode_status = next(
+        (item for item in status.get("modes", []) if item.get("id") == mode),
+        None,
+    )
+    if not mode_status or not mode_status.get("available"):
+        raise HTTPException(
+            503,
+            (mode_status or {}).get("message")
+            or "所選自家 AI 回答模式暫時不可用。",
+        )
+
+
 def _config(label, db=None):
+    if label == LMC_AI_MODEL_LABEL:
+        return dict(LMC_AI_INTERACTIVE_OPTION)
     if label == CUSTOM_LLM_OPTION["label"]:
         from deploy.proxy import _get_proxy_secret
         base_url = _get_proxy_secret(
@@ -493,6 +520,30 @@ def _stage_r2_audio(key: str, mime: str, expected_size: int) -> str:
 async def _generate(
     config, system, user, body, user_id="", *, on_provider_attempt=None
 ):
+    if config.get("local_node"):
+        if body.audio_intent_id:
+            await asyncio.to_thread(
+                _discard_audio_intent, str(user_id), body.audio_intent_id,
+            )
+            raise HTTPException(
+                400,
+                "自家 AI 暫未支援錄音分析；請改選支援錄音的 Gemini 模型。",
+            )
+        from core.lmc_ai_client import LocalAIError, generate_local_text
+        from deploy.proxy import get_vote_db
+
+        try:
+            return await generate_local_text(
+                get_vote_db(),
+                actor_id=str(user_id or "ai-coach"),
+                system_prompt=system,
+                user_prompt=user,
+                mode=body.local_mode,
+                operation_stage=f"ai_coach_{body.feature}"[:80],
+                on_provider_attempt=on_provider_attempt,
+            )
+        except LocalAIError as exc:
+            raise HTTPException(503, str(exc)) from exc
     from deploy.proxy import _get_proxy_secret
     key_name = config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"] == "openrouter" else "GEMINI_API_KEY")
     key = _get_proxy_secret(key_name).strip()
@@ -688,7 +739,28 @@ def data(request: Request):
     from core.config_store import get_config
     low_balance_hkd = float(get_config(db, "ai_fund_low_balance_hkd", 100) or 100)
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
-    models=[]
+    models=[{
+        "label": LMC_AI_MODEL_LABEL,
+        "selection_label": "",
+        "supports_audio": False,
+        "supports_web_search": False,
+        "note": (
+            LMC_AI_INTERACTIVE_OPTION["pricing_note"] + " "
+            + LMC_AI_INTERACTIVE_OPTION["paid_rate_note"]
+        ),
+        "pricing_label": LMC_AI_INTERACTIVE_OPTION["pricing_label"],
+        "is_premium": False,
+        "api_key_name": "",
+        "available": True,
+        "local_node": True,
+        "estimates": {
+            feature: {"usd": 0, "hkd": 0}
+            for feature in (
+                "strategy", "speech_review", "web_research", "fact_check",
+                "speech_review_audio",
+            )
+        },
+    }]
     for label,item in AI_MODEL_OPTIONS.items():
         if item["provider"] not in enabled_providers:
             continue
@@ -720,7 +792,12 @@ def data(request: Request):
         and int(bandwidth.get("total_bytes") or 0) < int(bandwidth.get("stop_live_bytes") or 0)
     )
     payload = {
-        "models": models, "default_model": runtime_default_model,
+        "models": models, "default_model": LMC_AI_MODEL_LABEL,
+        "external_default_model": runtime_default_model,
+        "local_modes": [
+            {"id": mode, **config}
+            for mode, config in LMC_AI_MODE_OPTIONS.items()
+        ],
         "topics": [dict(x) for x in topics.to_dict("records")],
         "matches": [dict(x) for x in matches.to_dict("records")],
         "formats": {name: get_debate_timer_config(name) for name in DEBATE_FORMATS},
@@ -742,6 +819,16 @@ def data(request: Request):
         },
     }
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/local-status")
+async def local_status(request: Request):
+    _context(request)
+    from core.lmc_ai_client import local_ai_availability
+    from deploy.proxy import get_vote_db
+
+    status = await local_ai_availability(get_vote_db())
+    return JSONResponse(status, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/mock-plan")
@@ -845,18 +932,25 @@ async def run(body: CoachRequest, request: Request):
             }
         _validate_coach_request(body)
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
-    model_label = _requested_model_label(body, runtime_default_model)
+    model_label = _requested_model_label(body, LMC_AI_MODEL_LABEL)
     config = _config(model_label, db)
     _require_enabled_model(model_label, config, enabled_providers)
     if (
         body.feature in ("web_research", "fact_check")
         and not config.get("supports_web_search")
     ):
+        if config.get("local_node"):
+            raise HTTPException(
+                400,
+                "自家 AI 暫未支援上網搜尋；請手動改選支援搜尋的 Gemini 模型。",
+            )
         # Never present an ungrounded custom-model answer as web research.
         config = AI_MODEL_OPTIONS[runtime_default_model]
         model_label = runtime_default_model
-    key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")
-    if not _get_proxy_secret(key_name): raise HTTPException(503,f"未設定 {key_name}")
+    await _require_local_model_available(config, db, body.local_mode)
+    if not config.get("local_node"):
+        key_name=config.get("api_key") or ("OPENROUTER_API_KEY" if config["provider"]=="openrouter" else "GEMINI_API_KEY")
+        if not _get_proxy_secret(key_name): raise HTTPException(503,f"未設定 {key_name}")
     operation_id = body.operation_id.strip() if prep_bundle is not None else "coach-" + secrets.token_urlsafe(18)
     if prep_bundle is not None and prep_run_type:
         try:
@@ -872,7 +966,7 @@ async def run(body: CoachRequest, request: Request):
                 headers={"Cache-Control": "no-store"},
             )
     system, user = _message(body, db)
-    if body.feature in ("speech_review", "strategy"):
+    if body.feature in ("speech_review", "strategy") and not config.get("local_node"):
         try:
             from core.rag import retrieve_rag_context
             rag = await retrieve_rag_context(db, _get_proxy_secret("GEMINI_API_KEY").strip(),
@@ -897,7 +991,7 @@ async def run(body: CoachRequest, request: Request):
             on_provider_attempt=mark_primary_attempt,
         )
     except HTTPException as exc:
-        if config.get("provider") == "custom":
+        if config.get("provider") == "custom" and not config.get("local_node"):
             primary_error = (
                 str(exc.detail)[:300]
                 if exc.status_code < 500
@@ -1013,10 +1107,15 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     if budget_error: raise HTTPException(429,budget_error)
     db = proxy.get_vote_db()
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
-    model_label = _requested_model_label(body, runtime_default_model)
+    model_label = _requested_model_label(body, LMC_AI_MODEL_LABEL)
     config = _config(model_label, db)
     _require_enabled_model(model_label, config, enabled_providers)
     if not config.get("supports_web_search"):
+        if config.get("local_node"):
+            raise HTTPException(
+                400,
+                "自家 AI 暫未支援 Live 賽前上網搵料；請手動改選支援搜尋的 Gemini 模型。",
+            )
         config=AI_MODEL_OPTIONS[runtime_default_model]
         model_label=runtime_default_model
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"

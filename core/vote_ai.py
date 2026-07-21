@@ -4,9 +4,10 @@ import logging
 
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, is_non_member_account
 from ai_model_config import (
-    AI_MODEL_OPTIONS, NON_MANUAL_DEFAULT_AI_MODEL,
+    AI_MODEL_OPTIONS, LMC_AI_INTERACTIVE_OPTION, NON_MANUAL_DEFAULT_AI_MODEL,
     NON_MANUAL_MODEL_OPTIONS, get_feature_model,
 )
+from ai_name import LMC_AI_MODEL_LABEL
 from prompts import (
     VOTE_BANK_ANALYSIS_SYSTEM_PROMPT,
     VOTE_DISCUSSION_SYSTEM_PROMPT,
@@ -53,14 +54,26 @@ def _model_config(model_label=None, feature="vote_discussion"):
     else:
         label, feature_config = get_feature_model(feature)
         return {**feature_config, "label": label}
+    local_config = (
+        LMC_AI_INTERACTIVE_OPTION if label == LMC_AI_MODEL_LABEL else None
+    )
     config = (
-        NON_MANUAL_MODEL_OPTIONS.get(label)
+        local_config
+        or NON_MANUAL_MODEL_OPTIONS.get(label)
         or AI_MODEL_OPTIONS.get(label)
         or NON_MANUAL_MODEL_OPTIONS.get(NON_MANUAL_DEFAULT_AI_MODEL)
     )
     if not config:
         return None
-    return {**config, "label": label if label in AI_MODEL_OPTIONS or label in NON_MANUAL_MODEL_OPTIONS else NON_MANUAL_DEFAULT_AI_MODEL}
+    known = (
+        label == LMC_AI_MODEL_LABEL
+        or label in AI_MODEL_OPTIONS
+        or label in NON_MANUAL_MODEL_OPTIONS
+    )
+    return {
+        **config,
+        "label": label if known else NON_MANUAL_DEFAULT_AI_MODEL,
+    }
 
 
 def _usage_record(model, actual=None):
@@ -110,6 +123,7 @@ def _format_ai_error(provider):
 
 async def generate_general_ai_reply(
     system_prompt, user_text, secrets, model_label=None, *, feature="vote_discussion",
+    db=None,
 ):
     user_text = str(user_text or "")
     if len(user_text) > VOTE_AI_PROMPT_MAX_CHARS:
@@ -118,6 +132,26 @@ async def generate_general_ai_reply(
     if not model:
         return "❌ 未能載入 AI 模型設定。", None
     provider = str(model.get("provider") or "").lower()
+    if model.get("local_node"):
+        from core.lmc_ai_client import LocalAIError, generate_local_text
+
+        try:
+            text, actual_usage = await generate_local_text(
+                db,
+                actor_id="vote-ai",
+                system_prompt=system_prompt,
+                user_prompt=user_text,
+                mode="complex",
+                operation_stage=feature,
+            )
+            return text, _usage_record(model, actual_usage)
+        except LocalAIError:
+            logger.exception("Vote AI local-node request failed (feature=%s)", feature)
+            return (
+                "❌ 自家 AI 暫時未能完成回覆，請稍後再試或手動改選 "
+                f"{NON_MANUAL_DEFAULT_AI_MODEL}。",
+                None,
+            )
     key_name = str(
         model.get("api_key")
         or ("GEMINI_API_KEY" if provider == "gemini" else "OPENROUTER_API_KEY")
@@ -196,7 +230,7 @@ def gather_topic_review_context(category, difficulty, db):
     return "\n".join(lines)
 
 
-async def review_topic(topic, category, difficulty, db, secrets):
+async def review_topic(topic, category, difficulty, db, secrets, model_label=None):
     difficulty_label = DIFFICULTY_OPTIONS.get(int(difficulty), str(difficulty))
     user_text = build_vote_topic_review_prompt(
         topic,
@@ -208,7 +242,7 @@ async def review_topic(topic, category, difficulty, db, secrets):
     )
     return await generate_general_ai_reply(
         VOTE_TOPIC_REVIEW_SYSTEM_PROMPT, user_text, secrets,
-        feature="vote_review",
+        feature="vote_review", model_label=model_label, db=db,
     )
 
 
@@ -255,12 +289,12 @@ def gather_bank_analysis_context(db):
     return "\n".join(summary_lines), topic_lines
 
 
-async def analyze_topic_bank(db, secrets):
+async def analyze_topic_bank(db, secrets, model_label=None):
     bank_summary, topic_lines = gather_bank_analysis_context(db)
     user_text = build_vote_bank_analysis_prompt(bank_summary, topic_lines)
     return await generate_general_ai_reply(
         VOTE_BANK_ANALYSIS_SYSTEM_PROMPT, user_text, secrets,
-        feature="vote_analysis",
+        feature="vote_analysis", model_label=model_label, db=db,
     )
 
 
@@ -357,21 +391,28 @@ def gather_vote_history_analysis_context(vote_df, db):
     return "\n".join(summary_lines), member_lines, category_lines, reason_lines
 
 
-async def analyze_vote_history(vote_df, db, secrets):
+async def analyze_vote_history(vote_df, db, secrets, model_label=None):
     overall_summary, member_lines, category_lines, reason_lines = gather_vote_history_analysis_context(vote_df, db)
     user_text = build_vote_history_analysis_prompt(overall_summary, member_lines, category_lines, reason_lines)
     return await generate_general_ai_reply(
         VOTE_HISTORY_ANALYSIS_SYSTEM_PROMPT, user_text, secrets,
-        feature="vote_analysis",
+        feature="vote_analysis", model_label=model_label, db=db,
     )
 
 
 def extract_gemini_question(comment):
-    idx = str(comment or "").lower().find("@gemini")
-    if idx == -1:
+    value = str(comment or "")
+    lowered = value.lower()
+    matches = []
+    for tag in ("@gemini", "@ai", "@辯才天呂"):
+        index = lowered.find(tag)
+        if index >= 0:
+            matches.append((index, tag))
+    if not matches:
         return None
-    question = str(comment)[idx + len("@gemini"):].strip().lstrip("：:，, ").strip()
-    return question or str(comment).strip()
+    index, tag = min(matches)
+    question = value[index + len(tag):].strip().lstrip("：:，, ").strip()
+    return question or value.strip()
 
 
 def build_motion_background(motion_type, motion_key, db):
@@ -393,7 +434,9 @@ def build_motion_background(motion_type, motion_key, db):
     return "\n".join(lines)
 
 
-async def discussion_reply(motion_type, motion_key, comments, db, secrets, question=None):
+async def discussion_reply(
+    motion_type, motion_key, comments, db, secrets, question=None, model_label=None
+):
     recent_comments = comments[-VOTE_AI_DISCUSSION_COMMENT_LIMIT:]
     discussion_lines = [f"{c['user_id']}：{str(c['comment_text'])[:2000]}" for c in recent_comments]
     removal_reasons = None
@@ -413,5 +456,5 @@ async def discussion_reply(motion_type, motion_key, comments, db, secrets, quest
     )
     return await generate_general_ai_reply(
         VOTE_DISCUSSION_SYSTEM_PROMPT, user_text, secrets,
-        feature="vote_discussion",
+        feature="vote_discussion", model_label=model_label, db=db,
     )
