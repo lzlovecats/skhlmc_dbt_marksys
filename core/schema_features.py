@@ -19,7 +19,7 @@ FEATURE_MIGRATION_VERSIONS: dict[str, str | None] = {
     "data_factory": "20260720_0009",
     "lmc_ai": "20260720_0010",
     "dataset_model": None,
-    "eval": None,
+    "eval": "20260721_0001",
     "rag": None,
 }
 

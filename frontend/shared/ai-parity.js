@@ -535,6 +535,7 @@
     const model = currentModel();
     if (!model) return;
     $("localModeWrap").classList.toggle("hidden", !model.local_node);
+    $("localAiStatus").classList.toggle("hidden", !model.local_node);
     const localOption = Array.from($("globalModel").options).find(
       (option) => modelByLabel(option.value)?.local_node,
     );

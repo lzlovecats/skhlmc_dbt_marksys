@@ -153,7 +153,8 @@ async def _active_service(db) -> tuple[str, dict | None, bool, dict[str, str]]:
         for mode, config in LMC_AI_MODE_OPTIONS.items():
             if config["model"] in available_models:
                 fingerprints[mode] = backend_fingerprint(
-                    active_node_id, config["model"], config["thinking"]
+                    active_node_id, config["model"], config["thinking"],
+                    model_digest=(snapshot.get("model_digests") or {}).get(config["model"], ""),
                 )
         # Cached pre-mode clients continue to work during the node rollout.
         if "daily" in fingerprints:

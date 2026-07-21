@@ -11,6 +11,24 @@
   let backendChanged = false;
   let pollGeneration = 0;
   let conversationGeneration = 0;
+  let abBootstrap = null;
+  let abAssignment = null;
+  let abGeneration = 0;
+  let abBusy = false;
+  let activePanel = "chatPanel";
+
+  const reviewQuestions = [
+    ["overall", "整體偏好"],
+    ["cantonese", "香港粵語自然度"],
+    ["reasoning", "論證／推理"],
+    ["usefulness", "具體及實用程度"],
+    ["factual", "事實可靠性"],
+    ["privacy", "私隱及安全"],
+  ];
+  const reviewChoices = [
+    ["left", "答案 A 較好"], ["right", "答案 B 較好"],
+    ["tie", "相若"], ["both_bad", "兩個都不合格"],
+  ];
 
   function totalCharacters(messages) {
     return messages.reduce((sum, item) => sum + String(item.content || "").length, 0);
@@ -209,6 +227,203 @@
     return payload;
   }
 
+  function setAbNotice(message) {
+    $("abNotice").textContent = message || "";
+    $("abNotice").classList.toggle("show", Boolean(message));
+  }
+
+  function metric(label, value) {
+    const card = document.createElement("div");
+    card.className = "ab-metric";
+    const strong = document.createElement("strong");
+    strong.textContent = String(value);
+    const caption = document.createElement("span");
+    caption.className = "caption";
+    caption.textContent = label;
+    card.append(strong, caption);
+    return card;
+  }
+
+  function renderReviewQuestions() {
+    const container = $("abReviewQuestions");
+    container.replaceChildren();
+    reviewQuestions.forEach(([name, label]) => {
+      const fieldset = document.createElement("fieldset");
+      fieldset.className = "review-row";
+      const legend = document.createElement("legend");
+      legend.textContent = label;
+      const options = document.createElement("div");
+      options.className = "review-options";
+      reviewChoices.forEach(([value, choiceLabel]) => {
+        const wrapper = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = name;
+        input.value = value;
+        input.required = true;
+        wrapper.append(input, document.createTextNode(choiceLabel));
+        options.append(wrapper);
+      });
+      fieldset.append(legend, options);
+      container.append(fieldset);
+    });
+  }
+
+  function formatCaseInput(input) {
+    if (!input || typeof input !== "object") return "";
+    const labels = {
+      topic: "辯題", side: "立場", text: "題目內容",
+      opponent: "對方講法", question: "對方問題", transcript: "比賽片段",
+    };
+    return Object.entries(input).map(([key, value]) => `${labels[key] || key}：${String(value)}`).join("\n");
+  }
+
+  function renderAssignment(value) {
+    abAssignment = value || null;
+    $("abReviewCard").classList.toggle("hidden", !abAssignment);
+    if (!abAssignment) return;
+    $("abCaseTitle").textContent = abAssignment.title || "盲評比較";
+    $("abCaseInput").textContent = formatCaseInput(abAssignment.input);
+    $("abCaseInput").style.whiteSpace = "pre-wrap";
+    $("abReference").textContent = abAssignment.reference_text || "";
+    $("abLeftAnswer").innerHTML = SafeMarkdown.render(String(abAssignment.left_answer || ""));
+    $("abRightAnswer").innerHTML = SafeMarkdown.render(String(abAssignment.right_answer || ""));
+    $("abReviewForm").reset();
+    $("abReviewForm").classList.toggle("hidden", Boolean(abAssignment.preview));
+    if (abAssignment.preview) setAbNotice("Developer preview：呢個比較唔會建立assignment，亦唔可以提交正式票。");
+  }
+
+  function renderResults(summary) {
+    const panel = $("abResults");
+    panel.replaceChildren();
+    panel.classList.toggle("hidden", !summary);
+    if (!summary) return;
+    const heading = document.createElement("h2");
+    heading.textContent = "Campaign 描述性結果";
+    const warning = document.createElement("p");
+    warning.className = "muted";
+    warning.textContent = "結果只比較三個本地模式，唔會自動宣布winner、切換production預設或成為訓練資料。";
+    const table = document.createElement("table");
+    table.className = "summary-table";
+    const head = document.createElement("tr");
+    ["模式", "整體", "粵語", "推理", "實用", "事實", "私隱安全"].forEach((value) => {
+      const th = document.createElement("th"); th.textContent = value; head.append(th);
+    });
+    const thead = document.createElement("thead"); thead.append(head); table.append(thead);
+    const tbody = document.createElement("tbody");
+    const labels = { daily: "4B 日常", complex: "4B Thinking", deep: "9B Thinking" };
+    Object.entries(summary.mode_scores || {}).forEach(([mode, scores]) => {
+      const row = document.createElement("tr");
+      [labels[mode] || mode, scores.overall, scores.cantonese, scores.reasoning, scores.usefulness, scores.factual, scores.privacy].forEach((value, index) => {
+        const cell = document.createElement(index ? "td" : "th");
+        cell.textContent = index ? `${(Number(value || 0) * 100).toFixed(1)}%` : value;
+        row.append(cell);
+      });
+      tbody.append(row);
+    });
+    table.append(tbody);
+    const details = document.createElement("details");
+    const detailTitle = document.createElement("summary");
+    detailTitle.textContent = "按題型分拆同 head-to-head";
+    const taskTable = document.createElement("table");
+    taskTable.className = "summary-table";
+    const taskHead = document.createElement("tr");
+    ["題型", "4B 日常", "4B Thinking", "9B Thinking"].forEach((value) => {
+      const th = document.createElement("th"); th.textContent = value; taskHead.append(th);
+    });
+    const taskThead = document.createElement("thead"); taskThead.append(taskHead); taskTable.append(taskThead);
+    const taskBody = document.createElement("tbody");
+    const taskLabels = { speech_review: "發言評改", strategy: "策略", attack_defence: "攻防", mock_judgement: "模擬評判", cantonese_style: "粵語風格" };
+    Object.entries(summary.task_type_scores || {}).forEach(([task, values]) => {
+      const row = document.createElement("tr");
+      [taskLabels[task] || task, values.daily?.overall, values.complex?.overall, values.deep?.overall].forEach((value, index) => {
+        const cell = document.createElement(index ? "td" : "th");
+        cell.textContent = index ? `${(Number(value || 0) * 100).toFixed(1)}%` : value;
+        row.append(cell);
+      });
+      taskBody.append(row);
+    });
+    taskTable.append(taskBody);
+    const pairList = document.createElement("ul");
+    Object.values(summary.head_to_head || {}).forEach((pair) => {
+      const item = document.createElement("li");
+      item.textContent = `${labels[pair.mode_a] || pair.mode_a} 勝 ${Number(pair.mode_a_wins || 0)}；${labels[pair.mode_b] || pair.mode_b} 勝 ${Number(pair.mode_b_wins || 0)}；相若 ${Number(pair.ties || 0)}；兩個都不合格 ${Number(pair.both_bad || 0)}`;
+      pairList.append(item);
+    });
+    details.append(detailTitle, taskTable, pairList);
+    const risks = document.createElement("p");
+    risks.textContent = `兩個都不合格題目：${(summary.both_bad_cases || []).join("、") || "沒有"}；私隱／安全雙失敗：${(summary.safety_failure_cases || []).join("、") || "沒有"}`;
+    panel.append(heading, warning, table, risks, details);
+  }
+
+  function renderAb() {
+    const data = abBootstrap;
+    const campaign = data?.campaign;
+    const progress = data?.progress;
+    const manager = Boolean(data?.identity?.manager);
+    const actions = $("abManagerActions");
+    actions.classList.toggle("hidden", !manager);
+    $("abProgress").replaceChildren();
+    $("abCreate").classList.toggle("hidden", Boolean(campaign));
+    $("abGenerate").classList.toggle("hidden", campaign?.status !== "generating");
+    $("abOpenReview").classList.toggle("hidden", campaign?.status !== "generating");
+    $("abClose").classList.toggle("hidden", campaign?.status !== "reviewing");
+    $("abInvalidate").classList.toggle("hidden", !campaign || campaign.status === "invalidated");
+    $("abExport").classList.toggle("hidden", campaign?.status !== "closed");
+    ["abCreate", "abGenerate", "abOpenReview", "abClose", "abInvalidate"].forEach((id) => { $(id).disabled = abBusy; });
+    if (!campaign) {
+      $("abStatus").textContent = manager ? "未有 campaign，可以建立固定30題三模式測試。" : "暫未有開放中嘅 A/B Test。";
+      renderAssignment(null); renderResults(null); return;
+    }
+    const labels = { generating: "答案準備中", reviewing: "盲評進行中", closed: "已完成", invalidated: "已作廢" };
+    $("abStatus").textContent = labels[campaign.status] || campaign.status;
+    if (campaign.status === "invalidated" && campaign.invalidation_reason) {
+      setAbNotice(data.manager?.invalidation_reason || campaign.invalidation_reason);
+    }
+    if (progress) {
+      $("abProgress").append(
+        metric("已成功固定答案", `${Number(progress.generation?.succeeded || 0)} / 90`),
+        metric("正式盲評票", `${Number(progress.quorum?.submitted || 0)} / 270`),
+        metric("你已完成", Number(progress.reviewer_completed || 0)),
+      );
+    }
+    $("abExport").href = `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaign.campaign_id)}/export.json`;
+    renderResults(campaign.status === "closed" && manager ? data.manager?.summary : null);
+    if (campaign.status !== "reviewing") renderAssignment(null);
+  }
+
+  async function refreshAb(loadAssignment = true) {
+    const generation = ++abGeneration;
+    try {
+      const data = await api("/api/lmc-ai/ab-tests/bootstrap", { method: "GET" });
+      if (generation !== abGeneration) return;
+      abBootstrap = data;
+      renderAb();
+      const campaign = data.campaign;
+      if (loadAssignment && campaign?.status === "reviewing" && (data.identity.can_review || data.identity.manager)) {
+        const next = await api(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaign.campaign_id)}/reviews/next`, { method: "GET" });
+        if (generation !== abGeneration || abBootstrap?.campaign?.campaign_id !== campaign.campaign_id) return;
+        renderAssignment(next.assignment);
+      }
+    } catch (error) {
+      if (generation === abGeneration) setAbNotice(error.message || "未能載入 A/B Test。 ");
+    }
+  }
+
+  async function abAction(path, options = {}) {
+    if (abBusy) return;
+    abBusy = true; setAbNotice(""); renderAb();
+    try {
+      const result = await api(path, { method: "POST", body: options.body ? JSON.stringify(options.body) : undefined });
+      if (result.error) setAbNotice(result.error);
+      await refreshAb();
+    } catch (error) {
+      setAbNotice(error.message || "A/B Test 動作失敗。");
+    } finally {
+      abBusy = false; renderAb();
+    }
+  }
+
   async function refreshBootstrap(showLogin = true) {
     const generation = ++pollGeneration;
     try {
@@ -230,6 +445,7 @@
       }
       $("loginCard").classList.remove("show");
       renderStatus();
+      if (activePanel === "abTestPanel" && !abBusy) refreshAb(false);
     } catch (error) {
       $("serviceStatus").textContent = error.message || "未能讀取服務狀態";
       $("statusDot").className = "dot offline";
@@ -426,15 +642,60 @@
   $("sendButton").onclick = sendMessage;
   $("stopButton").onclick = () => abortController?.abort();
   $("thinkingMode").onchange = switchConversationMode;
-  document.querySelectorAll("[data-panel]").forEach((button) => {
-    button.addEventListener("click", () => {
-      document.querySelectorAll("[data-panel]").forEach((item) => item.classList.remove("active"));
+  function selectPanel(button) {
+      activePanel = button.dataset.panel;
+      document.querySelectorAll("[data-panel]").forEach((item) => {
+        item.classList.remove("active");
+        item.setAttribute("aria-selected", "false");
+        item.tabIndex = -1;
+      });
       document.querySelectorAll(".panel").forEach((panel) => panel.classList.add("hidden"));
       button.classList.add("active");
+      button.setAttribute("aria-selected", "true");
+      button.tabIndex = 0;
       $(button.dataset.panel).classList.remove("hidden");
       $("composer").classList.toggle("hidden", button.dataset.panel !== "chatPanel");
+      if (button.dataset.panel === "abTestPanel") refreshAb();
+  }
+  document.querySelectorAll("[data-panel]").forEach((button) => {
+    button.addEventListener("click", () => selectPanel(button));
+    button.addEventListener("keydown", (event) => {
+      const tabs = Array.from(document.querySelectorAll("[role=tab]"));
+      const index = tabs.indexOf(button);
+      let target = -1;
+      if (event.key === "ArrowRight") target = (index + 1) % tabs.length;
+      if (event.key === "ArrowLeft") target = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === "Home") target = 0;
+      if (event.key === "End") target = tabs.length - 1;
+      if (target >= 0) { event.preventDefault(); tabs[target].focus(); selectPanel(tabs[target]); }
     });
   });
+  renderReviewQuestions();
+  $("abCreate").onclick = () => abAction("/api/lmc-ai/ab-tests/campaigns", { body: { note: "" } });
+  $("abGenerate").onclick = () => abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/generate-next`);
+  $("abOpenReview").onclick = () => abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/open-review`);
+  $("abClose").onclick = () => abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/close`);
+  $("abInvalidate").onclick = () => {
+    const reason = prompt("請填寫invalidate原因（資料會保留，不會刪除）：");
+    if (reason?.trim()) abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/invalidate`, { body: { reason: reason.trim() } });
+  };
+  $("abReviewForm").onsubmit = async (event) => {
+    event.preventDefault();
+    if (!abAssignment || abBusy) return;
+    const form = new FormData(event.currentTarget);
+    const body = { note: $("abReviewNote").value };
+    reviewQuestions.forEach(([name]) => { body[name] = form.get(name); });
+    abBusy = true; $("abSubmitReview").disabled = true; setAbNotice("");
+    try {
+      await api(`/api/lmc-ai/ab-tests/reviews/${encodeURIComponent(abAssignment.review_id)}`, { method: "POST", body: JSON.stringify(body) });
+      renderAssignment(null);
+      await refreshAb();
+    } catch (error) {
+      setAbNotice(error.message || "未能提交盲評。");
+    } finally {
+      abBusy = false; $("abSubmitReview").disabled = false; renderAb();
+    }
+  };
   $("newChat").onclick = () => clearConversation("開始新對話");
   $("deleteChat").onclick = () => clearConversation("刪除對話");
   $("loginButton").onclick = async () => {

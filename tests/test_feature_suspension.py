@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime as dt
+import json
 import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,6 +12,7 @@ import pytest
 from fastapi import Request
 
 from api import access
+from ai_name import LMC_AI_MENTION_TAG
 from core.feature_suspension import (
     SUSPENSION_END_KEY,
     SUSPENSION_START_KEY,
@@ -155,6 +157,11 @@ def test_vote_shell_versions_shared_assets_when_window_is_inactive(monkeypatch):
     assert f'/shared/vote-ui.js?v={proxy.APP_VERSION}' in html
     assert f'/shared/markdown.js?v={proxy.APP_VERSION}' in html
     assert "__APP_VERSION__" not in html
+    assert "__LMC_AI_MENTION_TAG_JSON__" not in html
+    assert (
+        f"const LOCAL_AI_MENTION_TAG = "
+        f"{json.dumps(LMC_AI_MENTION_TAG, ensure_ascii=False)};"
+    ) in html
 
 
 def test_developer_session_bypasses_only_the_schedule_gate(monkeypatch):

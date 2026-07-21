@@ -687,8 +687,10 @@
           <option value="local">__LMC_AI_MODEL_LABEL__</option>
           <option value="gemini">__VOTE_GEMINI_MODEL_LABEL__</option>
         </select>
-        <div id="voteAiStatus" class="sub" style="margin-top:.45rem" aria-live="polite">正在檢查自家 AI 狀態…</div>
-        <div class="sub" style="margin-top:.25rem">自家 AI 不可用時不會自動轉用 Gemini；你可以在此手動切換。</div>
+        <div id="voteLocalAiDetails">
+          <div id="voteAiStatus" class="sub" style="margin-top:.45rem" aria-live="polite">正在檢查自家 AI 狀態…</div>
+          <div class="sub" style="margin-top:.25rem">自家 AI 不可用時不會自動轉用 Gemini，你可以在此手動切換。</div>
+        </div>
       </div>
 
       <details class="guide">
@@ -729,6 +731,7 @@
         // Client-side input limits mirror the server contract.
         const AI_COMMENT_USER = "Gemini"; // legacy AI_COMMENT_USER_ID — replies rendered as markdown
         const LOCAL_AI_LABEL = "__LMC_AI_MODEL_LABEL__";
+        const LOCAL_AI_MENTION_TAG = __LMC_AI_MENTION_TAG_JSON__;
         const VOTE_GEMINI_LABEL = "__VOTE_GEMINI_MODEL_LABEL__";
         const VOTE_AI_STORAGE_KEY = "vote-ai-model:v1";
         let LOCAL_AI_STATUS = {
@@ -826,6 +829,8 @@
           );
           localOption.disabled = !complexMode?.available;
           const status = document.getElementById("voteAiStatus");
+          const localDetails = document.getElementById("voteLocalAiDetails");
+          localDetails.hidden = voteAiChoice() !== "local";
           const localMessage = complexMode?.available
             ? LOCAL_AI_STATUS.message
             : complexMode?.message || LOCAL_AI_STATUS.message;
@@ -1895,7 +1900,9 @@
           const box = btn.closest(".discussion");
           const textEl = box.querySelector("textarea");
           const text = textEl.value.trim();
-          const asksAi = tagAi || /@(ai|gemini|辯才天呂)/i.test(text);
+          const normalizedText = text.toLocaleLowerCase();
+          const asksAi = tagAi || ["@ai", "@gemini", LOCAL_AI_MENTION_TAG]
+            .some((tag) => normalizedText.includes(tag));
           if (asksAi && !requireSelectedVoteAi()) return;
           if (!text && !tagAi) {
             toast("⚠️ 請輸入內容。");

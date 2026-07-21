@@ -7,7 +7,7 @@ from ai_model_config import (
     AI_MODEL_OPTIONS, LMC_AI_INTERACTIVE_OPTION, NON_MANUAL_DEFAULT_AI_MODEL,
     NON_MANUAL_MODEL_OPTIONS, get_feature_model,
 )
-from ai_name import LMC_AI_MODEL_LABEL
+from ai_name import LMC_AI_MENTION_TAG, LMC_AI_MODEL_LABEL
 from prompts import (
     VOTE_BANK_ANALYSIS_SYSTEM_PROMPT,
     VOTE_DISCUSSION_SYSTEM_PROMPT,
@@ -404,7 +404,7 @@ def extract_gemini_question(comment):
     value = str(comment or "")
     lowered = value.lower()
     matches = []
-    for tag in ("@gemini", "@ai", "@辯才天呂"):
+    for tag in ("@gemini", "@ai", LMC_AI_MENTION_TAG):
         index = lowered.find(tag)
         if index >= 0:
             matches.append((index, tag))

@@ -5,6 +5,7 @@ from ai_name import LMC_AI_MODEL_LABEL
 
 # Local committee AI node defaults. Runtime code must never pull a model itself;
 # preflight advertises only models which passed the GPU/offload gate.
+LMC_AI_MODEL_PROFILE_VERSION = 2
 LMC_AI_DEFAULT_MODEL = "qwen3.5:4b"
 LMC_AI_DEEP_MODEL = "qwen3.5:9b"
 # Compatibility names retained for installed node code from the previous

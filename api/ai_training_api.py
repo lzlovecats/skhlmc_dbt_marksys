@@ -31,7 +31,8 @@ from core.schema_features import DISABLED, PARTIAL, READY, feature_bundle_state,
 
 from schema import (
     TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-    TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_RUNS, TABLE_AI_MODEL_VERSIONS,
+    TABLE_AI_EVAL_CAMPAIGNS, TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_OUTPUTS,
+    TABLE_AI_EVAL_REVIEWS, TABLE_AI_MODEL_VERSIONS,
     TABLE_AI_TRAINING_AUDIT, TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
     TABLE_LLM_TRAINING_SUBMISSIONS, TABLE_R2_UPLOAD_INTENTS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
     TABLE_TTS_VOICE_CONSENTS, TABLE_TTS_VOICE_RECORDINGS,
@@ -97,7 +98,10 @@ _OPTIONAL_SCHEMA_BUNDLES = {
         TABLE_AI_DATASET_SNAPSHOT_ITEMS,
         TABLE_AI_MODEL_VERSIONS,
     ),
-    "eval": (TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_RUNS),
+    "eval": (
+        TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_CAMPAIGNS,
+        TABLE_AI_EVAL_OUTPUTS, TABLE_AI_EVAL_REVIEWS,
+    ),
     "rag": (TABLE_RAG_DOCUMENTS, TABLE_RAG_CHUNKS),
 }
 
@@ -1503,17 +1507,12 @@ def eval_cases(request: Request):
 
 @router.post("/eval/runs")
 async def eval_baseline(request: Request):
-    user, db = _admin(request)
+    _user, db = _admin(request)
     _require_feature_schema(db, "eval")
-    payload_body = await request.json()
-    model_label = str(
-        payload_body.get("model_label")
-        or get_feature_model("ai_training_eval")[0]
-    )[:200]
-    cases = _rows(db.query(f"SELECT case_id,task_type,title,input_json,rubric_json FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE ORDER BY case_id LIMIT :eval_limit", {"eval_limit": AI_EVAL_CASE_LIMIT}))
-    _audit(db, user, "eval_baseline_requested", "eval_run", model_label, {"cases": len(cases)})
-    return {"ok":True,"model_label":model_label,"case_count":len(cases),
-            "message":"評估題已鎖定；請由受控eval worker逐題執行並寫入ai_eval_runs，API不會在單一HTTP request內長時間批量呼叫模型。"}
+    raise HTTPException(
+        410,
+        "舊有外部baseline入口已停用；請到自家 AI 的 A/B Test 分頁執行固定本地三模式盲評。",
+    )
 
 
 @router.post("/datasets/snapshots")
