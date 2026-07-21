@@ -22,9 +22,10 @@ from ai_model_config import (
     AI_MODEL_OPTIONS,
     CUSTOM_LLM_OPTION,
     DEFAULT_AI_MODEL,
-    LMC_AI_DEFAULT_MODE,
+    LMC_AI_DEFAULT_MODEL_SET,
     LMC_AI_INTERACTIVE_OPTION,
-    LMC_AI_MODE_OPTIONS,
+    get_lmc_ai_feature_mode,
+    resolve_lmc_ai_mode_options,
     resolve_interactive_model_settings,
 )
 from ai_name import LMC_AI_MODEL_LABEL
@@ -62,6 +63,7 @@ SPEECH_REVIEW_AUDIO_TOKEN_ESTIMATE = 1200
 AI_COACH_SEMAPHORE = asyncio.Semaphore(AI_COACH_CONCURRENCY)
 DIFFICULTY_OPTIONS = {1: "Lv1 — 概念日常", 2: "Lv2 — 一般議題", 3: "Lv3 — 進階專業"}
 AI_PROVIDER_PUBLIC_ERROR = "AI 服務暫時無法完成請求，請稍後再試。"
+AI_COACH_LOCAL_MODE = get_lmc_ai_feature_mode("ai_coach")
 
 
 class CoachRequest(BaseModel):
@@ -84,7 +86,7 @@ class CoachRequest(BaseModel):
     prep_project_id: int | None = Field(default=None, ge=1)
     prep_manuscript_id: int | None = Field(default=None, ge=1)
     operation_id: str = Field(default="", max_length=200)
-    local_mode: Literal["daily", "complex", "deep"] = LMC_AI_DEFAULT_MODE
+    local_mode: Literal["fast", "daily", "deep", "complex"] = AI_COACH_LOCAL_MODE
 
 class LivePrepareRequest(BaseModel):
     topic: str = Field(max_length=500)
@@ -170,8 +172,12 @@ async def _require_local_model_available(config, db, mode: str) -> None:
     status = await local_ai_availability(db)
     if not status.get("available"):
         raise HTTPException(503, status.get("message") or "自家 AI 暫時未準備好。")
+    selected_mode = {"complex": "daily", "thinking": "deep"}.get(mode, mode)
     mode_status = next(
-        (item for item in status.get("modes", []) if item.get("id") == mode),
+        (
+            item for item in status.get("modes", [])
+            if item.get("id") == selected_mode
+        ),
         None,
     )
     if not mode_status or not mode_status.get("available"):
@@ -732,6 +738,14 @@ def data(request: Request):
     balance=db.query("SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) balance FROM ai_fund_transactions WHERE status='confirmed'")
     from core.config_store import get_config
     low_balance_hkd = float(get_config(db, "ai_fund_low_balance_hkd", 100) or 100)
+    from core.lmc_ai_store import get_model_set
+    try:
+        local_model_set = get_model_set(db)
+    except RuntimeError:
+        # AI Coach itself remains usable with cloud providers while the
+        # independent local-node schema is unavailable.
+        local_model_set = LMC_AI_DEFAULT_MODEL_SET
+    local_mode_options = resolve_lmc_ai_mode_options(local_model_set)
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
     models=[{
         "label": LMC_AI_MODEL_LABEL,
@@ -790,8 +804,10 @@ def data(request: Request):
         "external_default_model": runtime_default_model,
         "local_modes": [
             {"id": mode, **config}
-            for mode, config in LMC_AI_MODE_OPTIONS.items()
+            for mode, config in local_mode_options.items()
         ],
+        "local_default_mode": AI_COACH_LOCAL_MODE,
+        "local_model_set": local_model_set,
         "topics": [dict(x) for x in topics.to_dict("records")],
         "matches": [dict(x) for x in matches.to_dict("records")],
         "formats": {name: get_debate_timer_config(name) for name in DEBATE_FORMATS},

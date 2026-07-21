@@ -8,13 +8,18 @@ import secrets
 
 from sqlalchemy import text
 
-from ai_model_config import LMC_AI_MODEL_PROFILE_VERSION
+from ai_model_config import (
+    LMC_AI_EVAL_MODE_TIERS,
+    LMC_AI_MODEL_PROFILE_VERSION,
+    resolve_lmc_ai_mode_options,
+)
 from core.ai_eval_defaults import EVAL_SUITE_ID, EVAL_SUITE_VERSION, load_eval_cases, suite_hash
 from core.lmc_ai_eval import (
     EVAL_MODES, EVAL_PROMPT_VERSION, REVIEW_DIMENSIONS,
     aggregate_campaign, generation_order, prompt_fingerprint,
 )
 from core.lmc_ai_runtime import PERSONA_VERSION
+from core.lmc_ai_store import get_model_set
 from core.funds_logic import log_ai_usage_in_transaction
 from core.schema_features import READY, feature_bundle_state
 from schema import (
@@ -106,9 +111,11 @@ def create_campaign(db, *, actor_id: str, node_id: str, snapshot: dict, note: st
     digests = snapshot.get("model_digests") if isinstance(snapshot, dict) else None
     available = set(snapshot.get("models") or []) if isinstance(snapshot, dict) else set()
     manifest = {}
-    from ai_model_config import LMC_AI_MODE_OPTIONS
+    model_set = get_model_set(db)
+    mode_options = resolve_lmc_ai_mode_options(model_set)
     for mode in EVAL_MODES:
-        config = LMC_AI_MODE_OPTIONS[mode]
+        tier = LMC_AI_EVAL_MODE_TIERS[mode]
+        config = mode_options[tier]
         model = str(config["model"])
         digest = str((digests or {}).get(model) or "")
         if model not in available or len(digest) != 64:
@@ -117,6 +124,7 @@ def create_campaign(db, *, actor_id: str, node_id: str, snapshot: dict, note: st
             raise ValueError("model digest格式無效。")
         manifest[mode] = {
             "model": model, "digest": digest, "thinking": bool(config["thinking"]),
+            "tier": tier, "label": config["label"], "model_set": model_set,
             "runtime": str(snapshot.get("runtime") or ""),
             "runtime_version": str(snapshot.get("runtime_version") or ""),
         }

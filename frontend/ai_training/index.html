@@ -202,6 +202,120 @@
         gap: 0.45rem;
         align-items: flex-start;
       }
+      .local-eval-heading,
+      .local-eval-current-head,
+      .local-eval-history-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .local-eval-kicker {
+        color: #9ecbff;
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .local-eval-stages {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin: 1rem 0;
+      }
+      .local-eval-stage {
+        display: flex;
+        gap: 0.65rem;
+        min-height: 4.4rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        color: var(--muted);
+      }
+      .local-eval-stage strong {
+        display: grid;
+        place-items: center;
+        flex: 0 0 2rem;
+        height: 2rem;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+      }
+      .local-eval-stage b,
+      .local-eval-stage span {
+        display: block;
+      }
+      .local-eval-stage span {
+        margin-top: 0.15rem;
+        font-size: 0.82rem;
+      }
+      .local-eval-stage.active {
+        border-color: var(--accent);
+        color: var(--text);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+      .local-eval-stage.done strong {
+        border-color: var(--agree);
+        background: #174c34;
+        color: var(--ok);
+      }
+      .local-eval-status {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 800;
+      }
+      .local-eval-status.generating { border-color: #927126; color: var(--warn); }
+      .local-eval-status.reviewing { border-color: #357a52; color: var(--ok); }
+      .local-eval-status.invalidated { border-color: #a14646; color: var(--danger); }
+      .local-eval-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin: 0.9rem 0;
+      }
+      .local-eval-metric {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        padding: 0.75rem;
+      }
+      .local-eval-metric strong,
+      .local-eval-metric span {
+        display: block;
+      }
+      .local-eval-metric strong { font-size: 1.2rem; }
+      .local-eval-metric progress {
+        width: 100%;
+        height: 0.45rem;
+        margin-top: 0.55rem;
+        accent-color: var(--accent);
+      }
+      .local-eval-list {
+        display: grid;
+        gap: 0.65rem;
+        margin-top: 0.8rem;
+      }
+      .local-eval-row {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        padding: 0.8rem;
+      }
+      .local-eval-id {
+        color: var(--muted);
+        font: 0.78rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        overflow-wrap: anywhere;
+      }
+      .local-eval-danger {
+        border-color: #773d43;
+        background: #28191e;
+      }
+      .local-eval-results .table-wrap { margin-top: 0.8rem; }
+      #localEvalActionDialog { width: min(34rem, calc(100vw - 2rem)); }
       #factoryPreviewDialog {
         width: min(70rem, calc(100vw - 2rem));
         max-height: calc(100vh - 2rem);
@@ -214,8 +328,15 @@
         .split,
         .factory-grid,
         .factory-review-grid,
-        .factory-product-grid {
+        .factory-product-grid,
+        .local-eval-stages,
+        .local-eval-metrics {
           grid-template-columns: minmax(0, 1fr);
+        }
+        .local-eval-heading,
+        .local-eval-current-head,
+        .local-eval-history-head {
+          display: block;
         }
         .factory-product-card {
           min-height: 0;
@@ -481,6 +602,7 @@
             ><button data-admin="manuscripts">📄 完整稿管理</button
             ><button data-admin="lexicon">📖 讀音字典管理</button
             ><button data-admin="llm-review">📝 LLM 資料審核 / Export</button
+            ><button data-admin="local-ai-eval">⚖️ 自家 AI 評測</button
             ><button data-admin="factory">🏭 資料工廠</button>
           </nav>
           <section id="recordings" class="admin-pane active">
@@ -614,6 +736,92 @@
                 href="/api/ai-training/export/llm.jsonl"
                 >按提交者匯出 accepted LLM JSONL</a
               >
+            </section>
+          </section>
+          <section id="local-ai-eval" class="admin-pane">
+            <section class="card">
+              <div class="local-eval-heading">
+                <div>
+                  <div class="local-eval-kicker">自家 AI 質素檢查</div>
+                  <h2>管理「測試並回饋」</h2>
+                  <p class="caption">
+                    先固定三種回答模式的答案，再由委員匿名比較，最後建立描述性結果。
+                    結果唔會自動更改正式模型或加入訓練資料。
+                  </p>
+                </div>
+                <button id="localEvalRefresh" type="button">重新整理</button>
+              </div>
+              <div id="localEvalNotice" class="notice">正在讀取評測狀態…</div>
+            </section>
+
+            <section class="card">
+              <div class="local-eval-current-head">
+                <div>
+                  <span id="localEvalStatus" class="local-eval-status">未有測試</span>
+                  <h3 id="localEvalTitle">建立新一輪測試</h3>
+                  <p id="localEvalDetail" class="caption">
+                    每輪使用固定題目，並為三種回答模式準備匿名答案。
+                  </p>
+                </div>
+                <div id="localEvalCurrentId" class="local-eval-id"></div>
+              </div>
+
+              <div class="local-eval-stages" aria-label="評測流程">
+                <div id="localEvalStageGenerate" class="local-eval-stage">
+                  <strong>1</strong><div><b>準備回答</b><span>固定整輪匿名答案</span></div>
+                </div>
+                <div id="localEvalStageReview" class="local-eval-stage">
+                  <strong>2</strong><div><b>收集回饋</b><span>收齊每組所需評分</span></div>
+                </div>
+                <div id="localEvalStageResults" class="local-eval-stage">
+                  <strong>3</strong><div><b>完成結果</b><span>關閉測試並建立摘要</span></div>
+                </div>
+              </div>
+
+              <div id="localEvalMetrics" class="local-eval-metrics"></div>
+              <p id="localEvalActionHelp" class="caption"></p>
+              <div class="actions">
+                <button id="localEvalCreate" class="primary hidden" type="button">建立新一輪測試</button>
+                <button id="localEvalGenerate" class="primary hidden" type="button">生成下一個回答</button>
+                <button id="localEvalOpen" class="primary hidden" type="button">開放委員回饋</button>
+                <button id="localEvalClose" class="primary hidden" type="button">結束收集並建立結果</button>
+              </div>
+            </section>
+
+            <section id="localEvalResults" class="card local-eval-results hidden">
+              <h3>今輪描述性結果</h3>
+              <p class="caption">
+                分數只反映今輪固定題目及匿名回饋，唔代表系統自動選出正式模式。
+              </p>
+              <div id="localEvalResultsBody"></div>
+            </section>
+
+            <section id="localEvalAssignmentsCard" class="card hidden">
+              <h3>尚未提交的比較</h3>
+              <p class="caption">
+                只顯示題目及答案組合，不會顯示評審身份。逾時項目會自動釋放。
+              </p>
+              <div id="localEvalAssignments" class="local-eval-list"></div>
+            </section>
+
+            <section class="card">
+              <div class="local-eval-history-head">
+                <div>
+                  <h3>評測紀錄</h3>
+                  <p class="caption">
+                    系統只保留有限輪次。已完成或已停止的測試要先下載完整紀錄，先可以清除。
+                  </p>
+                </div>
+              </div>
+              <div id="localEvalHistory" class="local-eval-list"></div>
+            </section>
+
+            <section id="localEvalDanger" class="card local-eval-danger hidden">
+              <h3>將目前測試作廢</h3>
+              <p class="caption">
+                作廢後不會再準備回答或派發比較；現有資料會保留，之後仍可下載紀錄。
+              </p>
+              <button id="localEvalInvalidate" class="danger" type="button">將今輪測試作廢</button>
             </section>
           </section>
           <section id="factory" class="admin-pane">
@@ -943,6 +1151,22 @@
         <div class="actions">
           <button value="cancel">取消</button
           ><button value="ok" class="primary">確認</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="localEvalActionDialog">
+      <form id="localEvalActionForm" method="dialog" class="card">
+        <h2 id="localEvalActionTitle">確認操作</h2>
+        <p id="localEvalActionText"></p>
+        <label id="localEvalReasonWrap" class="hidden">原因
+          <textarea id="localEvalReason" maxlength="500"></textarea>
+        </label>
+        <label id="localEvalConfirmationWrap" class="hidden">輸入完整測試編號以確認
+          <input id="localEvalConfirmation" autocomplete="off" />
+        </label>
+        <div class="actions">
+          <button value="cancel" type="submit" formnovalidate>取消</button>
+          <button id="localEvalActionConfirm" value="ok" class="primary" type="submit">確認</button>
         </div>
       </form>
     </dialog>

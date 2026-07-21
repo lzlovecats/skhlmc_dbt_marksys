@@ -36,9 +36,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from ai_model_config import (  # noqa: E402
     LMC_AI_CONTEXT_LENGTH as CONTEXT_LENGTH,
-    LMC_AI_DEEP_MODEL as DEEP_MODEL,
-    LMC_AI_DEFAULT_MODEL as DEFAULT_MODEL,
+    LMC_AI_DEFAULT_MODEL_SET as DEFAULT_MODEL_SET,
+    LMC_AI_MODEL_SETS as MODEL_SETS,
     LMC_AI_MODEL_PROFILE_VERSION as MODEL_PROFILE_VERSION,
+    lmc_ai_available_model_sets,
+    lmc_ai_required_models,
 )
 from system_limits import (  # noqa: E402
     LMC_AI_HEARTBEAT_INTERVAL_SECONDS as HEARTBEAT_SECONDS,
@@ -167,11 +169,16 @@ def configure(args) -> int:
             "model_digests": (
                 existing.get("model_digests", {}) if profile_current else {}
             ),
+            "available_model_sets": (
+                existing.get("available_model_sets", []) if profile_current else []
+            ),
             "model_profile_version": MODEL_PROFILE_VERSION,
             "preflight_ready": bool(
                 profile_current
                 and existing.get("preflight_ready")
-                and existing.get("effective_model") == DEFAULT_MODEL
+                and existing.get("effective_model")
+                in (existing.get("available_models") or [])
+                and bool(existing.get("available_model_sets"))
             ),
             "preflight_at": existing.get("preflight_at", "") if profile_current else "",
             "draining": bool(existing.get("draining", False)),
@@ -231,6 +238,20 @@ def _model_digest_profile_valid(config: dict) -> bool:
     )
 
 
+def _preflight_profile_valid(config: dict) -> bool:
+    models = tuple(
+        str(value) for value in (config.get("available_models") or []) if str(value)
+    )
+    complete_sets = lmc_ai_available_model_sets(models)
+    return bool(
+        config.get("preflight_ready")
+        and config.get("model_profile_version") == MODEL_PROFILE_VERSION
+        and str(config.get("effective_model") or "") in models
+        and tuple(config.get("available_model_sets") or ()) == complete_sets
+        and _model_digest_profile_valid(config)
+    )
+
+
 def _gpu_offload_percent(model: str) -> int:
     output = _run_checked(["ollama", "ps"], timeout=10)
     matching = next((line for line in output.splitlines() if model in line), "")
@@ -240,7 +261,7 @@ def _gpu_offload_percent(model: str) -> int:
     return int(match.group(1))
 
 
-def _model_probe(model: str) -> None:
+def _model_probe(model: str, *, think: bool) -> None:
     started = time.monotonic()
     with httpx.Client(timeout=PREFLIGHT_TIMEOUT_SECONDS) as client:
         response = client.post(
@@ -249,7 +270,7 @@ def _model_probe(model: str) -> None:
                 "model": model,
                 "messages": [{"role": "user", "content": "用一句正體中文粵語介紹你自己。"}],
                 "stream": False,
-                "think": False,
+                "think": bool(think),
                 "keep_alive": "5m",
                 "options": {"num_ctx": CONTEXT_LENGTH},
             },
@@ -277,15 +298,14 @@ def preflight(args) -> int:
         checks.append("Ollama localhost binding：OK")
         installed = _installed_models()
         installed_names = set(installed)
-        if DEFAULT_MODEL not in installed_names:
-            raise RuntimeError("未下載日常預設 model：" + DEFAULT_MODEL)
-        checks.append("日常預設 model：已安裝")
+        checks.append("已讀取 Ollama models")
     except Exception as exc:
         config.update(
             preflight_ready=False,
             preflight_at="",
             effective_model="",
             available_models=[],
+            available_model_sets=[],
             model_digests={},
             model_profile_version=MODEL_PROFILE_VERSION,
         )
@@ -293,38 +313,59 @@ def preflight(args) -> int:
         print("\n".join(checks))
         raise SystemExit(f"Preflight 失敗：{exc}") from exc
 
-    available_models = []
+    complete_sets = []
     errors = []
-    try:
-        print(f"測試日常預設 {DEFAULT_MODEL}…")
-        _model_probe(DEFAULT_MODEL)
-        available_models.append(DEFAULT_MODEL)
-    except Exception as exc:
+    for model_set, model_set_config in MODEL_SETS.items():
+        required_models = lmc_ai_required_models(model_set)
+        missing = [model for model in required_models if model not in installed_names]
+        if missing:
+            errors.append(
+                f"{model_set_config['label']}: 未安裝 " + "、".join(missing)
+            )
+            continue
+        try:
+            probes = tuple(dict.fromkeys(
+                (str(mode["model"]), bool(mode["thinking"]))
+                for mode in model_set_config["modes"].values()
+            ))
+            for model, thinking in probes:
+                thinking_label = "Thinking" if thinking else "non-Thinking"
+                print(f"測試 8K {thinking_label} {model}…")
+                _model_probe(model, think=thinking)
+            complete_sets.append(model_set)
+        except Exception as exc:
+            errors.append(f"{model_set_config['label']}: {exc}")
+
+    if not complete_sets:
         config.update(
             preflight_ready=False,
             preflight_at="",
             effective_model="",
             available_models=[],
+            available_model_sets=[],
             model_digests={},
             model_profile_version=MODEL_PROFILE_VERSION,
         )
         _save(args.config, config)
-        raise SystemExit(f"日常預設 model 未能通過 preflight：{exc}") from exc
+        for error in errors:
+            print("模型組合未啟用：" + error)
+        raise SystemExit("Preflight 失敗：沒有完整模型組合通過全部模式測試。")
 
-    if DEEP_MODEL in installed_names:
-        try:
-            print(f"測試深入思考 {DEEP_MODEL}…")
-            _model_probe(DEEP_MODEL)
-            available_models.append(DEEP_MODEL)
-        except Exception as exc:
-            errors.append(f"{DEEP_MODEL}: {exc}")
-    else:
-        errors.append(f"{DEEP_MODEL}: 未安裝；深入思考模式暫停")
+    available_models = list(dict.fromkeys(
+        model
+        for model_set in complete_sets
+        for model in lmc_ai_required_models(model_set)
+    ))
+    effective_set = (
+        DEFAULT_MODEL_SET if DEFAULT_MODEL_SET in complete_sets else complete_sets[0]
+    )
+    effective_model = str(MODEL_SETS[effective_set]["modes"]["fast"]["model"])
     config.update(
         preflight_ready=True,
         preflight_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        effective_model=DEFAULT_MODEL,
+        effective_model=effective_model,
         available_models=available_models,
+        available_model_sets=complete_sets,
         model_digests={
             model: installed[model] for model in available_models
             if isinstance(installed, dict) and model in installed
@@ -334,8 +375,11 @@ def preflight(args) -> int:
     _save(args.config, config)
     print("\n".join(checks))
     for error in errors:
-        print("選用模式未啟用：" + error)
-    print("Preflight 完成；日常預設：" + DEFAULT_MODEL)
+        print("模型組合未啟用：" + error)
+    print("Preflight 完成；預設載入：" + effective_model)
+    print("可用模型組合：" + "、".join(
+        str(MODEL_SETS[item]["label"]) for item in complete_sets
+    ))
     print("可用 models：" + "、".join(available_models))
     return 0
 
@@ -437,9 +481,7 @@ def install_service(args) -> int:
         raise SystemExit("請以 AI OS account 執行，唔好直接用 root。")
     config = _load(args.config)
     if (
-        not config.get("preflight_ready")
-        or config.get("model_profile_version") != MODEL_PROFILE_VERSION
-        or not _model_digest_profile_valid(config)
+        not _preflight_profile_valid(config)
     ):
         raise SystemExit("請先完成 preflight。")
     if _auto_power_config(config)["enabled"] and not shutil.which("rtcwake"):
@@ -609,6 +651,7 @@ class NodeClient:
                         await self.send({"type": "chat.started", "operation_id": operation_id, "model": model})
                         response.raise_for_status()
                         usage = {}
+                        has_final_content = False
                         async for line in response.aiter_lines():
                             if self.cancel_event.is_set():
                                 raise asyncio.CancelledError
@@ -620,6 +663,7 @@ class NodeClient:
                             # Deliberately ignore message.thinking and tool_calls.
                             content = str((item.get("message") or {}).get("content") or "")
                             if content:
+                                has_final_content = has_final_content or bool(content.strip())
                                 await self.send({"type": "chat.delta", "operation_id": operation_id, "text": content})
                             if item.get("done"):
                                 usage = {
@@ -627,7 +671,16 @@ class NodeClient:
                                     "output_tokens": int(item.get("eval_count") or 0),
                                     "duration_ms": int(item.get("total_duration") or 0) // 1_000_000,
                                 }
-                        await self.send({"type": "chat.complete", "operation_id": operation_id, "model": model, "usage": usage})
+                        if not has_final_content:
+                            await self.send({
+                                "type": "chat.error",
+                                "operation_id": operation_id,
+                                "code": "empty_response",
+                                "model": model,
+                                "usage": usage,
+                            })
+                        else:
+                            await self.send({"type": "chat.complete", "operation_id": operation_id, "model": model, "usage": usage})
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -642,11 +695,7 @@ class NodeClient:
     async def session(self) -> None:
         config = self.reload()
         if (
-            not config.get("preflight_ready")
-            or config.get("model_profile_version") != MODEL_PROFILE_VERSION
-            or config.get("effective_model") != DEFAULT_MODEL
-            or DEFAULT_MODEL not in (config.get("available_models") or [])
-            or not _model_digest_profile_valid(config)
+            not _preflight_profile_valid(config)
         ):
             raise RuntimeError("preflight not ready")
         headers = {"Authorization": f"Bearer {config['token']}"}
@@ -728,9 +777,7 @@ async def run_forever(config_path: Path) -> None:
 def run(args) -> int:
     config = _load(args.config)
     if (
-        not config.get("preflight_ready")
-        or config.get("model_profile_version") != MODEL_PROFILE_VERSION
-        or not _model_digest_profile_valid(config)
+        not _preflight_profile_valid(config)
     ):
         raise SystemExit("Preflight 未完成或已失效。")
     asyncio.run(run_forever(args.config))

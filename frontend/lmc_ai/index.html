@@ -50,24 +50,35 @@
       .node-card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:.85rem; }
       .node-card h2 { margin:0 0 .4rem; font-size:1rem; }
       .node-meta { display:flex; flex-wrap:wrap; gap:.45rem; color:var(--muted); font-size:.86rem; }
-      .ab-card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:1rem; margin:.8rem 0; }
+      .ab-card { border:1px solid var(--border); background:var(--card); border-radius:14px; padding:1rem; margin:.8rem 0; }
       .ab-card h2,.ab-card h3 { margin:.1rem 0 .6rem; }
-      .ab-progress { display:grid; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); gap:.6rem; margin:.8rem 0; }
-      .ab-metric { border:1px solid var(--border); border-radius:9px; padding:.7rem; }
+      .ab-hero { background:linear-gradient(135deg,#20233a,#1b1d27 58%); }
+      .ab-kicker { color:#c4b5fd; font-size:.78rem; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+      .ab-steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.55rem; margin-top:1rem; }
+      .ab-step { display:flex; align-items:center; gap:.5rem; color:var(--muted); font-size:.86rem; }
+      .ab-step strong { display:grid; place-items:center; flex:0 0 1.8rem; height:1.8rem; border:1px solid #66559a; border-radius:50%; color:#ddd6fe; }
+      .ab-status-head { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
+      .ab-badge { display:inline-flex; border:1px solid #66559a; border-radius:999px; color:#ddd6fe; padding:.2rem .55rem; font-size:.78rem; font-weight:800; margin-bottom:.45rem; }
+      .ab-progress { display:grid; grid-template-columns:repeat(auto-fit,minmax(10rem,1fr)); gap:.6rem; margin:.9rem 0 0; }
+      .ab-metric { border:1px solid var(--border); background:#171923; border-radius:10px; padding:.75rem; }
       .ab-metric strong { display:block; font-size:1.25rem; }
+      .ab-metric progress { width:100%; height:.45rem; margin-top:.55rem; accent-color:var(--accent); }
+      .ab-empty { text-align:center; padding:2rem 1rem; }
+      .ab-empty .empty-icon { display:block; font-size:2rem; margin-bottom:.45rem; }
+      .ab-question { border-left:3px solid var(--accent); background:#151824; border-radius:8px; padding:.8rem .9rem; margin:.85rem 0; }
+      .ab-question p:last-child { margin-bottom:0; }
       .comparison { display:grid; grid-template-columns:1fr 1fr; gap:.8rem; }
-      .answer-card { border:1px solid var(--border); border-radius:10px; padding:.85rem; min-width:0; overflow-wrap:anywhere; }
-      .answer-card h3 { color:#c4b5fd; }
+      .answer-card { border:1px solid var(--border); border-radius:12px; padding:1rem; min-width:0; overflow-wrap:anywhere; background:#151824; }
+      .answer-card h3 { display:inline-flex; margin-top:0; border-radius:999px; background:#312e55; color:#ddd6fe; padding:.25rem .65rem; font-size:.9rem; }
       .review-grid { display:grid; gap:.7rem; margin-top:.9rem; }
-      .review-row { border:1px solid var(--border); border-radius:9px; padding:.7rem; }
+      .review-row { border:1px solid var(--border); border-radius:10px; padding:.8rem; }
       .review-row legend { font-weight:700; padding:0 .3rem; }
-      .review-options { display:flex; gap:.75rem; flex-wrap:wrap; }
-      .review-options label { display:inline-flex; align-items:center; gap:.3rem; }
+      .review-options { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.5rem; }
+      .review-options label { display:flex; align-items:center; gap:.3rem; min-height:2.7rem; margin:0; border:1px solid var(--border); border-radius:8px; padding:.45rem .55rem; cursor:pointer; }
+      .review-options label:has(input:checked) { border-color:var(--accent); background:#26214a; color:#fff; }
       .review-options input { width:auto; }
-      .summary-table { width:100%; border-collapse:collapse; }
-      .summary-table th,.summary-table td { border-bottom:1px solid var(--border); padding:.55rem; text-align:left; }
       @media (max-width:640px) { .message{max-width:94%} header{display:block}.header-actions{margin-top:.6rem}.mode-picker .caption{display:none} }
-      @media (max-width:640px) { .comparison{grid-template-columns:1fr}.tabs{display:flex;overflow:auto}.tab{white-space:nowrap} }
+      @media (max-width:640px) { .comparison{grid-template-columns:1fr}.tabs{display:flex;overflow:auto}.tab{white-space:nowrap}.ab-steps{grid-template-columns:1fr}.ab-status-head{display:block}.review-options{grid-template-columns:1fr 1fr} }
     </style>
   </head>
   <body>
@@ -87,7 +98,7 @@
         <div class="tabs" role="tablist" aria-label="自家 AI 功能">
           <button id="chatTab" class="tab active" data-panel="chatPanel" role="tab" aria-controls="chatPanel" aria-selected="true" tabindex="0" type="button">對話</button>
           <button id="operationsTab" class="tab" data-panel="operationsPanel" role="tab" aria-controls="operationsPanel" aria-selected="false" tabindex="-1" type="button">AI運作情況</button>
-          <button id="abTestTab" class="tab" data-panel="abTestPanel" role="tab" aria-controls="abTestPanel" aria-selected="false" tabindex="-1" type="button">A/B Test</button>
+          <button id="abTestTab" class="tab" data-panel="abTestPanel" role="tab" aria-controls="abTestPanel" aria-selected="false" tabindex="-1" type="button">測試並回饋</button>
         </div>
         <div class="status-row" style="margin-top:.65rem">
           <span class="pill"><span id="statusDot" class="dot"></span><span id="serviceStatus">正在檢查服務…</span></span>
@@ -109,49 +120,59 @@
       </section>
       <section id="abTestPanel" class="panel hidden" role="tabpanel" aria-labelledby="abTestTab">
         <div id="abNotice" class="notice" aria-live="polite"></div>
-        <article class="ab-card">
-          <h2>固定三模式盲評</h2>
-          <p id="abStatus" class="muted">正在載入 campaign…</p>
-          <div id="abProgress" class="ab-progress"></div>
-          <div id="abManagerActions" class="actions hidden">
-            <button id="abCreate" class="primary" type="button">建立固定 campaign</button>
-            <button id="abGenerate" class="primary" type="button">生成下一題</button>
-            <button id="abOpenReview" type="button">開放盲評</button>
-            <button id="abClose" type="button">關閉並建立摘要</button>
-            <button id="abInvalidate" class="danger" type="button">Invalidate</button>
-            <button id="abExport" class="hidden" type="button">下載 audit JSON</button>
-            <button id="abPurge" class="danger hidden" type="button">清除已匯出 campaign</button>
+        <article class="ab-card ab-hero">
+          <div class="ab-kicker">匿名回答比較</div>
+          <h2>測試自家 AI，回饋邊個回答更好</h2>
+          <p class="muted">每次會並排顯示兩個匿名回答。請按內容本身評分；系統會隱藏模型模式，提交後亦不能更改。</p>
+          <div class="ab-steps" aria-label="回饋步驟">
+            <span class="ab-step"><strong>1</strong>閱讀題目</span>
+            <span class="ab-step"><strong>2</strong>比較答案 A、B</span>
+            <span class="ab-step"><strong>3</strong>完成六項回饋</span>
           </div>
         </article>
-        <article id="abManagerPanel" class="ab-card hidden">
-          <h2>Campaign 管理</h2>
-          <p class="muted">最多保留10個。已完成或作廢項目必須先下載 audit JSON，先可以清除。</p>
-          <div id="abCampaignHistory"></div>
-          <h3>未提交 reservations</h3>
-          <p class="muted">只顯示不含評核人身份的 reservation；過期項目會自動停止佔用名額。</p>
-          <div id="abPendingAssignments"></div>
+        <article class="ab-card" aria-live="polite">
+          <div class="ab-status-head">
+            <div>
+              <span id="abStatusBadge" class="ab-badge">載入中</span>
+              <h2 id="abStatus">正在讀取測試狀態…</h2>
+              <p id="abStatusDetail" class="muted">請稍候。</p>
+            </div>
+          </div>
+          <div id="abProgress" class="ab-progress"></div>
+        </article>
+        <article id="abEmptyState" class="ab-card ab-empty">
+          <span class="empty-icon" aria-hidden="true">🧪</span>
+          <h2 id="abEmptyTitle">正在準備測試…</h2>
+          <p id="abEmptyText" class="muted">請稍候。</p>
         </article>
         <article id="abReviewCard" class="ab-card hidden">
-          <h2 id="abCaseTitle">盲評比較</h2>
-          <p id="abCaseInput"></p>
-          <p><strong>評核重點：</strong><span id="abReference"></span></p>
+          <span id="abReviewCounter" class="ab-badge">下一組</span>
+          <h2 id="abCaseTitle">比較兩個回答</h2>
+          <div class="ab-question">
+            <strong>題目</strong>
+            <p id="abCaseInput"></p>
+            <p><strong>評核重點：</strong><span id="abReference"></span></p>
+          </div>
           <div class="comparison">
             <section class="answer-card"><h3>答案 A</h3><div id="abLeftAnswer"></div></section>
             <section class="answer-card"><h3>答案 B</h3><div id="abRightAnswer"></div></section>
           </div>
           <form id="abReviewForm" class="review-grid">
+            <div>
+              <h3>你嘅回饋</h3>
+              <p class="muted">每一項都要選擇。若兩個回答同樣有嚴重問題，請選「兩個都不合格」。</p>
+            </div>
             <div id="abReviewQuestions"></div>
             <label>補充備註（選填，最多500字）<textarea id="abReviewNote" maxlength="500"></textarea></label>
-            <div class="actions"><button id="abSubmitReview" class="primary" type="submit">提交並鎖定呢票</button></div>
+            <div class="actions"><button id="abSubmitReview" class="primary" type="submit">提交回饋，查看下一組</button><span class="caption">提交後不能更改</span></div>
           </form>
         </article>
-        <article id="abResults" class="ab-card hidden"></article>
       </section>
       <section id="composer" class="composer">
         <div id="contextNotice" class="notice"></div>
         <textarea id="messageInput" placeholder="有咩要 __LMC_AI_NAME__ 幫你？" maxlength="__LMC_AI_MESSAGE_MAX_CHARS__"></textarea>
         <div class="actions" style="margin-top:.55rem">
-          <label class="mode-picker"><span class="caption">回答模式</span><select id="thinkingMode" aria-label="回答模式" disabled><option value="daily">日常預設（4B）</option><option value="complex">複雜問題（4B Thinking）</option><option value="deep">深入思考（9B Thinking）</option></select></label>
+          <label class="mode-picker"><span class="caption">回答模式</span><select id="thinkingMode" aria-label="回答模式" disabled></select></label>
           <button id="sendButton" class="primary" type="button">傳送</button>
           <button id="stopButton" type="button" disabled>停止生成</button>
           <span id="characterCount" class="caption counter">0 / __LMC_AI_MESSAGE_MAX_CHARS__</span>

@@ -13,6 +13,11 @@ import secrets
 
 from sqlalchemy import text
 
+from ai_model_config import (
+    LMC_AI_DEFAULT_MODEL_SET,
+    LMC_AI_MODEL_SETS,
+    resolve_lmc_ai_model_set,
+)
 from core.config_store import get_config, set_config
 from core.schema_features import READY, feature_bundle_state
 from schema import TABLE_LMC_AI_NODES
@@ -20,6 +25,7 @@ from system_limits import LMC_AI_NODE_MAX, LMC_AI_NODE_NAME_MAX_CHARS
 
 
 ACTIVE_NODE_CONFIG_KEY = "lmc_ai_active_node_id"
+MODEL_SET_CONFIG_KEY = "lmc_ai_model_set"
 THINKING_ENABLED_CONFIG_KEY = "lmc_ai_thinking_enabled"
 
 
@@ -216,6 +222,21 @@ def set_active_node_id(db, node_id: str) -> None:
         if row.empty or not bool(row.iloc[0]["enabled"]):
             raise LookupError("找不到已啟用嘅 AI 電腦。")
     set_config(db, ACTIVE_NODE_CONFIG_KEY, node_id)
+
+
+def get_model_set(db) -> str:
+    require_lmc_ai_schema(db)
+    return resolve_lmc_ai_model_set(
+        get_config(db, MODEL_SET_CONFIG_KEY, LMC_AI_DEFAULT_MODEL_SET)
+    )
+
+
+def set_model_set(db, model_set: str) -> None:
+    require_lmc_ai_schema(db)
+    selected = str(model_set or "").strip().lower()
+    if selected not in LMC_AI_MODEL_SETS:
+        raise ValueError("不支援的自家 AI 模型組合。")
+    set_config(db, MODEL_SET_CONFIG_KEY, selected)
 
 
 def get_thinking_enabled(db) -> bool:

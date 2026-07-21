@@ -15,9 +15,9 @@ from typing import Awaitable, Callable
 
 from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
-    LMC_AI_DEFAULT_MODEL,
-    LMC_AI_MODE_OPTIONS,
     LMC_AI_MODEL_PROFILE_VERSION,
+    lmc_ai_all_models,
+    lmc_ai_available_model_sets,
 )
 from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
 from system_limits import (
@@ -166,9 +166,7 @@ class LocalAIRuntime:
         model = str(payload.get("model") or "").strip()
         if not name or not model:
             raise ValueError("node name and effective model are required")
-        allowed_models = {
-            str(config["model"]) for config in LMC_AI_MODE_OPTIONS.values()
-        }
+        allowed_models = set(lmc_ai_all_models())
         raw_models = payload.get("models")
         if raw_models is None:
             models = (model,)
@@ -186,8 +184,8 @@ class LocalAIRuntime:
             or any(item not in allowed_models for item in models)
         ):
             raise ValueError("node advertised an unsupported model set")
-        if model != LMC_AI_DEFAULT_MODEL or LMC_AI_DEFAULT_MODEL not in models:
-            raise ValueError("node model profile is missing required default model")
+        if not lmc_ai_available_model_sets(models):
+            raise ValueError("node model profile has no complete supported model set")
         raw_digests = payload.get("model_digests")
         if raw_digests is None:
             model_digests = {}
@@ -469,9 +467,7 @@ class LocalAIRuntime:
             reported_models = payload.get("models")
             reported_digests = payload.get("model_digests")
             clean_models = node.models
-            allowed_models = {
-                str(config["model"]) for config in LMC_AI_MODE_OPTIONS.values()
-            }
+            allowed_models = set(lmc_ai_all_models())
             if reported_model and reported_model not in allowed_models:
                 raise ValueError("node reported an unsupported model")
             if reported_models is not None and not isinstance(reported_models, list):
@@ -481,7 +477,12 @@ class LocalAIRuntime:
                     str(item or "").strip()[:200] for item in reported_models
                     if str(item or "").strip() in allowed_models
                 ))
-                if not candidate or (reported_model and reported_model not in candidate):
+                effective_model = reported_model or node.model
+                if (
+                    not candidate
+                    or effective_model not in candidate
+                    or not lmc_ai_available_model_sets(candidate)
+                ):
                     raise ValueError("node reported an invalid model set")
                 clean_models = candidate
             clean_digests = node.model_digests
@@ -560,11 +561,19 @@ class LocalAIRuntime:
             code = str(payload.get("code") or "runtime_error")[:80]
             message = {
                 "cancelled": "已停止生成。",
+                "empty_response": "AI 思考完成但未有產生正式答案，請改用日常模式或開始新對話再試。",
                 "model_load": "AI 模型載入失敗，請開始新對話再試。",
                 "out_of_memory": "AI 電腦記憶體不足，請開始新對話再試。",
                 "model_unavailable": "所選回答模式未能喺目前 AI 電腦使用。",
             }.get(code, "AI 電腦未能完成今次回覆。")
-            await self._finish(node, job, False, {}, message)
+            raw_usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            usage = {
+                "input_tokens": max(0, int(raw_usage.get("input_tokens") or 0)),
+                "output_tokens": max(0, int(raw_usage.get("output_tokens") or 0)),
+                "duration_ms": max(0, int(raw_usage.get("duration_ms") or 0)),
+                "model": str(payload.get("model") or node.model)[:200],
+            } if raw_usage else {}
+            await self._finish(node, job, False, usage, message)
             return
         raise ValueError("unsupported node message type")
 

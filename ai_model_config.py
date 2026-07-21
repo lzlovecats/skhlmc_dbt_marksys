@@ -5,32 +5,120 @@ from ai_name import LMC_AI_MODEL_LABEL
 
 # Local committee AI node defaults. Runtime code must never pull a model itself;
 # preflight advertises only models which passed the GPU/offload gate.
-LMC_AI_MODEL_PROFILE_VERSION = 2
-LMC_AI_DEFAULT_MODEL = "qwen3.5:4b"
-LMC_AI_DEEP_MODEL = "qwen3.5:9b"
+LMC_AI_MODEL_PROFILE_VERSION = 4
+LMC_AI_DEFAULT_MODEL_SET = "qwen"
+LMC_AI_DEFAULT_MODE = "daily"
+LMC_AI_MODEL_SETS = {
+    "qwen": {
+        "label": "Qwen 3.5",
+        "modes": {
+            "fast": {
+                "label": "快速回覆",
+                "model": "qwen3.5:4b",
+                "thinking": False,
+            },
+            "daily": {
+                "label": "日常預設",
+                "model": "qwen3.5:4b",
+                "thinking": True,
+            },
+            "deep": {
+                "label": "深入思考",
+                "model": "qwen3.5:9b",
+                "thinking": True,
+            },
+        },
+    },
+    "gemma": {
+        "label": "Gemma 4",
+        "modes": {
+            "fast": {
+                "label": "快速回覆",
+                "model": "gemma4:e2b-it-qat",
+                "thinking": False,
+            },
+            "daily": {
+                "label": "日常預設",
+                "model": "gemma4:e4b-it-qat",
+                "thinking": False,
+            },
+            "deep": {
+                "label": "深入思考",
+                "model": "gemma4:e4b-it-qat",
+                "thinking": True,
+            },
+        },
+    },
+}
+
+# Feature routing belongs here so Vote Page and AI Coach do not carry their
+# own copies of the local model policy.
+LMC_AI_FEATURE_MODES = {
+    "lmc_ai": "daily",
+    "vote": "fast",
+    "ai_coach": "daily",
+}
+
+# Phase-2 evaluation database rows retain their original immutable mode IDs;
+# this maps them onto the current three user-facing tiers.
+LMC_AI_EVAL_MODE_TIERS = {
+    "daily": "fast",
+    "complex": "daily",
+    "deep": "deep",
+}
+
+
+def resolve_lmc_ai_model_set(value: object = None) -> str:
+    selected = str(value or LMC_AI_DEFAULT_MODEL_SET).strip().lower()
+    return selected if selected in LMC_AI_MODEL_SETS else LMC_AI_DEFAULT_MODEL_SET
+
+
+def resolve_lmc_ai_mode_options(model_set: object = None) -> dict:
+    selected = resolve_lmc_ai_model_set(model_set)
+    return LMC_AI_MODEL_SETS[selected]["modes"]
+
+
+def get_lmc_ai_feature_mode(feature: str) -> str:
+    try:
+        return LMC_AI_FEATURE_MODES[str(feature)]
+    except KeyError as exc:
+        raise KeyError(f"Unknown local AI feature: {feature}") from exc
+
+
+def lmc_ai_all_models() -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(config["model"])
+        for model_set in LMC_AI_MODEL_SETS.values()
+        for config in model_set["modes"].values()
+    ))
+
+
+def lmc_ai_required_models(model_set: object = None) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(config["model"])
+        for config in resolve_lmc_ai_mode_options(model_set).values()
+    ))
+
+
+def lmc_ai_available_model_sets(models: object) -> tuple[str, ...]:
+    advertised = {str(model) for model in (models or ()) if str(model)}
+    return tuple(
+        model_set
+        for model_set in LMC_AI_MODEL_SETS
+        if set(lmc_ai_required_models(model_set)).issubset(advertised)
+    )
+
+
+# Compatibility names retained for installed code and imports which refer to
+# the default Qwen profile. Runtime routing resolves the selected model set.
+LMC_AI_MODE_OPTIONS = resolve_lmc_ai_mode_options(LMC_AI_DEFAULT_MODEL_SET)
+LMC_AI_DEFAULT_MODEL = LMC_AI_MODE_OPTIONS["fast"]["model"]
+LMC_AI_DEEP_MODEL = LMC_AI_MODE_OPTIONS["deep"]["model"]
 # Compatibility names retained for installed node code from the previous
 # profile. New routing never treats 9B as an automatic fallback.
 LMC_AI_PRIMARY_MODEL = LMC_AI_DEFAULT_MODEL
 LMC_AI_FALLBACK_MODEL = LMC_AI_DEEP_MODEL
-LMC_AI_CONTEXT_LENGTH = 4096
-LMC_AI_DEFAULT_MODE = "daily"
-LMC_AI_MODE_OPTIONS = {
-    "daily": {
-        "label": "日常預設",
-        "model": LMC_AI_DEFAULT_MODEL,
-        "thinking": False,
-    },
-    "complex": {
-        "label": "複雜問題",
-        "model": LMC_AI_DEFAULT_MODEL,
-        "thinking": True,
-    },
-    "deep": {
-        "label": "深入思考",
-        "model": LMC_AI_DEEP_MODEL,
-        "thinking": True,
-    },
-}
+LMC_AI_CONTEXT_LENGTH = 8192
 
 # This option represents the outbound committee-node runtime, not the separate
 # registry-gated OpenAI-compatible CUSTOM_LLM_OPTION below.

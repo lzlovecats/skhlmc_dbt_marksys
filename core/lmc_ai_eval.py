@@ -8,7 +8,6 @@ import json
 import math
 from statistics import median
 
-from ai_model_config import LMC_AI_MODE_OPTIONS
 from core.ai_eval_defaults import EVAL_SUITE_ID, suite_hash
 
 
