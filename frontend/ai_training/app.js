@@ -36,11 +36,18 @@
       sft_speech_critique_v1: "演辭評改",
       sft_attack_defence_dialogue: "SFT攻防演練對話",
       sft_attack_defence_v1: "SFT攻防演練對話",
+      transcript_structure: "完整逐字稿結構拆分",
+      transcript_structure_v1: "完整逐字稿結構拆分",
     },
+    FACTORY_TRANSCRIPT_RECIPE = "transcript_structure_v1",
     factoryState = {
       bootstrap: null,
       selectedSource: null,
       preview: null,
+      selectedRecipe: "",
+      transcriptRunPage: 1,
+      transcriptRunPages: 1,
+      reviewKind: "standard",
       retryJobId: "",
       sourcePage: 1,
       sourcePages: 1,
@@ -50,6 +57,7 @@
       reviewPages: 1,
       reviewItems: [],
       reviewIndex: 0,
+      reviewContext: null,
       approvedPage: 1,
       approvedPages: 1,
       releasePage: 1,
@@ -291,7 +299,7 @@
   }
 
   function factoryRecipeLabel(item, key) {
-    return String(FACTORY_RECIPE_LABELS[key] || item?.label || item?.name || key);
+    return String(item?.label || item?.name || FACTORY_RECIPE_LABELS[key] || key);
   }
 
   function factoryArtifactKind(item) {
@@ -399,6 +407,63 @@
     return [];
   }
 
+  function selectFactoryProduct(recipeId, { load = true } = {}) {
+    const selected = String(recipeId || ""),
+      transcript = selected === FACTORY_TRANSCRIPT_RECIPE;
+    factoryState.selectedRecipe = selected;
+    $("factoryRecipe").value = selected;
+    document.querySelectorAll(".factory-product-card").forEach((card) => {
+      const active = card.dataset.recipeId === selected;
+      card.classList.toggle("selected", active);
+      const input = card.querySelector('input[type="radio"]');
+      if (input) input.checked = active;
+    });
+    $("factoryStandardWorkflow").classList.toggle("hidden", transcript);
+    $("factoryTranscriptForm").classList.toggle("hidden", !transcript);
+    $("factoryJobs").classList.toggle("hidden", transcript);
+    $("factoryTranscriptRuns").classList.toggle("hidden", !transcript);
+    syncFactoryJobPagination();
+    if (load) {
+      if (transcript) void loadTranscriptRuns(true);
+      else void Promise.all([loadFactorySources(), loadFactoryJobs()]);
+    }
+  }
+
+  function renderFactoryProducts(recipes) {
+    const target = $("factoryProducts");
+    factoryClear(target);
+    recipes.forEach((item, index) => {
+      const recipeId = factoryRecipeId(item),
+        label = factoryEl("label", "factory-product-card"),
+        radio = document.createElement("input"),
+        body = factoryEl("span"),
+        title = factoryEl("strong", "", factoryRecipeLabel(item, recipeId)),
+        description = factoryEl(
+          "span",
+          "",
+          item.description || "用途說明未能載入。",
+        );
+      label.dataset.recipeId = recipeId;
+      radio.type = "radio";
+      radio.name = "factoryProduct";
+      radio.value = recipeId;
+      radio.addEventListener("change", () => selectFactoryProduct(recipeId));
+      body.append(title, description);
+      label.append(radio, body);
+      target.appendChild(label);
+      if (index === 0 && !factoryState.selectedRecipe) {
+        factoryState.selectedRecipe = recipeId;
+      }
+    });
+    const available = recipes.some(
+      (item) => factoryRecipeId(item) === factoryState.selectedRecipe,
+    );
+    selectFactoryProduct(
+      available ? factoryState.selectedRecipe : factoryRecipeId(recipes[0]),
+      { load: false },
+    );
+  }
+
   function renderFactoryBootstrap(payload) {
     factoryState.bootstrap = payload || {};
     const readiness = payload?.readiness || {},
@@ -421,8 +486,21 @@
       (item) => factoryRecipeLabel(item, factoryRecipeId(item)),
       recipes[0] ? factoryRecipeId(recipes[0]) : "",
     );
+    renderFactoryProducts(recipes);
     factoryRenderSelect(
       $("factoryModel"),
+      models,
+      (item) => item.label || item.model_label || item.id,
+      (item) => {
+        const label = item.label || item.model_label || item.id,
+          cost = item.pricing_label || item.cost_note || "";
+        return `${label}${cost ? `｜${cost}` : ""}${item.available === false ? "｜未設定" : ""}`;
+      },
+      defaultModel,
+      (item) => item.available !== false,
+    );
+    factoryRenderSelect(
+      $("factoryTranscriptModel"),
       models,
       (item) => item.label || item.model_label || item.id,
       (item) => {
@@ -439,10 +517,17 @@
       );
       if (firstAvailable) firstAvailable.selected = true;
     }
+    if (!$("factoryTranscriptModel").value && models.length) {
+      const firstAvailable = [...$("factoryTranscriptModel").options].find(
+        (option) => !option.disabled,
+      );
+      if (firstAvailable) firstAvailable.selected = true;
+    }
     const hasAvailableModel = [...$("factoryModel").options].some(
       (option) => !option.disabled,
     );
     $("factoryPreviewBtn").disabled = !ready || !hasAvailableModel;
+    $("factoryTranscriptPreviewBtn").disabled = !ready || !hasAvailableModel;
 
     const limits = payload?.limits || {},
       maxCount = Math.min(5, Math.max(1, Number(limits.max_items_per_job || 5))),
@@ -458,6 +543,11 @@
     if (Number(limits.source_note_max_chars || 0) > 0) {
       $("factoryPasteSourceNote").maxLength = Number(
         limits.source_note_max_chars,
+      );
+    }
+    if (Number(limits.transcript_max_chars || 0) > 0) {
+      $("factoryTranscriptContent").maxLength = Number(
+        limits.transcript_max_chars,
       );
     }
 
@@ -494,6 +584,7 @@
           `資料工廠暫時未能載入：${error.message}`;
         $("factoryReadiness").classList.add("warn");
         $("factoryPreviewBtn").disabled = true;
+        $("factoryTranscriptPreviewBtn").disabled = true;
       }
       throw error;
     }
@@ -503,6 +594,9 @@
     factoryState.retryJobId = String(jobId || "");
     const retrying = Boolean(factoryState.retryJobId);
     $("factoryRecipe").disabled = retrying;
+    document
+      .querySelectorAll('input[name="factoryProduct"]')
+      .forEach((input) => (input.disabled = retrying));
     $("factoryCount").disabled = retrying;
     $("factoryManagerInstruction").disabled = retrying;
     $("factoryCancelRetry").classList.toggle("hidden", !retrying);
@@ -521,6 +615,7 @@
     const title = source?.title || source?.topic_text || `來源 #${factoryId(source)}`,
       kind = factorySourceKind(source) === "paste" ? "貼上資料" : "已批准提交";
     $("factorySelectedSource").textContent = `已選：${title}｜${kind}`;
+    $("factorySourceChooser").open = false;
   }
 
   function restoreFactoryRetryJob(job) {
@@ -545,7 +640,7 @@
       title: job.source_title || `來源 #${sourceId}`,
       source_kind: job.source_kind || "",
     };
-    $("factoryRecipe").value = recipeId;
+    selectFactoryProduct(recipeId, { load: false });
     $("factoryCount").value = String(requestedCount);
     $("factoryManagerInstruction").value = managerInstruction;
     if (
@@ -801,8 +896,131 @@
     }
   }
 
+  function showTranscriptPreview(preview) {
+    const windows = Array.isArray(preview.windows) ? preview.windows : [],
+      first = windows[0] || {},
+      userPrompts = windows
+        .map(
+          (item) =>
+            `===== 視窗 ${item.ordinal} / ${windows.length}｜核心 ${item.core_start}-${item.core_end}｜連同前後文 ${item.context_start}-${item.context_end} =====\n${item.user_prompt || ""}`,
+        )
+        .join("\n\n");
+    showFactoryPreview({
+      ...preview,
+      recipe_id: FACTORY_TRANSCRIPT_RECIPE,
+      estimated_cost_hkd: preview.estimate?.estimated_cost_hkd,
+      source_sha256: preview.content_sha256,
+      preview_sha256: preview.manifest_sha256,
+      system_prompt: first.system_prompt || "",
+      user_prompt: userPrompts,
+      provider_payload: first.provider_payload || {},
+    });
+    $("factoryPreviewMeta").textContent +=
+      `｜共 ${windows.length} 個視窗，確認後會逐窗處理`;
+  }
+
+  async function previewTranscript() {
+    if (factoryState.loading["transcript-preview"]) return;
+    if (!$("factoryTranscriptForm").reportValidity()) return;
+    const submit = $("factoryTranscriptPreviewBtn");
+    factorySetLoading("transcript-preview", true, submit);
+    try {
+      const preview = await api("/api/ai-training/factory/transcripts/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          title: $("factoryTranscriptTitle").value.trim(),
+          topic_text: $("factoryTranscriptTopic").value.trim(),
+          source_note: $("factoryTranscriptSourceNote").value.trim(),
+          language: $("factoryTranscriptLanguage").value,
+          rights_basis: $("factoryTranscriptRightsBasis").value,
+          rights_for_storage_confirmed: $("factoryTranscriptStorageRights").checked,
+          content_text: $("factoryTranscriptContent").value,
+          model_label: $("factoryTranscriptModel").value,
+          manager_instruction: $("factoryTranscriptInstruction").value.trim(),
+        }),
+      });
+      showTranscriptPreview(preview);
+      await loadTranscriptRuns(true);
+    } catch (error) {
+      toast("⚠️ 未能建立逐字稿預覽：" + error.message);
+    } finally {
+      factorySetLoading("transcript-preview", false, submit);
+    }
+  }
+
+  async function processTranscriptRun(runId) {
+    if (factoryState.loading["transcript-run"]) return;
+    factorySetLoading("transcript-run", true, $("factoryGenerateBtn"));
+    try {
+      let done = false,
+        guard = 0;
+      while (!done && guard < 41) {
+        const result = await api(
+          `/api/ai-training/factory/transcript-runs/${encodeURIComponent(runId)}/next`,
+          { method: "POST" },
+        );
+        done = Boolean(result.done);
+        guard += 1;
+        await loadTranscriptRuns();
+      }
+      if (!done) throw Error("逐字稿視窗數量超出保護範圍");
+      toast("✅ 已完成逐字稿結構拆分，段落已放入人工審核。");
+      factoryState.reviewKind = "transcript";
+      syncFactoryReviewKindButtons();
+      await loadFactoryReviewItems(true);
+    } catch (error) {
+      toast(
+        "⚠️ 逐字稿處理已停止，系統沒有自動重試。請在工作紀錄按「繼續處理」：" +
+          error.message,
+      );
+      await loadTranscriptRuns(true);
+    } finally {
+      factorySetLoading("transcript-run", false, $("factoryGenerateBtn"));
+    }
+  }
+
+  async function confirmAndProcessTranscript() {
+    const preview = factoryState.preview,
+      warnings = factoryPreviewWarnings(preview),
+      piiReason = $("factoryPiiOverrideReason").value.trim(),
+      runId = String(preview?.run_id || "");
+    if (!runId) return toast("⚠️ 逐字稿預覽缺少工作識別碼。");
+    if (!$("factoryRightsConfirmed").checked)
+      return toast("⚠️ 請先確認你有權使用內容。");
+    if (!$("factoryAnonymizedConfirmed").checked)
+      return toast("⚠️ 請先確認內容已匿名化。");
+    if (!$("factoryThirdPartyConfirmed").checked)
+      return toast("⚠️ 請先確認第三方 AI 傳送警告。");
+    if (warnings.length && !piiReason)
+      return toast("⚠️ 預覽有個人資料警告，請填寫覆寫理由。");
+    try {
+      await api(
+        `/api/ai-training/factory/transcript-runs/${encodeURIComponent(runId)}/confirm`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            preview_token: preview.preview_token || "",
+            rights_confirmed: true,
+            anonymized_confirmed: true,
+            third_party_confirmed: true,
+            pii_override_reason: piiReason,
+          }),
+        },
+      );
+      $("factoryPreviewDialog").close();
+      factoryState.preview = null;
+      await processTranscriptRun(runId);
+    } catch (error) {
+      toast("⚠️ 未能確認逐字稿處理：" + error.message);
+    }
+  }
+
   async function generateFactoryJob() {
     if (factoryState.loading.generate || !factoryState.preview) return;
+    if (factoryState.preview.recipe_id === FACTORY_TRANSCRIPT_RECIPE) {
+      await confirmAndProcessTranscript();
+      return;
+    }
     if (!$("factoryRightsConfirmed").checked)
       return toast("⚠️ 請先確認你有權使用內容。");
     if (!$("factoryAnonymizedConfirmed").checked)
@@ -904,9 +1122,7 @@
       target.appendChild(card);
     });
     factoryState.jobPages = factoryPageCount(payload, factoryState.jobPage);
-    $("factoryJobsPage").textContent = `第 ${factoryState.jobPage} / ${factoryState.jobPages} 頁`;
-    $("factoryJobsPrev").disabled = factoryState.jobPage <= 1;
-    $("factoryJobsNext").disabled = factoryState.jobPage >= factoryState.jobPages;
+    syncFactoryJobPagination();
   }
 
   async function loadFactoryJobs(reset = false) {
@@ -920,6 +1136,138 @@
     } catch (error) {
       if (factoryRequestIsCurrent("jobs", generation))
         toast("⚠️ 工作紀錄載入失敗：" + error.message);
+    }
+  }
+
+  async function withdrawTranscript(run, button) {
+    const transcriptId = String(run?.transcript_id || "");
+    if (!transcriptId || factoryState.loading["transcript-withdraw"]) return;
+    factorySetLoading("transcript-withdraw", true, button);
+    try {
+      if (
+        !(await confirmAsk(
+          "撤回完整逐字稿",
+          "所有處理工作、審核段落、衍生來源及發布版本都會失效。原文只保留作內部 audit，撤回後不會再由 API 顯示；已送到第三方 provider 的進行中請求無法取消，完成後只會結算用量並丟棄回覆。確定繼續？",
+        ))
+      )
+        return;
+      const entered = window.prompt(
+        "請填寫撤回原因（必填，最多 1000 字）：",
+        "",
+      );
+      if (entered === null) return;
+      const reason = entered.trim();
+      if (!reason) return toast("⚠️ 請填寫撤回原因。");
+      if (reason.length > 1000)
+        return toast("⚠️ 撤回原因不可超過 1000 字。");
+      await api(
+        `/api/ai-training/factory/transcripts/${encodeURIComponent(transcriptId)}/withdraw`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        },
+      );
+      factoryState.selectedApproved.clear();
+      toast("✅ 已撤回逐字稿並令所有衍生資料失效；原文只保留作 audit。");
+      await Promise.all([
+        loadTranscriptRuns(true),
+        loadFactorySources(true),
+        loadFactoryReviewItems(true),
+        loadFactoryApprovedItems(true),
+        loadFactoryReleases(true),
+      ]);
+    } catch (error) {
+      toast("⚠️ 未能撤回逐字稿：" + error.message);
+    } finally {
+      factorySetLoading("transcript-withdraw", false, button);
+    }
+  }
+
+  function renderTranscriptRuns(payload) {
+    const rows = factoryRows(payload),
+      target = $("factoryTranscriptRuns");
+    factoryClear(target);
+    if (!rows.length) {
+      target.appendChild(factoryEl("p", "caption", "尚未有完整逐字稿工作。"));
+    }
+    rows.forEach((run) => {
+      const runId = factoryId(run),
+        statusValue = String(run.status || "unknown"),
+        card = factoryEl("article", "factory-item-card"),
+        title = factoryEl("strong", "", run.title || `逐字稿工作 #${runId}`),
+        progress = factoryEl(
+          "p",
+          "",
+          `狀態：${statusValue}｜模型：${run.model_label || "未提供"}｜視窗：${run.succeeded_windows || 0} / ${run.window_count || 0}｜段落：${run.segment_count || 0}`,
+        ),
+        meta = factoryEl(
+          "div",
+          "factory-meta",
+          `${run.created_at || ""}${run.topic_text ? `｜${run.topic_text}` : ""}`,
+        ),
+        actions = factoryEl("div", "actions");
+      card.append(title, progress, meta);
+      if (["processing", "failed"].includes(statusValue)) {
+        const resume = factoryEl("button", "", "繼續處理");
+        resume.type = "button";
+        resume.addEventListener("click", () => void processTranscriptRun(runId));
+        actions.appendChild(resume);
+      } else if (statusValue === "awaiting_review") {
+        const review = factoryEl("button", "primary", "前往逐段審核");
+        review.type = "button";
+        review.addEventListener("click", () => {
+          factoryState.reviewKind = "transcript";
+          syncFactoryReviewKindButtons();
+          document.querySelector('[data-factory-pane="factory-review"]').click();
+        });
+        actions.appendChild(review);
+      }
+      if (!run.withdrawn_at) {
+        const withdraw = factoryEl("button", "danger", "撤回逐字稿");
+        withdraw.type = "button";
+        withdraw.addEventListener("click", () => {
+          void withdrawTranscript(run, withdraw);
+        });
+        actions.appendChild(withdraw);
+      } else {
+        card.appendChild(factoryEl(
+          "p",
+          "notice warn",
+          "此逐字稿已撤回；原文及 lineage 只保留作內部 audit，不能再處理或檢視。",
+        ));
+      }
+      if (actions.children.length) card.appendChild(actions);
+      target.appendChild(card);
+    });
+    factoryState.transcriptRunPages = factoryPageCount(
+      payload, factoryState.transcriptRunPage,
+    );
+    syncFactoryJobPagination();
+  }
+
+  function syncFactoryJobPagination() {
+    const transcript = factoryState.selectedRecipe === FACTORY_TRANSCRIPT_RECIPE,
+      page = transcript ? factoryState.transcriptRunPage : factoryState.jobPage,
+      pages = transcript ? factoryState.transcriptRunPages : factoryState.jobPages;
+    $("factoryJobsPage").textContent = `第 ${page} / ${pages} 頁`;
+    $("factoryJobsPrev").disabled = page <= 1;
+    $("factoryJobsNext").disabled = page >= pages;
+  }
+
+  async function loadTranscriptRuns(reset = false) {
+    if (reset) factoryState.transcriptRunPage = 1;
+    const generation = factoryRequest("transcript-runs");
+    try {
+      const value = await api(
+        `/api/ai-training/factory/transcript-runs?page=${factoryState.transcriptRunPage}`,
+      );
+      if (factoryRequestIsCurrent("transcript-runs", generation)) {
+        renderTranscriptRuns(value);
+      }
+    } catch (error) {
+      if (factoryRequestIsCurrent("transcript-runs", generation)) {
+        toast("⚠️ 完整逐字稿工作載入失敗：" + error.message);
+      }
     }
   }
 
@@ -938,13 +1286,47 @@
     $("factoryReviewPosition").textContent = hasItem
       ? `本頁第 ${factoryState.reviewIndex + 1} / ${rows.length} 項｜第 ${factoryState.reviewPage} / ${factoryState.reviewPages} 頁`
       : `第 ${factoryState.reviewPage} / ${factoryState.reviewPages} 頁`;
+    factoryState.reviewContext = null;
     if (!hasItem) return;
+    if (factoryState.reviewKind === "transcript") {
+      const payload = factoryCandidatePayload(item),
+        confidence = Number(payload.confidence),
+        confidenceText = Number.isFinite(confidence) ? `${confidence}%` : "未提供";
+      $("factoryReviewSourceMeta").textContent =
+        `${item.transcript_title || "完整逐字稿"}｜第 ${item.sequence_no || "-"} / ${item.run_segment_count || "-"} 段｜原文位置 ${item.start_offset}-${item.end_offset}`;
+      $("factoryReviewSource").textContent = "正在載入原文前後文…";
+      $("factoryReviewCandidateMeta").textContent =
+        `完整逐字稿結構拆分｜信心：${confidenceText}｜請核對辯位、立場及環節；原文邊界只供檢視`;
+      $("factoryTranscriptReviewFields").classList.remove("hidden");
+      $("factoryReviewPayloadLabel").classList.add("hidden");
+      $("factoryTranscriptSequence").value = String(
+        payload.sequence_no || item.sequence_no || "",
+      );
+      $("factoryTranscriptStart").value = String(payload.start_offset ?? "");
+      $("factoryTranscriptEnd").value = String(payload.end_offset ?? "");
+      $("factoryTranscriptSpeaker").value = String(payload.speaker_label || "");
+      $("factoryTranscriptSide").value = String(payload.side || "unknown");
+      $("factoryTranscriptStage").value = String(payload.stage || "unknown");
+      $("factoryTranscriptConfidence").value = String(payload.confidence ?? "");
+      $("factoryTranscriptReviewItems").value = Array.isArray(payload.review_items)
+        ? payload.review_items.join("\n")
+        : "";
+      $("factoryTranscriptQuote").textContent = String(
+        payload.full_text || payload.quote || "",
+      );
+      $("factoryReviewPayload").value = factoryPrettyJson(payload);
+      $("factoryReviewNote").value = "";
+      void loadTranscriptSegmentContext(item);
+      return;
+    }
     const source = item.source && typeof item.source === "object" ? item.source : item,
       sourceTitle =
         source.title || item.source_title || item.topic_text || `來源 #${item.source_id || "-"}`,
       artifact = factoryArtifactKind(item),
       creator =
         item.job_created_by || item.created_by || item.creator_user_id || "未提供";
+    $("factoryTranscriptReviewFields").classList.add("hidden");
+    $("factoryReviewPayloadLabel").classList.remove("hidden");
     $("factoryReviewSourceMeta").textContent =
       `${sourceTitle}｜${source.topic_text || item.topic_text || "未設辯題"}｜${source.side || item.source_side || item.side || "neutral"}`;
     $("factoryReviewSource").textContent = factorySourceText(item);
@@ -952,6 +1334,112 @@
       `${FACTORY_RECIPE_LABELS[artifact] || artifact}｜建立者：${creator}｜版本：${item.revision ?? 0}`;
     $("factoryReviewPayload").value = factoryPrettyJson(factoryCandidatePayload(item));
     $("factoryReviewNote").value = "";
+  }
+
+  async function loadTranscriptSegmentContext(item) {
+    const itemId = factoryId(item),
+      generation = factoryRequest("transcript-segment-context");
+    try {
+      const context = await api(
+        `/api/ai-training/factory/transcript-segments/${encodeURIComponent(itemId)}/context`,
+      );
+      const current = factoryState.reviewItems[factoryState.reviewIndex];
+      if (
+        !factoryRequestIsCurrent("transcript-segment-context", generation) ||
+        factoryId(current) !== itemId
+      )
+        return;
+      const contextText = String(context.context_text || ""),
+        contextCodePoints = Array.from(contextText),
+        localStart = Number(context.start_offset) - Number(context.context_start),
+        localEnd = Number(context.end_offset) - Number(context.context_start),
+        before = contextCodePoints.slice(0, Math.max(0, localStart)).join(""),
+        selected = contextCodePoints
+          .slice(Math.max(0, localStart), Math.max(0, localEnd))
+          .join(""),
+        after = contextCodePoints.slice(Math.max(0, localEnd)).join("");
+      factoryState.reviewContext = context;
+      $("factoryTranscriptStart").min = String(context.context_start);
+      $("factoryTranscriptStart").max = String(context.context_end - 1);
+      $("factoryTranscriptEnd").min = String(context.context_start + 1);
+      $("factoryTranscriptEnd").max = String(context.context_end);
+      $("factoryReviewSource").textContent =
+        `${before}\n\n【本段開始】\n${selected}\n【本段結束】\n\n${after}`;
+      updateTranscriptReviewQuote();
+    } catch (error) {
+      if (factoryRequestIsCurrent("transcript-segment-context", generation)) {
+        $("factoryReviewSource").textContent =
+          `原文前後文載入失敗：${error.message}`;
+      }
+    }
+  }
+
+  function transcriptReviewPayloadFromFields() {
+    const context = factoryState.reviewContext;
+    if (!context) throw Error("原文前後文尚未載入");
+    const start = Number(context.start_offset),
+      end = Number(context.end_offset),
+      contextStart = Number(context.context_start),
+      contextEnd = Number(context.context_end);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || end <= start) {
+      throw Error("原文起止位置不正確");
+    }
+    if (start < contextStart || end > contextEnd) {
+      throw Error("原文邊界超出目前顯示範圍");
+    }
+    const quote = Array.from(String(context.context_text || ""))
+      .slice(start - contextStart, end - contextStart)
+      .join("");
+    if (!quote) throw Error("完整發言不可留空");
+    const reviewItems = $("factoryTranscriptReviewItems").value
+      .split("\n")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (reviewItems.length > 8) throw Error("需人工確認項目最多八項");
+    if (reviewItems.some((value) => value.length > 300)) {
+      throw Error("每項人工確認內容最多三百字");
+    }
+    const sequence = Number($("factoryTranscriptSequence").value),
+      confidence = Number($("factoryTranscriptConfidence").value),
+      speaker = $("factoryTranscriptSpeaker").value.trim();
+    if (!Number.isInteger(sequence) || sequence < 1) throw Error("發言次序不正確");
+    if (!Number.isInteger(confidence) || confidence < 0 || confidence > 100) {
+      throw Error("判斷信心必須為零至一百的整數");
+    }
+    if (!speaker) throw Error("辯位不可留空");
+    return {
+      sequence_no: sequence,
+      start_offset: start,
+      end_offset: end,
+      quote,
+      speaker_label: speaker,
+      side: $("factoryTranscriptSide").value,
+      stage: $("factoryTranscriptStage").value,
+      full_text: quote,
+      confidence,
+      review_items: reviewItems,
+    };
+  }
+
+  function updateTranscriptReviewQuote() {
+    if (!factoryState.reviewContext) return;
+    try {
+      const payload = transcriptReviewPayloadFromFields();
+      $("factoryTranscriptQuote").textContent = payload.full_text;
+    } catch (error) {
+      $("factoryTranscriptQuote").textContent = `未能抽取完整發言：${error.message}`;
+    }
+  }
+
+  function syncFactoryReviewKindButtons() {
+    document.querySelectorAll("[data-factory-review-kind]").forEach((button) => {
+      button.classList.toggle(
+        "active", button.dataset.factoryReviewKind === factoryState.reviewKind,
+      );
+    });
+    $("factoryReviewHelp").textContent = factoryState.reviewKind === "transcript"
+      ? "每次只審核一段。請按原文核對及修正發言資料，系統會保留 AI 原稿。"
+      : "每次只審核一項。你可以修正結構化 JSON，系統仍會保留 AI 原稿。";
   }
 
   function renderFactoryReviewItems(payload) {
@@ -965,8 +1453,11 @@
     if (reset) factoryState.reviewPage = 1;
     const generation = factoryRequest("review-items");
     try {
+      const endpoint = factoryState.reviewKind === "transcript"
+        ? "/api/ai-training/factory/transcript-segments"
+        : "/api/ai-training/factory/items";
       const payload = await api(
-        `/api/ai-training/factory/items?status=pending&page=${factoryState.reviewPage}`,
+        `${endpoint}?status=pending&page=${factoryState.reviewPage}`,
       );
       if (factoryRequestIsCurrent("review-items", generation))
         renderFactoryReviewItems(payload);
@@ -982,9 +1473,11 @@
     if (!item) return;
     let reviewedPayload;
     try {
-      reviewedPayload = JSON.parse($("factoryReviewPayload").value);
-    } catch (_error) {
-      return toast("⚠️ 候選資料不是有效 JSON，請修正後再審核。");
+      reviewedPayload = factoryState.reviewKind === "transcript" && status === "approved"
+        ? transcriptReviewPayloadFromFields()
+        : JSON.parse($("factoryReviewPayload").value);
+    } catch (error) {
+      return toast(`⚠️ 候選資料未能通過檢查：${error.message}`);
     }
     const note = $("factoryReviewNote").value.trim();
     if (status === "rejected" && !note)
@@ -993,8 +1486,11 @@
       rejectButton = $("factoryReviewReject");
     factorySetLoading("review", true, approveButton, rejectButton);
     try {
+      const endpoint = factoryState.reviewKind === "transcript"
+        ? `/api/ai-training/factory/transcript-segments/${encodeURIComponent(factoryId(item))}/review`
+        : `/api/ai-training/factory/items/${encodeURIComponent(factoryId(item))}/review`;
       await api(
-        `/api/ai-training/factory/items/${encodeURIComponent(factoryId(item))}/review`,
+        endpoint,
         {
           method: "POST",
           body: JSON.stringify({
@@ -1005,8 +1501,18 @@
           }),
         },
       );
-      toast(status === "approved" ? "✅ 已批准資料。" : "✅ 已拒絕資料。");
-      await Promise.all([loadFactoryReviewItems(), loadFactoryApprovedItems(true)]);
+      toast(
+        status === "approved"
+          ? factoryState.reviewKind === "transcript"
+            ? "✅ 已批准段落並建立可供其他產品使用的來源。"
+            : "✅ 已批准資料。"
+          : "✅ 已拒絕資料。",
+      );
+      await Promise.all([
+        loadFactoryReviewItems(),
+        loadFactoryApprovedItems(true),
+        loadFactorySources(true),
+      ]);
     } catch (error) {
       toast("⚠️ 審核未能儲存：" + error.message);
     } finally {
@@ -1275,6 +1781,7 @@
     await Promise.all([
       loadFactorySources(),
       loadFactoryJobs(),
+      loadTranscriptRuns(),
       loadFactoryReviewItems(),
       loadFactoryApprovedItems(),
       loadFactoryReleases(),
@@ -1609,7 +2116,11 @@
         $(button.dataset.factoryPane).classList.add("active");
         button.classList.add("active");
         if (button.dataset.factoryPane === "factory-create") {
-          void Promise.all([loadFactorySources(), loadFactoryJobs()]);
+          if (factoryState.selectedRecipe === FACTORY_TRANSCRIPT_RECIPE) {
+            void loadTranscriptRuns();
+          } else {
+            void Promise.all([loadFactorySources(), loadFactoryJobs()]);
+          }
         } else if (button.dataset.factoryPane === "factory-review") {
           void loadFactoryReviewItems(true);
         } else if (button.dataset.factoryPane === "factory-approved") {
@@ -1628,6 +2139,19 @@
     event.preventDefault();
     void previewFactoryJob();
   };
+  $("factoryTranscriptForm").onsubmit = (event) => {
+    event.preventDefault();
+    void previewTranscript();
+  };
+  $("factoryTranscriptContent").addEventListener("input", () => {
+    const maximum = Number(
+      $("factoryTranscriptContent").maxLength ||
+        factoryState.bootstrap?.limits?.transcript_max_chars ||
+        200000,
+    );
+    $("factoryTranscriptCharCount").textContent =
+      `${$("factoryTranscriptContent").value.length.toLocaleString()} / ${maximum.toLocaleString()} 字`;
+  });
   $("factoryPreviewCancel").onclick = () => {
     factoryState.preview = null;
     $("factoryPreviewDialog").close();
@@ -1659,11 +2183,23 @@
     void loadFactorySources();
   };
   $("factoryJobsPrev").onclick = () => {
+    if (factoryState.selectedRecipe === FACTORY_TRANSCRIPT_RECIPE) {
+      if (factoryState.transcriptRunPage <= 1) return;
+      factoryState.transcriptRunPage -= 1;
+      void loadTranscriptRuns();
+      return;
+    }
     if (factoryState.jobPage <= 1) return;
     factoryState.jobPage -= 1;
     void loadFactoryJobs();
   };
   $("factoryJobsNext").onclick = () => {
+    if (factoryState.selectedRecipe === FACTORY_TRANSCRIPT_RECIPE) {
+      if (factoryState.transcriptRunPage >= factoryState.transcriptRunPages) return;
+      factoryState.transcriptRunPage += 1;
+      void loadTranscriptRuns();
+      return;
+    }
     if (factoryState.jobPage >= factoryState.jobPages) return;
     factoryState.jobPage += 1;
     void loadFactoryJobs();
@@ -1690,6 +2226,13 @@
   };
   $("factoryReviewApprove").onclick = () => void reviewFactoryItem("approved");
   $("factoryReviewReject").onclick = () => void reviewFactoryItem("rejected");
+  document.querySelectorAll("[data-factory-review-kind]").forEach((button) => {
+    button.onclick = () => {
+      factoryState.reviewKind = button.dataset.factoryReviewKind || "standard";
+      syncFactoryReviewKindButtons();
+      void loadFactoryReviewItems(true);
+    };
+  });
   $("factoryApprovedPrev").onclick = () => {
     if (factoryState.approvedPage <= 1) return;
     factoryState.approvedPage -= 1;

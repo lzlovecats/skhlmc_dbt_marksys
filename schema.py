@@ -77,6 +77,11 @@ TABLE_AI_FACTORY_TOPIC_TAGS = "ai_factory_topic_tags"
 TABLE_AI_FACTORY_ITEM_TAGS = "ai_factory_item_tags"
 TABLE_AI_FACTORY_RELEASES = "ai_factory_releases"
 TABLE_AI_FACTORY_RELEASE_ITEMS = "ai_factory_release_items"
+TABLE_AI_FACTORY_TRANSCRIPTS = "ai_factory_transcripts"
+TABLE_AI_FACTORY_TRANSCRIPT_RUNS = "ai_factory_transcript_runs"
+TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS = "ai_factory_transcript_windows"
+TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS = "ai_factory_transcript_attempts"
+TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS = "ai_factory_transcript_segments"
 TABLE_MATCH_ROSTER_LINKS = "match_roster_links"
 TABLE_BEST_DEBATER_RANKINGS = "best_debater_rankings"
 TABLE_MOTION_COMMENTS = "motion_comments"
@@ -97,6 +102,7 @@ TABLE_PROJECTOR_KIOSK_DEVICES = "projector_kiosk_devices"
 TABLE_OFFICIAL_AI_JUDGE_RUNS = "official_ai_judge_runs"
 TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS = "official_ai_judge_attempts"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
+TABLE_LMC_AI_NODES = "lmc_ai_nodes"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
@@ -1809,7 +1815,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_SOURCES} (
 );
 
 COMMENT ON TABLE {TABLE_AI_FACTORY_SOURCES} IS
-    'skhlmc-feature:data_factory:20260720_0001';
+    'skhlmc-feature:data_factory:20260720_0009';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_factory_sources_submission
     ON {TABLE_AI_FACTORY_SOURCES}(origin_submission_id)
@@ -1974,18 +1980,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_ATTEMPTS} (
                 OR char_length(provider_request_id) <= 300)
             AND (resolved_provider_model IS NULL
                 OR char_length(resolved_provider_model) BETWEEN 1 AND 200)
-        ),
-    CONSTRAINT ai_factory_attempts_budget_reservation
-        CHECK (
-            (estimated_cost_hkd = 0
-                AND budget_provider_name IS NULL
-                AND budget_period_month IS NULL
-                AND budget_window_start IS NULL)
-            OR
-            (estimated_cost_hkd > 0
-                AND char_length(budget_provider_name) BETWEEN 1 AND 80
-                AND budget_period_month IS NOT NULL
-                AND budget_window_start IS NOT NULL)
         ),
     CONSTRAINT ai_factory_attempts_hashes
         CHECK (
@@ -2288,6 +2282,424 @@ CREATE INDEX IF NOT EXISTS idx_ai_factory_release_items_item
     ON {TABLE_AI_FACTORY_RELEASE_ITEMS}(item_id, release_id);
 """
 
+CREATE_AI_FACTORY_TRANSCRIPT_WORKFLOW = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_TRANSCRIPTS} (
+    id                    TEXT        PRIMARY KEY,
+    title                 TEXT        NOT NULL,
+    topic_text            TEXT,
+    source_note           TEXT        NOT NULL,
+    language_code         TEXT        NOT NULL
+        CHECK (language_code IN ('yue-Hant-HK', 'zh-Hant', 'en', 'mixed', 'other')),
+    rights_basis          TEXT        NOT NULL
+        CHECK (rights_basis IN ('own_work', 'permission', 'open_license', 'public_domain', 'other')),
+    rights_confirmed_by   TEXT        NOT NULL,
+    rights_confirmed_at   TIMESTAMPTZ NOT NULL,
+    content_text          TEXT        NOT NULL,
+    content_sha256        TEXT        NOT NULL,
+    created_by            TEXT        NOT NULL,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    withdrawn_by          TEXT,
+    withdrawn_at          TIMESTAMPTZ,
+    withdrawal_reason     TEXT,
+    CONSTRAINT ai_factory_transcripts_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_transcripts_metadata_lengths
+        CHECK (
+            char_length(title) BETWEEN 1 AND 200
+            AND (topic_text IS NULL OR char_length(topic_text) <= 500)
+            AND char_length(source_note) BETWEEN 1 AND 1000
+            AND char_length(rights_confirmed_by) BETWEEN 1 AND 200
+            AND char_length(created_by) BETWEEN 1 AND 200
+        ),
+    CONSTRAINT ai_factory_transcripts_content_length
+        CHECK (char_length(content_text) BETWEEN 1 AND 200000),
+    CONSTRAINT ai_factory_transcripts_content_hash
+        CHECK (
+            char_length(content_sha256) = 64
+            AND content_sha256 = lower(content_sha256)
+            AND content_sha256 ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT ai_factory_transcripts_withdrawal_fields
+        CHECK (
+            (withdrawn_at IS NULL AND withdrawn_by IS NULL AND withdrawal_reason IS NULL)
+            OR
+            (withdrawn_at IS NOT NULL
+                AND char_length(withdrawn_by) BETWEEN 1 AND 200
+                AND char_length(withdrawal_reason) BETWEEN 1 AND 1000)
+        )
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcripts_active_created
+    ON {TABLE_AI_FACTORY_TRANSCRIPTS}(created_at DESC)
+    WHERE withdrawn_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} (
+    id                      TEXT        PRIMARY KEY,
+    transcript_id           TEXT        NOT NULL,
+    recipe_key              TEXT        NOT NULL
+        CHECK (recipe_key = 'transcript_structure_v1'),
+    model_label             TEXT        NOT NULL,
+    provider                TEXT        NOT NULL,
+    provider_model          TEXT        NOT NULL,
+    prompt_version          TEXT        NOT NULL,
+    prompt_template_sha256  TEXT        NOT NULL,
+    instruction_text        TEXT        NOT NULL DEFAULT '',
+    window_count            SMALLINT    NOT NULL CHECK (window_count BETWEEN 1 AND 40),
+    estimated_cost_hkd      NUMERIC(20, 8) NOT NULL DEFAULT 0
+        CHECK (estimated_cost_hkd >= 0),
+    status                  TEXT        NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'processing', 'awaiting_review', 'reviewed', 'failed', 'invalidated')),
+    preview_manifest_sha256 TEXT        NOT NULL,
+    preview_expires_at      TIMESTAMPTZ NOT NULL,
+    confirmation_version    TEXT,
+    anonymization_confirmed BOOLEAN,
+    rights_confirmed        BOOLEAN,
+    third_party_confirmed   BOOLEAN,
+    pii_warning_count       SMALLINT
+        CHECK (pii_warning_count IS NULL OR pii_warning_count BETWEEN 0 AND 20),
+    pii_override_reason     TEXT,
+    confirmed_by            TEXT,
+    confirmed_at            TIMESTAMPTZ,
+    created_by              TEXT        NOT NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    invalidated_by          TEXT,
+    invalidated_at          TIMESTAMPTZ,
+    invalidation_reason     TEXT,
+    CONSTRAINT ai_factory_transcript_runs_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_transcript_runs_identity_lengths
+        CHECK (
+            char_length(model_label) BETWEEN 1 AND 200
+            AND char_length(provider) BETWEEN 1 AND 80
+            AND char_length(provider_model) BETWEEN 1 AND 200
+            AND char_length(prompt_version) BETWEEN 1 AND 80
+            AND char_length(instruction_text) <= 500
+            AND char_length(created_by) BETWEEN 1 AND 200
+        ),
+    CONSTRAINT ai_factory_transcript_runs_hashes
+        CHECK (
+            char_length(prompt_template_sha256) = 64
+            AND prompt_template_sha256 = lower(prompt_template_sha256)
+            AND prompt_template_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(preview_manifest_sha256) = 64
+            AND preview_manifest_sha256 = lower(preview_manifest_sha256)
+            AND preview_manifest_sha256 ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT ai_factory_transcript_runs_confirmation
+        CHECK (
+            (status IN ('draft', 'invalidated')
+                AND confirmation_version IS NULL
+                AND anonymization_confirmed IS NULL
+                AND rights_confirmed IS NULL
+                AND third_party_confirmed IS NULL
+                AND pii_warning_count IS NULL
+                AND pii_override_reason IS NULL
+                AND confirmed_by IS NULL
+                AND confirmed_at IS NULL)
+            OR
+            (status <> 'draft'
+                AND char_length(confirmation_version) BETWEEN 1 AND 80
+                AND anonymization_confirmed = TRUE
+                AND rights_confirmed = TRUE
+                AND third_party_confirmed = TRUE
+                AND pii_warning_count IS NOT NULL
+                AND char_length(confirmed_by) BETWEEN 1 AND 200
+                AND confirmed_at IS NOT NULL
+                AND confirmed_at <= preview_expires_at
+                AND (
+                    (pii_warning_count = 0 AND pii_override_reason IS NULL)
+                    OR
+                    (pii_warning_count > 0
+                        AND char_length(pii_override_reason) BETWEEN 1 AND 1000)
+                ))
+        ),
+    CONSTRAINT ai_factory_transcript_runs_invalidation_fields
+        CHECK (
+            (status <> 'invalidated'
+                AND invalidated_by IS NULL AND invalidated_at IS NULL
+                AND invalidation_reason IS NULL)
+            OR
+            (status = 'invalidated'
+                AND char_length(invalidated_by) BETWEEN 1 AND 200
+                AND invalidated_at IS NOT NULL
+                AND char_length(invalidation_reason) BETWEEN 1 AND 1000)
+        ),
+    CONSTRAINT fk_ai_factory_transcript_runs_transcript
+        FOREIGN KEY (transcript_id)
+        REFERENCES {TABLE_AI_FACTORY_TRANSCRIPTS}(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_runs_transcript_created
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_RUNS}(transcript_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_runs_status_updated
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_RUNS}(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS} (
+    id                  TEXT        PRIMARY KEY,
+    run_id              TEXT        NOT NULL,
+    ordinal             SMALLINT    NOT NULL CHECK (ordinal BETWEEN 1 AND 40),
+    context_start       INTEGER     NOT NULL CHECK (context_start >= 0),
+    context_end         INTEGER     NOT NULL CHECK (context_end > context_start),
+    core_start          INTEGER     NOT NULL CHECK (core_start >= context_start),
+    core_end            INTEGER     NOT NULL CHECK (core_end > core_start),
+    prompt_sha256       TEXT        NOT NULL,
+    input_sha256        TEXT        NOT NULL,
+    preview_sha256      TEXT        NOT NULL,
+    status              TEXT        NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'succeeded', 'failed', 'discarded')),
+    attempt_count       SMALLINT    NOT NULL DEFAULT 0 CHECK (attempt_count BETWEEN 0 AND 3),
+    boundary_json       JSONB,
+    boundary_sha256     TEXT,
+    error_code          TEXT,
+    started_at          TIMESTAMPTZ,
+    completed_at        TIMESTAMPTZ,
+    CONSTRAINT ai_factory_transcript_windows_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_transcript_windows_bounds
+        CHECK (core_end <= context_end),
+    CONSTRAINT ai_factory_transcript_windows_hashes
+        CHECK (
+            char_length(prompt_sha256) = 64
+            AND prompt_sha256 = lower(prompt_sha256)
+            AND prompt_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(input_sha256) = 64
+            AND input_sha256 = lower(input_sha256)
+            AND input_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(preview_sha256) = 64
+            AND preview_sha256 = lower(preview_sha256)
+            AND preview_sha256 ~ '^[0-9a-f]+$'
+            AND (
+                (boundary_json IS NULL AND boundary_sha256 IS NULL)
+                OR
+                (jsonb_typeof(boundary_json) = 'array'
+                    AND char_length(boundary_sha256) = 64
+                    AND boundary_sha256 = lower(boundary_sha256)
+                    AND boundary_sha256 ~ '^[0-9a-f]+$')
+            )
+        ),
+    CONSTRAINT ai_factory_transcript_windows_status_fields
+        CHECK (
+            (status = 'pending' AND started_at IS NULL AND completed_at IS NULL
+                AND error_code IS NULL AND boundary_json IS NULL)
+            OR
+            (status = 'processing' AND started_at IS NOT NULL AND completed_at IS NULL
+                AND error_code IS NULL AND boundary_json IS NULL)
+            OR
+            (status = 'succeeded' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                AND error_code IS NULL AND boundary_json IS NOT NULL)
+            OR
+            (status IN ('failed', 'discarded') AND completed_at IS NOT NULL
+                AND char_length(error_code) BETWEEN 1 AND 120)
+        ),
+    CONSTRAINT fk_ai_factory_transcript_windows_run
+        FOREIGN KEY (run_id)
+        REFERENCES {TABLE_AI_FACTORY_TRANSCRIPT_RUNS}(id) ON DELETE RESTRICT,
+    UNIQUE (run_id, ordinal),
+    UNIQUE (id, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_windows_run_status
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS}(run_id, status, ordinal);
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS} (
+    id                        TEXT        PRIMARY KEY,
+    run_id                    TEXT        NOT NULL,
+    window_id                 TEXT        NOT NULL,
+    attempt_no                SMALLINT    NOT NULL CHECK (attempt_no BETWEEN 1 AND 3),
+    operation_id              TEXT        NOT NULL,
+    model_label               TEXT        NOT NULL,
+    provider                  TEXT        NOT NULL,
+    provider_model            TEXT        NOT NULL,
+    prompt_version            TEXT        NOT NULL,
+    prompt_sha256             TEXT        NOT NULL,
+    input_sha256              TEXT        NOT NULL,
+    preview_sha256            TEXT        NOT NULL,
+    estimated_cost_hkd        NUMERIC(20, 8) NOT NULL DEFAULT 0
+        CHECK (estimated_cost_hkd >= 0),
+    confirmed_by              TEXT        NOT NULL,
+    confirmed_at              TIMESTAMPTZ NOT NULL,
+    status                    TEXT        NOT NULL DEFAULT 'claimed'
+        CHECK (status IN ('claimed', 'running', 'succeeded', 'failed', 'discarded')),
+    provider_attempted_at     TIMESTAMPTZ,
+    provider_request_id       TEXT,
+    resolved_provider_model   TEXT,
+    response_sha256           TEXT,
+    response_bytes            INTEGER,
+    error_code                TEXT,
+    completed_at              TIMESTAMPTZ,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ai_factory_transcript_attempts_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_transcript_attempts_operation
+        CHECK (operation_id = run_id),
+    CONSTRAINT ai_factory_transcript_attempts_identity_lengths
+        CHECK (
+            char_length(model_label) BETWEEN 1 AND 200
+            AND char_length(provider) BETWEEN 1 AND 80
+            AND char_length(provider_model) BETWEEN 1 AND 200
+            AND char_length(prompt_version) BETWEEN 1 AND 80
+            AND char_length(confirmed_by) BETWEEN 1 AND 200
+            AND (provider_request_id IS NULL OR char_length(provider_request_id) <= 300)
+            AND (resolved_provider_model IS NULL
+                OR char_length(resolved_provider_model) BETWEEN 1 AND 200)
+        ),
+    CONSTRAINT ai_factory_transcript_attempts_hashes
+        CHECK (
+            char_length(prompt_sha256) = 64
+            AND prompt_sha256 = lower(prompt_sha256)
+            AND prompt_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(input_sha256) = 64
+            AND input_sha256 = lower(input_sha256)
+            AND input_sha256 ~ '^[0-9a-f]+$'
+            AND char_length(preview_sha256) = 64
+            AND preview_sha256 = lower(preview_sha256)
+            AND preview_sha256 ~ '^[0-9a-f]+$'
+            AND (response_sha256 IS NULL OR (
+                char_length(response_sha256) = 64
+                AND response_sha256 = lower(response_sha256)
+                AND response_sha256 ~ '^[0-9a-f]+$'))
+        ),
+    CONSTRAINT ai_factory_transcript_attempts_response_size
+        CHECK (response_bytes IS NULL OR response_bytes BETWEEN 0 AND 102400),
+    CONSTRAINT ai_factory_transcript_attempts_status_fields
+        CHECK (
+            (status = 'claimed' AND provider_attempted_at IS NULL
+                AND completed_at IS NULL AND error_code IS NULL)
+            OR
+            (status = 'running' AND provider_attempted_at IS NOT NULL
+                AND completed_at IS NULL AND error_code IS NULL)
+            OR
+            (status = 'succeeded' AND provider_attempted_at IS NOT NULL
+                AND completed_at IS NOT NULL AND response_sha256 IS NOT NULL
+                AND response_bytes > 0 AND error_code IS NULL)
+            OR
+            (status IN ('failed', 'discarded') AND completed_at IS NOT NULL
+                AND char_length(error_code) BETWEEN 1 AND 120)
+        ),
+    CONSTRAINT fk_ai_factory_transcript_attempts_window_run
+        FOREIGN KEY (window_id, run_id)
+        REFERENCES {TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS}(id, run_id) ON DELETE RESTRICT,
+    UNIQUE (window_id, attempt_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_attempts_run_created
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS}(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_attempts_processing
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS}(provider_attempted_at)
+    WHERE status IN ('claimed', 'running');
+
+CREATE TABLE IF NOT EXISTS {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS} (
+    id                    TEXT        PRIMARY KEY,
+    run_id                TEXT        NOT NULL,
+    transcript_id         TEXT        NOT NULL,
+    origin_window_id      TEXT        NOT NULL,
+    start_offset          INTEGER     NOT NULL CHECK (start_offset >= 0),
+    end_offset            INTEGER     NOT NULL CHECK (end_offset > start_offset),
+    original_json         JSONB       NOT NULL,
+    original_sha256       TEXT        NOT NULL,
+    reviewed_json         JSONB,
+    reviewed_sha256       TEXT,
+    review_status         TEXT        NOT NULL DEFAULT 'pending'
+        CHECK (review_status IN ('pending', 'approved', 'rejected')),
+    review_note           TEXT,
+    reviewed_by           TEXT,
+    reviewed_at           TIMESTAMPTZ,
+    approved_source_id    TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ai_factory_transcript_segments_id_length
+        CHECK (char_length(id) BETWEEN 1 AND 64),
+    CONSTRAINT ai_factory_transcript_segments_json_objects
+        CHECK (jsonb_typeof(original_json) = 'object'
+            AND (reviewed_json IS NULL OR jsonb_typeof(reviewed_json) = 'object')),
+    CONSTRAINT ai_factory_transcript_segments_hashes
+        CHECK (
+            char_length(original_sha256) = 64
+            AND original_sha256 = lower(original_sha256)
+            AND original_sha256 ~ '^[0-9a-f]+$'
+            AND (
+                (reviewed_json IS NULL AND reviewed_sha256 IS NULL)
+                OR
+                (reviewed_json IS NOT NULL
+                    AND char_length(reviewed_sha256) = 64
+                    AND reviewed_sha256 = lower(reviewed_sha256)
+                    AND reviewed_sha256 ~ '^[0-9a-f]+$')
+            )
+        ),
+    CONSTRAINT ai_factory_transcript_segments_review_fields
+        CHECK (
+            (review_status = 'pending' AND reviewed_json IS NULL
+                AND reviewed_sha256 IS NULL AND reviewed_by IS NULL
+                AND reviewed_at IS NULL AND approved_source_id IS NULL)
+            OR
+            (review_status = 'approved' AND reviewed_json IS NOT NULL
+                AND reviewed_sha256 IS NOT NULL
+                AND char_length(reviewed_by) BETWEEN 1 AND 200
+                AND reviewed_at IS NOT NULL AND approved_source_id IS NOT NULL)
+            OR
+            (review_status = 'rejected'
+                AND char_length(reviewed_by) BETWEEN 1 AND 200
+                AND reviewed_at IS NOT NULL AND approved_source_id IS NULL)
+        ),
+    CONSTRAINT ai_factory_transcript_segments_note_length
+        CHECK (review_note IS NULL OR char_length(review_note) <= 2000),
+    CONSTRAINT fk_ai_factory_transcript_segments_run
+        FOREIGN KEY (run_id)
+        REFERENCES {TABLE_AI_FACTORY_TRANSCRIPT_RUNS}(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_ai_factory_transcript_segments_transcript
+        FOREIGN KEY (transcript_id)
+        REFERENCES {TABLE_AI_FACTORY_TRANSCRIPTS}(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_ai_factory_transcript_segments_window
+        FOREIGN KEY (origin_window_id)
+        REFERENCES {TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS}(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_ai_factory_transcript_segments_source
+        FOREIGN KEY (approved_source_id)
+        REFERENCES {TABLE_AI_FACTORY_SOURCES}(id) ON DELETE RESTRICT,
+    UNIQUE (run_id, start_offset)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_segments_review_queue
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS}(created_at, start_offset)
+    WHERE review_status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_ai_factory_transcript_segments_run_offset
+    ON {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS}(run_id, start_offset);
+"""
+
+LOCK_AI_FACTORY_TRANSCRIPT_PRIVILEGES = f"""
+REVOKE ALL PRIVILEGES ON TABLE
+    {TABLE_AI_FACTORY_TRANSCRIPTS},
+    {TABLE_AI_FACTORY_TRANSCRIPT_RUNS},
+    {TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS},
+    {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS},
+    {TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS}
+FROM PUBLIC;
+DO $$
+DECLARE
+    role_name TEXT;
+    table_name TEXT;
+BEGIN
+    FOR role_name IN
+        SELECT rolname FROM pg_roles
+        WHERE rolname IN ('anon', 'authenticated')
+    LOOP
+        FOREACH table_name IN ARRAY ARRAY[
+            '{TABLE_AI_FACTORY_TRANSCRIPTS}',
+            '{TABLE_AI_FACTORY_TRANSCRIPT_RUNS}',
+            '{TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS}',
+            '{TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS}',
+            '{TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS}'
+        ]
+        LOOP
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON TABLE %I FROM %I',
+                table_name,
+                role_name
+            );
+        END LOOP;
+    END LOOP;
+END $$;
+"""
+
 LOCK_AI_DATA_FACTORY_PRIVILEGES = f"""
 REVOKE ALL PRIVILEGES ON TABLE
     {TABLE_AI_FACTORY_SOURCES},
@@ -2414,7 +2826,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
     user_id             TEXT,
     feature             TEXT        NOT NULL
-                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts', 'data_factory_generation', 'official_ai_judge')),
+                                CHECK (feature IN ('speech_review', 'strategy', 'competition_prep', 'web_research', 'fact_check', 'free_debate_live', 'full_mock_live', 'vote_review', 'vote_analysis', 'vote_discussion', 'tts_review', 'tts_script_analysis', 'llm_review', 'kiosk_match_review', 'tts', 'kiosk_match_review_tts', 'data_factory_generation', 'official_ai_judge', 'lmc_ai_chat')),
     model_label         TEXT        NOT NULL,
     provider            TEXT,
     estimated_cost_usd  NUMERIC(12, 6) DEFAULT 0,
@@ -2425,6 +2837,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     billable_characters INTEGER     NOT NULL DEFAULT 0
                                 CHECK (billable_characters >= 0),
     search_calls        INTEGER     DEFAULT 0,
+    provider_duration_ms INTEGER    NOT NULL DEFAULT 0
+                                CHECK (provider_duration_ms >= 0),
     operation_id        TEXT        CHECK (
                                 operation_id IS NULL
                                 OR CHAR_LENGTH(operation_id) BETWEEN 1 AND 200
@@ -2442,6 +2856,60 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
         FOREIGN KEY (user_id) REFERENCES {TABLE_ACCOUNTS}(user_id)
         ON DELETE SET NULL
 );
+"""
+
+# Private local-AI computer registry. Conversation content and prompts are
+# deliberately absent; connection/queue state remains process-local memory.
+CREATE_LMC_AI_NODES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_LMC_AI_NODES} (
+    node_id               TEXT        PRIMARY KEY,
+    display_name          TEXT        NOT NULL,
+    token_hash            TEXT        NOT NULL UNIQUE,
+    enabled               BOOLEAN     NOT NULL DEFAULT TRUE,
+    last_runtime          TEXT,
+    last_runtime_version  TEXT,
+    last_model            TEXT,
+    last_capabilities     JSONB,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_connected_at     TIMESTAMPTZ,
+    last_disconnected_at  TIMESTAMPTZ,
+    CONSTRAINT lmc_ai_nodes_id_length
+        CHECK (CHAR_LENGTH(node_id) BETWEEN 1 AND 64),
+    CONSTRAINT lmc_ai_nodes_name_length
+        CHECK (CHAR_LENGTH(display_name) BETWEEN 1 AND 80),
+    CONSTRAINT lmc_ai_nodes_token_hash
+        CHECK (
+            CHAR_LENGTH(token_hash) = 64
+            AND token_hash = LOWER(token_hash)
+            AND token_hash ~ '^[0-9a-f]+$'
+        ),
+    CONSTRAINT lmc_ai_nodes_capabilities_object
+        CHECK (
+            last_capabilities IS NULL
+            OR JSONB_TYPEOF(last_capabilities) = 'object'
+        )
+);
+CREATE INDEX IF NOT EXISTS idx_lmc_ai_nodes_enabled_created
+    ON {TABLE_LMC_AI_NODES}(enabled, created_at DESC);
+COMMENT ON TABLE {TABLE_LMC_AI_NODES} IS
+    'skhlmc-feature:lmc_ai:20260720_0010';
+
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM PUBLIC;
+DO $lmc_ai_privileges$
+DECLARE
+    role_name TEXT;
+BEGIN
+    FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated']
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+            EXECUTE FORMAT(
+                'REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM %I',
+                role_name
+            );
+        END IF;
+    END LOOP;
+END $lmc_ai_privileges$;
 """
 
 # Table: LATENESS_FUND_RECORDS
@@ -2737,7 +3205,8 @@ CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
         'factory_item_reviewed', 'factory_item_withdrawn',
         'factory_item_invalidated',
         'factory_topic_tag_approved', 'factory_topic_tag_retired',
-        'factory_release_published', 'factory_release_invalidated'
+        'factory_release_published', 'factory_release_invalidated',
+        'factory_transcript_withdrawn'
     );
 CREATE INDEX IF NOT EXISTS idx_ai_fund_transactions_status
     ON {TABLE_AI_FUND_TRANSACTIONS}(status);
@@ -2945,10 +3414,13 @@ ALL_SCHEMAS = [
     LOCK_AI_TRAINING_AUDIT_PRIVILEGES,
     CREATE_AI_DATA_FACTORY,           # → LLM submissions; internal lineage
     LOCK_AI_DATA_FACTORY_PRIVILEGES,
+    CREATE_AI_FACTORY_TRANSCRIPT_WORKFLOW,  # → factory sources; full transcript lineage
+    LOCK_AI_FACTORY_TRANSCRIPT_PRIVILEGES,
     CREATE_MATCH_ROSTER_LINKS,        # → matches
     CREATE_MOTION_COMMENTS,           # → accounts
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
     CREATE_AI_FUND_USAGE_LOGS,        # → accounts
+    CREATE_LMC_AI_NODES,              # private local-AI computer registry
     CREATE_LATENESS_FUND_RECORDS,     # → accounts
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps

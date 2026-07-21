@@ -20,7 +20,7 @@ FACTORY_SCRIPT = SCRIPT.split("const factoryRows", 1)[1].split(
 def test_factory_is_one_preserved_admin_tab_with_three_exact_sections():
     assert PAGE.count('data-admin="factory"') == 1
     tab = re.search(r'<button data-admin="factory">([^<]+)</button>', PAGE)
-    assert tab and tab.group(1) == "資料工廠"
+    assert tab and tab.group(1) == "🏭 資料工廠"
 
     assert 'data-admin="recordings"' in PAGE
     assert 'data-admin="scripts"' in PAGE
@@ -50,7 +50,8 @@ def test_factory_uses_the_v0_routes_and_no_hidden_automatic_call():
         "/api/ai-training/factory/jobs/preview",
         "/api/ai-training/factory/jobs/${encodeURIComponent(jobId)}/generate",
         "/api/ai-training/factory/jobs?page=",
-        "/api/ai-training/factory/items?status=pending&page=",
+        '"/api/ai-training/factory/items"',
+        "?status=pending&page=",
         "/api/ai-training/factory/items?status=approved&page=",
         "/api/ai-training/factory/items/${encodeURIComponent(factoryId(item))}/review",
         "/api/ai-training/factory/items/${encodeURIComponent(factoryId(item))}/withdraw",
@@ -108,8 +109,8 @@ def test_factory_prefers_product_recipe_labels_and_api_review_aliases():
     recipe_label = FACTORY_SCRIPT.split("function factoryRecipeLabel", 1)[1].split(
         "function factoryArtifactKind", 1
     )[0]
-    assert recipe_label.index("FACTORY_RECIPE_LABELS[key]") < recipe_label.index(
-        "item?.label"
+    assert recipe_label.index("item?.label") < recipe_label.index(
+        "FACTORY_RECIPE_LABELS[key]"
     )
     assert "item.job_created_by" in FACTORY_SCRIPT
     assert "item.source_side" in FACTORY_SCRIPT
@@ -162,11 +163,99 @@ def test_factory_fixed_language_recipes_and_batch_bounds_are_visible():
         "RAG論證拆解卡",
         "演辭評改",
         "SFT攻防演練對話",
+        "完整逐字稿結構拆分",
     ):
         assert label in SCRIPT
     assert "攻防演練只可使用已標示正方或反方的來源" in FACTORY_PAGE
     assert "Free Provider 不扣 AI Fund" in FACTORY_PAGE
     assert "候選資料仍須人工審核" in FACTORY_PAGE
+
+
+def test_factory_product_cards_are_product_first_and_show_server_descriptions():
+    product = FACTORY_PAGE.index('id="factoryProducts"')
+    sources = FACTORY_PAGE.index('id="factoryStandardWorkflow"')
+    transcript = FACTORY_PAGE.index('id="factoryTranscriptForm"')
+
+    assert product < sources < transcript
+    assert 'class="factory-product-grid"' in FACTORY_PAGE
+    assert 'role="radiogroup"' in FACTORY_PAGE
+    assert "item.description" in FACTORY_SCRIPT
+    assert "factory-product-card" in PAGE
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in PAGE
+    assert "FACTORY_TRANSCRIPT_RECIPE" in FACTORY_SCRIPT
+
+
+def test_factory_full_transcript_workflow_is_bounded_resumable_and_reviewable():
+    for element_id in (
+        "factoryTranscriptTitle",
+        "factoryTranscriptSourceNote",
+        "factoryTranscriptContent",
+        "factoryTranscriptCharCount",
+        "factoryTranscriptModel",
+        "factoryTranscriptStorageRights",
+        "factoryTranscriptRuns",
+        "factoryTranscriptReviewFields",
+        "factoryTranscriptSequence",
+        "factoryTranscriptStart",
+        "factoryTranscriptEnd",
+        "factoryTranscriptSpeaker",
+        "factoryTranscriptSide",
+        "factoryTranscriptStage",
+        "factoryTranscriptConfidence",
+        "factoryTranscriptReviewItems",
+        "factoryTranscriptQuote",
+    ):
+        assert f'id="{element_id}"' in FACTORY_PAGE
+    for route in (
+        "/api/ai-training/factory/transcripts/preview",
+        "/api/ai-training/factory/transcripts/${encodeURIComponent(transcriptId)}/withdraw",
+        "/api/ai-training/factory/transcript-runs/${encodeURIComponent(runId)}/confirm",
+        "/api/ai-training/factory/transcript-runs/${encodeURIComponent(runId)}/next",
+        "/api/ai-training/factory/transcript-segments",
+    ):
+        assert route in FACTORY_SCRIPT
+    assert "while (!done && guard < 41)" in FACTORY_SCRIPT
+    assert "系統沒有自動重試" in FACTORY_SCRIPT
+    assert 'data-factory-review-kind="transcript"' in FACTORY_PAGE
+
+    runs = FACTORY_SCRIPT.split("function renderTranscriptRuns", 1)[1].split(
+        "function syncFactoryJobPagination", 1
+    )[0]
+    assert '["processing", "failed"].includes(statusValue)' in runs
+    assert "繼續處理" in runs
+    assert "撤回逐字稿" in runs
+    assert "withdrawTranscript" in FACTORY_SCRIPT
+
+
+def test_transcript_review_slices_server_offsets_as_unicode_code_points():
+    context = FACTORY_SCRIPT.split("async function loadTranscriptSegmentContext", 1)[1].split(
+        "function syncFactoryReviewKindButtons", 1
+    )[0]
+    assert "Array.from(contextText)" in context
+    assert "Array.from(String(context.context_text || \"\"))" in context
+    assert ".slice(" in context
+    assert ".join(\"\")" in context
+
+
+def test_transcript_review_offsets_are_read_only_and_come_from_server_context():
+    assert 'id="factoryTranscriptStart" type="number" min="0" readonly' in FACTORY_PAGE
+    assert 'id="factoryTranscriptEnd" type="number" min="1" readonly' in FACTORY_PAGE
+    payload = FACTORY_SCRIPT.split("function transcriptReviewPayloadFromFields", 1)[1].split(
+        "function updateTranscriptReviewQuote", 1
+    )[0]
+    assert "Number(context.start_offset)" in payload
+    assert "Number(context.end_offset)" in payload
+    assert 'Number($("factoryTranscriptStart").value)' not in payload
+    assert 'Number($("factoryTranscriptEnd").value)' not in payload
+
+
+def test_factory_mobile_layout_clamps_sources_and_uses_touch_sized_navigation():
+    assert "-webkit-line-clamp: 4" in PAGE
+    mobile = PAGE.split("@media (max-width: 760px)", 1)[1].split("</style>", 1)[0]
+    assert ".factory-product-grid" in mobile
+    assert ".factory-review-nav" in mobile
+    assert "min-height: 2.75rem" in mobile
+    assert 'id="factorySourceChooser"' in FACTORY_PAGE
 
 
 def test_factory_pasted_source_exposes_all_side_values_and_defaults_to_not_applicable():
@@ -229,10 +318,14 @@ def test_factory_source_withdraw_is_per_item_reasoned_and_excludes_virtual_rows(
 
 def test_factory_review_is_single_item_editable_and_preserves_original():
     assert "每次只審核一項" in FACTORY_PAGE
+    assert 'id="factoryReviewHelp"' in FACTORY_PAGE
+    assert "每次只審核一段" in FACTORY_SCRIPT
     assert 'id="factoryReviewSource"' in FACTORY_PAGE
     assert 'id="factoryReviewPayload"' in FACTORY_PAGE
     assert "factoryPrettyJson(factoryCandidatePayload(item))" in FACTORY_SCRIPT
     assert "JSON.parse($(\"factoryReviewPayload\").value)" in FACTORY_SCRIPT
+    assert "transcriptReviewPayloadFromFields" in FACTORY_SCRIPT
+    assert "updateTranscriptReviewQuote" in FACTORY_SCRIPT
     assert "reviewed_payload: reviewedPayload" in FACTORY_SCRIPT
     assert "expected_revision:" in FACTORY_SCRIPT
     assert 'reviewFactoryItem("approved")' in SCRIPT

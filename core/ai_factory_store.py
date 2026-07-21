@@ -24,10 +24,13 @@ from schema import (
     TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_SOURCES,
     TABLE_AI_FACTORY_TOPIC_TAGS,
-    TABLE_AI_FUND_USAGE_LOGS,
+    TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_RUNS,
+    TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS,
+    TABLE_AI_FACTORY_TRANSCRIPTS,
     TABLE_AI_TRAINING_AUDIT,
     TABLE_LLM_TRAINING_SUBMISSIONS,
-    TABLE_MONTHLY_RESOURCE_LIMITS,
 )
 from system_limits import (
     AI_FACTORY_ATTEMPT_MAX,
@@ -58,6 +61,11 @@ FACTORY_TABLES = (
     TABLE_AI_FACTORY_ITEM_TAGS,
     TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_RELEASE_ITEMS,
+    TABLE_AI_FACTORY_TRANSCRIPTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_RUNS,
+    TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS,
+    TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS,
+    TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS,
 )
 SOURCE_KINDS = frozenset(("llm_submission", "admin_paste"))
 RIGHTS_BASES = frozenset(
@@ -89,24 +97,6 @@ def _aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
-
-def _current_budget_reservation(now: datetime):
-    """Return the canonical paid-attempt cycle for one fixed timestamp."""
-    from core.funds_logic import ai_budget_cycle
-
-    cycle = ai_budget_cycle(now)
-    return cycle["budget_month"], cycle["window_end"].replace(tzinfo=None)
-
-
-def _budget_window_value(value):
-    if not isinstance(value, datetime):
-        return None
-    if value.tzinfo is not None:
-        from zoneinfo import ZoneInfo
-
-        return value.astimezone(ZoneInfo("Asia/Hong_Kong")).replace(tzinfo=None)
-    return value
 
 
 def new_id(prefix: str) -> str:
@@ -791,9 +781,6 @@ def claim_attempt(
     pii_warning_count: int = 0,
     pii_override_reason: str = "",
     estimated_cost_hkd: float = 0,
-    budget_provider_name: str = "",
-    budget_period_month=None,
-    budget_window_start=None,
 ) -> dict:
     if not anonymization_confirmed or not rights_confirmed or not third_party_confirmed:
         raise FactoryStoreError(400, "生成前必須確認匿名化、使用權及第三方 AI 傳送警告")
@@ -802,26 +789,12 @@ def claim_attempt(
     if warning_count and not override_reason:
         raise FactoryStoreError(400, "來源有個人資料警告，必須填寫覆寫理由")
     try:
-        reserved_cost = float(estimated_cost_hkd or 0)
+        estimated_cost = float(estimated_cost_hkd or 0)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise FactoryStoreError(400, "生成成本預留值不正確") from exc
-    if not 0 <= reserved_cost <= 9_999:
-        raise FactoryStoreError(400, "生成成本預留值不正確")
-    budget_name = str(budget_provider_name or "").strip()
-    if reserved_cost > 0 and (
-        not budget_name or budget_period_month is None or budget_window_start is None
-    ):
-        raise FactoryStoreError(409, "AI Fund 預留資料不完整")
+        raise FactoryStoreError(400, "生成成本估算不正確") from exc
+    if not 0 <= estimated_cost <= 9_999:
+        raise FactoryStoreError(400, "生成成本估算不正確")
     now = utc_now()
-    if reserved_cost > 0:
-        expected_period, expected_window = _current_budget_reservation(now)
-        if (
-            budget_period_month != expected_period
-            or _budget_window_value(budget_window_start) != expected_window
-        ):
-            raise FactoryStoreError(409, "AI Fund 預留週期已改變，請重新預覽及確認")
-        budget_period_month = expected_period
-        budget_window_start = expected_window
     attempt_id = new_id("attempt")
     with db.transaction() as conn:
         conn.execute(
@@ -872,8 +845,12 @@ def claim_attempt(
         global_active = int(
             conn.execute(
                 text(
-                    f"""SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS}
-                        WHERE status IN ('claimed','running')"""
+                    f"""SELECT
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS}
+                            WHERE status IN ('claimed','running'))
+                        +
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS}
+                            WHERE status IN ('claimed','running'))"""
                 )
             ).scalar()
             or 0
@@ -881,9 +858,16 @@ def claim_attempt(
         manager_active = int(
             conn.execute(
                 text(
-                    f"""SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS} a
-                        JOIN {TABLE_AI_FACTORY_JOBS} j ON j.id=a.job_id
-                        WHERE a.status IN ('claimed','running') AND j.created_by=:actor"""
+                    f"""SELECT
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_ATTEMPTS} a
+                            JOIN {TABLE_AI_FACTORY_JOBS} j ON j.id=a.job_id
+                            WHERE a.status IN ('claimed','running')
+                              AND j.created_by=:actor)
+                        +
+                        (SELECT COUNT(*) FROM {TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS} a
+                            JOIN {TABLE_AI_FACTORY_TRANSCRIPT_RUNS} r ON r.id=a.run_id
+                            WHERE a.status IN ('claimed','running')
+                              AND r.created_by=:actor)"""
                 ),
                 {"actor": str(actor)},
             ).scalar()
@@ -893,77 +877,12 @@ def claim_attempt(
             raise FactoryStoreError(429, "資料工廠正處理其他生成工作，請稍後再試")
         if manager_active >= AI_FACTORY_MANAGER_CONCURRENCY:
             raise FactoryStoreError(429, "你已有一個生成工作正在處理")
-        if reserved_cost > 0:
-            conn.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-                {
-                    "key": (
-                        f"ai_factory_budget:{budget_name}:"
-                        f"{budget_period_month}"
-                    )
-                },
-            )
-            budget = conn.execute(
-                text(
-                    f"""SELECT allocated_hkd,external_cap_confirmed
-                        FROM {TABLE_MONTHLY_RESOURCE_LIMITS}
-                        WHERE period_month=:month AND limit_key=:limit_key
-                        FOR UPDATE"""
-                ),
-                {
-                    "month": budget_period_month,
-                    "limit_key": f"provider:{budget_name}",
-                },
-            ).mappings().first()
-            if (
-                budget is None
-                or float(budget["allocated_hkd"] or 0) <= 0
-                or not bool(budget["external_cap_confirmed"])
-            ):
-                raise FactoryStoreError(
-                    409, "所選 provider 未有可用並已確認 spending cap 嘅 AI Fund 預算"
-                )
-            committed_or_reserved = float(
-                conn.execute(
-                    text(
-                        f"""SELECT
-                            COALESCE((
-                                SELECT SUM(estimated_cost_hkd)
-                                FROM {TABLE_AI_FUND_USAGE_LOGS}
-                                WHERE created_at>=:start AND (
-                                    (:budget_name='google' AND provider='gemini')
-                                    OR (:budget_name='openrouter' AND provider='openrouter')
-                                    OR (:budget_name='azure' AND provider='azure')
-                                    OR (:budget_name='other' AND provider NOT IN (
-                                        'gemini','openrouter','azure'
-                                    ))
-                                )
-                            ),0) + COALESCE((
-                                SELECT SUM(estimated_cost_hkd)
-                                FROM {TABLE_AI_FACTORY_ATTEMPTS}
-                                WHERE status IN ('claimed','running')
-                                  AND budget_provider_name=:budget_name
-                                  AND budget_period_month=:period_month
-                            ),0) AS committed_or_reserved"""
-                    ),
-                    {
-                        "start": budget_window_start,
-                        "budget_name": budget_name,
-                        "period_month": budget_period_month,
-                    },
-                ).scalar()
-                or 0
-            )
-            allocated = float(budget["allocated_hkd"] or 0)
-            if committed_or_reserved + reserved_cost > allocated + 1e-9:
-                raise FactoryStoreError(429, "所選 provider 嘅本期 AI Fund 餘額不足")
         attempt_no = previous_count + 1
         conn.execute(
             text(
                 f"""INSERT INTO {TABLE_AI_FACTORY_ATTEMPTS}(
                     id,job_id,attempt_no,operation_id,model_label,provider,provider_model,
                     recipe_key,recipe_version,candidate_count,estimated_cost_hkd,
-                    budget_provider_name,budget_period_month,budget_window_start,
                     source_sha256,prompt_sha256,
                     input_sha256,preview_sha256,previewed_at,preview_expires_at,
                     confirmation_version,anonymization_confirmed,rights_confirmed,
@@ -972,7 +891,6 @@ def claim_attempt(
                 ) VALUES(
                     :id,:job_id,:attempt_no,:job_id,:label,:provider,:provider_model,
                     :recipe,:recipe_version,:count,:estimated_cost_hkd,
-                    :budget_provider_name,:budget_period_month,:budget_window_start,
                     :source_sha,:prompt_sha,:input_sha,
                     :preview_sha,:previewed_at,:expires,:confirmation,TRUE,TRUE,TRUE,
                     :pii_warning_count,:pii_override_reason,:actor,:now,'claimed',:now
@@ -988,10 +906,7 @@ def claim_attempt(
                 "recipe": str(job["recipe_key"]),
                 "recipe_version": recipe_version,
                 "count": int(candidate_count),
-                "estimated_cost_hkd": reserved_cost,
-                "budget_provider_name": budget_name if reserved_cost > 0 else None,
-                "budget_period_month": budget_period_month if reserved_cost > 0 else None,
-                "budget_window_start": budget_window_start if reserved_cost > 0 else None,
+                "estimated_cost_hkd": estimated_cost,
                 "source_sha": source_sha256,
                 "prompt_sha": prompt_sha256,
                 "input_sha": input_sha256,
@@ -1063,8 +978,7 @@ def mark_provider_started(db, attempt_id: str) -> None:
         ).mappings().first()
         attempt = conn.execute(
             text(
-                f"""SELECT id,job_id,status,estimated_cost_hkd,
-                    budget_period_month,budget_window_start
+                f"""SELECT id,job_id,status
                     FROM {TABLE_AI_FACTORY_ATTEMPTS}
                     WHERE id=:id FOR UPDATE"""
             ),
@@ -1082,14 +996,6 @@ def mark_provider_started(db, attempt_id: str) -> None:
         if attempt["status"] != "claimed":
             raise FactoryStoreError(409, "生成 attempt 狀態已改變")
         now = utc_now()
-        if float(attempt.get("estimated_cost_hkd") or 0) > 0:
-            expected_period, expected_window = _current_budget_reservation(now)
-            if (
-                attempt.get("budget_period_month") != expected_period
-                or _budget_window_value(attempt.get("budget_window_start"))
-                != expected_window
-            ):
-                raise FactoryStoreError(409, "AI Fund 預留已跨期，請重新預覽及確認")
         conn.execute(
             text(
                 f"""UPDATE {TABLE_AI_FACTORY_ATTEMPTS}

@@ -1311,7 +1311,7 @@ def parse_validate_canonicalize(
     )
 
 
-def _estimate_text_tokens(value: str) -> int:
+def estimate_text_tokens(value: str) -> int:
     # Conservative preview heuristic for mixed Cantonese/English.  Provider
     # usage metadata remains authoritative after a real attempt.
     ascii_chars = sum(ord(character) < 128 for character in value)
@@ -1342,7 +1342,7 @@ def estimate_factory_cost(
             raise FactoryContractError(f"Invalid model rate: {name}")
         return value
 
-    input_tokens = _estimate_text_tokens(prompt.system + prompt.user)
+    input_tokens = estimate_text_tokens(prompt.system + prompt.user)
     output_tokens = int(
         recipe["estimated_output_tokens_per_candidate"] * requested_count
     )
@@ -1387,6 +1387,7 @@ __all__ = [
     "canonicalize_factory_output",
     "content_hash",
     "estimate_factory_cost",
+    "estimate_text_tokens",
     "get_output_schema",
     "get_prompt_template_hash",
     "get_recipe_metadata",

@@ -100,6 +100,65 @@
         width: auto;
         flex: 0 0 auto;
       }
+      .factory-source-card p {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 4;
+        overflow: hidden;
+        margin-bottom: 0;
+      }
+      .factory-product-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+      .factory-product-card {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.65rem;
+        min-height: 7rem;
+        padding: 0.9rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        cursor: pointer;
+      }
+      .factory-product-card.selected {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+      .factory-product-card input {
+        width: auto;
+        flex: 0 0 auto;
+      }
+      .factory-product-card strong,
+      .factory-product-card span {
+        display: block;
+      }
+      .factory-product-card span {
+        margin-top: 0.35rem;
+        color: var(--muted);
+      }
+      .factory-review-kind {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .factory-review-kind button.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
+      }
+      .factory-char-count {
+        text-align: right;
+      }
+      .factory-source-chooser > summary {
+        min-height: 2.75rem;
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+      }
       .factory-meta {
         color: var(--muted);
         font-size: 0.86rem;
@@ -119,6 +178,17 @@
         border-radius: var(--radius);
         background: var(--surface);
         padding: 0.85rem;
+      }
+      .factory-transcript-review-fields {
+        display: grid;
+        gap: 0.75rem;
+      }
+      .factory-transcript-review-fields.hidden {
+        display: none;
+      }
+      .factory-transcript-review-fields .factory-preview {
+        min-height: 8rem;
+        max-height: 18rem;
       }
       .factory-tags {
         display: flex;
@@ -143,8 +213,24 @@
       @media (max-width: 760px) {
         .split,
         .factory-grid,
-        .factory-review-grid {
+        .factory-review-grid,
+        .factory-product-grid {
           grid-template-columns: minmax(0, 1fr);
+        }
+        .factory-product-card {
+          min-height: 0;
+        }
+        .factory-review-nav {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .factory-review-nav .caption {
+          grid-column: 1 / -1;
+          grid-row: 1;
+        }
+        .factory-review-nav button {
+          width: 100%;
+          min-height: 2.75rem;
         }
         #factoryPreviewDialog {
           width: calc(100vw - 1rem);
@@ -395,7 +481,7 @@
             ><button data-admin="manuscripts">📄 完整稿管理</button
             ><button data-admin="lexicon">📖 讀音字典管理</button
             ><button data-admin="llm-review">📝 LLM 資料審核 / Export</button
-            ><button data-admin="factory">資料工廠</button>
+            ><button data-admin="factory">🏭 資料工廠</button>
           </nav>
           <section id="recordings" class="admin-pane active">
             <section class="card">
@@ -546,9 +632,18 @@
             </nav>
 
             <section id="factory-create" class="factory-subpane active">
-              <div class="factory-grid">
+              <section class="card">
+                <h3>1. 選擇產品</h3>
+                <p class="caption">先選擇要建立的資料類型，系統會顯示相應的來源及處理方式。</p>
+                <div id="factoryProducts" class="factory-product-grid" role="radiogroup" aria-label="資料產品"></div>
+                <select id="factoryRecipe" class="hidden" aria-hidden="true"></select>
+              </section>
+
+              <div id="factoryStandardWorkflow" class="factory-grid">
                 <section class="card">
-                  <h3>1. 選擇一份來源</h3>
+                  <h3>2. 選擇一份來源</h3>
+                  <details id="factorySourceChooser" class="factory-source-chooser" open>
+                    <summary>搜尋及選擇來源</summary>
                   <div class="split">
                     <label>來源類型
                       <select id="factorySourceKind">
@@ -605,13 +700,13 @@
                       <button id="factoryPasteSubmit" class="primary">儲存來源</button>
                     </form>
                   </details>
+                  </details>
                 </section>
 
                 <form id="factoryJobForm" class="card">
-                  <h3>2. 選擇產品及模型</h3>
+                  <h3>3. 選擇模型及生成設定</h3>
                   <p id="factorySelectedSource" class="notice">尚未選擇來源。</p>
                   <button id="factoryCancelRetry" class="hidden" type="button">取消重試，建立新工作</button>
-                  <label>產品<select id="factoryRecipe" required></select></label>
                   <p class="caption">攻防演練只可使用已標示正方或反方的來源。</p>
                   <label>AI 模型<select id="factoryModel" required></select></label>
                   <p class="caption">
@@ -634,10 +729,52 @@
                 </form>
               </div>
 
+              <form id="factoryTranscriptForm" class="card hidden">
+                <h3>2. 貼上完整逐字稿及設定模型</h3>
+                <p class="caption">逐字稿會按約 11,000 字的核心範圍分批處理，每批另加前後文協助判斷。AI 只標示發言起點，完整段落由伺服器按原文位置逐字建立。</p>
+                <div class="split">
+                  <label>標題<input id="factoryTranscriptTitle" maxlength="200" required /></label>
+                  <label>辯題／主題<input id="factoryTranscriptTopic" maxlength="500" /></label>
+                </div>
+                <label>來源說明<textarea id="factoryTranscriptSourceNote" maxlength="1000" required></textarea></label>
+                <div class="split">
+                  <label>來源語言
+                    <select id="factoryTranscriptLanguage" required>
+                      <option value="yue-Hant-HK" selected>香港粵語繁體中文</option>
+                      <option value="zh-Hant">繁體中文</option>
+                      <option value="en">英文</option>
+                      <option value="mixed">混合語言</option>
+                      <option value="other">其他</option>
+                    </select>
+                  </label>
+                  <label>權利依據
+                    <select id="factoryTranscriptRightsBasis" required>
+                      <option value="own_work">自撰</option>
+                      <option value="permission">已取得權利人許可</option>
+                      <option value="open_license">開放授權</option>
+                      <option value="public_domain">公有領域</option>
+                      <option value="other">其他</option>
+                    </select>
+                  </label>
+                </div>
+                <label>完整逐字稿<textarea id="factoryTranscriptContent" rows="16" required></textarea></label>
+                <p id="factoryTranscriptCharCount" class="caption factory-char-count">0 / 200,000 字</p>
+                <label>AI 模型<select id="factoryTranscriptModel" required></select></label>
+                <label>管理員補充指示（可選）
+                  <textarea id="factoryTranscriptInstruction" maxlength="500" rows="4"></textarea>
+                </label>
+                <label class="check">
+                  <input id="factoryTranscriptStorageRights" type="checkbox" required />
+                  我確認有權將這份逐字稿儲存於內部資料庫並作資料處理。
+                </label>
+                <button id="factoryTranscriptPreviewBtn" class="primary">預覽所有分批傳送內容</button>
+              </form>
+
               <section class="card">
                 <h3>工作紀錄</h3>
                 <p class="caption">失敗工作不會自動重試；如要再做，請重新預覽及確認。</p>
                 <div id="factoryJobs" class="factory-list"></div>
+                <div id="factoryTranscriptRuns" class="factory-list hidden"></div>
                 <div class="actions">
                   <button id="factoryJobsPrev" type="button">上一頁</button>
                   <span id="factoryJobsPage" class="caption"></span>
@@ -649,7 +786,11 @@
             <section id="factory-review" class="factory-subpane">
               <section class="card">
                 <h3>待審核</h3>
-                <p class="caption">每次只審核一項。你可以修正結構化 JSON；系統仍會保留 AI 原稿。</p>
+                <p id="factoryReviewHelp" class="caption">每次只審核一項。你可以修正結構化 JSON；系統仍會保留 AI 原稿。</p>
+                <div id="factoryReviewKinds" class="factory-review-kind">
+                  <button class="active" type="button" data-factory-review-kind="standard">一般候選資料</button>
+                  <button type="button" data-factory-review-kind="transcript">逐字稿段落</button>
+                </div>
                 <div id="factoryReviewEmpty" class="notice hidden">現時沒有待審核資料。</div>
                 <div id="factoryReviewWorkspace" class="hidden">
                   <div class="factory-review-grid">
@@ -661,7 +802,46 @@
                     <div>
                       <h4>候選資料（可修正）</h4>
                       <div id="factoryReviewCandidateMeta" class="factory-meta"></div>
-                      <textarea id="factoryReviewPayload" class="factory-json-editor" spellcheck="false"></textarea>
+                      <div id="factoryTranscriptReviewFields" class="factory-transcript-review-fields hidden">
+                        <div class="split">
+                          <label>發言次序<input id="factoryTranscriptSequence" readonly /></label>
+                          <label>判斷信心<input id="factoryTranscriptConfidence" type="number" min="0" max="100" required /></label>
+                        </div>
+                        <div class="split">
+                          <label>原文起點（鎖定）<input id="factoryTranscriptStart" type="number" min="0" readonly required /></label>
+                          <label>原文終點（鎖定）<input id="factoryTranscriptEnd" type="number" min="1" readonly required /></label>
+                        </div>
+                        <label>辯位<input id="factoryTranscriptSpeaker" maxlength="100" required /></label>
+                        <div class="split">
+                          <label>立場
+                            <select id="factoryTranscriptSide" required>
+                              <option value="pro">正方</option>
+                              <option value="con">反方</option>
+                              <option value="neutral">中立</option>
+                              <option value="unknown">未能確定</option>
+                            </select>
+                          </label>
+                          <label>環節
+                            <select id="factoryTranscriptStage" required>
+                              <option value="opening">開場或立論</option>
+                              <option value="questioning">質詢或盤問</option>
+                              <option value="free_debate">自由辯論</option>
+                              <option value="summary">總結</option>
+                              <option value="adjudication">評判講評</option>
+                              <option value="general">一般環節</option>
+                              <option value="unknown">未能確定</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label>需人工確認項目，每行一項<textarea id="factoryTranscriptReviewItems" rows="4" maxlength="2407"></textarea></label>
+                        <div>
+                          <strong>按原文位置抽取的完整發言</strong>
+                          <pre id="factoryTranscriptQuote" class="factory-preview"></pre>
+                        </div>
+                      </div>
+                      <label id="factoryReviewPayloadLabel">結構化 JSON
+                        <textarea id="factoryReviewPayload" class="factory-json-editor" spellcheck="false"></textarea>
+                      </label>
                     </div>
                   </div>
                   <label>審核備註<textarea id="factoryReviewNote" maxlength="2000"></textarea></label>
@@ -670,7 +850,7 @@
                     <button id="factoryReviewApprove" class="primary" type="button">批准</button>
                   </div>
                 </div>
-                <div class="actions">
+                <div class="actions factory-review-nav">
                   <button id="factoryReviewPrevItem" type="button">上一項</button>
                   <span id="factoryReviewPosition" class="caption"></span>
                   <button id="factoryReviewNextItem" type="button">下一項</button>

@@ -104,13 +104,16 @@ from api.admin_console_api import router as admin_console_router
 from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
 from api.community_api import router as community_router
+from api.lmc_ai_api import router as lmc_ai_router
 from api.access import (
+    has_developer_session,
     interactive_features_suspension,
     require_competition_staff,
     require_interactive_features_available,
     require_page_user,
 )
 from version import APP_VERSION
+from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
 from system_limits import (
     BANDWIDTH_CHECKPOINT_SECONDS, BANDWIDTH_ESSENTIAL_ONLY_BYTES,
     BANDWIDTH_LOG_RETENTION_DAYS, BANDWIDTH_STOP_LIVE_BYTES,
@@ -158,6 +161,7 @@ from system_limits import (
     ROOM_TRANSCRIPT_TOTAL_MAX_CHARS, ROOM_TURN_FINALIZE_TIMEOUT_SECONDS,
     ROOM_WS_SEND_TIMEOUT_SECONDS,
     ROOM_WS_TEXT_MAX_BYTES,
+    LMC_AI_MESSAGE_MAX_CHARS,
     TTS_CONCURRENCY, TTS_LEXICON_CACHE_TTL_SECONDS, TTS_LEXICON_LIMIT,
     TTS_MAX_RESPONSE_BYTES, TTS_PROVIDER_CONNECT_TIMEOUT_SECONDS,
     TTS_PROVIDER_TIMEOUT_SECONDS, TTS_TEXT_MAX_CHARS, VIDEO_PROGRESS_MAX_SECONDS,
@@ -194,6 +198,7 @@ async def _lifespan(_app):
 
 app = FastAPI(lifespan=_lifespan)
 ESSENTIAL_ONLY_BLOCKED_PATHS = {
+    "/api/lmc-ai/chat",
     "/api/ai-training/llm",
     "/api/ai-training/recordings/quality-check",
     "/api/ai-training/coverage/ai",
@@ -340,7 +345,10 @@ async def enforce_essential_only_budget(request: Request, call_next):
         path.startswith("/api/ai-training/factory/jobs/")
         and path.endswith("/generate")
     )
-    if path in ESSENTIAL_ONLY_BLOCKED_PATHS or factory_generation:
+    developer_lmc_ai_bypass = (
+        path == "/api/lmc-ai/chat" and has_developer_session(request)
+    )
+    if (path in ESSENTIAL_ONLY_BLOCKED_PATHS or factory_generation) and not developer_lmc_ai_bypass:
         budget_error = _bandwidth_essential_gate_error()
         if budget_error:
             return JSONResponse({"detail": budget_error}, status_code=429)
@@ -386,6 +394,7 @@ app.include_router(admin_console_router)
 app.include_router(kiosk_router)
 app.include_router(projector_ai_router)
 app.include_router(community_router)
+app.include_router(lmc_ai_router)
 logger = logging.getLogger("skh_proxy")
 
 
@@ -2134,9 +2143,14 @@ async def vote_page(request: Request):
 @app.get("/")
 async def home_page():
     """Primary HTML home page, replacing Streamlit's former default route."""
-    return FileResponse(BASE_DIR / "frontend" / "home" / "index.html",
-                        media_type="text/html",
-                        headers=_cache_headers(CACHE_HTML))
+    html = (BASE_DIR / "frontend" / "home" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    return Response(
+        html.replace("__LMC_AI_EMOJI__", xml_escape(LMC_AI_EMOJI)),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_HTML),
+    )
 
 
 @app.get("/open_db")
@@ -2387,6 +2401,36 @@ async def ai_training_page():
     # revalidation so a browser holding the 4.2.1 immutable script cannot keep
     # receiving a stale shell during the hotfix's stale-while-revalidate window.
     return Response(content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_CACHE))
+
+
+@app.get("/lmc-ai")
+async def lmc_ai_page(request: Request):
+    blocked = _scheduled_feature_page_block(request)
+    if blocked is not None:
+        return blocked
+    html = (BASE_DIR / "frontend" / "lmc_ai" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    html = html.replace("__APP_VERSION__", APP_VERSION)
+    html = html.replace("__LMC_AI_NAME__", xml_escape(LMC_AI_NAME))
+    html = html.replace("__LMC_AI_EMOJI__", xml_escape(LMC_AI_EMOJI))
+    html = html.replace(
+        "__LMC_AI_MESSAGE_MAX_CHARS__", str(LMC_AI_MESSAGE_MAX_CHARS)
+    )
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers=_cache_headers(CACHE_NO_CACHE),
+    )
+
+
+@app.get("/lmc-ai/app.js")
+async def lmc_ai_script():
+    return FileResponse(
+        BASE_DIR / "frontend" / "lmc_ai" / "app.js",
+        media_type="text/javascript",
+        headers=_cache_headers(CACHE_NO_CACHE),
+    )
 
 
 @app.get("/ai-training/app.js")

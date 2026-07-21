@@ -7,7 +7,7 @@ with no committed partial writes.
 """
 
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -425,6 +425,18 @@ def test_claim_enforces_database_locked_global_and_per_manager_concurrency(
     assert error.value.status_code == 429
     assert expected_message in str(error.value)
     assert not any("INSERT INTO ai_factory_attempts" in sql for sql, _ in db.conn.calls)
+    global_sql = next(
+        sql for sql, _params in db.conn.calls
+        if "SELECT COUNT(*) FROM ai_factory_transcript_attempts" in sql
+        and "created_by" not in sql
+    )
+    manager_sql = next(
+        sql for sql, _params in db.conn.calls
+        if "j.created_by=:actor" in sql
+    )
+    assert "FROM ai_factory_transcript_attempts" in global_sql
+    assert "FROM ai_factory_transcript_attempts" in manager_sql
+    assert "JOIN ai_factory_transcript_runs" in manager_sql
     db.conn.assert_done()
 
 
@@ -450,16 +462,8 @@ def test_claim_enforces_manual_retry_cap_before_capacity_or_provider_state():
     db.conn.assert_done()
 
 
-def test_paid_claim_atomically_locks_allocation_and_rejects_spend_plus_reservations(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        store,
-        "utc_now",
-        lambda: datetime(2026, 7, 20, 4, tzinfo=timezone.utc),
-    )
-    period_month = date(2026, 7, 1)
-    window_start = datetime(2026, 6, 25)
+def test_paid_claim_records_estimate_without_budget_configuration_or_limit_lookup():
+    """Paid factory work must not depend on the separately managed AI Fund."""
     db = _ScriptedDb(
         [
             ("ai_factory_provider_capacity", _Result()),
@@ -468,101 +472,29 @@ def test_paid_claim_atomically_locks_allocation_and_rejects_spend_plus_reservati
             ("FROM ai_factory_attempts WHERE job_id=:id", _Result(scalar=0)),
             ("status IN ('claimed','running')", _Result(scalar=0)),
             ("j.created_by=:actor", _Result(scalar=0)),
-            ("SELECT pg_advisory_xact_lock(hashtext(:key))", _Result()),
-            (
-                (
-                    "FROM monthly_resource_limits",
-                    "period_month=:month",
-                    "limit_key=:limit_key",
-                    "FOR UPDATE",
-                ),
-                _Result(
-                    row={
-                        "allocated_hkd": 100,
-                        "external_cap_confirmed": True,
-                    }
-                ),
-            ),
-            (
-                (
-                    "FROM ai_fund_usage_logs",
-                    "created_at>=:start",
-                    ":budget_name='google'",
-                    "FROM ai_factory_attempts",
-                    "status IN ('claimed','running')",
-                    "budget_provider_name=:budget_name",
-                    "budget_period_month=:period_month",
-                ),
-                _Result(scalar=90),
-            ),
+            ("INSERT INTO ai_factory_attempts", _Result()),
+            (("UPDATE ai_factory_jobs", "status='processing'"), _Result()),
+            ("INSERT INTO ai_training_audit", _Result()),
         ]
     )
 
-    with pytest.raises(store.FactoryStoreError) as error:
-        _claim(
-            db,
-            estimated_cost_hkd=20,
-            budget_provider_name="google",
-            budget_period_month=period_month,
-            budget_window_start=window_start,
-        )
+    result = _claim(db, estimated_cost_hkd=20)
 
-    assert error.value.status_code == 429
-    assert "AI Fund 餘額不足" in str(error.value)
-    budget_lock_sql, budget_lock_params = next(
-        call
-        for call in db.conn.calls
-        if call[1].get("key") == "ai_factory_budget:google:2026-07-01"
+    assert result["attempt_no"] == 1
+    insert_sql, insert_params = next(
+        call for call in db.conn.calls if "INSERT INTO ai_factory_attempts" in call[0]
     )
-    assert "pg_advisory_xact_lock" in budget_lock_sql
-    assert budget_lock_params["key"] == "ai_factory_budget:google:2026-07-01"
-    allocation_params = next(
-        params
-        for sql, params in db.conn.calls
-        if "FROM monthly_resource_limits" in sql
+    assert insert_params["estimated_cost_hkd"] == 20
+    assert "budget_provider_name" not in insert_sql
+    assert "budget_period_month" not in insert_sql
+    assert "budget_window_start" not in insert_sql
+    assert "monthly_resource_limits" not in " ".join(
+        sql for sql, _params in db.conn.calls
     )
-    assert allocation_params == {
-        "month": period_month,
-        "limit_key": "provider:google",
-    }
-    combined_usage_params = next(
-        params
-        for sql, params in db.conn.calls
-        if "FROM ai_fund_usage_logs" in sql
+    assert "ai_factory_budget:" not in " ".join(
+        str(params) for _sql, params in db.conn.calls
     )
-    assert combined_usage_params == {
-        "start": window_start,
-        "budget_name": "google",
-        "period_month": period_month,
-    }
-    assert not any("INSERT INTO ai_factory_attempts" in sql for sql, _ in db.conn.calls)
-    assert db.transaction_count == 1
-    assert db.rollback_count == 1
-    assert db.committed_calls == []
     db.conn.assert_done()
-
-
-def test_paid_claim_rejects_a_caller_cycle_that_crossed_the_25th(monkeypatch):
-    monkeypatch.setattr(
-        store,
-        "utc_now",
-        lambda: datetime(2026, 7, 24, 16, tzinfo=timezone.utc),
-    )
-    db = _ScriptedDb()
-
-    with pytest.raises(store.FactoryStoreError) as error:
-        _claim(
-            db,
-            estimated_cost_hkd=1,
-            budget_provider_name="google",
-            budget_period_month=date(2026, 7, 1),
-            budget_window_start=datetime(2026, 6, 25),
-        )
-
-    assert error.value.status_code == 409
-    assert "預留週期已改變" in str(error.value)
-    assert db.transaction_count == 0
-    assert db.conn.calls == []
 
 
 def test_failed_job_cannot_reuse_its_old_preview_without_refresh():
@@ -1246,48 +1178,6 @@ def test_provider_start_stops_before_send_when_source_withdrawal_won_the_lock():
     assert error.value.status_code == 410
     assert "沒有呼叫 AI provider" in str(error.value)
     assert not any("UPDATE ai_factory_attempts" in sql for sql, _ in db.conn.calls)
-    assert db.rollback_count == 1
-    db.conn.assert_done()
-
-
-def test_provider_start_rejects_a_paid_reservation_after_cycle_rollover(monkeypatch):
-    db = _ScriptedDb(
-        [
-            ("FROM ai_factory_attempts a", _Result(row={"job_id": "job-1", "source_id": "source-1"})),
-            (("FROM ai_factory_sources", "FOR UPDATE"), _Result(row={"id": "source-1", "withdrawn_at": None})),
-            (("FROM ai_factory_jobs", "FOR UPDATE"), _Result(row={"id": "job-1", "source_id": "source-1", "invalidated_at": None})),
-            (
-                ("FROM ai_factory_attempts", "FOR UPDATE"),
-                _Result(
-                    row={
-                        "id": "attempt-1",
-                        "job_id": "job-1",
-                        "status": "claimed",
-                        "estimated_cost_hkd": 1,
-                        "budget_period_month": date(2026, 7, 1),
-                        "budget_window_start": datetime(2026, 6, 25),
-                    }
-                ),
-            ),
-        ]
-    )
-    clock_calls = []
-
-    def fixed_now():
-        clock_calls.append(len(db.conn.calls))
-        assert "FROM ai_factory_attempts" in db.conn.calls[-1][0]
-        assert "FOR UPDATE" in db.conn.calls[-1][0]
-        return datetime(2026, 7, 24, 16, tzinfo=timezone.utc)
-
-    monkeypatch.setattr(store, "utc_now", fixed_now)
-
-    with pytest.raises(store.FactoryStoreError) as error:
-        store.mark_provider_started(db, "attempt-1")
-
-    assert error.value.status_code == 409
-    assert "預留已跨期" in str(error.value)
-    assert not any("UPDATE ai_factory_attempts" in sql for sql, _ in db.conn.calls)
-    assert clock_calls == [4]
     assert db.rollback_count == 1
     db.conn.assert_done()
 

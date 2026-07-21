@@ -48,6 +48,7 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "interactive_features_suspension_end": ConfigSpec("runtime", _STRING),
     "ai_enabled_providers": ConfigSpec("ai", _ARRAY),
     "ai_default_model": ConfigSpec("ai", _STRING),
+    "lmc_ai_active_node_id": ConfigSpec("ai", _STRING),
     # Account access and delegated capabilities.
     "login_disabled_accounts": ConfigSpec("access", _ARRAY),
     "bypass_active_check_until": ConfigSpec("access", _OBJECT),

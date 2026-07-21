@@ -94,6 +94,10 @@ PAGE_ACCESS_POLICIES = {
     "team_history": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
     "ghost_forum": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
     "ai_training": PageAccessPolicy(denied_accounts=_MEMBER_ONLY),
+    "lmc_ai": PageAccessPolicy(
+        denied_accounts=_MEMBER_ONLY,
+        denial_message="此系統帳戶不能使用自家 AI 專區。",
+    ),
     # The dedicated appliance account may use AI Coach, but admin/developer and
     # the Gemini comment pseudo-account may not impersonate a committee member.
     "ai_coach": PageAccessPolicy(

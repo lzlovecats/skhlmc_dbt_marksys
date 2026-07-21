@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>__LMC_AI_EMOJI__ 自家AI專區</title>
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
+    <style>
+      :root { color-scheme: dark; --bg:#0e1117; --card:#1b1d27; --border:#343844; --muted:#a7afbf; --accent:#8b5cf6; --user:#23416b; }
+      * { box-sizing:border-box; }
+      body { margin:0; background:var(--bg); color:#f8fafc; font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; }
+      main { width:min(100%,62rem); min-height:100vh; margin:auto; padding:1rem max(1rem,env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)); display:grid; grid-template-rows:auto auto 1fr auto; gap:.8rem; }
+      header { display:flex; gap:.8rem; align-items:flex-start; justify-content:space-between; }
+      h1 { margin:.2rem 0; font-size:1.55rem; }
+      p { margin:.3rem 0; }
+      .muted,.caption { color:var(--muted); font-size:.9rem; }
+      .status-row,.actions { display:flex; gap:.55rem; align-items:center; flex-wrap:wrap; }
+      .pill { display:inline-flex; align-items:center; gap:.4rem; border:1px solid var(--border); border-radius:999px; padding:.35rem .65rem; background:var(--card); font-size:.88rem; }
+      .dot { width:.55rem; height:.55rem; border-radius:50%; background:#94a3b8; }
+      .dot.online { background:#34d399; } .dot.busy { background:#fbbf24; } .dot.offline { background:#fb7185; }
+      .tabs { border-bottom:1px solid var(--border); }
+      .tab { display:inline-block; padding:.55rem .8rem; border-bottom:2px solid var(--accent); font-weight:700; }
+      #conversation { min-height:20rem; overflow:auto; display:flex; flex-direction:column; gap:.85rem; padding:.6rem 0; }
+      .empty { margin:auto; max-width:34rem; text-align:center; color:var(--muted); }
+      .message { max-width:min(88%,48rem); border:1px solid var(--border); background:var(--card); border-radius:14px; padding:.75rem .9rem; overflow-wrap:anywhere; }
+      .message.user { align-self:flex-end; background:var(--user); }
+      .message.assistant { align-self:flex-start; }
+      .message .who { display:block; color:#c4b5fd; font-size:.78rem; font-weight:700; margin-bottom:.35rem; }
+      .message.user .who { color:#bfdbfe; }
+      .message p:first-child { margin-top:0; } .message p:last-child { margin-bottom:0; }
+      pre { overflow:auto; background:#10131b; padding:.65rem; border-radius:8px; } code { font-family:ui-monospace,monospace; }
+      .notice { display:none; border:1px solid #8a6829; background:#2c2414; color:#fde68a; border-radius:9px; padding:.65rem .8rem; }
+      .notice.show { display:block; }
+      .composer { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 15%); padding-top:1rem; }
+      textarea,input { width:100%; border:1px solid var(--border); border-radius:10px; background:#12141c; color:#fff; padding:.7rem; font:inherit; }
+      textarea { min-height:5.5rem; resize:vertical; }
+      button,a.button { min-height:2.5rem; border:1px solid var(--border); border-radius:9px; background:#20232e; color:#fff; padding:.45rem .75rem; font:inherit; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
+      button.primary { background:var(--accent); border-color:var(--accent); } button.danger { color:#fecaca; }
+      button:disabled { opacity:.5; cursor:not-allowed; }
+      #loginCard { display:none; border:1px solid var(--border); background:var(--card); border-radius:12px; padding:1rem; }
+      #loginCard.show { display:grid; gap:.65rem; }
+      .counter { margin-left:auto; }
+      @media (max-width:640px) { .message{max-width:94%} header{display:block}.header-actions{margin-top:.6rem} }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <a href="/" class="caption">← 返回主頁</a>
+          <h1>__LMC_AI_EMOJI__ 自家AI專區</h1>
+          <p class="muted">同 __LMC_AI_NAME__ 對話；RAG 同 Fine-tune 暫未啟用。</p>
+        </div>
+        <div class="actions header-actions">
+          <button id="newChat" type="button">新對話</button>
+          <button id="deleteChat" class="danger" type="button">刪除對話</button>
+        </div>
+      </header>
+      <div>
+        <div class="tabs"><span class="tab">對話</span></div>
+        <div class="status-row" style="margin-top:.65rem">
+          <span class="pill"><span id="statusDot" class="dot"></span><span id="serviceStatus">正在檢查服務…</span></span>
+          <span id="identityStatus" class="caption"></span>
+        </div>
+      </div>
+      <section id="loginCard">
+        <strong>委員登入</strong>
+        <input id="loginUser" autocomplete="username" placeholder="帳戶" />
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密碼" />
+        <div class="actions"><button id="loginButton" class="primary" type="button">登入</button><span id="loginError" class="caption"></span></div>
+      </section>
+      <section id="conversation" aria-live="polite"></section>
+      <section class="composer">
+        <div id="contextNotice" class="notice"></div>
+        <textarea id="messageInput" placeholder="同 __LMC_AI_NAME__ 講啲咩…" maxlength="__LMC_AI_MESSAGE_MAX_CHARS__"></textarea>
+        <div class="actions" style="margin-top:.55rem">
+          <button id="sendButton" class="primary" type="button">傳送</button>
+          <button id="stopButton" type="button" disabled>停止生成</button>
+          <span id="characterCount" class="caption counter">0 / __LMC_AI_MESSAGE_MAX_CHARS__</span>
+        </div>
+      </section>
+    </main>
+    <script src="/shared/markdown.js?v=__APP_VERSION__"></script>
+    <script src="/lmc-ai/app.js?v=__APP_VERSION__"></script>
+  </body>
+</html>

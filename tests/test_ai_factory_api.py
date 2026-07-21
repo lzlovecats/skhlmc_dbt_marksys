@@ -557,22 +557,43 @@ def test_nonessential_bandwidth_helper_maps_the_shared_gate_to_429(monkeypatch):
     assert blocked.value.detail == "網絡傳輸量已進入必要服務模式"
 
 
-def test_zero_cost_provider_bypasses_budget_configuration_and_database():
-    class NoDatabaseCalls:
-        def query(self, *_args, **_kwargs):
-            raise AssertionError("a free provider estimate must not query paid budgets")
+def test_paid_generation_reaches_attempt_claim_without_ai_fund_budget_query(monkeypatch):
+    job = _job()
+    db = _install_generation_fakes(monkeypatch, job)
+    estimate = {
+        "estimated_cost_hkd": 0.975,
+        "estimated_cost_usd": 0.125,
+        "output_tokens": 3000,
+    }
+    signed = _signed_claim(job)
+    signed["estimate"] = estimate
+    monkeypatch.setattr(r2_storage, "verify_upload_claim", lambda *_args: signed)
+    monkeypatch.setattr(api, "estimate_factory_cost", lambda *_args, **_kwargs: estimate)
+    claimed = {}
 
-    estimate = api.estimate_factory_cost(
-        api.AI_FACTORY_MODEL_OPTIONS["OpenRouter Free"],
-        _prompt(),
-        requested_count=3,
-        model_label="OpenRouter Free",
-    )
-    result = api._require_provider_budget(NoDatabaseCalls(), "openrouter", estimate)
+    def stop_after_claim(*_args, **kwargs):
+        claimed.update(kwargs)
+        raise FactoryStoreError(418, "attempt claim reached")
 
-    assert estimate["estimated_cost_usd"] == 0
-    assert estimate["estimated_cost_hkd"] == 0
-    assert result == {"estimated_cost_hkd": 0.0, "remaining_hkd": None, "free": True}
+    monkeypatch.setattr(api, "claim_attempt", stop_after_claim)
+
+    with pytest.raises(HTTPException) as stopped:
+        asyncio.run(
+            api.generate_job(
+                "job-1",
+                api.FactoryGenerateBody(
+                    preview_token="token",
+                    rights_confirmed=True,
+                    anonymized_confirmed=True,
+                    third_party_confirmed=True,
+                ),
+                None,
+            )
+        )
+
+    assert stopped.value.status_code == 418
+    assert claimed["estimated_cost_hkd"] == 0.975
+    assert len(db.queries) == 1
 
 
 def test_missing_provider_usage_uses_the_reserved_preview_estimate():
