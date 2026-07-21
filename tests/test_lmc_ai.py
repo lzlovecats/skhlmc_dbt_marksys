@@ -602,6 +602,50 @@ def test_node_hello_requires_current_model_profile_and_mandatory_4b():
     assert '"model_profile_version": MODEL_PROFILE_VERSION' in NODE_SOURCE
 
 
+def test_node_websocket_accepts_current_profile_after_sanitizing_hello(monkeypatch):
+    class NodeSocket(_FakeWebSocket):
+        query_params = {}
+        headers = {"authorization": "Bearer node-token"}
+
+        def __init__(self):
+            super().__init__()
+            self.accepted = False
+            self.incoming = [json.dumps(_hello(model_digests={
+                LMC_AI_PRIMARY_MODEL: "a" * 64,
+                LMC_AI_FALLBACK_MODEL: "b" * 64,
+            }))]
+
+        async def accept(self):
+            self.accepted = True
+
+        async def receive_text(self):
+            if self.incoming:
+                return self.incoming.pop(0)
+            raise lmc_api.WebSocketDisconnect()
+
+    runtime = LocalAIRuntime()
+    socket = NodeSocket()
+    updated = []
+    monkeypatch.setattr(lmc_api, "RUNTIME", runtime)
+    monkeypatch.setattr(lmc_api, "_db", lambda: object())
+    monkeypatch.setattr(
+        lmc_api, "authenticate_node",
+        lambda _db, _token: {"node_id": "node-1", "display_name": "AI 01"},
+    )
+    monkeypatch.setattr(
+        lmc_api, "update_node_hello",
+        lambda _db, _node_id, _token, hello: updated.append(hello),
+    )
+    monkeypatch.setattr(lmc_api, "mark_node_disconnected", lambda _db, _node_id: None)
+
+    asyncio.run(lmc_api.lmc_ai_node_connect(socket))
+
+    assert socket.accepted is True
+    assert updated and updated[0]["model"] == LMC_AI_PRIMARY_MODEL
+    assert any(item.get("type") == "hello.accepted" for item in socket.sent)
+    assert not any(item.get("code") == 1007 for item in socket.closed)
+
+
 def test_pending_node_cannot_serve_or_activate_after_concurrent_revocation():
     async def scenario():
         runtime = LocalAIRuntime()
@@ -896,6 +940,13 @@ def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(
     lmc_ai_node._save(path, {"token": "secret", "name": "AI 01"})
     assert os.stat(path).st_mode & 0o777 == 0o600
     assert "secret" not in json.dumps(lmc_ai_node._public_config(lmc_ai_node._load(path)))
+
+
+def test_node_server_url_normalization_is_idempotent_and_repairs_duplicate_path():
+    expected = "wss://example.test/api/lmc-ai/nodes/connect"
+    assert lmc_ai_node._normalise_server("https://example.test") == expected
+    assert lmc_ai_node._normalise_server(expected) == expected
+    assert lmc_ai_node._normalise_server(expected + "/api/lmc-ai/nodes/connect") == expected
 
 
 def test_node_preflight_requires_4b_and_treats_9b_as_optional(tmp_path, monkeypatch):

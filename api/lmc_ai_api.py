@@ -507,11 +507,12 @@ async def lmc_ai_node_connect(websocket: WebSocket):
         if len(raw_hello.encode("utf-8")) > LMC_AI_NODE_WS_FRAME_MAX_BYTES:
             await websocket.close(code=1009, reason="node frame too large")
             return
-        hello = RUNTIME.validate_hello(json.loads(raw_hello))
+        hello_payload = json.loads(raw_hello)
+        hello = RUNTIME.validate_hello(hello_payload)
         node = await RUNTIME.register(
             node_id,
             websocket,
-            {"type": "hello", "protocol": 1, **hello},
+            hello_payload,
             pending=True,
         )
         try:

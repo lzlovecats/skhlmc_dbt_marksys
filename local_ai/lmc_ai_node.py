@@ -61,6 +61,7 @@ AUTO_POWER_TIMEZONE = "Asia/Hong_Kong"
 AUTO_POWER_DRAIN_AT = "23:55"
 AUTO_POWER_SUSPEND_AT = "00:00"
 AUTO_POWER_WAKE_AT = "08:00"
+NODE_CONNECT_PATH = "/api/lmc-ai/nodes/connect"
 
 
 def _load(path: Path) -> dict:
@@ -112,7 +113,9 @@ def _normalise_server(value: str) -> str:
         raise ValueError("Server 必須係有效 https:// 或 wss:// 地址。")
     scheme = "wss" if parsed.scheme == "https" else parsed.scheme
     base_path = parsed.path.rstrip("/")
-    return f"{scheme}://{parsed.netloc}{base_path}/api/lmc-ai/nodes/connect"
+    while base_path.endswith(NODE_CONNECT_PATH):
+        base_path = base_path[:-len(NODE_CONNECT_PATH)].rstrip("/")
+    return f"{scheme}://{parsed.netloc}{base_path}{NODE_CONNECT_PATH}"
 
 
 def configure(args) -> int:
