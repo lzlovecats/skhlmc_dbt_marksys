@@ -119,8 +119,17 @@
             <button id="abOpenReview" type="button">開放盲評</button>
             <button id="abClose" type="button">關閉並建立摘要</button>
             <button id="abInvalidate" class="danger" type="button">Invalidate</button>
-            <a id="abExport" class="button hidden" href="#" download>下載 audit JSON</a>
+            <button id="abExport" class="hidden" type="button">下載 audit JSON</button>
+            <button id="abPurge" class="danger hidden" type="button">清除已匯出 campaign</button>
           </div>
+        </article>
+        <article id="abManagerPanel" class="ab-card hidden">
+          <h2>Campaign 管理</h2>
+          <p class="muted">最多保留10個。已完成或作廢項目必須先下載 audit JSON，先可以清除。</p>
+          <div id="abCampaignHistory"></div>
+          <h3>未提交 reservations</h3>
+          <p class="muted">只顯示不含評核人身份的 reservation；過期項目會自動停止佔用名額。</p>
+          <div id="abPendingAssignments"></div>
         </article>
         <article id="abReviewCard" class="ab-card hidden">
           <h2 id="abCaseTitle">盲評比較</h2>

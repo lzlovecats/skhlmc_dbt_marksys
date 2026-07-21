@@ -2937,7 +2937,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CASES} (
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-COMMENT ON TABLE {TABLE_AI_EVAL_CASES} IS 'skhlmc-feature:eval:20260721_0001';
+COMMENT ON TABLE {TABLE_AI_EVAL_CASES} IS 'skhlmc-feature:eval:20260721_0002';
 
 CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CAMPAIGNS} (
     campaign_id TEXT PRIMARY KEY CHECK (CHAR_LENGTH(campaign_id)=32),
@@ -2963,7 +2963,15 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CAMPAIGNS} (
     invalidation_reason TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(invalidation_reason) <= 500),
     summary_json JSONB,
     summary_hash TEXT CHECK (summary_hash IS NULL OR CHAR_LENGTH(summary_hash)=64),
-    CHECK (status<>'closed' OR (summary_json IS NOT NULL AND summary_hash IS NOT NULL))
+    exported_at TIMESTAMPTZ,
+    exported_by TEXT CHECK (exported_by IS NULL OR CHAR_LENGTH(exported_by) BETWEEN 1 AND 100),
+    CHECK (status<>'closed' OR (summary_json IS NOT NULL AND summary_hash IS NOT NULL)),
+    CHECK (
+        (exported_at IS NULL AND exported_by IS NULL)
+        OR
+        (exported_at IS NOT NULL AND exported_by IS NOT NULL
+         AND status IN ('closed','invalidated'))
+    )
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_eval_one_active_campaign
     ON {TABLE_AI_EVAL_CAMPAIGNS} ((TRUE))
@@ -3022,9 +3030,19 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_REVIEWS} (
     privacy TEXT CHECK (privacy IN ('left','right','tie','both_bad')),
     note TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(note) <= 500),
     assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'),
+    released_at TIMESTAMPTZ,
+    released_by TEXT CHECK (released_by IS NULL OR CHAR_LENGTH(released_by) BETWEEN 1 AND 100),
+    release_reason TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(release_reason) <= 500),
     submitted_at TIMESTAMPTZ,
     UNIQUE (campaign_id,case_id,pair_key,reviewer_user_id),
     CHECK (left_mode<>right_mode),
+    CHECK (expires_at>assigned_at),
+    CHECK (
+        (released_at IS NULL AND released_by IS NULL AND release_reason='')
+        OR
+        (released_at IS NOT NULL AND released_by IS NOT NULL AND submitted_at IS NULL)
+    ),
     CHECK (
         (submitted_at IS NULL AND overall IS NULL AND cantonese IS NULL
          AND reasoning IS NULL AND usefulness IS NULL AND factual IS NULL AND privacy IS NULL)
@@ -3035,6 +3053,9 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_REVIEWS} (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_eval_reviews_quorum
     ON {TABLE_AI_EVAL_REVIEWS}(campaign_id,case_id,pair_key,submitted_at);
+CREATE INDEX IF NOT EXISTS idx_ai_eval_reviews_pending
+    ON {TABLE_AI_EVAL_REVIEWS}(campaign_id,reviewer_user_id,expires_at)
+    WHERE submitted_at IS NULL AND released_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_eval_usage_operation_stage
     ON {TABLE_AI_FUND_USAGE_LOGS}(operation_id,operation_stage)
     WHERE feature='lmc_ai_eval';

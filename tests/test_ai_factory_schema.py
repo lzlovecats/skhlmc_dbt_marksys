@@ -62,7 +62,7 @@ def test_data_factory_feature_is_explicit_and_old_optional_bundles_stay_disabled
         "data_factory": "20260720_0009",
         "lmc_ai": "20260720_0010",
         "dataset_model": None,
-        "eval": "20260721_0001",
+        "eval": "20260721_0002",
         "rag": None,
     }
 

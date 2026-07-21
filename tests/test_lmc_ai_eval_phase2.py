@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import schema
+from api import lmc_ai_eval_api
 from ai_model_config import LMC_AI_DEFAULT_MODEL, LMC_AI_DEEP_MODEL, LMC_AI_MODEL_PROFILE_VERSION
 from core.ai_eval_defaults import (
     EVAL_SUITE_ID, case_content_hash, load_eval_cases, suite_hash,
@@ -18,6 +19,7 @@ from core.schema_features import FEATURE_MIGRATION_VERSIONS
 from system_limits import (
     LMC_AI_EVAL_CAMPAIGN_MAX, LMC_AI_EVAL_GENERATION_ATTEMPT_MAX,
     LMC_AI_EVAL_OUTPUT_MAX_BYTES, LMC_AI_EVAL_PROCESSING_LEASE_SECONDS,
+    LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS,
     LMC_AI_EVAL_REVIEW_NOTE_MAX_CHARS, LMC_AI_EVAL_REVIEWS_PER_PAIR,
     LMC_AI_REQUEST_TIMEOUT_SECONDS,
 )
@@ -26,6 +28,8 @@ from system_limits import (
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "migrations" / "20260721_0001_add_lmc_ai_eval.up.sql"
 DOWN = ROOT / "migrations" / "20260721_0001_add_lmc_ai_eval.down.sql"
+LIFECYCLE_UP = ROOT / "migrations" / "20260721_0002_simplify_lmc_ai_eval_lifecycle.up.sql"
+LIFECYCLE_DOWN = ROOT / "migrations" / "20260721_0002_simplify_lmc_ai_eval_lifecycle.down.sql"
 
 
 def _migration_seed():
@@ -55,7 +59,7 @@ def test_eval_migration_is_private_versioned_and_rollback_refuses_data_loss():
     assert "feature='lmc_ai_eval'" in down
     assert "RAISE EXCEPTION" in down
     assert "uq_ai_eval_usage_operation_stage" in up
-    assert FEATURE_MIGRATION_VERSIONS["eval"] == "20260721_0001"
+    assert FEATURE_MIGRATION_VERSIONS["eval"] == "20260721_0002"
     assert FEATURE_MIGRATION_VERSIONS["dataset_model"] is None
     assert FEATURE_MIGRATION_VERSIONS["rag"] is None
     assert schema.TABLE_AI_EVAL_RUNS == schema.TABLE_AI_EVAL_CAMPAIGNS
@@ -68,6 +72,22 @@ def test_phase2_limits_are_central_and_bounded():
     assert LMC_AI_EVAL_REVIEW_NOTE_MAX_CHARS == 500
     assert LMC_AI_EVAL_REVIEWS_PER_PAIR == 3
     assert LMC_AI_EVAL_PROCESSING_LEASE_SECONDS > LMC_AI_REQUEST_TIMEOUT_SECONDS
+    assert LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS == 24 * 60 * 60
+
+
+def test_eval_lifecycle_migration_tracks_reservations_and_export_gate():
+    up = LIFECYCLE_UP.read_text(encoding="utf-8")
+    down = LIFECYCLE_DOWN.read_text(encoding="utf-8")
+    for column in (
+        "expires_at", "released_at", "released_by", "release_reason",
+        "exported_at", "exported_by",
+    ):
+        assert column in up
+        assert column in down
+    assert "skhlmc-feature:eval:20260721_0002" in up
+    assert "skhlmc-feature:eval:20260721_0001" in down
+    assert "RAISE EXCEPTION" in down
+    assert FEATURE_MIGRATION_VERSIONS["eval"] == "20260721_0002"
 
 
 @pytest.mark.parametrize("case", load_eval_cases(), ids=lambda case: case["case_id"])
@@ -129,6 +149,34 @@ def test_node_exact_digest_changes_backend_fingerprint_and_is_exposed_privately(
         LocalAIRuntime.validate_hello(invalid)
 
 
+def test_eval_generation_rejects_runtime_identity_change(monkeypatch):
+    digest = "a" * 64
+    claim = {
+        "mode": "daily",
+        "campaign": {
+            "bound_node_id": "node-1",
+            "model_manifest": {
+                "daily": {
+                    "model": LMC_AI_DEFAULT_MODEL,
+                    "digest": digest,
+                    "thinking": False,
+                    "runtime": "ollama",
+                    "runtime_version": "1.0",
+                },
+            },
+        },
+    }
+    snapshot = {
+        "online": True, "ready": True, "draining": False, "busy": False,
+        "queue_length": 0, "models": [LMC_AI_DEFAULT_MODEL],
+        "model_digests": {LMC_AI_DEFAULT_MODEL: digest},
+        "runtime": "ollama", "runtime_version": "2.0",
+    }
+    monkeypatch.setattr(lmc_ai_eval_api, "get_active_node_id", lambda _db: "node-1")
+    with pytest.raises(ValueError, match="runtime"):
+        lmc_ai_eval_api._validate_bound_identity(object(), claim, snapshot)
+
+
 def test_frontend_has_accessible_third_tab_blind_form_and_stale_guard():
     html = (ROOT / "frontend/lmc_ai/index.html").read_text(encoding="utf-8")
     js = (ROOT / "frontend/lmc_ai/app.js").read_text(encoding="utf-8")
@@ -138,6 +186,9 @@ def test_frontend_has_accessible_third_tab_blind_form_and_stale_guard():
     assert "SafeMarkdown.render" in js
     assert "abGeneration" in js and "campaign_id" in js
     assert '$("composer").classList.toggle("hidden", button.dataset.panel !== "chatPanel")' in js
+    assert 'id="abCampaignHistory"' in html
+    assert "can_create_campaign" in js
+    assert "Boolean(campaign)" not in js
 
 
 def test_api_routes_and_export_privacy_contract_are_present():
@@ -148,9 +199,26 @@ def test_api_routes_and_export_privacy_contract_are_present():
         '"/reviews/{review_id}"', '"/campaigns/{campaign_id}/close"',
         '"/campaigns/{campaign_id}/invalidate"', '"/campaigns/{campaign_id}/results"',
         '"/campaigns/{campaign_id}/export.json"',
+        '"/campaigns/{campaign_id}/assignments"',
+        '"/campaigns/{campaign_id}/assignments/{review_id}/release"',
+        '"/campaigns/{campaign_id}/purge"',
     ):
         assert path in source
     store = (ROOT / "core/lmc_ai_eval_store.py").read_text(encoding="utf-8")
     export_select = store.split("def manager_export", 1)[1]
     assert "review_id and reviewer_user_id" in export_select
     assert '"reviews"' in export_select
+
+
+def test_store_expires_abandoned_assignments_and_requires_export_before_purge():
+    store = (ROOT / "core/lmc_ai_eval_store.py").read_text(encoding="utf-8")
+    assignment = store.split("def next_assignment", 1)[1].split("def preview_assignment", 1)[0]
+    assert "expires_at>NOW()" in assignment
+    assert "released_at IS NULL" in assignment
+    assert "LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS" in assignment
+    assert "def list_pending_assignments" in store
+    assert "reviewer_user_id" not in store.split("def list_pending_assignments", 1)[1].split("def ", 1)[0]
+    purge = store.split("def purge_campaign", 1)[1]
+    assert "exported_at" in purge
+    assert "DELETE FROM" in purge
+    assert "eval_campaign_purged" in purge

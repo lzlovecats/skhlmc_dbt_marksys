@@ -33,8 +33,6 @@ from account_access import (
 )
 from schema import (
     TABLE_ACCOUNTS,
-    TABLE_AI_DATASET_SNAPSHOTS,
-    TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_FUND_USAGE_LOGS,
     TABLE_AI_MODEL_VERSIONS,
     TABLE_BANDWIDTH_USAGE_LOGS,
@@ -1341,11 +1339,7 @@ def _model_is_deployable(model_id: str, model_type: str) -> bool:
         from core.schema_features import READY, feature_bundle_state
 
         db = get_vote_db()
-        if feature_bundle_state(db, "dataset_model", (
-            TABLE_AI_DATASET_SNAPSHOTS,
-            TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-            TABLE_AI_MODEL_VERSIONS,
-        )) != READY:
+        if feature_bundle_state(db, "dataset_model") != READY:
             return False
         engine = _get_db_engine()
         with engine.connect() as conn:

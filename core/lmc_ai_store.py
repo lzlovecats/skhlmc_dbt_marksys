@@ -25,7 +25,7 @@ THINKING_ENABLED_CONFIG_KEY = "lmc_ai_thinking_enabled"
 
 def require_lmc_ai_schema(db) -> None:
     try:
-        state = feature_bundle_state(db, "lmc_ai", (TABLE_LMC_AI_NODES,))
+        state = feature_bundle_state(db, "lmc_ai")
     except Exception as exc:
         raise RuntimeError("自家 AI 資料庫功能未準備好。") from exc
     if state != READY:

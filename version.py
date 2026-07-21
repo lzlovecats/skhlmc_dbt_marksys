@@ -6,3 +6,7 @@ read this constant, so the version shown to users and the default
 """
 
 APP_VERSION = "4.10.1"
+
+# Minimum ledger version required by this application release. A database may
+# be ahead during a staged rollout, but it must never be behind this marker.
+REQUIRED_SCHEMA_MIGRATION = "20260721_0002"

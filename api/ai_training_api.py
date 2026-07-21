@@ -31,8 +31,7 @@ from core.schema_features import DISABLED, PARTIAL, READY, feature_bundle_state,
 
 from schema import (
     TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-    TABLE_AI_EVAL_CAMPAIGNS, TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_OUTPUTS,
-    TABLE_AI_EVAL_REVIEWS, TABLE_AI_MODEL_VERSIONS,
+    TABLE_AI_EVAL_CASES, TABLE_AI_MODEL_VERSIONS,
     TABLE_AI_TRAINING_AUDIT, TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
     TABLE_LLM_TRAINING_SUBMISSIONS, TABLE_R2_UPLOAD_INTENTS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
     TABLE_TTS_VOICE_CONSENTS, TABLE_TTS_VOICE_RECORDINGS,
@@ -91,20 +90,6 @@ async def _post_gemini_json(client, url, api_key, **kwargs):
     headers = dict(kwargs.pop("headers", {}) or {})
     headers["x-goog-api-key"] = api_key
     return await post_json_bounded(client, url, headers=headers, **kwargs)
-
-_OPTIONAL_SCHEMA_BUNDLES = {
-    "dataset_model": (
-        TABLE_AI_DATASET_SNAPSHOTS,
-        TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-        TABLE_AI_MODEL_VERSIONS,
-    ),
-    "eval": (
-        TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_CAMPAIGNS,
-        TABLE_AI_EVAL_OUTPUTS, TABLE_AI_EVAL_REVIEWS,
-    ),
-    "rag": (TABLE_RAG_DOCUMENTS, TABLE_RAG_CHUNKS),
-}
-
 
 class ConsentBody(BaseModel):
     agreed: bool
@@ -236,7 +221,7 @@ def _ctx(request):
 def _feature_schema_state(db, feature: str) -> bool:
     """Require both the exact migration marker and a complete table bundle."""
     try:
-        state = feature_bundle_state(db, feature, _OPTIONAL_SCHEMA_BUNDLES[feature])
+        state = feature_bundle_state(db, feature)
     except Exception as exc:
         raise HTTPException(503, f"{feature} schema狀態暫時無法驗證") from exc
     if state == PARTIAL:
@@ -1034,9 +1019,7 @@ def withdraw_llm(submission_id: int, request: Request):
     now = datetime.now()
     changed = False
     try:
-        from core.ai_factory_store import FACTORY_TABLES
-
-        factory_state = feature_bundle_state(db, "data_factory", FACTORY_TABLES)
+        factory_state = feature_bundle_state(db, "data_factory")
     except Exception as exc:
         raise HTTPException(503, "資料工廠狀態暫時無法驗證，未有撤回任何資料") from exc
     if factory_state == PARTIAL:

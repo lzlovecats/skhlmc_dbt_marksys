@@ -12,7 +12,7 @@ Phase 2 以同一套30條固定題目，比較4B日常、4B Thinking及9B Thinki
 - 270個整體偏好標籤；
 - 最多1,350個分項偏好標籤，分別反映香港粵語自然度、論證／推理、具體實用、事實可靠及私隱安全。
 
-所有答案都保存suite、prompt、persona、model tag、exact digest、runtime及generation fingerprint。Reviewer身份只在private database用作防重、quorum及audit，唔會出現在會員畫面、aggregate或manager export。系統不保存Thinking trace、hidden reasoning或對話歷史。
+所有答案都保存suite、prompt、persona、model tag、exact digest、runtime及generation fingerprint；生成前會再次核對runtime及runtime version，避免同一campaign混入另一backend。Reviewer身份只在private database用作防重、quorum及audit，唔會出現在會員畫面、manager reservation清單、aggregate或manager export。系統不保存Thinking trace、hidden reasoning或對話歷史。
 
 ## 對自家 AI 發展的幫助
 
@@ -26,9 +26,17 @@ Phase 3準備屬高價值。Closed campaign嘅summary hash同provenance可成為
 
 ## 資源與限制
 
-一個campaign預計約2–4MB；最多保留10個，hard budget約40MB內。系統不會自動刪除資料，到上限就拒絕建立新campaign。生成逐題手動觸發、node必須完全空閒、每個答案最多16KB及最多3次真正開始的attempt；processing lease容許server restart後安全續跑。
+一個campaign預計約2–4MB；最多保留10個，hard budget約40MB內。已完成或作廢campaign不會自動刪除；AI管理員要先下載audit JSON，再輸入完整campaign ID及原因，先可逐個清除。清除會在單一transaction刪除該campaign的reviews、outputs及campaign row，固定case suite保留，另留下不含reviewer身份的audit摘要。清除後可立即建立下一個campaign。
+
+盲評reservation固定24小時。未提交reservation到期後自動停止佔用三票名額，但同一reviewer不會再次收到已看過的同一pair；AI管理員亦可按opaque review ID提早釋放，不會在管理畫面顯示reviewer身份。生成逐題手動觸發、node必須完全空閒、每個答案最多16KB及最多3次真正開始的attempt；processing lease容許server restart後安全續跑。
 
 三票pair只提供方向性內部證據，唔係大型統計研究。測試亦只比較三個本地模式，無外部baseline，所以不能據此聲稱自家AI優於Gemini或其他外部模型。Latency只作營運參考，不直接計入勝負。
+
+## 4.10.1 rollout次序
+
+1. 先按`LMC_AI_NODE_RUNBOOK.md`更新本地AI node、重新跑current model-profile preflight，再確認exact model digests及runtime version正常。
+2. 對cloud database跑`tools/database_health.py`；核對只欠本release migration後，另行授權及套用migration，再重跑health至eval feature為ready。
+3. 最後deploy application及做真實browser smoke。舊`/api/ai-training/eval/runs` contract已明確退役並維持HTTP 410；所有Phase 2 client只可使用`/api/lmc-ai/ab-tests`。
 
 ## Phase 3建議入口
 

@@ -275,6 +275,8 @@ LMC_AI_EVAL_OUTPUT_MAX_BYTES = _limit("LMC_AI_EVAL_OUTPUT_MAX_BYTES", 16 * KIB, 
 LMC_AI_EVAL_GENERATION_ATTEMPT_MAX = _limit("LMC_AI_EVAL_GENERATION_ATTEMPT_MAX", 3, minimum=1, maximum=3, group="ai", description="Real local-AI attempts per eval output")
 LMC_AI_EVAL_REVIEW_NOTE_MAX_CHARS = _limit("LMC_AI_EVAL_REVIEW_NOTE_MAX_CHARS", 500, minimum=0, maximum=500, group="ai", description="Characters in one blind-review note")
 LMC_AI_EVAL_REVIEWS_PER_PAIR = _limit("LMC_AI_EVAL_REVIEWS_PER_PAIR", 3, minimum=3, maximum=3, group="ai", description="Unique reviewers required per eval pair")
+LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS = _limit("LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS", 24 * 60 * 60, minimum=24 * 60 * 60, maximum=24 * 60 * 60, group="ai", description="Fixed lifetime of one blind-review reservation")
+LMC_AI_EVAL_ASSIGNMENT_LIST_MAX = _limit("LMC_AI_EVAL_ASSIGNMENT_LIST_MAX", 300, minimum=270, maximum=300, group="api", description="Manager-visible pending eval reservations")
 LMC_AI_EVAL_PROCESSING_LEASE_SECONDS = _limit("LMC_AI_EVAL_PROCESSING_LEASE_SECONDS", 240, minimum=181, maximum=600, group="ai", description="Lease for restart-safe eval generation claims")
 LMC_AI_EVAL_EXPORT_MAX_BYTES = _limit("LMC_AI_EVAL_EXPORT_MAX_BYTES", 2 * MIB, minimum=64 * KIB, maximum=2 * MIB, group="api", description="Manager eval audit export bytes")
 LMC_AI_BROWSER_HISTORY_MAX_MESSAGES = _limit("LMC_AI_BROWSER_HISTORY_MAX_MESSAGES", 100, minimum=2, maximum=100, group="browser", description="Messages retained for one browser-local AI conversation")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import secrets
@@ -12,7 +11,7 @@ from sqlalchemy import text
 from ai_model_config import LMC_AI_MODEL_PROFILE_VERSION
 from core.ai_eval_defaults import EVAL_SUITE_ID, EVAL_SUITE_VERSION, load_eval_cases, suite_hash
 from core.lmc_ai_eval import (
-    EVAL_MODES, EVAL_PAIRS, EVAL_PROMPT_VERSION, REVIEW_DIMENSIONS,
+    EVAL_MODES, EVAL_PROMPT_VERSION, REVIEW_DIMENSIONS,
     aggregate_campaign, generation_order, prompt_fingerprint,
 )
 from core.lmc_ai_runtime import PERSONA_VERSION
@@ -20,17 +19,12 @@ from core.funds_logic import log_ai_usage_in_transaction
 from core.schema_features import READY, feature_bundle_state
 from schema import (
     TABLE_AI_EVAL_CAMPAIGNS, TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_OUTPUTS,
-    TABLE_AI_EVAL_REVIEWS,
+    TABLE_AI_EVAL_REVIEWS, TABLE_AI_TRAINING_AUDIT,
 )
 from system_limits import (
-    LMC_AI_EVAL_CAMPAIGN_MAX, LMC_AI_EVAL_GENERATION_ATTEMPT_MAX,
-    LMC_AI_EVAL_PROCESSING_LEASE_SECONDS, LMC_AI_EVAL_REVIEWS_PER_PAIR,
-)
-
-
-EVAL_TABLE_BUNDLE = (
-    TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_CAMPAIGNS,
-    TABLE_AI_EVAL_OUTPUTS, TABLE_AI_EVAL_REVIEWS,
+    LMC_AI_EVAL_ASSIGNMENT_LIST_MAX, LMC_AI_EVAL_CAMPAIGN_MAX,
+    LMC_AI_EVAL_GENERATION_ATTEMPT_MAX, LMC_AI_EVAL_PROCESSING_LEASE_SECONDS,
+    LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS, LMC_AI_EVAL_REVIEWS_PER_PAIR,
 )
 
 
@@ -51,8 +45,17 @@ def _dicts(result) -> list[dict]:
     return [dict(row._mapping) for row in result.fetchall()]
 
 
+def _audit(conn, actor: str, action: str, target_id: str, details: dict) -> None:
+    conn.execute(text(f"""INSERT INTO {TABLE_AI_TRAINING_AUDIT}
+        (actor_user_id,action,target_type,target_id,details_json)
+        VALUES(:actor,:action,'lmc_ai_eval_campaign',:target,CAST(:details AS JSONB))"""), {
+        "actor": actor, "action": action, "target": target_id,
+        "details": _canonical(details),
+    })
+
+
 def require_eval_schema(db) -> None:
-    if feature_bundle_state(db, "eval", EVAL_TABLE_BUNDLE) != READY:
+    if feature_bundle_state(db, "eval") != READY:
         raise RuntimeError("Phase 2 A/B Test database migration 尚未套用。")
 
 
@@ -66,6 +69,15 @@ def latest_campaign(db) -> dict | None:
     value["model_manifest"] = _json(value.get("model_manifest"))
     value["summary_json"] = _json(value.get("summary_json"))
     return value
+
+
+def list_campaigns(db) -> list[dict]:
+    rows = db.query(f"""SELECT campaign_id,status,created_at,reviewing_at,closed_at,
+        invalidated_at,exported_at,summary_hash,note
+        FROM {TABLE_AI_EVAL_CAMPAIGNS}
+        ORDER BY created_at DESC,campaign_id DESC
+        LIMIT :campaign_limit""", {"campaign_limit": LMC_AI_EVAL_CAMPAIGN_MAX})
+    return [dict(row) for _, row in rows.iterrows()]
 
 
 def campaign_progress(db, campaign_id: str, reviewer_user_id: str = "") -> dict:
@@ -116,7 +128,7 @@ def create_campaign(db, *, actor_id: str, node_id: str, snapshot: dict, note: st
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('lmc_ai_eval_campaign'))"))
         retained = conn.execute(text(f"SELECT COUNT(*) FROM {TABLE_AI_EVAL_CAMPAIGNS}")).scalar_one()
         if int(retained) >= LMC_AI_EVAL_CAMPAIGN_MAX:
-            raise ValueError("已保留10個campaign；Phase 2唔會自動刪除。")
+            raise ValueError(f"已保留{LMC_AI_EVAL_CAMPAIGN_MAX}個campaign；請先下載並清除一個已完成campaign。")
         if conn.execute(text(f"SELECT 1 FROM {TABLE_AI_EVAL_CAMPAIGNS} WHERE status IN ('generating','reviewing') LIMIT 1 FOR UPDATE")).first():
             raise ValueError("同一時間只可以有一個進行中campaign。")
         cases = _dicts(conn.execute(text(f"""SELECT case_id,content_hash FROM {TABLE_AI_EVAL_CASES}
@@ -283,7 +295,9 @@ def _assignment_payload(conn, review_id: str, reviewer: str) -> dict | None:
         JOIN {TABLE_AI_EVAL_CASES} c ON c.case_id=r.case_id
         JOIN {TABLE_AI_EVAL_OUTPUTS} lo ON lo.campaign_id=r.campaign_id AND lo.case_id=r.case_id AND lo.mode=r.left_mode
         JOIN {TABLE_AI_EVAL_OUTPUTS} ro ON ro.campaign_id=r.campaign_id AND ro.case_id=r.case_id AND ro.mode=r.right_mode
-        WHERE r.review_id=:review AND r.reviewer_user_id=:reviewer"""), {"review": review_id, "reviewer": reviewer}).mappings().first()
+        WHERE r.review_id=:review AND r.reviewer_user_id=:reviewer
+          AND r.submitted_at IS NULL AND r.released_at IS NULL
+          AND r.expires_at>NOW()"""), {"review": review_id, "reviewer": reviewer}).mappings().first()
     if not row:
         return None
     value = dict(row)
@@ -300,6 +314,7 @@ def next_assignment(db, campaign_id: str, reviewer: str) -> dict | None:
             raise ValueError("campaign未開放盲評。")
         existing = conn.execute(text(f"""SELECT review_id FROM {TABLE_AI_EVAL_REVIEWS}
             WHERE campaign_id=:campaign AND reviewer_user_id=:reviewer AND submitted_at IS NULL
+              AND released_at IS NULL AND expires_at>NOW()
             ORDER BY assigned_at LIMIT 1 FOR UPDATE"""), {"campaign": campaign_id, "reviewer": reviewer}).scalar()
         if existing:
             return _assignment_payload(conn, existing, reviewer)
@@ -310,6 +325,7 @@ def next_assignment(db, campaign_id: str, reviewer: str) -> dict | None:
             FROM {TABLE_AI_EVAL_CASES} c CROSS JOIN pairs p
             LEFT JOIN {TABLE_AI_EVAL_REVIEWS} r ON r.campaign_id=:campaign
               AND r.case_id=c.case_id AND r.pair_key=p.pair_key
+              AND (r.submitted_at IS NOT NULL OR (r.released_at IS NULL AND r.expires_at>NOW()))
             WHERE c.is_active=TRUE AND c.suite_id=:suite AND c.suite_version=:suite_version
             GROUP BY c.case_id,p.pair_key,p.a,p.b
         ) SELECT * FROM counts x WHERE assignments<:votes AND NOT EXISTS (
@@ -326,7 +342,8 @@ def next_assignment(db, campaign_id: str, reviewer: str) -> dict | None:
         orientation = conn.execute(text(f"""SELECT
             COUNT(*) FILTER (WHERE left_mode=:a) a_left,
             COUNT(*) FILTER (WHERE left_mode=:b) b_left
-            FROM {TABLE_AI_EVAL_REVIEWS} WHERE campaign_id=:campaign AND pair_key=:pair"""), {
+            FROM {TABLE_AI_EVAL_REVIEWS} WHERE campaign_id=:campaign AND pair_key=:pair
+              AND (submitted_at IS NOT NULL OR (released_at IS NULL AND expires_at>NOW()))"""), {
             "a": candidate["a"], "b": candidate["b"],
             "campaign": campaign_id, "pair": candidate["pair_key"],
         }).mappings().one()
@@ -340,12 +357,60 @@ def next_assignment(db, campaign_id: str, reviewer: str) -> dict | None:
             left, right = candidate["b"], candidate["a"]
         review_id = secrets.token_hex(16)
         conn.execute(text(f"""INSERT INTO {TABLE_AI_EVAL_REVIEWS}(
-            review_id,campaign_id,case_id,pair_key,reviewer_user_id,left_mode,right_mode
-        ) VALUES(:review,:campaign,:case,:pair,:reviewer,:left,:right)"""), {
+            review_id,campaign_id,case_id,pair_key,reviewer_user_id,left_mode,right_mode,expires_at
+        ) VALUES(:review,:campaign,:case,:pair,:reviewer,:left,:right,
+            NOW()+(:assignment_ttl * INTERVAL '1 second'))"""), {
             "review": review_id, "campaign": campaign_id, "case": candidate["case_id"],
             "pair": candidate["pair_key"], "reviewer": reviewer, "left": left, "right": right,
+            "assignment_ttl": LMC_AI_EVAL_REVIEW_ASSIGNMENT_TTL_SECONDS,
         })
         return _assignment_payload(conn, review_id, reviewer)
+
+
+def list_pending_assignments(db, campaign_id: str) -> list[dict]:
+    rows = db.query(f"""SELECT review_id,case_id,pair_key,assigned_at,expires_at,
+        (expires_at<=NOW()) expired
+        FROM {TABLE_AI_EVAL_REVIEWS}
+        WHERE campaign_id=:campaign AND submitted_at IS NULL AND released_at IS NULL
+        ORDER BY expired DESC,assigned_at,review_id
+        LIMIT :assignment_limit""", {
+        "campaign": campaign_id,
+        "assignment_limit": LMC_AI_EVAL_ASSIGNMENT_LIST_MAX,
+    })
+    return [dict(row) for _, row in rows.iterrows()]
+
+
+def release_assignment(
+    db, campaign_id: str, review_id: str, actor_id: str, reason: str,
+) -> None:
+    with db.transaction() as conn:
+        campaign_status = conn.execute(text(f"""SELECT status
+            FROM {TABLE_AI_EVAL_CAMPAIGNS}
+            WHERE campaign_id=:campaign FOR SHARE"""), {
+            "campaign": campaign_id,
+        }).scalar()
+        if campaign_status != "reviewing":
+            raise ValueError("campaign未開放盲評。")
+        row = conn.execute(text(f"""SELECT case_id,pair_key
+            FROM {TABLE_AI_EVAL_REVIEWS}
+            WHERE campaign_id=:campaign AND review_id=:review FOR UPDATE"""), {
+            "campaign": campaign_id, "review": review_id,
+        }).mappings().first()
+        if not row:
+            raise LookupError("找不到盲評assignment。")
+        result = conn.execute(text(f"""UPDATE {TABLE_AI_EVAL_REVIEWS}
+            SET released_at=NOW(),released_by=:actor,release_reason=:reason
+            WHERE campaign_id=:campaign AND review_id=:review
+              AND submitted_at IS NULL AND released_at IS NULL"""), {
+            "actor": actor_id, "reason": reason, "campaign": campaign_id,
+            "review": review_id,
+        })
+        if result.rowcount != 1:
+            raise ValueError("assignment已提交或已被釋放。")
+        _audit(conn, actor_id, "eval_assignment_released", campaign_id, {
+            "review_id": review_id, "case_id": row["case_id"],
+            "pair_key": row["pair_key"], "reason": reason,
+        })
 
 
 def preview_assignment(db, campaign_id: str) -> dict | None:
@@ -383,10 +448,13 @@ def submit_review(db, review_id: str, reviewer: str, choices: dict, note: str) -
         if status != "reviewing":
             raise ValueError("campaign已經停止收票。")
         params = {**choices, "note": note, "review": review_id, "reviewer": reviewer}
-        conn.execute(text(f"""UPDATE {TABLE_AI_EVAL_REVIEWS} SET overall=:overall,
+        result = conn.execute(text(f"""UPDATE {TABLE_AI_EVAL_REVIEWS} SET overall=:overall,
             cantonese=:cantonese,reasoning=:reasoning,usefulness=:usefulness,
             factual=:factual,privacy=:privacy,note=:note,submitted_at=NOW()
-            WHERE review_id=:review AND reviewer_user_id=:reviewer AND submitted_at IS NULL"""), params)
+            WHERE review_id=:review AND reviewer_user_id=:reviewer AND submitted_at IS NULL
+              AND released_at IS NULL AND expires_at>NOW()"""), params)
+        if result.rowcount != 1:
+            raise ValueError("assignment已過期或被釋放，請領取下一組。")
         return True
 
 
@@ -449,7 +517,8 @@ def manager_export(db, campaign_id: str) -> dict:
         prompt_hash,thinking_enabled,answer_text,answer_hash,input_tokens,output_tokens,duration_ms,
         error_code,error_message,started_at,completed_at
         FROM {TABLE_AI_EVAL_OUTPUTS} WHERE campaign_id=:campaign ORDER BY case_id,mode""", {"campaign": campaign_id})
-    review_rows = db.query(f"""SELECT case_id,pair_key,left_mode,right_mode,{','.join(REVIEW_DIMENSIONS)},note,assigned_at,submitted_at
+    review_rows = db.query(f"""SELECT case_id,pair_key,left_mode,right_mode,{','.join(REVIEW_DIMENSIONS)},note,
+        assigned_at,expires_at,released_at,release_reason,submitted_at
         FROM {TABLE_AI_EVAL_REVIEWS} WHERE campaign_id=:campaign ORDER BY case_id,pair_key,review_id""", {"campaign": campaign_id})
     cases = db.query(f"""SELECT case_id,task_type,title,input_json,rubric_json,reference_text,content_hash
         FROM {TABLE_AI_EVAL_CASES} WHERE suite_id=:suite AND suite_version=:version ORDER BY case_id""", {"suite": campaign["suite_id"], "version": campaign["suite_version"]})
@@ -460,3 +529,56 @@ def manager_export(db, campaign_id: str) -> dict:
         # Deliberately excludes review_id and reviewer_user_id.
         "reviews": [dict(row) for _, row in review_rows.iterrows()],
     }
+
+
+def record_campaign_export(db, campaign_id: str, actor_id: str) -> None:
+    with db.transaction() as conn:
+        result = conn.execute(text(f"""UPDATE {TABLE_AI_EVAL_CAMPAIGNS}
+            SET exported_at=NOW(),exported_by=:actor
+            WHERE campaign_id=:campaign AND status IN ('closed','invalidated')"""), {
+            "actor": actor_id, "campaign": campaign_id,
+        })
+        if result.rowcount != 1:
+            raise ValueError("campaign完成或作廢後先可以記錄audit export。")
+        _audit(conn, actor_id, "eval_campaign_exported", campaign_id, {})
+
+
+def purge_campaign(
+    db, campaign_id: str, actor_id: str, confirmation: str, reason: str,
+) -> dict:
+    if confirmation != campaign_id:
+        raise ValueError("確認文字必須完全等於campaign ID。")
+    with db.transaction() as conn:
+        campaign = conn.execute(text(f"""SELECT campaign_id,status,suite_id,suite_version,
+            suite_hash,prompt_hash,persona_hash,model_profile_version,summary_hash,
+            exported_at,exported_by
+            FROM {TABLE_AI_EVAL_CAMPAIGNS}
+            WHERE campaign_id=:campaign FOR UPDATE"""), {
+            "campaign": campaign_id,
+        }).mappings().first()
+        if not campaign:
+            raise LookupError("找不到campaign。")
+        if campaign["status"] not in {"closed", "invalidated"}:
+            raise ValueError("只可以清除已完成或已作廢campaign。")
+        if campaign["exported_at"] is None:
+            raise ValueError("必須先下載audit export，先可以清除campaign。")
+        counts = conn.execute(text(f"""SELECT
+            (SELECT COUNT(*) FROM {TABLE_AI_EVAL_OUTPUTS} WHERE campaign_id=:campaign) outputs,
+            (SELECT COUNT(*) FROM {TABLE_AI_EVAL_REVIEWS} WHERE campaign_id=:campaign) reviews"""), {
+            "campaign": campaign_id,
+        }).mappings().one()
+        details = {
+            "status": campaign["status"], "suite_id": campaign["suite_id"],
+            "suite_version": campaign["suite_version"], "suite_hash": campaign["suite_hash"],
+            "prompt_hash": campaign["prompt_hash"], "persona_hash": campaign["persona_hash"],
+            "model_profile_version": campaign["model_profile_version"],
+            "summary_hash": campaign["summary_hash"],
+            "exported_at": str(campaign["exported_at"]),
+            "exported_by": campaign["exported_by"], "outputs": int(counts["outputs"]),
+            "reviews": int(counts["reviews"]), "reason": reason,
+        }
+        _audit(conn, actor_id, "eval_campaign_purged", campaign_id, details)
+        conn.execute(text(f"DELETE FROM {TABLE_AI_EVAL_REVIEWS} WHERE campaign_id=:campaign"), {"campaign": campaign_id})
+        conn.execute(text(f"DELETE FROM {TABLE_AI_EVAL_OUTPUTS} WHERE campaign_id=:campaign"), {"campaign": campaign_id})
+        conn.execute(text(f"DELETE FROM {TABLE_AI_EVAL_CAMPAIGNS} WHERE campaign_id=:campaign"), {"campaign": campaign_id})
+        return {"campaign_id": campaign_id, "outputs": details["outputs"], "reviews": details["reviews"]}

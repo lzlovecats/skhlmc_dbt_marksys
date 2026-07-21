@@ -13,6 +13,7 @@
   let conversationGeneration = 0;
   let abBootstrap = null;
   let abAssignment = null;
+  let abPendingAssignments = [];
   let abGeneration = 0;
   let abBusy = false;
   let activePanel = "chatPanel";
@@ -356,6 +357,69 @@
     panel.append(heading, warning, table, risks, details);
   }
 
+  function campaignDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-HK");
+  }
+
+  function historyAction(label, className, handler, disabled = false) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.className = className || "";
+    button.disabled = disabled || abBusy;
+    button.onclick = handler;
+    return button;
+  }
+
+  function renderCampaignHistory() {
+    const panel = $("abManagerPanel");
+    const history = $("abCampaignHistory");
+    const pending = $("abPendingAssignments");
+    const manager = Boolean(abBootstrap?.identity?.manager);
+    panel.classList.toggle("hidden", !manager);
+    history.replaceChildren();
+    pending.replaceChildren();
+    if (!manager) return;
+    const campaigns = Array.isArray(abBootstrap?.campaigns) ? abBootstrap.campaigns : [];
+    if (!campaigns.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "未有 campaign。";
+      history.append(empty);
+    }
+    campaigns.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "actions";
+      const summary = document.createElement("span");
+      summary.textContent = `${item.campaign_id}・${item.status}・${campaignDate(item.created_at)}`;
+      row.append(summary);
+      if (["closed", "invalidated"].includes(item.status)) {
+        row.append(historyAction("下載", "", () => downloadCampaign(item.campaign_id)));
+        row.append(historyAction(
+          "清除", "danger", () => confirmPurgeCampaign(item.campaign_id), !item.exported_at,
+        ));
+      }
+      history.append(row);
+    });
+    if (!abPendingAssignments.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "沒有未提交 reservation。";
+      pending.append(empty);
+      return;
+    }
+    abPendingAssignments.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "actions";
+      const summary = document.createElement("span");
+      summary.textContent = `${item.case_id}・${item.pair_key}・${item.expired ? "已過期" : `到期 ${campaignDate(item.expires_at)}`}`;
+      row.append(summary, historyAction("釋放", "danger", () => releaseReservation(item.review_id)));
+      pending.append(row);
+    });
+  }
+
   function renderAb() {
     const data = abBootstrap;
     const campaign = data?.campaign;
@@ -364,13 +428,16 @@
     const actions = $("abManagerActions");
     actions.classList.toggle("hidden", !manager);
     $("abProgress").replaceChildren();
-    $("abCreate").classList.toggle("hidden", Boolean(campaign));
+    $("abCreate").classList.toggle("hidden", !data?.can_create_campaign);
     $("abGenerate").classList.toggle("hidden", campaign?.status !== "generating");
     $("abOpenReview").classList.toggle("hidden", campaign?.status !== "generating");
     $("abClose").classList.toggle("hidden", campaign?.status !== "reviewing");
     $("abInvalidate").classList.toggle("hidden", !campaign || campaign.status === "invalidated");
-    $("abExport").classList.toggle("hidden", campaign?.status !== "closed");
-    ["abCreate", "abGenerate", "abOpenReview", "abClose", "abInvalidate"].forEach((id) => { $(id).disabled = abBusy; });
+    const terminal = ["closed", "invalidated"].includes(campaign?.status);
+    $("abExport").classList.toggle("hidden", !terminal);
+    $("abPurge").classList.toggle("hidden", !terminal || !data?.manager?.exported_at);
+    ["abCreate", "abGenerate", "abOpenReview", "abClose", "abInvalidate", "abExport", "abPurge"].forEach((id) => { $(id).disabled = abBusy; });
+    renderCampaignHistory();
     if (!campaign) {
       $("abStatus").textContent = manager ? "未有 campaign，可以建立固定30題三模式測試。" : "暫未有開放中嘅 A/B Test。";
       renderAssignment(null); renderResults(null); return;
@@ -387,7 +454,6 @@
         metric("你已完成", Number(progress.reviewer_completed || 0)),
       );
     }
-    $("abExport").href = `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaign.campaign_id)}/export.json`;
     renderResults(campaign.status === "closed" && manager ? data.manager?.summary : null);
     if (campaign.status !== "reviewing") renderAssignment(null);
   }
@@ -398,6 +464,12 @@
       const data = await api("/api/lmc-ai/ab-tests/bootstrap", { method: "GET" });
       if (generation !== abGeneration) return;
       abBootstrap = data;
+      abPendingAssignments = [];
+      if (data.identity.manager && data.campaign?.status === "reviewing") {
+        const reservations = await api(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(data.campaign.campaign_id)}/assignments`, { method: "GET" });
+        if (generation !== abGeneration) return;
+        abPendingAssignments = Array.isArray(reservations.assignments) ? reservations.assignments : [];
+      }
       renderAb();
       const campaign = data.campaign;
       if (loadAssignment && campaign?.status === "reviewing" && (data.identity.can_review || data.identity.manager)) {
@@ -421,6 +493,57 @@
       setAbNotice(error.message || "A/B Test 動作失敗。");
     } finally {
       abBusy = false; renderAb();
+    }
+  }
+
+  async function downloadCampaign(campaignId) {
+    if (abBusy) return;
+    abBusy = true; setAbNotice(""); renderAb();
+    try {
+      const response = await fetch(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/export.json`, {
+        method: "POST", credentials: "same-origin", cache: "no-store",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = `lmc-ai-eval-${campaignId}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      await refreshAb(false);
+    } catch (error) {
+      setAbNotice(error.message || "未能下載 audit JSON。");
+    } finally {
+      abBusy = false; renderAb();
+    }
+  }
+
+  function confirmPurgeCampaign(campaignId) {
+    const confirmation = prompt(`清除後只保留 audit 記錄。請輸入完整 campaign ID：\n${campaignId}`);
+    if (confirmation !== campaignId) {
+      if (confirmation !== null) setAbNotice("確認文字不正確，未有清除資料。");
+      return;
+    }
+    const reason = prompt("請填寫清除原因：");
+    if (reason?.trim()) {
+      abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/purge`, {
+        body: { confirmation, reason: reason.trim() },
+      });
+    }
+  }
+
+  function releaseReservation(reviewId) {
+    const campaignId = abBootstrap?.campaign?.campaign_id;
+    if (!campaignId) return;
+    const reason = prompt("請填寫提早釋放 reservation 原因：");
+    if (reason?.trim()) {
+      abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/assignments/${encodeURIComponent(reviewId)}/release`, {
+        body: { reason: reason.trim() },
+      });
     }
   }
 
@@ -679,6 +802,8 @@
     const reason = prompt("請填寫invalidate原因（資料會保留，不會刪除）：");
     if (reason?.trim()) abAction(`/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(abBootstrap.campaign.campaign_id)}/invalidate`, { body: { reason: reason.trim() } });
   };
+  $("abExport").onclick = () => downloadCampaign(abBootstrap.campaign.campaign_id);
+  $("abPurge").onclick = () => confirmPurgeCampaign(abBootstrap.campaign.campaign_id);
   $("abReviewForm").onsubmit = async (event) => {
     event.preventDefault();
     if (!abAssignment || abBusy) return;
