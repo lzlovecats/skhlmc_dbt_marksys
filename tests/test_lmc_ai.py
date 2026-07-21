@@ -8,10 +8,13 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 import ai_name
 import schema
 import system_limits
+from api import lmc_ai_api as lmc_api
+from api.lmc_ai_api import ChatRequest, _resolve_thinking_enabled
 from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
     LMC_AI_FALLBACK_MODEL,
@@ -423,7 +426,24 @@ def test_node_hello_revalidates_the_current_token_before_registration(monkeypatc
     assert db.params["token_hash"] == lmc_ai_store._token_digest("old-token")
 
 
-def test_thinking_setting_is_typed_and_uses_the_config_store(monkeypatch):
+def test_chat_mode_is_allowlisted_and_legacy_requests_remain_distinguishable():
+    request = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "expected_fingerprint": "0" * 64,
+        "has_history": False,
+    }
+    assert ChatRequest(**request).mode is None
+    assert ChatRequest(**request, mode="thinking").mode == "thinking"
+    assert ChatRequest(**request, mode="fast").mode == "fast"
+    assert _resolve_thinking_enabled(None, True) is True
+    assert _resolve_thinking_enabled(None, False) is False
+    assert _resolve_thinking_enabled("thinking", False) is True
+    assert _resolve_thinking_enabled("fast", True) is False
+    with pytest.raises(ValidationError):
+        ChatRequest(**request, mode="unlimited")
+
+
+def test_legacy_thinking_setting_stays_typed_for_cached_pre_mode_clients(monkeypatch):
     writes = []
     monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
     monkeypatch.setattr(
@@ -443,7 +463,66 @@ def test_thinking_setting_is_typed_and_uses_the_config_store(monkeypatch):
     assert writes == [("lmc_ai_thinking_enabled", False)]
 
 
-def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking():
+def test_cached_pre_mode_api_contract_remains_functional(monkeypatch):
+    monkeypatch.setattr(lmc_api, "_developer_required", lambda _request: None)
+    monkeypatch.setattr(lmc_api, "_db", lambda: object())
+    monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [])
+    monkeypatch.setattr(lmc_api, "get_active_node_id", lambda _db: "")
+    monkeypatch.setattr(lmc_api, "get_thinking_enabled", lambda _db: True)
+    writes = []
+    monkeypatch.setattr(
+        lmc_api,
+        "set_thinking_enabled",
+        lambda _db, enabled: writes.append(enabled),
+    )
+
+    async def snapshots():
+        return {}
+
+    monkeypatch.setattr(lmc_api.RUNTIME, "all_snapshots", snapshots)
+    nodes = asyncio.run(lmc_api.developer_lmc_ai_nodes(object()))
+    saved = asyncio.run(
+        lmc_api.developer_set_lmc_ai_thinking(
+            lmc_api.ThinkingSetting(enabled=False), object()
+        )
+    )
+
+    assert nodes["thinking_enabled"] is True
+    assert saved == {"ok": True, "thinking_enabled": False}
+    assert writes == [False]
+
+
+def test_cached_pre_mode_bootstrap_uses_the_legacy_global_fingerprint(monkeypatch):
+    monkeypatch.setattr(
+        lmc_api,
+        "require_page_user_or_developer",
+        lambda _request, _page: "member-1",
+    )
+    monkeypatch.setattr(lmc_api, "_db", lambda: object())
+    monkeypatch.setattr(lmc_api, "require_lmc_ai_schema", lambda _db: None)
+    monkeypatch.setattr(
+        lmc_api,
+        "interactive_features_suspension",
+        lambda _request: {"active": False},
+    )
+
+    async def active_service(_db):
+        return "node-1", {"online": True, "ready": True}, True, {
+            "fast": "f" * 64,
+            "thinking": "t" * 64,
+        }
+
+    monkeypatch.setattr(lmc_api, "_active_service", active_service)
+    result = asyncio.run(lmc_api.lmc_ai_bootstrap(object()))
+
+    assert result["backend_fingerprint"] == "t" * 64
+    assert result["backend_fingerprints"] == {
+        "fast": "f" * 64,
+        "thinking": "t" * 64,
+    }
+
+
+def test_member_api_and_browser_contract_keep_node_metadata_and_thinking_trace_private():
     assert 'role == "system"' in API_SOURCE
     assert '"provider": "custom"' in API_SOURCE
     assert 'usage_user_id=None if actor_id == "developer"' in API_SOURCE
@@ -469,6 +548,20 @@ def test_member_api_and_browser_contract_do_not_expose_node_metadata_or_thinking
     assert "effective_model" not in SCRIPT
 
 
+def test_browser_offers_a_conversation_scoped_fast_or_thinking_dropdown():
+    assert 'id="thinkingMode"' in PAGE
+    assert '<option value="fast">快速回答</option>' in PAGE
+    assert '<option value="thinking">深入思考</option>' in PAGE
+    assert "backend_fingerprints" in API_SOURCE
+    assert "_resolve_thinking_enabled" in API_SOURCE
+    assert "mode: conversation.mode" in SCRIPT
+    assert "normalizeMode" in SCRIPT
+    assert "switchConversationMode" in SCRIPT
+    assert "切換回答模式" in SCRIPT
+    assert "conversation.messages.length && !confirm(" in SCRIPT
+    assert "conversation.mode" in SCRIPT
+
+
 def test_browser_clear_invalidates_and_aborts_an_inflight_conversation():
     assert "let conversationGeneration = 0" in SCRIPT
     assert "const requestGeneration = conversationGeneration" in SCRIPT
@@ -490,20 +583,23 @@ def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
     assert "自家 AI 電腦資料暫時未能讀取" in load_block
 
 
-def test_developer_can_refresh_clear_selection_and_set_global_thinking():
+def test_new_developer_ui_hides_global_thinking_but_keeps_cached_page_api_compatibility():
     assert 'id="refreshLmcNodes"' in DEV_SETTINGS
     assert 'id="clearLmcSelection"' in DEV_SETTINGS
-    assert 'id="lmcThinkingEnabled"' in DEV_SETTINGS
+    assert 'id="lmcThinkingEnabled"' not in DEV_SETTINGS
+    assert 'id="saveLmcThinking"' not in DEV_SETTINGS
     assert "let lmcLoadGeneration = 0" in DEV_SETTINGS
     assert "loadGeneration !== lmcLoadGeneration" in DEV_SETTINGS
     assert 'JSON.stringify({ node_id: "" })' in DEV_SETTINGS
-    assert '"/api/developer/lmc-ai/thinking"' in DEV_SETTINGS
     assert '"/api/developer/lmc-ai/active-node"' in DEV_SETTINGS
+    assert '"/api/developer/lmc-ai/thinking"' not in DEV_SETTINGS
 
     assert "class ThinkingSetting" in API_SOURCE
     assert "node_id: str = Field(max_length=64)" in API_SOURCE
     assert "set_thinking_enabled" in API_SOURCE
-    assert "thinking_enabled=thinking_enabled" in API_SOURCE
+    assert "get_thinking_enabled" in API_SOURCE
+    assert '"thinking_enabled": thinking_enabled' in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/thinking")' in API_SOURCE
 
 
 def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(tmp_path):

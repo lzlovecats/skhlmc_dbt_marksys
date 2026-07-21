@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
@@ -80,6 +81,9 @@ class ChatRequest(BaseModel):
     )
     expected_fingerprint: str = Field(min_length=64, max_length=64)
     has_history: bool
+    # None identifies a cached pre-mode browser and follows the temporary
+    # legacy global setting. New browsers always send an explicit mode.
+    mode: Literal["fast", "thinking"] | None = None
 
 
 class NodeCreate(BaseModel):
@@ -119,17 +123,24 @@ def _validated_messages(body: ChatRequest) -> list[dict]:
     return messages
 
 
-async def _active_service(db) -> tuple[str, dict | None, bool]:
+def _resolve_thinking_enabled(
+    mode: Literal["fast", "thinking"] | None, legacy_enabled: bool
+) -> bool:
+    return bool(legacy_enabled) if mode is None else mode == "thinking"
+
+
+async def _active_service(db) -> tuple[str, dict | None, bool, dict[str, str]]:
     active_node_id = get_active_node_id(db)
-    thinking_enabled = get_thinking_enabled(db)
+    legacy_thinking_enabled = get_thinking_enabled(db)
     snapshot = await RUNTIME.snapshot(active_node_id) if active_node_id else None
+    fingerprints = {}
     if snapshot:
-        snapshot["fingerprint"] = backend_fingerprint(
-            active_node_id,
-            str(snapshot.get("model") or ""),
-            thinking_enabled,
-        )
-    return active_node_id, snapshot, thinking_enabled
+        model = str(snapshot.get("model") or "")
+        fingerprints = {
+            "fast": backend_fingerprint(active_node_id, model, False),
+            "thinking": backend_fingerprint(active_node_id, model, True),
+        }
+    return active_node_id, snapshot, legacy_thinking_enabled, fingerprints
 
 
 def _public_status(active_node_id: str, snapshot: dict | None) -> dict:
@@ -158,7 +169,9 @@ async def lmc_ai_bootstrap(request: Request):
     db = _db()
     try:
         require_lmc_ai_schema(db)
-        active_node_id, snapshot, _thinking_enabled = await _active_service(db)
+        active_node_id, snapshot, legacy_thinking_enabled, fingerprints = (
+            await _active_service(db)
+        )
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
     status = _public_status(active_node_id, snapshot)
@@ -178,7 +191,12 @@ async def lmc_ai_bootstrap(request: Request):
             "context_characters": LMC_AI_CONTEXT_MAX_CHARS,
             "request_messages": LMC_AI_REQUEST_MESSAGES_MAX,
         },
-        "backend_fingerprint": (snapshot or {}).get("fingerprint"),
+        # Cached pre-mode browsers use the singular fingerprint and continue
+        # following the legacy global setting during this release transition.
+        "backend_fingerprint": fingerprints.get(
+            "thinking" if legacy_thinking_enabled else "fast"
+        ),
+        "backend_fingerprints": fingerprints,
     }
 
 
@@ -225,7 +243,9 @@ async def lmc_ai_chat(body: ChatRequest, request: Request):
     db = _db()
     try:
         require_lmc_ai_schema(db)
-        active_node_id, _snapshot, thinking_enabled = await _active_service(db)
+        active_node_id, _snapshot, legacy_thinking_enabled, _fingerprints = (
+            await _active_service(db)
+        )
         job, _position = await RUNTIME.submit(
             node_id=active_node_id,
             expected_fingerprint=body.expected_fingerprint,
@@ -234,7 +254,9 @@ async def lmc_ai_chat(body: ChatRequest, request: Request):
             operation_stage="developer_chat" if actor_id == "developer" else "member_chat",
             messages=messages,
             has_history=body.has_history,
-            thinking_enabled=thinking_enabled,
+            thinking_enabled=_resolve_thinking_enabled(
+                body.mode, legacy_thinking_enabled
+            ),
             finish_callback=_record_usage,
         )
     except QueueFullError as exc:
@@ -296,6 +318,7 @@ async def developer_lmc_ai_nodes(request: Request):
     return {
         "nodes": nodes,
         "active_node_id": active_node_id,
+        # Temporary response compatibility for cached 4.9.3 Developer pages.
         "thinking_enabled": thinking_enabled,
     }
 
@@ -380,6 +403,7 @@ async def developer_select_lmc_ai_node(body: NodeSelection, request: Request):
 
 @router.post("/api/developer/lmc-ai/thinking")
 async def developer_set_lmc_ai_thinking(body: ThinkingSetting, request: Request):
+    """Compatibility endpoint for cached 4.9.3 Developer pages."""
     _developer_required(request)
     try:
         set_thinking_enabled(_db(), body.enabled)

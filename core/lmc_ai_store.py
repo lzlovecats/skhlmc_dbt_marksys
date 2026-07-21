@@ -219,10 +219,12 @@ def set_active_node_id(db, node_id: str) -> None:
 
 
 def get_thinking_enabled(db) -> bool:
+    """Return the legacy global mode for cached pre-4.9.4 clients."""
     require_lmc_ai_schema(db)
     return bool(get_config(db, THINKING_ENABLED_CONFIG_KEY, False))
 
 
 def set_thinking_enabled(db, enabled: bool) -> None:
+    """Keep cached Developer pages functional during the mode transition."""
     require_lmc_ai_schema(db)
     set_config(db, THINKING_ENABLED_CONFIG_KEY, bool(enabled))

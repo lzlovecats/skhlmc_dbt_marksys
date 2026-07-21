@@ -2451,7 +2451,11 @@ async def developer_settings_page():
     )
     html = html.replace("__APP_VERSION__", APP_VERSION)
     return Response(
-        content=html, media_type="text/html", headers=_cache_headers(CACHE_HTML)
+        content=html,
+        media_type="text/html",
+        # The 4.9.4 inline UI removes a legacy API control. Revalidate the
+        # tightly coupled shell while the server keeps one-release fallback.
+        headers=_cache_headers(CACHE_NO_CACHE),
     )
 
 

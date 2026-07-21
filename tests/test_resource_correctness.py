@@ -331,7 +331,7 @@ def test_overlapping_pushes_share_one_process_bounded_executor():
 def test_developer_settings_and_room_cache_contract(monkeypatch):
     response = asyncio.run(proxy.developer_settings_page())
     html = response.body.decode("utf-8")
-    assert response.headers["cache-control"].startswith("private,")
+    assert response.headers["cache-control"] == "no-cache"
     assert "lateness-managers.js" not in html
     assert 'id="aiManagersOptions"' in html
     assert 'id="seniorMembersOptions"' in html

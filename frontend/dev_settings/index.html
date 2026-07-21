@@ -74,16 +74,6 @@
       .account-picker .caption {
         margin-top: 0.4rem;
       }
-      .lmc-thinking-toggle {
-        display: inline-flex;
-        gap: 0.5rem;
-        align-items: center;
-        margin: 0;
-      }
-      .lmc-thinking-toggle input {
-        width: auto;
-        margin: 0;
-      }
       dialog.card {
         width: min(32rem, calc(100% - 2rem));
         max-height: calc(100dvh - 2rem);
@@ -235,11 +225,6 @@
               <button id="refreshLmcNodes" type="button">🔄 重新整理</button>
               <button id="clearLmcSelection" class="danger" type="button" disabled>取消選用所有電腦</button>
             </div>
-            <div class="actions">
-              <label class="lmc-thinking-toggle"><input id="lmcThinkingEnabled" type="checkbox" />開啟 Thinking</label>
-              <button id="saveLmcThinking" type="button">儲存 Thinking 設定</button>
-            </div>
-            <p id="lmcThinkingState" class="caption">正在讀取 Thinking 設定…</p>
             <form id="lmcNodeForm" class="actions">
               <label style="flex:1">新電腦名稱<input id="lmcNodeName" placeholder="例如：辯論室 AI 01" required /></label>
               <button class="primary" type="submit">建立電腦 token</button>
@@ -569,20 +554,10 @@
           } catch (error) {
             if (loadGeneration !== lmcLoadGeneration) return false;
             $("lmcNodes").innerHTML = '<p class="caption">自家 AI 電腦資料暫時未能讀取；其他開發者設定仍可使用。</p>';
-            $("lmcThinkingState").textContent = "Thinking 設定暫時未能讀取。";
-            $("lmcThinkingEnabled").disabled = true;
-            $("saveLmcThinking").disabled = true;
             $("clearLmcSelection").disabled = true;
             throw error;
           }
           if (loadGeneration !== lmcLoadGeneration) return false;
-          const thinkingEnabled = result.thinking_enabled === true;
-          $("lmcThinkingEnabled").disabled = false;
-          $("saveLmcThinking").disabled = false;
-          $("lmcThinkingEnabled").checked = thinkingEnabled;
-          $("lmcThinkingState").textContent = thinkingEnabled
-            ? "Thinking 已開啟；只會向隊員顯示最終答案。"
-            : "Thinking 已關閉。";
           $("clearLmcSelection").disabled = !result.active_node_id;
           const nodes = result.nodes || [];
           if (!nodes.length) {
@@ -744,31 +719,6 @@
             toast("✅ 已取消選用所有 AI 電腦。");
           } catch (error) {
             toast("⚠️ " + error.message);
-          } finally {
-            busy(false);
-          }
-        };
-        $("saveLmcThinking").onclick = async () => {
-          const enabled = $("lmcThinkingEnabled").checked;
-          const confirmed = await askAction(
-            `${enabled ? "開啟" : "關閉"} Thinking？`,
-            "設定只影響之後提交嘅工作；目前生成會完成，已有對話下次發問時會要求開始新對話。",
-          );
-          if (!confirmed) {
-            await loadLmcNodes().catch((error) => toast("⚠️ " + error.message));
-            return;
-          }
-          busy(true);
-          try {
-            await api("/api/developer/lmc-ai/thinking", {
-              method: "POST",
-              body: JSON.stringify({ enabled }),
-            });
-            await loadLmcNodes();
-            toast(`✅ Thinking 已${enabled ? "開啟" : "關閉"}。`);
-          } catch (error) {
-            toast("⚠️ " + error.message);
-            await loadLmcNodes().catch(() => {});
           } finally {
             busy(false);
           }
