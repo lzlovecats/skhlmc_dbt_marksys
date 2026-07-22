@@ -17,6 +17,8 @@ from core.lmc_ai_runtime import (
     NodeUnavailableError,
     QueueFullError,
     RUNTIME,
+    WorkstationBusyError,
+    WorkstationJob,
 )
 from core.lmc_ai_store import get_active_node_id, get_model_set, require_lmc_ai_schema
 from system_limits import LMC_AI_QUEUE_MAX
@@ -193,6 +195,12 @@ async def _availability(db) -> tuple[dict, str]:
         state = "draining"
         message = LOCAL_AI_DRAINING_MESSAGE
         service_available = False
+    elif (snapshot.get("manager") or {}).get("mode") in {
+        "voice_coach", "tts_training", "maintenance", "faulted"
+    } or (snapshot.get("manager") or {}).get("voice_session_pending"):
+        state = "busy"
+        message = "自家 AI 電腦正處理語音或維護工作，暫時未能接收文字工作。"
+        service_available = False
     elif (
         snapshot.get("busy")
         and int(snapshot.get("queue_length") or 0) >= LMC_AI_QUEUE_MAX
@@ -287,4 +295,111 @@ async def generate_local_text(
         model_set=model_set,
         operation_stage=operation_stage,
         on_provider_attempt=on_provider_attempt,
+    ))
+
+
+async def _selected_snapshot(db) -> tuple[str, dict | None]:
+    try:
+        node_id, _model_set = await asyncio.to_thread(_selected_service, db)
+    except RuntimeError as exc:
+        raise LocalAIError(str(exc)) from exc
+    if not node_id:
+        return "", None
+    try:
+        snapshot = await _await_owner_loop(RUNTIME.snapshot(node_id))
+    except LocalAIError:
+        snapshot = None
+    return node_id, snapshot
+
+
+async def workstation_capabilities(db) -> dict:
+    """Return public-safe capabilities for only the selected healthy node."""
+
+    node_id, snapshot = await _selected_snapshot(db)
+    advertised = (snapshot or {}).get("capabilities") or {}
+    ready = bool(
+        node_id
+        and snapshot
+        and snapshot.get("protocol", 0) >= 2
+        and snapshot.get("ready")
+        and not snapshot.get("draining")
+        and advertised.get("manager")
+        and advertised.get("direct_r2")
+    )
+    manager = (snapshot or {}).get("manager") or {}
+    return {
+        "workstation": ready,
+        "asr": bool(ready and advertised.get("asr")),
+        "local_tts": bool(ready and advertised.get("local_tts")),
+        "rag": bool(ready and advertised.get("rag")),
+        "controlled_web_search": bool(ready and advertised.get("controlled_web_search")),
+        "tts_training": bool(ready and advertised.get("tts_training")),
+        "manager_mode": str(manager.get("mode") or "unavailable"),
+        "voice_session_active": bool(manager.get("voice_session_active")),
+        "voice_session_pending": bool(manager.get("voice_session_pending")),
+    }
+
+
+async def _run_workstation_on_runtime_loop(
+    *,
+    node_id: str,
+    operation_id: str,
+    job_kind: str,
+    session_id: str,
+    turn_id: str,
+    stage: str,
+    payload: dict,
+    upload_callback=None,
+) -> dict:
+    try:
+        job = await RUNTIME.submit_workstation(
+            node_id=node_id,
+            operation_id=operation_id,
+            job_kind=job_kind,
+            session_id=session_id,
+            turn_id=turn_id,
+            stage=stage,
+            payload=payload,
+            upload_callback=upload_callback,
+        )
+    except (NodeUnavailableError, WorkstationBusyError, ValueError) as exc:
+        raise LocalAIError(str(exc)) from exc
+    terminal = False
+    try:
+        while True:
+            event, event_payload = await job.events.get()
+            if event == "complete":
+                terminal = True
+                return dict(event_payload.get("result") or {})
+            if event == "error":
+                terminal = True
+                raise LocalAIError(str(event_payload.get("message") or "AI Workstation 未能完成今次工作。"))
+    finally:
+        if not terminal:
+            await RUNTIME.cancel_workstation(node_id, job)
+
+
+async def run_workstation_job(
+    db,
+    *,
+    operation_id: str,
+    job_kind: str,
+    session_id: str,
+    turn_id: str = "",
+    stage: str = "",
+    payload: dict | None = None,
+    upload_callback=None,
+) -> dict:
+    node_id, snapshot = await _selected_snapshot(db)
+    if not node_id or not snapshot or snapshot.get("protocol", 0) < 2:
+        raise LocalAIError("目前選用的自家 AI 電腦未支援 Workstation 工作。")
+    return await _await_owner_loop(_run_workstation_on_runtime_loop(
+        node_id=node_id,
+        operation_id=operation_id,
+        job_kind=job_kind,
+        session_id=session_id,
+        turn_id=turn_id,
+        stage=stage,
+        payload=dict(payload or {}),
+        upload_callback=upload_callback,
     ))

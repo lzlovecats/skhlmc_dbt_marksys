@@ -32,12 +32,15 @@ python3 -m venv local_ai/.venv
 local_ai/.venv/bin/pip install -r local_ai/requirements-node.txt
 ```
 
-Runtime 唔會自行下載模型。自家 AI 固定使用 Gemma 4；準備以下完整 QAT 模型組合：
+Runtime 唔會自行下載模型。`fast`、`daily`、`deep` 三個模式嘅 model tag
+只喺 `ai_model_config.py` 設定。先由同一設定列出目前需要嘅完整模型組合：
 
 ```bash
-ollama pull gemma4:e2b-it-qat
-ollama pull gemma4:e4b-it-qat
+local_ai/.venv/bin/python -c 'from ai_model_config import lmc_ai_required_models; print(*lmc_ai_required_models(), sep="\n")'
 ```
+
+對輸出嘅每一個 model tag 執行 `ollama pull <model-tag>`。如果 `daily` 同
+`deep` 使用相同 tag，列表會自動去重，只需下載一次。
 
 舊模型檔唔會由程式自動刪除；佢哋亦唔會被 preflight、節點連線或工作路由使用。
 

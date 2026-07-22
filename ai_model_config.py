@@ -8,23 +8,30 @@ from ai_name import LMC_AI_MODEL_LABEL
 LMC_AI_MODEL_PROFILE_VERSION = 5
 LMC_AI_DEFAULT_MODEL_SET = "gemma"
 LMC_AI_DEFAULT_MODE = "daily"
+
+# Keep each user-facing tier independently switchable even when two tiers use
+# the same model today. These are the only source of local Ollama model tags.
+LMC_AI_FAST_MODEL_TAG = "gemma4:e2b-it-qat"
+LMC_AI_DAILY_MODEL_TAG = "gemma4:e4b-it-qat"
+LMC_AI_DEEP_MODEL_TAG = "gemma4:e4b-it-qat"
+
 LMC_AI_MODEL_SETS = {
     "gemma": {
         "label": "Gemma 4",
         "modes": {
             "fast": {
                 "label": "快速回覆",
-                "model": "gemma4:e2b-it-qat",
+                "model": LMC_AI_FAST_MODEL_TAG,
                 "thinking": False,
             },
             "daily": {
                 "label": "日常預設",
-                "model": "gemma4:e4b-it-qat",
+                "model": LMC_AI_DAILY_MODEL_TAG,
                 "thinking": False,
             },
             "deep": {
                 "label": "深入思考",
-                "model": "gemma4:e4b-it-qat",
+                "model": LMC_AI_DEEP_MODEL_TAG,
                 "thinking": True,
             },
         },

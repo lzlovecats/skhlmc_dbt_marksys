@@ -652,7 +652,7 @@ async def lmc_ai_node_connect(websocket: WebSocket):
             return
         await websocket.send_text(
             json.dumps(
-                {"type": "hello.accepted", "protocol": 1, "node_id": node_id},
+                {"type": "hello.accepted", "protocol": hello["protocol"], "node_id": node_id},
                 separators=(",", ":"),
             )
         )

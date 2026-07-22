@@ -22,9 +22,12 @@ from api import ai_coach_api
 from api.lmc_ai_api import ChatRequest, _resolve_thinking_enabled
 from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
+    LMC_AI_DAILY_MODEL_TAG,
+    LMC_AI_DEEP_MODEL_TAG,
     LMC_AI_DEFAULT_MODE,
     LMC_AI_DEFAULT_MODEL_SET,
     LMC_AI_FALLBACK_MODEL,
+    LMC_AI_FAST_MODEL_TAG,
     LMC_AI_FEATURE_MODES,
     LMC_AI_MODE_OPTIONS,
     LMC_AI_MODEL_SETS,
@@ -124,24 +127,32 @@ def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
 
 
 def test_limits_and_models_are_centralized_at_the_decided_values():
-    assert LMC_AI_PRIMARY_MODEL == "gemma4:e2b-it-qat"
-    assert LMC_AI_FALLBACK_MODEL == "gemma4:e4b-it-qat"
+    assert LMC_AI_PRIMARY_MODEL == LMC_AI_FAST_MODEL_TAG
+    assert LMC_AI_FALLBACK_MODEL == LMC_AI_DEEP_MODEL_TAG
     assert LMC_AI_DEFAULT_MODE == "daily"
     assert LMC_AI_DEFAULT_MODEL_SET == "gemma"
     assert set(LMC_AI_MODEL_SETS) == {"gemma"}
     assert LMC_AI_MODE_OPTIONS == {
-        "fast": {"label": "快速回覆", "model": "gemma4:e2b-it-qat", "thinking": False},
-        "daily": {"label": "日常預設", "model": "gemma4:e4b-it-qat", "thinking": False},
-        "deep": {"label": "深入思考", "model": "gemma4:e4b-it-qat", "thinking": True},
+        "fast": {"label": "快速回覆", "model": LMC_AI_FAST_MODEL_TAG, "thinking": False},
+        "daily": {"label": "日常預設", "model": LMC_AI_DAILY_MODEL_TAG, "thinking": False},
+        "deep": {"label": "深入思考", "model": LMC_AI_DEEP_MODEL_TAG, "thinking": True},
     }
     assert LMC_AI_MODEL_SETS["gemma"]["modes"] == {
-        "fast": {"label": "快速回覆", "model": "gemma4:e2b-it-qat", "thinking": False},
-        "daily": {"label": "日常預設", "model": "gemma4:e4b-it-qat", "thinking": False},
-        "deep": {"label": "深入思考", "model": "gemma4:e4b-it-qat", "thinking": True},
+        "fast": {"label": "快速回覆", "model": LMC_AI_FAST_MODEL_TAG, "thinking": False},
+        "daily": {"label": "日常預設", "model": LMC_AI_DAILY_MODEL_TAG, "thinking": False},
+        "deep": {"label": "深入思考", "model": LMC_AI_DEEP_MODEL_TAG, "thinking": True},
     }
     assert LMC_AI_FEATURE_MODES == {
         "lmc_ai": "daily", "vote": "fast", "ai_coach": "daily",
     }
+    runbook = (ROOT / "docs/LMC_AI_NODE_RUNBOOK.md").read_text("utf-8")
+    assert "lmc_ai_required_models" in runbook
+    for tag in {
+        LMC_AI_FAST_MODEL_TAG,
+        LMC_AI_DAILY_MODEL_TAG,
+        LMC_AI_DEEP_MODEL_TAG,
+    }:
+        assert tag not in runbook
     assert ai_coach_api.AI_COACH_LOCAL_MODE == LMC_AI_FEATURE_MODES["ai_coach"]
     assert LMC_AI_CONTEXT_LENGTH == 8192
     assert system_limits.LMC_AI_NODE_MAX == 8
@@ -665,7 +676,7 @@ def test_node_hello_requires_current_model_profile_and_one_complete_model_set():
     clean = LocalAIRuntime.validate_hello(_hello(
         model=gemma_models[0], models=gemma_models,
     ))
-    assert clean["model"] == "gemma4:e2b-it-qat"
+    assert clean["model"] == LMC_AI_FAST_MODEL_TAG
 
     assert '"model_profile_version": MODEL_PROFILE_VERSION' in NODE_SOURCE
 
@@ -1252,9 +1263,9 @@ def test_node_preflight_accepts_the_complete_gemma_set_and_reports_failure(tmp_p
     assert selected["available_model_sets"] == ["gemma"]
     assert selected["model_profile_version"] == lmc_ai_node.MODEL_PROFILE_VERSION
     assert probes == [
-        (LMC_AI_PRIMARY_MODEL, False),
-        ("gemma4:e4b-it-qat", False),
-        ("gemma4:e4b-it-qat", True),
+        (LMC_AI_FAST_MODEL_TAG, False),
+        (LMC_AI_DAILY_MODEL_TAG, False),
+        (LMC_AI_DEEP_MODEL_TAG, True),
     ]
 
     monkeypatch.setattr(

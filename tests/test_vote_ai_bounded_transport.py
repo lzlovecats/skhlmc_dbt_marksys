@@ -247,7 +247,8 @@ def test_vote_page_polls_and_disables_local_ai_actions_when_unavailable():
     assert "localOption.disabled = !requiredMode?.available" in page
     assert 'item.id === LOCAL_AI_STATUS.required_mode' in page
     assert 'id="voteAiModeLabel"' in page
-    assert "requiredMode.label" in page
+    assert '`投票頁使用「${requiredMode.label}」模式。`' in page
+    assert "Vote Page 使用" not in page
     assert "selectedVoteAiAvailable" in page
     assert "requireSelectedVoteAi" in page
     assert 'localDetails.hidden = voteAiChoice() !== "local"' in page
