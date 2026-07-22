@@ -387,6 +387,7 @@
           ><button data-pane="research">🌐 搵料易</button
           ><button data-pane="live">🎙️ 打Free De</button
           ><button data-pane="mock">🏟️ 打Mock</button
+          ><button data-pane="localPractice">🤖 與自家AI練習</button
           ><button data-pane="room">🎧 連線練習</button>
         </nav>
         <section id="prep" class="pane active">
@@ -798,7 +799,7 @@
         </section>
         <section id="live" class="pane">
           <form id="liveForm" class="card">
-            <h2>Gemini Live自由辯論練習</h2>
+            <h2>自由辯論練習</h2>
             <div id="liveWarnings"></div>
             <div data-topic-source="topics" data-topic-target="liveTopic"></div>
             <label>辯題<input id="liveTopic" required /></label>
@@ -836,7 +837,7 @@
         </section>
         <section id="mock" class="pane">
           <form id="mockForm" class="card">
-            <h2>Gemini Live Mock練習</h2>
+            <h2>Mock練習</h2>
             <div id="mockWarnings"></div>
             <div data-topic-source="topics" data-topic-target="mockTopic"></div>
             <label>辯題<input id="mockTopic" required /></label>
@@ -871,6 +872,47 @@
             </details>
             <p id="mockEstimate" class="caption estimate"></p>
             <button class="primary">開始打Mock</button>
+          </form>
+        </section>
+        <section id="localPractice" class="pane">
+          <form id="localPracticeForm" class="card">
+            <h2>與自家AI練習</h2>
+            <div id="localPracticeWarnings"></div>
+            <div data-topic-source="topics" data-topic-target="localPracticeTopic"></div>
+            <label>辯題<input id="localPracticeTopic" maxlength="500" required /></label>
+            <div class="field-grid">
+              <label
+                >你的立場<select id="localPracticeSide">
+                  <option>正方</option>
+                  <option>反方</option>
+                </select></label
+              ><label
+                >賽制<select id="localPracticeFormat">
+                  <option>校園隨想</option>
+                  <option>聯中</option>
+                </select></label
+              >
+            </div>
+            <label id="localPracticeMinutesWrap" class="hidden"
+              >每邊發言時間（分鐘）<input
+                id="localPracticeMinutes"
+                type="number"
+                min=".5"
+                max="10"
+                step=".5"
+                value="5"
+            /></label>
+            <p id="localPracticeFixed" class="caption">
+              校園隨想每方時間固定為 2:30；正方先開始，之後正反方一問一答。
+            </p>
+            <div class="notice">ℹ️ 自家AI將會使用「快速回覆」模式。</div>
+            <div class="notice warn">
+              ⚠️ Workstation RAG／最新網頁搜尋尚未接駁時，練習只會使用自家模型已有知識，最新資料未能核實。
+            </div>
+            <p class="caption">
+              自家語音服務未準備好時仍可輸入文字；AI 讀音會依次嘗試自家 TTS、Azure TTS，最後保留文字。
+            </p>
+            <button class="primary">開始與自家AI練習</button>
           </form>
         </section>
         <section id="room" class="pane">

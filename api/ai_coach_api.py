@@ -752,6 +752,7 @@ def data(request: Request):
         "selection_label": "",
         "supports_audio": False,
         "supports_web_search": False,
+        "supports_live": False,
         "note": (
             LMC_AI_INTERACTIVE_OPTION["pricing_note"] + " "
             + LMC_AI_INTERACTIVE_OPTION["paid_rate_note"]
@@ -775,11 +776,11 @@ def data(request: Request):
         key_name="OPENROUTER_API_KEY" if item["provider"]=="openrouter" else "GEMINI_API_KEY"
         estimates={f:_estimate(f,item) for f in ("strategy","speech_review","web_research","fact_check")}
         estimates["speech_review_audio"]=_estimate("speech_review",item,has_audio=True)
-        models.append({"label":label,"selection_label":item.get("selection_label",""),"supports_audio":item["supports_audio"],"supports_web_search":item["supports_web_search"],"note":f"{item['pricing_note']} {item.get('paid_rate_note','')}".strip(),"pricing_label":item.get("pricing_label",""),"is_premium":bool(item.get("is_premium")),"api_key_name":key_name,"available":bool(_get_proxy_secret(key_name)),"estimates":estimates})
+        models.append({"label":label,"selection_label":item.get("selection_label",""),"supports_audio":item["supports_audio"],"supports_web_search":item["supports_web_search"],"supports_live":item["provider"]=="gemini","note":f"{item['pricing_note']} {item.get('paid_rate_note','')}".strip(),"pricing_label":item.get("pricing_label",""),"is_premium":bool(item.get("is_premium")),"api_key_name":key_name,"available":bool(_get_proxy_secret(key_name)),"estimates":estimates})
     try:
         custom = _config(CUSTOM_LLM_OPTION["label"], db)
         models.append({"label":CUSTOM_LLM_OPTION["label"],"selection_label":custom["selection_label"],"supports_audio":custom["supports_audio"],
-            "supports_web_search":custom["supports_web_search"],"note":custom["pricing_note"],"pricing_label":custom["pricing_label"],
+            "supports_web_search":custom["supports_web_search"],"supports_live":False,"note":custom["pricing_note"],"pricing_label":custom["pricing_label"],
             "is_premium":custom["is_premium"],"api_key_name":CUSTOM_LLM_OPTION["api_key_secret"],"available":True,
             "estimates":{feature:{"usd":0,"hkd":0} for feature in ("strategy","speech_review","web_research","fact_check","speech_review_audio")}})
     except HTTPException:
@@ -801,6 +802,7 @@ def data(request: Request):
     )
     payload = {
         "models": models, "default_model": LMC_AI_MODEL_LABEL,
+        "offline_default_model": DEFAULT_AI_MODEL,
         "external_default_model": runtime_default_model,
         "local_modes": [
             {"id": mode, **config}
@@ -1116,18 +1118,14 @@ async def prepare_live(body:LivePrepareRequest,request:Request):
     budget_error=proxy._bandwidth_essential_gate_error()
     if budget_error: raise HTTPException(429,budget_error)
     db = proxy.get_vote_db()
-    enabled_providers, runtime_default_model = _runtime_model_settings(db)
+    enabled_providers, _runtime_default_model = _runtime_model_settings(db)
     model_label = _requested_model_label(body, LMC_AI_MODEL_LABEL)
     config = _config(model_label, db)
     _require_enabled_model(model_label, config, enabled_providers)
+    if config.get("provider") != "gemini":
+        raise HTTPException(400, "目前模型不支援Live，請使用Gemini模型。")
     if not config.get("supports_web_search"):
-        if config.get("local_node"):
-            raise HTTPException(
-                400,
-                "自家 AI 暫未支援 Live 賽前上網搵料；請手動改選支援搜尋的 Gemini 模型。",
-            )
-        config=AI_MODEL_OPTIONS[runtime_default_model]
-        model_label=runtime_default_model
+        raise HTTPException(400, "所選 Gemini 模型暫不支援 Live 賽前上網搵料。")
     need=f"為{body.mode}練習準備正反雙方最新事實、數據、例子、攻防位及可靠來源。賽制：{body.debate_format}；使用者立場：{body.side}。"
     grounded_body=CoachRequest(feature="web_research",model_label=model_label,topic=body.topic,research_need=need)
     system,user=_message(grounded_body)

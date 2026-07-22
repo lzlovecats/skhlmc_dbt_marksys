@@ -1,5 +1,9 @@
 DEBATE_FORMATS = ["校園隨想", "聯中", "星島", "基本法盃"]
 FREE_DEBATE_FORMATS = ["校園隨想", "聯中"]
+# Shared speech-length estimate used by Solo Live prompts and server-side local
+# practice time accounting.  It is an estimate, never a replacement for probed
+# recording duration once Workstation ASR is available.
+DEBATE_SPEECH_CHARS_PER_MINUTE = 300
 
 
 def _bell(t, rings, label):

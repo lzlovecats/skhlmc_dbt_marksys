@@ -5,30 +5,10 @@ from ai_name import LMC_AI_MODEL_LABEL
 
 # Local committee AI node defaults. Runtime code must never pull a model itself;
 # preflight advertises only models which passed the GPU/offload gate.
-LMC_AI_MODEL_PROFILE_VERSION = 4
-LMC_AI_DEFAULT_MODEL_SET = "qwen"
+LMC_AI_MODEL_PROFILE_VERSION = 5
+LMC_AI_DEFAULT_MODEL_SET = "gemma"
 LMC_AI_DEFAULT_MODE = "daily"
 LMC_AI_MODEL_SETS = {
-    "qwen": {
-        "label": "Qwen 3.5",
-        "modes": {
-            "fast": {
-                "label": "快速回覆",
-                "model": "qwen3.5:4b",
-                "thinking": False,
-            },
-            "daily": {
-                "label": "日常預設",
-                "model": "qwen3.5:4b",
-                "thinking": True,
-            },
-            "deep": {
-                "label": "深入思考",
-                "model": "qwen3.5:9b",
-                "thinking": True,
-            },
-        },
-    },
     "gemma": {
         "label": "Gemma 4",
         "modes": {
@@ -109,13 +89,13 @@ def lmc_ai_available_model_sets(models: object) -> tuple[str, ...]:
     )
 
 
-# Compatibility names retained for installed code and imports which refer to
-# the default Qwen profile. Runtime routing resolves the selected model set.
+# Compatibility names retained for installed node code and existing imports.
+# Runtime routing still resolves the selected Gemma mode explicitly.
 LMC_AI_MODE_OPTIONS = resolve_lmc_ai_mode_options(LMC_AI_DEFAULT_MODEL_SET)
 LMC_AI_DEFAULT_MODEL = LMC_AI_MODE_OPTIONS["fast"]["model"]
 LMC_AI_DEEP_MODEL = LMC_AI_MODE_OPTIONS["deep"]["model"]
-# Compatibility names retained for installed node code from the previous
-# profile. New routing never treats 9B as an automatic fallback.
+# The legacy names do not enable automatic model fallback. They identify the
+# smallest and largest models in the one supported Gemma profile.
 LMC_AI_PRIMARY_MODEL = LMC_AI_DEFAULT_MODEL
 LMC_AI_FALLBACK_MODEL = LMC_AI_DEEP_MODEL
 LMC_AI_CONTEXT_LENGTH = 8192

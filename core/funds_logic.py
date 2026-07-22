@@ -63,6 +63,7 @@ AI_FEATURE_LABELS = {
     "kiosk_match_review_tts": "AI評判易·粵語讀出",
     "official_ai_judge": "正式 AI 第三評判",
     "lmc_ai_chat": "自家 AI 對話",
+    "local_ai_practice": "與自家AI練習",
     "lmc_ai_eval": "自家 AI 固定盲評",
 }
 AI_USAGE_FEATURES = (
@@ -72,7 +73,7 @@ AI_USAGE_FEATURES = (
     "tts_script_analysis", "llm_review",
     "data_factory_generation",
     "kiosk_match_review", "tts", "kiosk_match_review_tts", "official_ai_judge",
-    "lmc_ai_chat", "lmc_ai_eval",
+    "lmc_ai_chat", "local_ai_practice", "lmc_ai_eval",
 )
 TTS_USAGE_FEATURES = frozenset(("tts", "kiosk_match_review_tts"))
 _AI_PRUNE_LOCK = threading.Lock()

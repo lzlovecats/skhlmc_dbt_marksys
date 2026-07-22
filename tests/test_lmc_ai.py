@@ -124,14 +124,15 @@ def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
 
 
 def test_limits_and_models_are_centralized_at_the_decided_values():
-    assert LMC_AI_PRIMARY_MODEL == "qwen3.5:4b"
-    assert LMC_AI_FALLBACK_MODEL == "qwen3.5:9b"
+    assert LMC_AI_PRIMARY_MODEL == "gemma4:e2b-it-qat"
+    assert LMC_AI_FALLBACK_MODEL == "gemma4:e4b-it-qat"
     assert LMC_AI_DEFAULT_MODE == "daily"
-    assert LMC_AI_DEFAULT_MODEL_SET == "qwen"
+    assert LMC_AI_DEFAULT_MODEL_SET == "gemma"
+    assert set(LMC_AI_MODEL_SETS) == {"gemma"}
     assert LMC_AI_MODE_OPTIONS == {
-        "fast": {"label": "快速回覆", "model": "qwen3.5:4b", "thinking": False},
-        "daily": {"label": "日常預設", "model": "qwen3.5:4b", "thinking": True},
-        "deep": {"label": "深入思考", "model": "qwen3.5:9b", "thinking": True},
+        "fast": {"label": "快速回覆", "model": "gemma4:e2b-it-qat", "thinking": False},
+        "daily": {"label": "日常預設", "model": "gemma4:e4b-it-qat", "thinking": False},
+        "deep": {"label": "深入思考", "model": "gemma4:e4b-it-qat", "thinking": True},
     }
     assert LMC_AI_MODEL_SETS["gemma"]["modes"] == {
         "fast": {"label": "快速回覆", "model": "gemma4:e2b-it-qat", "thinking": False},
@@ -343,7 +344,7 @@ def test_runtime_records_usage_when_thinking_finishes_without_a_final_answer():
     asyncio.run(scenario())
 
 
-def test_runtime_routes_deep_mode_to_9b_and_refuses_incomplete_model_sets():
+def test_runtime_routes_deep_mode_to_e4b_and_refuses_incomplete_model_sets():
     async def scenario():
         runtime = LocalAIRuntime()
         socket = _FakeWebSocket()
@@ -385,7 +386,7 @@ def test_shared_availability_requires_selected_ready_node_and_tracks_modes(monke
     monkeypatch.setattr(
         lmc_ai_client, "get_active_node_id", lambda _db: selected["node_id"],
     )
-    monkeypatch.setattr(lmc_ai_client, "get_model_set", lambda _db: "qwen")
+    monkeypatch.setattr(lmc_ai_client, "get_model_set", lambda _db: "gemma")
 
     async def scenario():
         missing = await lmc_ai_client.local_ai_availability(object())
@@ -485,7 +486,7 @@ def test_shared_local_client_bridges_sync_worker_loop_to_runtime_owner(monkeypat
     monkeypatch.setattr(lmc_ai_client, "RUNTIME", runtime)
     monkeypatch.setattr(lmc_ai_client, "require_lmc_ai_schema", lambda _db: None)
     monkeypatch.setattr(lmc_ai_client, "get_active_node_id", lambda _db: "node-1")
-    monkeypatch.setattr(lmc_ai_client, "get_model_set", lambda _db: "qwen")
+    monkeypatch.setattr(lmc_ai_client, "get_model_set", lambda _db: "gemma")
     attempts = []
     try:
         text, usage = asyncio.run(lmc_ai_client.generate_local_text(
@@ -505,8 +506,8 @@ def test_shared_local_client_bridges_sync_worker_loop_to_runtime_owner(monkeypat
         start = next(
             item for item in holder["socket"].sent if item.get("type") == "chat.start"
         )
-        assert start["model"] == LMC_AI_PRIMARY_MODEL
-        assert start["think"] is True
+        assert start["model"] == LMC_AI_FALLBACK_MODEL
+        assert start["think"] is False
     finally:
         async def cleanup():
             await runtime.unregister(holder["node"], "test cleanup")
@@ -646,7 +647,7 @@ def test_node_hello_refuses_future_or_unsafe_capabilities():
 
 
 def test_node_hello_requires_current_model_profile_and_one_complete_model_set():
-    assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 4
+    assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 5
     assert LocalAIRuntime.validate_hello(_hello())["ready"] is True
 
     missing_profile = _hello()
@@ -779,7 +780,7 @@ def test_chat_mode_is_allowlisted_and_legacy_requests_remain_distinguishable():
     assert _resolve_thinking_enabled(None, False) is False
     assert _resolve_thinking_enabled("thinking", False) is True
     assert _resolve_thinking_enabled("fast", True) is False
-    assert _resolve_thinking_enabled("daily", False) is True
+    assert _resolve_thinking_enabled("daily", False) is False
     with pytest.raises(ValidationError):
         ChatRequest(**request, mode="unlimited")
 
@@ -804,13 +805,13 @@ def test_legacy_thinking_setting_stays_typed_for_cached_pre_mode_clients(monkeyp
     assert writes == [("lmc_ai_thinking_enabled", False)]
 
 
-def test_model_set_setting_is_typed_validated_and_defaults_to_qwen(monkeypatch):
+def test_model_set_setting_is_typed_validated_and_defaults_to_gemma(monkeypatch):
     writes = []
     monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
     monkeypatch.setattr(
         lmc_ai_store,
         "get_config",
-        lambda _db, _key, default: default,
+        lambda _db, _key, _default: "retired-model-profile",
     )
     monkeypatch.setattr(
         lmc_ai_store,
@@ -819,14 +820,14 @@ def test_model_set_setting_is_typed_validated_and_defaults_to_qwen(monkeypatch):
     )
 
     assert config_store.CONFIG_SPECS["lmc_ai_model_set"].value_type == "string"
-    assert lmc_ai_store.get_model_set(object()) == "qwen"
+    assert lmc_ai_store.get_model_set(object()) == "gemma"
     lmc_ai_store.set_model_set(object(), "gemma")
     assert writes == [("lmc_ai_model_set", "gemma")]
     with pytest.raises(ValueError, match="模型組合"):
         lmc_ai_store.set_model_set(object(), "unknown")
 
 
-def test_developer_can_select_only_a_complete_preflighted_model_set(monkeypatch):
+def test_developer_can_select_only_the_complete_gemma_model_set(monkeypatch):
     monkeypatch.setattr(lmc_api, "_developer_required", lambda _request: None)
     monkeypatch.setattr(lmc_api, "_db", lambda: object())
     monkeypatch.setattr(lmc_api, "require_lmc_ai_schema", lambda _db: None)
@@ -839,7 +840,7 @@ def test_developer_can_select_only_a_complete_preflighted_model_set(monkeypatch)
         lmc_api, "set_model_set", lambda _db, value: writes.append(value),
     )
 
-    async def qwen_snapshot(_node_id):
+    async def gemma_snapshot(_node_id):
         return {
             "online": True,
             "ready": True,
@@ -847,19 +848,28 @@ def test_developer_can_select_only_a_complete_preflighted_model_set(monkeypatch)
             "models": [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL],
         }
 
-    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", qwen_snapshot)
+    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", gemma_snapshot)
     saved = asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
-        lmc_api.ModelSetSelection(model_set="qwen"), object(),
+        lmc_api.ModelSetSelection(model_set="gemma"), object(),
     ))
-    assert saved == {"ok": True, "model_set": "qwen"}
-    assert writes == ["qwen"]
+    assert saved == {"ok": True, "model_set": "gemma"}
+    assert writes == ["gemma"]
 
+    async def incomplete_snapshot(_node_id):
+        return {
+            "online": True,
+            "ready": True,
+            "draining": False,
+            "models": [LMC_AI_PRIMARY_MODEL],
+        }
+
+    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", incomplete_snapshot)
     with pytest.raises(lmc_api.HTTPException) as exc_info:
         asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
             lmc_api.ModelSetSelection(model_set="gemma"), object(),
         ))
     assert exc_info.value.status_code == 409
-    assert writes == ["qwen"]
+    assert writes == ["gemma"]
 
     active["node_id"] = ""
     gemma_models = list(ai_model_config.lmc_ai_required_models("gemma"))
@@ -877,7 +887,7 @@ def test_developer_can_select_only_a_complete_preflighted_model_set(monkeypatch)
         lmc_api.ModelSetSelection(model_set="gemma"), object(),
     ))
     assert saved == {"ok": True, "model_set": "gemma"}
-    assert writes == ["qwen", "gemma"]
+    assert writes == ["gemma", "gemma"]
 
     with pytest.raises(lmc_api.HTTPException) as exc_info:
         asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
@@ -891,7 +901,7 @@ def test_cached_pre_mode_api_contract_remains_functional(monkeypatch):
     monkeypatch.setattr(lmc_api, "_db", lambda: object())
     monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [])
     monkeypatch.setattr(lmc_api, "get_active_node_id", lambda _db: "")
-    monkeypatch.setattr(lmc_api, "get_model_set", lambda _db: "qwen")
+    monkeypatch.setattr(lmc_api, "get_model_set", lambda _db: "gemma")
     monkeypatch.setattr(lmc_api, "get_thinking_enabled", lambda _db: True)
     writes = []
     monkeypatch.setattr(
@@ -961,7 +971,7 @@ def test_cached_pre_mode_bootstrap_uses_the_legacy_global_fingerprint(monkeypatc
             "deep": "d" * 64,
             "complex": "t" * 64,
             "thinking": "d" * 64,
-        }, "qwen"
+        }, "gemma"
 
     monkeypatch.setattr(lmc_api, "_active_service", active_service)
 
@@ -971,7 +981,7 @@ def test_cached_pre_mode_bootstrap_uses_the_legacy_global_fingerprint(monkeypatc
     monkeypatch.setattr(lmc_api, "_public_nodes", public_nodes)
     result = asyncio.run(lmc_api.lmc_ai_bootstrap(object()))
 
-    assert result["backend_fingerprint"] == "t" * 64
+    assert result["backend_fingerprint"] == "d" * 64
     assert result["backend_fingerprints"] == {
         "fast": "f" * 64,
         "daily": "t" * 64,
@@ -1024,6 +1034,22 @@ def test_browser_offers_three_conversation_scoped_model_modes_and_node_status():
     assert "conversation.mode" in SCRIPT
 
 
+def test_lmc_browser_status_never_appends_the_model_set_label():
+    render_status = SCRIPT.split("function renderStatus()", 1)[1].split(
+        "function renderNodes()", 1,
+    )[0]
+
+    assert "service.model_set_label" not in render_status
+
+
+def test_lmc_browser_requires_the_server_owned_default_mode():
+    assert 'const DEFAULT_MODE = "daily"' not in SCRIPT
+    assert "bootstrap?.default_mode ||" not in SCRIPT
+    assert "function requireDefaultMode" in SCRIPT
+    assert "requireDefaultMode(data)" in SCRIPT
+    assert 'throw new Error("自家 AI 回答模式設定無效。")' in SCRIPT
+
+
 def test_browser_clear_invalidates_and_aborts_an_inflight_conversation():
     assert "let conversationGeneration = 0" in SCRIPT
     assert "const requestGeneration = conversationGeneration" in SCRIPT
@@ -1045,7 +1071,7 @@ def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
     assert "自家 AI 電腦資料暫時未能讀取" in load_block
 
 
-def test_new_developer_ui_hides_global_thinking_but_keeps_cached_page_api_compatibility():
+def test_new_developer_ui_hides_model_set_and_global_thinking_controls():
     assert 'id="refreshLmcNodes"' in DEV_SETTINGS
     assert 'id="clearLmcSelection"' in DEV_SETTINGS
     assert 'id="lmcThinkingEnabled"' not in DEV_SETTINGS
@@ -1055,8 +1081,8 @@ def test_new_developer_ui_hides_global_thinking_but_keeps_cached_page_api_compat
     assert 'JSON.stringify({ node_id: "" })' in DEV_SETTINGS
     assert '"/api/developer/lmc-ai/active-node"' in DEV_SETTINGS
     assert '"/api/developer/lmc-ai/thinking"' not in DEV_SETTINGS
-    assert 'id="lmcModelSet"' in DEV_SETTINGS
-    assert '"/api/developer/lmc-ai/model-set"' in DEV_SETTINGS
+    assert 'id="lmcModelSet"' not in DEV_SETTINGS
+    assert '"/api/developer/lmc-ai/model-set"' not in DEV_SETTINGS
 
     assert "class ThinkingSetting" in API_SOURCE
     assert "node_id: str = Field(max_length=64)" in API_SOURCE
@@ -1064,6 +1090,19 @@ def test_new_developer_ui_hides_global_thinking_but_keeps_cached_page_api_compat
     assert "get_thinking_enabled" in API_SOURCE
     assert '"thinking_enabled": thinking_enabled' in API_SOURCE
     assert '@router.post("/api/developer/lmc-ai/thinking")' in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/model-set")' in API_SOURCE
+
+
+def test_chat_page_serves_and_renders_the_versioned_assistant_avatar():
+    avatar = ROOT / "frontend/lmc_ai/shiba-avatar.jpg"
+    assert avatar.is_file()
+    assert avatar.stat().st_size < 100_000
+    assert 'data-avatar-src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__"' in PAGE
+    assert 'className = "assistant-avatar"' in SCRIPT
+    assert 'className = "message-row assistant"' in SCRIPT
+    assert '@app.get("/lmc-ai/shiba-avatar.jpg")' in (
+        ROOT / "deploy/proxy.py"
+    ).read_text("utf-8")
 
 
 def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(tmp_path):
@@ -1174,7 +1213,7 @@ def test_node_server_url_normalization_is_idempotent_and_repairs_duplicate_path(
     assert lmc_ai_node._normalise_server(expected + "/api/lmc-ai/nodes/connect") == expected
 
 
-def test_node_preflight_accepts_one_complete_set_and_reports_other_set_failure(tmp_path, monkeypatch):
+def test_node_preflight_accepts_the_complete_gemma_set_and_reports_failure(tmp_path, monkeypatch):
     path = tmp_path / "node.json"
     lmc_ai_node._save(
         path,
@@ -1201,24 +1240,19 @@ def test_node_preflight_accepts_one_complete_set_and_reports_other_set_failure(t
 
     probes = []
 
-    def optional_gemma_probe(model, *, think):
+    def gemma_probe(model, *, think):
         probes.append((model, think))
-        if model == "gemma4:e4b-it-qat" and think:
-            raise RuntimeError("out of memory")
 
-    monkeypatch.setattr(lmc_ai_node, "_model_probe", optional_gemma_probe)
+    monkeypatch.setattr(lmc_ai_node, "_model_probe", gemma_probe)
     assert lmc_ai_node.preflight(SimpleNamespace(config=path)) == 0
     selected = lmc_ai_node._load(path)
     assert selected["preflight_ready"] is True
     assert selected["effective_model"] == LMC_AI_PRIMARY_MODEL
     assert selected["available_models"] == [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL]
-    assert selected["available_model_sets"] == ["qwen"]
+    assert selected["available_model_sets"] == ["gemma"]
     assert selected["model_profile_version"] == lmc_ai_node.MODEL_PROFILE_VERSION
     assert probes == [
         (LMC_AI_PRIMARY_MODEL, False),
-        (LMC_AI_PRIMARY_MODEL, True),
-        (LMC_AI_FALLBACK_MODEL, True),
-        ("gemma4:e2b-it-qat", False),
         ("gemma4:e4b-it-qat", False),
         ("gemma4:e4b-it-qat", True),
     ]

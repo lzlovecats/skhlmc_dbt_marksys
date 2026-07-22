@@ -28,6 +28,26 @@ def test_ai_coach_html_versions_shared_ai_parity_without_placeholder(monkeypatch
     assert "__APP_VERSION__" not in html
 
 
+def test_local_ai_practice_versions_assets_and_server_limits(monkeypatch):
+    monkeypatch.setattr(
+        proxy, "interactive_features_suspension", lambda _request: {"active": False}
+    )
+    monkeypatch.setattr(proxy, "require_page_user", lambda *_args: "alice")
+    response = asyncio.run(
+        proxy.local_ai_practice_page(_request("/ai-coach/local-practice"))
+    )
+    html = response.body.decode("utf-8")
+
+    assert response.headers["cache-control"] == "no-store"
+    assert f'href="/shared/app-shell.css?v={proxy.APP_VERSION}"' in html
+    assert (
+        f'src="/ai-coach/local-practice/app.js?v={proxy.APP_VERSION}"' in html
+    )
+    assert f'maxlength="{proxy.LMC_AI_MESSAGE_MAX_CHARS}"' in html
+    assert "__APP_VERSION__" not in html
+    assert "__LOCAL_PRACTICE_MESSAGE_MAX_CHARS__" not in html
+
+
 def test_score_sheet_confirmation_versions_shared_assets_and_is_private():
     response = asyncio.run(proxy.score_sheet_confirmation_page())
     html = response.body.decode("utf-8")
@@ -43,6 +63,20 @@ def test_ai_training_versions_shared_vote_ui_without_placeholder():
     html = response.body.decode("utf-8")
 
     assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
+    assert "__APP_VERSION__" not in html
+
+
+def test_lmc_ai_versions_the_assistant_avatar_without_placeholder(monkeypatch):
+    monkeypatch.setattr(
+        proxy, "interactive_features_suspension", lambda _request: {"active": False}
+    )
+    response = asyncio.run(proxy.lmc_ai_page(_request("/lmc-ai")))
+    html = response.body.decode("utf-8")
+
+    assert (
+        f'data-avatar-src="/lmc-ai/shiba-avatar.jpg?v={proxy.APP_VERSION}"'
+        in html
+    )
     assert "__APP_VERSION__" not in html
 
 

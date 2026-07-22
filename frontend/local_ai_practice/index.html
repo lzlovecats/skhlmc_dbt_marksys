@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0e1117" />
+    <title>與自家AI練習</title>
+    <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
+    <style>
+      :root { color-scheme:dark; --coach-accent:#8b5cf6; }
+      main { width:min(100%,70rem); margin:auto; padding:1rem; }
+      .topbar,.status-row,.actions,.timer-grid { display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; }
+      .topbar { justify-content:space-between; }
+      .timer-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:.8rem 0; }
+      .timer { border:1px solid var(--border); border-radius:12px; padding:.75rem; background:var(--surface); }
+      .timer strong { display:block; font-size:1.35rem; font-variant-numeric:tabular-nums; }
+      .transcript { display:flex; flex-direction:column; gap:.8rem; min-height:15rem; }
+      .turn { width:min(88%,48rem); border:1px solid var(--border); border-radius:14px; padding:.8rem .9rem; background:var(--surface); white-space:pre-wrap; overflow-wrap:anywhere; }
+      .turn.user { align-self:flex-end; background:#213c64; }
+      .turn.ai { align-self:flex-start; }
+      .turn-head { display:flex; justify-content:space-between; gap:.8rem; color:var(--muted); font-size:.82rem; margin-bottom:.35rem; }
+      .turn button { width:auto; min-height:2rem; margin-top:.55rem; }
+      .composer textarea { min-height:7rem; }
+      .notice { display:none; }
+      .notice.show { display:block; }
+      .feedback { white-space:pre-wrap; line-height:1.65; }
+      button.primary { background:var(--coach-accent); border-color:var(--coach-accent); }
+      button:disabled { opacity:.5; cursor:not-allowed; }
+      @media (max-width:640px) {
+        .timer-grid { grid-template-columns:1fr; }
+        .turn { width:96%; }
+        .actions button { flex:1 1 10rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="caption"><a href="/">主頁</a>　·　<a href="/ai-coach">← 返回 AI 辯論易</a></p>
+          <h1>🤖 與自家AI練習</h1>
+          <p class="caption">正方先開始，之後正反方嚴格一問一答；自家AI使用「快速回覆」模式。</p>
+        </div>
+        <button id="stopPractice" class="danger" type="button">停止並取得評語</button>
+      </header>
+
+      <section class="card">
+        <h2 id="topic">正在載入辯題…</h2>
+        <p id="meta" class="caption"></p>
+        <div class="timer-grid">
+          <div class="timer"><span>正方累積時間</span><strong id="proTime">0:00</strong></div>
+          <div class="timer"><span>反方累積時間</span><strong id="conTime">0:00</strong></div>
+        </div>
+        <div class="status-row">
+          <strong id="turnStatus">正在讀取回合…</strong>
+          <span id="stage" class="caption"></span>
+        </div>
+        <div id="notice" class="notice" aria-live="polite"></div>
+        <div id="speechNotice" class="notice" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <h2>攻防紀錄</h2>
+        <div id="transcript" class="transcript" aria-live="polite"></div>
+      </section>
+
+      <section id="feedbackCard" class="card hidden">
+        <h2>完場評語</h2>
+        <div id="feedback" class="feedback"></div>
+        <div class="actions"><button id="downloadFeedback" type="button">下載評語</button></div>
+      </section>
+
+      <section id="composer" class="card composer">
+        <h2>你的回合</h2>
+        <p id="inputHelp" class="caption">先按「開始我的回合」，server 先會開始計時。</p>
+        <textarea id="turnText" maxlength="__LOCAL_PRACTICE_MESSAGE_MAX_CHARS__" placeholder="輸入你今輪嘅發言…" disabled></textarea>
+        <div class="actions">
+          <button id="startTurn" class="primary" type="button">開始我的回合</button>
+          <button id="recordTurn" type="button" disabled>錄音</button>
+          <button id="sendTurn" class="primary" type="button" disabled>完成並送出</button>
+          <span id="charCount" class="caption">0 / __LOCAL_PRACTICE_MESSAGE_MAX_CHARS__</span>
+        </div>
+      </section>
+    </main>
+    <script src="/ai-coach/local-practice/app.js?v=__APP_VERSION__"></script>
+  </body>
+</html>
