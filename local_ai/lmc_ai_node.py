@@ -36,10 +36,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from ai_model_config import (  # noqa: E402
     LMC_AI_CONTEXT_LENGTH as CONTEXT_LENGTH,
-    LMC_AI_DEFAULT_MODEL_SET as DEFAULT_MODEL_SET,
-    LMC_AI_MODEL_SETS as MODEL_SETS,
+    LMC_AI_MODE_OPTIONS as MODE_OPTIONS,
     LMC_AI_MODEL_PROFILE_VERSION as MODEL_PROFILE_VERSION,
-    lmc_ai_available_model_sets,
+    lmc_ai_models_ready,
     lmc_ai_required_models,
 )
 from system_limits import (  # noqa: E402
@@ -169,16 +168,13 @@ def configure(args) -> int:
             "model_digests": (
                 existing.get("model_digests", {}) if profile_current else {}
             ),
-            "available_model_sets": (
-                existing.get("available_model_sets", []) if profile_current else []
-            ),
             "model_profile_version": MODEL_PROFILE_VERSION,
             "preflight_ready": bool(
                 profile_current
                 and existing.get("preflight_ready")
                 and existing.get("effective_model")
                 in (existing.get("available_models") or [])
-                and bool(existing.get("available_model_sets"))
+                and lmc_ai_models_ready(existing.get("available_models"))
             ),
             "preflight_at": existing.get("preflight_at", "") if profile_current else "",
             "draining": bool(existing.get("draining", False)),
@@ -242,12 +238,11 @@ def _preflight_profile_valid(config: dict) -> bool:
     models = tuple(
         str(value) for value in (config.get("available_models") or []) if str(value)
     )
-    complete_sets = lmc_ai_available_model_sets(models)
     return bool(
         config.get("preflight_ready")
         and config.get("model_profile_version") == MODEL_PROFILE_VERSION
         and str(config.get("effective_model") or "") in models
-        and tuple(config.get("available_model_sets") or ()) == complete_sets
+        and lmc_ai_models_ready(models)
         and _model_digest_profile_valid(config)
     )
 
@@ -305,7 +300,6 @@ def preflight(args) -> int:
             preflight_at="",
             effective_model="",
             available_models=[],
-            available_model_sets=[],
             model_digests={},
             model_profile_version=MODEL_PROFILE_VERSION,
         )
@@ -313,59 +307,43 @@ def preflight(args) -> int:
         print("\n".join(checks))
         raise SystemExit(f"Preflight 失敗：{exc}") from exc
 
-    complete_sets = []
-    errors = []
-    for model_set, model_set_config in MODEL_SETS.items():
-        required_models = lmc_ai_required_models(model_set)
-        missing = [model for model in required_models if model not in installed_names]
-        if missing:
-            errors.append(
-                f"{model_set_config['label']}: 未安裝 " + "、".join(missing)
-            )
-            continue
+    required_models = lmc_ai_required_models()
+    missing = [model for model in required_models if model not in installed_names]
+    error = ""
+    if missing:
+        error = "未安裝 " + "、".join(missing)
+    else:
         try:
             probes = tuple(dict.fromkeys(
                 (str(mode["model"]), bool(mode["thinking"]))
-                for mode in model_set_config["modes"].values()
+                for mode in MODE_OPTIONS.values()
             ))
             for model, thinking in probes:
                 thinking_label = "Thinking" if thinking else "non-Thinking"
                 print(f"測試 8K {thinking_label} {model}…")
                 _model_probe(model, think=thinking)
-            complete_sets.append(model_set)
         except Exception as exc:
-            errors.append(f"{model_set_config['label']}: {exc}")
+            error = str(exc)
 
-    if not complete_sets:
+    if error:
         config.update(
             preflight_ready=False,
             preflight_at="",
             effective_model="",
             available_models=[],
-            available_model_sets=[],
             model_digests={},
             model_profile_version=MODEL_PROFILE_VERSION,
         )
         _save(args.config, config)
-        for error in errors:
-            print("模型組合未啟用：" + error)
-        raise SystemExit("Preflight 失敗：沒有完整模型組合通過全部模式測試。")
+        raise SystemExit("Preflight 失敗：Gemma profile 未通過全部模式測試：" + error)
 
-    available_models = list(dict.fromkeys(
-        model
-        for model_set in complete_sets
-        for model in lmc_ai_required_models(model_set)
-    ))
-    effective_set = (
-        DEFAULT_MODEL_SET if DEFAULT_MODEL_SET in complete_sets else complete_sets[0]
-    )
-    effective_model = str(MODEL_SETS[effective_set]["modes"]["fast"]["model"])
+    available_models = list(required_models)
+    effective_model = str(MODE_OPTIONS["fast"]["model"])
     config.update(
         preflight_ready=True,
         preflight_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         effective_model=effective_model,
         available_models=available_models,
-        available_model_sets=complete_sets,
         model_digests={
             model: installed[model] for model in available_models
             if isinstance(installed, dict) and model in installed
@@ -374,12 +352,7 @@ def preflight(args) -> int:
     )
     _save(args.config, config)
     print("\n".join(checks))
-    for error in errors:
-        print("模型組合未啟用：" + error)
     print("Preflight 完成；預設載入：" + effective_model)
-    print("可用模型組合：" + "、".join(
-        str(MODEL_SETS[item]["label"]) for item in complete_sets
-    ))
     print("可用 models：" + "、".join(available_models))
     return 0
 

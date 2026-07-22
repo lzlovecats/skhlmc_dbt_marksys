@@ -1,0 +1,11 @@
+[Unit]
+Description=Run LMC AI Workstation health preflight
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+Unit=lmc-ai-health.service
+
+[Install]
+WantedBy=timers.target

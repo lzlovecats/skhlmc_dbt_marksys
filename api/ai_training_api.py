@@ -31,7 +31,7 @@ from core.schema_features import DISABLED, PARTIAL, READY, feature_bundle_state,
 
 from schema import (
     TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS,
-    TABLE_AI_EVAL_CASES, TABLE_AI_MODEL_VERSIONS,
+    TABLE_AI_MODEL_VERSIONS,
     TABLE_AI_TRAINING_AUDIT, TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
     TABLE_LLM_TRAINING_SUBMISSIONS, TABLE_R2_UPLOAD_INTENTS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
     TABLE_TTS_VOICE_CONSENTS, TABLE_TTS_VOICE_RECORDINGS,
@@ -41,7 +41,7 @@ from prompts import (
     build_tts_coverage_prompt, build_tts_regenerate_prompt,
 )
 from system_limits import (
-    AI_EVAL_CASE_LIMIT, AI_MODEL_VERSION_LIMIT, AI_SUGGESTION_BATCH_MAX,
+    AI_MODEL_VERSION_LIMIT, AI_SUGGESTION_BATCH_MAX,
     AI_TRAINING_ADMIN_PAGE_SIZE, AI_TRAINING_AUDIT_RETENTION_DAYS,
     AI_TRAINING_INVENTORY_LIMIT, AI_TRAINING_JSON_MAX_BYTES,
     AI_TRAINING_PROMPT_MAX_CHARS, AI_TRAINING_PROVIDER_TIMEOUT_SECONDS,
@@ -1465,37 +1465,11 @@ def readiness(request: Request):
         AND anonymized=TRUE AND permission_confirmed=TRUE GROUP BY data_type ORDER BY docs DESC
         LIMIT :group_limit""", {"group_limit": AI_TRAINING_READINESS_GROUP_LIMIT}))
     active_lexicon = int(lexicon.iloc[0]["n"] or 0) if not lexicon.empty else 0
-    eval_provisioned = _feature_schema_state(db, "eval")
-    eval_rows = (
-        db.query(f"SELECT COUNT(*) n FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE")
-        if eval_provisioned else None
-    )
-    eval_count = int(eval_rows.iloc[0]["n"] or 0) if eval_rows is not None and not eval_rows.empty else 0
     return json_safe({"consent_version": CONSENT_VERSION, "speakers": speakers,
         "active_lexicon": active_lexicon, "llm_by_type": llm,
-        "eval_provisioned": eval_provisioned, "active_eval_cases": eval_count,
         "gates": {"tts_min_train_minutes": 30, "tts_target_collected_minutes": 40,
-                  "tts_min_lexicon": 50, "llm_eval_cases": 30,
+                  "tts_min_lexicon": 50,
                   "llm_min_instruction_pairs_for_lora": 500}})
-
-
-@router.get("/eval/cases")
-def eval_cases(request: Request):
-    _user, db = _admin(request)
-    _require_feature_schema(db, "eval")
-    return json_safe({"items": _rows(db.query(f"""SELECT case_id,task_type,title,input_json,
-        rubric_json,reference_text FROM {TABLE_AI_EVAL_CASES} WHERE is_active=TRUE
-        ORDER BY task_type,case_id LIMIT :eval_limit""", {"eval_limit": AI_EVAL_CASE_LIMIT}))})
-
-
-@router.post("/eval/runs")
-async def eval_baseline(request: Request):
-    _user, db = _admin(request)
-    _require_feature_schema(db, "eval")
-    raise HTTPException(
-        410,
-        "舊有外部baseline入口已停用；請到自家 AI 的 A/B Test 分頁執行固定本地三模式盲評。",
-    )
 
 
 @router.post("/datasets/snapshots")

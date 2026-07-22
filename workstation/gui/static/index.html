@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-HK">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="lmc-csrf" content="__CSRF_TOKEN__" />
+    <title>AI Workstation Manager</title>
+    <style>
+      :root { color-scheme:dark; font-family:system-ui,sans-serif; background:#0e1117; color:#eef2ff; }
+      body { margin:0; }
+      main { width:min(100% - 2rem,72rem); margin:auto; padding:1.2rem 0 3rem; }
+      header,.row { display:flex; align-items:center; justify-content:space-between; gap:.7rem; flex-wrap:wrap; }
+      .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(18rem,1fr)); gap:1rem; }
+      section { border:1px solid #303849; border-radius:14px; background:#171c26; padding:1rem; margin:1rem 0; }
+      button,input,select { min-height:2.7rem; border-radius:9px; border:1px solid #3d465a; background:#232a38; color:inherit; padding:.45rem .7rem; }
+      button { cursor:pointer; }
+      button.primary { background:#7657e8; border-color:#7657e8; }
+      label { display:grid; gap:.3rem; margin:.6rem 0; }
+      .muted { color:#a8b0c2; }
+      .ok { color:#6ee7a8; }
+      .bad { color:#fda4af; }
+      pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
+      [hidden] { display:none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><div><h1>AI Workstation Manager</h1><p class="muted">只可由呢部 Ubuntu 電腦本機開啟。</p></div><button id="refresh">重新整理</button></header>
+      <div id="notice" role="status"></div>
+      <div class="grid">
+        <section><h2>目前狀態</h2><div id="summary">正在讀取…</div><div class="row"><button data-action="drain">Drain</button><button data-action="resume">Resume</button><button data-action="preflight" class="primary">執行 Preflight</button></div></section>
+        <section><h2>硬件及服務</h2><div id="health"></div></section>
+        <section><h2>模型／RAG 資料</h2><pre id="inventory"></pre><pre id="artifactCatalog"></pre><div class="row"><button id="inspectArtifacts">先查看已簽署模型大小／雜湊</button><button id="approveModels">批准並安裝上述模型</button><button id="installRag" class="primary">下載、建立及啟用 RAG</button><button id="rollbackRag">切回上一版 RAG</button></div><p class="muted">只有你先查看 signed inventory，再明確確認，系統先會 pull code allowlist 內模型；完成後會逐一核對 signed digest。RAG 會驗簽及 hash、在新目錄建立 index，成功後才原子切換。</p></section>
+        <section><h2>程式更新／Rollback</h2><div id="releaseStatus"></div><form id="updateChannelForm"><label>更新頻道<select id="updateChannel"><option value="stable">Stable</option><option value="candidate">Candidate（只供 canary）</option></select></label><button>保存頻道</button></form><div class="row"><button id="checkUpdate" class="primary">立即安全檢查更新</button><button id="rollbackPrevious">切回上一版本</button></div><p class="muted">每次更新都會先 Drain，驗 Ed25519 簽名、hash 及相容性，再經完整 health gate；失敗會自動切回。</p></section>
+        <section><h2>GPT-SoVITS 資料準備／訓練</h2><form id="datasetForm"><label>Incoming dataset ID<input id="datasetId" maxlength="100" required /></label><label>Speaker ID（單一 speaker 可留空）<input id="datasetSpeaker" maxlength="100" /></label><button>開始資料準備</button></form><form id="trainingForm"><label>已準備 dataset ID<input id="trainingDatasetId" maxlength="100" required /></label><button class="primary">開始受控訓練</button></form><button id="cancelActive" type="button">停止目前長工作</button><p class="muted">先經 Tailscale SSH 將一個 recordings.json 或 ZIP 放入 /srv/lmc-ai/datasets/incoming，檔名必須等於 dataset ID。訓練不會自動啟用新聲線。</p></section>
+        <section><h2>配對網站</h2><form id="pairForm"><label>電腦名稱<input id="nodeName" maxlength="80" required /></label><label>網站 URL<input id="serverUrl" type="url" placeholder="https://example.com" required /></label><label>一次性 node token<input id="nodeToken" type="password" autocomplete="off" required /></label><button class="primary">保存並重新連線</button></form></section>
+        <section><h2>每日休眠／喚醒</h2><div id="powerStatus"></div><form id="powerForm"><label><span>啟用排程 <input id="powerEnabled" type="checkbox" /></span></label><label>Suspend 時間<input id="suspendAt" type="time" required /></label><label>RTC wake 時間<input id="wakeAt" type="time" required /></label><button class="primary">保存排程</button></form><form id="powerOverrideForm"><label>臨時保持喚醒至（最長 7 日）<input id="powerOverrideUntil" type="datetime-local" /></label><div class="row"><button>設定臨時 override</button><button id="clearPowerOverride" type="button">取消 override</button></div></form><p class="muted">時區固定為 Asia/Hong_Kong；active managed job 完成前不會休眠。</p></section>
+        <section><h2>安全操作</h2><div class="row"><button data-action="ack_reconcile">確認 restart reconciliation</button><button data-service="lmc-ai-node.service">重啟 Node</button><button data-service="ollama.service">重啟 Ollama</button></div></section>
+      </div>
+      <section><h2>詳細狀態</h2><pre id="details"></pre></section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

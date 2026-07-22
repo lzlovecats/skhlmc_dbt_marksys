@@ -1,0 +1,25 @@
+[Unit]
+Description=Pinned localhost GPT-SoVITS inference runtime
+After=lmc-ai-manager.service
+ConditionPathExists=/srv/lmc-ai/vendor/GPT-SoVITS/api_v2.py
+
+[Service]
+Type=simple
+User=lmc-ai
+Group=lmc-ai
+SupplementaryGroups=video render
+WorkingDirectory=/srv/lmc-ai/vendor/GPT-SoVITS
+ExecStart=/srv/lmc-ai/vendor/GPT-SoVITS/runtime/bin/python api_v2.py -a 127.0.0.1 -p 9880 -c /srv/lmc-ai/models/gpt-sovits/tts_infer.json
+Restart=no
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/cache/lmc-ai-workstation
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+# Manager starts this allowlisted service only for local TTS inference and stops
+# it before another GPU workload. It is intentionally not WantedBy boot.

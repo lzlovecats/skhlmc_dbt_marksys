@@ -1,0 +1,17 @@
+[Unit]
+Description=Evaluate LMC AI Workstation suspend and RTC schedule
+After=lmc-ai-manager.service lmc-ai-privileged.service
+Requires=lmc-ai-manager.service lmc-ai-privileged.service
+
+[Service]
+Type=oneshot
+User=lmc-ai
+Group=lmc-ai
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.scripts.workstationctl power-check
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/lmc-ai-workstation

@@ -1639,54 +1639,41 @@ def test_actual_audio_over_six_minutes_is_allowed_up_to_google_boundary(monkeypa
     assert google_files.GOOGLE_AUDIO_MAX_SECONDS == int(9.5 * 60 * 60)
 
 
-def _install_custom_fallback_test_path(monkeypatch, ledger):
-    custom = {
-        "provider": "custom", "model": "school-model",
-        "api_key": "CUSTOM_LLM_API_KEY", "supports_audio": False,
-    }
+def _install_local_workstation_test_path(monkeypatch, ledger):
+    local = dict(ai_model_config.LMC_AI_INTERACTIVE_OPTION)
     monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
-    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: custom)
+    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: local)
     monkeypatch.setattr(ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user"))
     monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
-    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "gemini-super-secret")
+    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "provider-secret")
     monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(
+        ai_coach_api, "_require_local_model_available",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
     monkeypatch.setattr(
         ai_coach_api, "_usage",
         lambda *args, **kwargs: ledger.append((args, kwargs)),
     )
     return ai_coach_api.CoachRequest(
-        feature="fact_check", model_label="自家辯論 LLM", text="check",
+        feature="fact_check", model_label=ai_model_config.LMC_AI_INTERACTIVE_OPTION["label"],
+        text="check",
     )
 
 
-def test_custom_web_research_uses_grounded_default_only(monkeypatch):
+def test_local_workstation_search_is_rejected_without_cloud_fallback(monkeypatch):
     ledger = []
-    body = _install_custom_fallback_test_path(monkeypatch, ledger)
-    calls = 0
+    body = _install_local_workstation_test_path(monkeypatch, ledger)
 
-    async def provider(config, *_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if config["provider"] == "custom":
-            request = ai_provider.httpx.Request(
-                "POST", "https://provider.invalid/generate?key=gemini-super-secret",
-            )
-            ai_provider.httpx.Response(403, request=request).raise_for_status()
-        return "fallback ok", {
-            "input_tokens": 3, "output_tokens": 4,
-            "cost_source": "gemini_usage_metadata",
-        }
+    async def provider(*_args, **_kwargs):
+        raise AssertionError("local search must not call any external provider")
 
     monkeypatch.setattr(ai_provider, "generate_text", provider)
-    result = asyncio.run(ai_coach_api.run(body, _request("US")))
-    assert json.loads(result.body) == {"ok": True, "markdown": "fallback ok"}
-    assert result.headers["cache-control"] == "no-store"
-    assert calls == 1 and len(ledger) == 1
-    args, kwargs = ledger[0]
-    assert args[3] == ai_coach_api.DEFAULT_AI_MODEL
-    assert args[4]["provider"] == "gemini" and args[5] is True
-    assert kwargs["actual"]["cost_source"] == "gemini_usage_metadata"
-    assert "gemini-super-secret" not in repr(ledger)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(ai_coach_api.run(body, _request("US")))
+    assert raised.value.status_code == 400
+    assert "暫未支援上網搜尋" in raised.value.detail
+    assert ledger == []
 
 
 def test_competition_prep_coach_claims_and_saves_before_usage(monkeypatch):
@@ -1759,13 +1746,17 @@ def test_competition_prep_coach_claims_and_saves_before_usage(monkeypatch):
     }
 
 
-def test_custom_fallback_failure_logs_safe_fallback_failure(monkeypatch):
+def test_external_provider_failure_logs_one_safe_primary_attempt(monkeypatch):
     ledger = []
-    body = _install_custom_fallback_test_path(monkeypatch, ledger)
+    body = _install_local_workstation_test_path(monkeypatch, ledger)
+    gemini = dict(ai_model_config.AI_MODEL_OPTIONS[ai_coach_api.DEFAULT_AI_MODEL])
+    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: gemini)
+    body.feature = "strategy"
+    body.model_label = ai_coach_api.DEFAULT_AI_MODEL
 
     async def provider(*_args, **_kwargs):
         request = ai_provider.httpx.Request(
-            "POST", "https://provider.invalid/generate?key=gemini-super-secret",
+            "POST", "https://provider.invalid/generate?key=provider-secret",
         )
         ai_provider.httpx.Response(403, request=request).raise_for_status()
 
@@ -1774,112 +1765,63 @@ def test_custom_fallback_failure_logs_safe_fallback_failure(monkeypatch):
         asyncio.run(ai_coach_api.run(body, _request("US")))
     assert raised.value.status_code == 502
     assert raised.value.detail == ai_coach_api.AI_PROVIDER_PUBLIC_ERROR
-    assert "gemini-super-secret" not in raised.value.detail
+    assert "provider-secret" not in raised.value.detail
     assert len(ledger) == 1
     args, kwargs = ledger[0]
     assert args[3] == ai_coach_api.DEFAULT_AI_MODEL
     assert args[4]["provider"] == "gemini" and args[5] is False
     assert args[6] == ai_coach_api.AI_PROVIDER_PUBLIC_ERROR
-    assert "gemini-super-secret" not in repr((args, kwargs))
+    assert kwargs["operation_stage"] == "primary"
+    assert "provider-secret" not in repr((args, kwargs))
 
 
-def test_custom_strategy_fallback_logs_both_real_attempts_as_one_operation(monkeypatch):
+def test_local_workstation_failure_is_fail_closed_without_cloud_fallback(monkeypatch):
     ledger = []
-    custom = {
-        "provider": "custom",
-        "model": "school-model",
-        "api_key": "CUSTOM_LLM_API_KEY",
-        "supports_audio": False,
-        "supports_web_search": False,
-        "input_price_per_million": 0,
-        "output_price_per_million": 0,
-    }
-    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
-    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: custom)
-    monkeypatch.setattr(
-        ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user")
-    )
-    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
-    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
-    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
-    monkeypatch.setattr(
-        ai_coach_api,
-        "_usage",
-        lambda *args, **kwargs: ledger.append((args, kwargs)),
-    )
-    calls = []
+    body = _install_local_workstation_test_path(monkeypatch, ledger)
+    body.feature = "strategy"
+    body.topic = "測試辯題"
 
-    async def provider(config, *_args, **_kwargs):
-        calls.append(config["provider"])
-        if config["provider"] == "custom":
-            raise RuntimeError("custom unavailable")
-        return "fallback ok", {
-            "input_tokens": 3,
-            "output_tokens": 4,
-            "audio_tokens": 0,
-            "search_calls": 0,
-            "cost_source": "gemini_usage_metadata",
-        }
-
-    monkeypatch.setattr(ai_provider, "generate_text", provider)
-    body = ai_coach_api.CoachRequest(
-        feature="strategy",
-        model_label="自家辯論 LLM",
-        topic="測試辯題",
-    )
-    response = asyncio.run(ai_coach_api.run(body, _request("US")))
-
-    assert json.loads(response.body)["markdown"] == "fallback ok"
-    assert calls == ["custom", "gemini"]
-    assert [(item[0][4]["provider"], item[0][5]) for item in ledger] == [
-        ("custom", False),
-        ("gemini", True),
-    ]
-    assert [item[1]["operation_stage"] for item in ledger] == [
-        "primary",
-        "fallback",
-    ]
-    operation_ids = {item[1]["operation_id"] for item in ledger}
-    assert len(operation_ids) == 1
-    assert next(iter(operation_ids)).startswith("coach-")
-
-
-def test_custom_audio_uri_falls_back_without_phantom_custom_attempt(monkeypatch):
-    ledger = []
-    custom = {
-        "provider": "custom", "model": "school-model",
-        "api_key": "CUSTOM_LLM_API_KEY", "supports_audio": False,
-        "supports_web_search": False,
-    }
-    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
-    monkeypatch.setattr(ai_coach_api, "_config", lambda *_args, **_kwargs: custom)
-    monkeypatch.setattr(ai_coach_api, "_message", lambda *_args, **_kwargs: ("system", "user"))
-    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
-    monkeypatch.setattr(proxy, "_get_proxy_secret", lambda *_args, **_kwargs: "key")
-    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
-    monkeypatch.setattr(
-        ai_coach_api, "_usage",
-        lambda *args, **kwargs: ledger.append((args, kwargs)),
-    )
-
-    async def generate(config, *_args, on_provider_attempt=None, **_kwargs):
-        if config["provider"] == "custom":
-            raise HTTPException(400, "錄音分析只支援 Google Gemini Files API。")
+    async def generate(*_args, on_provider_attempt=None, **_kwargs):
         on_provider_attempt()
-        return "fallback ok", {}
+        raise HTTPException(503, "自家 AI Workstation 離線。")
+
+    async def provider(*_args, **_kwargs):
+        raise AssertionError("local failure must not call a cloud provider")
 
     monkeypatch.setattr(ai_coach_api, "_generate", generate)
-    body = ai_coach_api.CoachRequest(
-        feature="speech_review", model_label="自家辯論 LLM",
-        topic="測試辯題", audio_intent_id="a" * 32,
-        audio_duration_seconds=361,
-    )
-    response = asyncio.run(ai_coach_api.run(body, _request("US")))
-    assert json.loads(response.body)["markdown"] == "fallback ok"
+    monkeypatch.setattr(ai_provider, "generate_text", provider)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(ai_coach_api.run(body, _request("US")))
+    assert raised.value.status_code == 503
     assert len(ledger) == 1
-    assert ledger[0][0][4]["provider"] == "gemini"
-    assert ledger[0][0][5] is True
-    assert ledger[0][1]["operation_stage"] == "fallback"
+    assert ledger[0][0][4]["local_node"] is True
+    assert ledger[0][0][5] is False
+    assert ledger[0][1]["operation_stage"] == "primary"
+
+
+def test_local_workstation_audio_is_rejected_without_phantom_or_cloud_attempt(monkeypatch):
+    ledger = []
+    body = _install_local_workstation_test_path(monkeypatch, ledger)
+    discarded = []
+    monkeypatch.setattr(
+        ai_coach_api, "_discard_audio_intent",
+        lambda user_id, intent_id: discarded.append((user_id, intent_id)),
+    )
+
+    async def provider(*_args, **_kwargs):
+        raise AssertionError("local audio rejection must not call a cloud provider")
+
+    monkeypatch.setattr(ai_provider, "generate_text", provider)
+    body.feature = "speech_review"
+    body.topic = "測試辯題"
+    body.audio_intent_id = "a" * 32
+    body.audio_duration_seconds = 361
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(ai_coach_api.run(body, _request("US")))
+    assert raised.value.status_code == 400
+    assert "自家 AI 暫未支援錄音分析" in raised.value.detail
+    assert discarded == [("alice", "a" * 32)]
+    assert ledger == []
 
 
 def test_room_judgement_uses_two_mib_bounded_reader(monkeypatch):

@@ -26,6 +26,9 @@ from core.config_store import (
 )
 from core.runtime_secrets import get_secret
 from system_limits import (
+    LOCAL_PRACTICE_FAILED_INPUT_RETRY_TTL_SECONDS,
+    LOCAL_PRACTICE_MEDIA_PRUNE_BATCH,
+    LOCAL_PRACTICE_TTS_OUTPUT_TTL_SECONDS,
     R2_CLAIM_MAX_TTL_SECONDS, R2_CLIENT_MAX_ATTEMPTS,
     R2_DOWNLOAD_URL_MAX_TTL_SECONDS, R2_DOWNLOAD_URL_TTL_SECONDS,
     R2_INTENT_RETENTION_DAYS, R2_OBJECT_CACHE_MAX_AGE_SECONDS,
@@ -33,6 +36,8 @@ from system_limits import (
     R2_UPLOAD_CLAIM_TTL_SECONDS,
     R2_UPLOAD_URL_MAX_TTL_SECONDS, R2_UPLOAD_URL_TTL_SECONDS,
     R2_URL_MIN_TTL_SECONDS, R2_USAGE_SNAPSHOT_MAX_AGE_SECONDS,
+    WORKSTATION_R2_HEALTH_ORPHAN_TTL_SECONDS,
+    WORKSTATION_R2_HEALTH_PRUNE_BATCH,
 )
 
 
@@ -374,11 +379,65 @@ def claim_completed_upload_intent(
 ) -> bool:
     """Atomically make one completed temporary upload single-use."""
     from schema import TABLE_R2_UPLOAD_INTENTS
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     changed = db.execute_count(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
-        SET status='processing',completed_at=NULL
+        SET status='processing',completed_at=NULL,
+            intent_metadata=jsonb_set(
+                COALESCE(intent_metadata,'{{}}'::jsonb),
+                '{{processing_started_at}}',to_jsonb(CAST(:started AS TEXT)),TRUE
+            )
         WHERE intent_id=:id AND user_id=:user AND media_kind=:kind
           AND status='completed'""", {
         "id": intent_id, "user": user_id, "kind": media_kind,
+        "started": now.isoformat(),
+    })
+    return int(changed or 0) == 1
+
+
+def release_processing_upload_intent(
+    db, intent_id: str, *, user_id: str, media_kind: str,
+) -> bool:
+    """Return a failed, retryable provider claim to the completed state.
+
+    The media object remains private and bounded by the caller-specific retry
+    lifecycle. ``retry_started_at`` is write-once so repeated retries cannot
+    slide the privacy deadline indefinitely.
+    """
+    from schema import TABLE_R2_UPLOAD_INTENTS
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    changed = db.execute_count(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+        SET status='completed',completed_at=:now,
+            intent_metadata=CASE
+                WHEN COALESCE(intent_metadata,'{{}}'::jsonb) ? 'retry_started_at'
+                THEN COALESCE(intent_metadata,'{{}}'::jsonb)
+                ELSE jsonb_set(
+                    COALESCE(intent_metadata,'{{}}'::jsonb),
+                    '{{retry_started_at}}',to_jsonb(CAST(:started AS TEXT)),TRUE
+                )
+            END
+        WHERE intent_id=:id AND user_id=:user AND media_kind=:kind
+          AND status='processing'""", {
+        "id": intent_id, "user": user_id, "kind": media_kind,
+        "now": now, "started": now.isoformat(),
+    })
+    return int(changed or 0) == 1
+
+
+def mark_processing_upload_cleanup_pending(
+    db, intent_id: str, *, user_id: str, media_kind: str,
+) -> bool:
+    """Mark successful processing for prompt delete retry without closing it."""
+    from schema import TABLE_R2_UPLOAD_INTENTS
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat()
+    changed = db.execute_count(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+        SET intent_metadata=jsonb_set(
+            COALESCE(intent_metadata,'{{}}'::jsonb),
+            '{{cleanup_pending_at}}',to_jsonb(CAST(:started AS TEXT)),TRUE
+        )
+        WHERE intent_id=:id AND user_id=:user AND media_kind=:kind
+          AND status='processing'""", {
+        "id": intent_id, "user": user_id, "kind": media_kind,
+        "started": now,
     })
     return int(changed or 0) == 1
 
@@ -433,6 +492,217 @@ def delete_intent_objects(db, intent_id: str, object_keys) -> bool:
     except Exception:
         return False
     return True
+
+
+def _intent_timestamp(value) -> dt.datetime | None:
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if not isinstance(value, dt.datetime):
+        try:
+            value = dt.datetime.fromisoformat(str(value or ""))
+        except (TypeError, ValueError):
+            return None
+    if value.tzinfo is not None:
+        value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def prune_local_practice_media(
+    db,
+    *,
+    now: dt.datetime | None = None,
+    limit: int = LOCAL_PRACTICE_MEDIA_PRUNE_BATCH,
+) -> dict:
+    """Delete temporary practice media at the confirmed privacy deadlines.
+
+    Completed rows are conditionally claimed before any R2 mutation, so an ASR
+    retry cannot race the retention worker. Expired issued uploads, crashed ASR
+    claims, and successful-ASR cleanup retries are also included. Delete failures
+    keep a conservative open intent so storage accounting can retry safely.
+    """
+    from schema import TABLE_R2_UPLOAD_INTENTS
+
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is not None:
+        current = current.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    bounded_limit = max(1, min(int(limit), LOCAL_PRACTICE_MEDIA_PRUNE_BATCH))
+    frame = db.query(f"""SELECT intent_id,media_kind,object_keys,intent_metadata,
+            status,created_at,completed_at
+        FROM {TABLE_R2_UPLOAD_INTENTS}
+        WHERE media_kind IN (
+            'local_practice_input','local_practice_tts_output'
+        ) AND status IN ('issued','completed','processing')
+        ORDER BY created_at ASC LIMIT :limit""", {"limit": bounded_limit * 4})
+    deleted = 0
+    failed = 0
+    examined = 0
+    for row in frame.to_dict("records"):
+        if examined >= bounded_limit:
+            break
+        kind = str(row.get("media_kind") or "")
+        ttl = (
+            LOCAL_PRACTICE_FAILED_INPUT_RETRY_TTL_SECONDS
+            if kind == "local_practice_input"
+            else LOCAL_PRACTICE_TTS_OUTPUT_TTL_SECONDS
+        )
+        metadata = row.get("intent_metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (TypeError, ValueError):
+                metadata = {}
+        status = str(row.get("status") or "")
+        cleanup_pending = bool(metadata.get("cleanup_pending_at"))
+        if status == "completed":
+            age_value = (
+                metadata.get("retry_started_at")
+                if kind == "local_practice_input"
+                else None
+            ) or row.get("completed_at")
+        elif status == "processing":
+            age_value = metadata.get("processing_started_at") or row.get("created_at")
+        else:
+            age_value = row.get("created_at")
+        timestamp = _intent_timestamp(age_value)
+        if (
+            timestamp is None
+            or (
+                not cleanup_pending
+                and timestamp > current - dt.timedelta(seconds=ttl)
+            )
+        ):
+            continue
+        intent_id = str(row.get("intent_id") or "")
+        if not intent_id:
+            continue
+        if status == "completed":
+            changed = db.execute_count(f"""UPDATE {TABLE_R2_UPLOAD_INTENTS}
+                SET status='processing',completed_at=NULL,
+                    intent_metadata=jsonb_set(
+                        COALESCE(intent_metadata,'{{}}'::jsonb),
+                        '{{processing_started_at}}',
+                        to_jsonb(CAST(:started AS TEXT)),TRUE
+                    )
+                WHERE intent_id=:id AND status='completed'
+                  AND completed_at=:completed""", {
+                "id": intent_id,
+                "completed": row.get("completed_at"),
+                "started": current.isoformat(),
+            })
+            if int(changed or 0) != 1:
+                continue
+        keys = row.get("object_keys") or []
+        if isinstance(keys, str):
+            try:
+                keys = json.loads(keys)
+            except (TypeError, ValueError):
+                keys = []
+        examined += 1
+        if delete_intent_objects(db, intent_id, keys if isinstance(keys, list) else []):
+            deleted += 1
+        else:
+            failed += 1
+    return {"examined": examined, "deleted": deleted, "failed": failed}
+
+
+def reserve_workstation_r2_health_probe(
+    db,
+    *,
+    intent_id: str,
+    node_id: str,
+    object_key: str,
+    sha256: str,
+    byte_size: int,
+) -> bool:
+    """Create one durable, outstanding functional R2 probe for a node."""
+    from schema import TABLE_WORKSTATION_R2_HEALTH_PROBES
+
+    changed = db.execute_count(f"""INSERT INTO {TABLE_WORKSTATION_R2_HEALTH_PROBES}
+        (intent_id,node_id,object_key,sha256,byte_size,created_at)
+        VALUES(:id,:node,:key,:sha,:bytes,NOW())
+        ON CONFLICT (node_id) DO NOTHING""", {
+        "id": str(intent_id),
+        "node": str(node_id),
+        "key": str(object_key),
+        "sha": str(sha256),
+        "bytes": int(byte_size),
+    })
+    return int(changed or 0) == 1
+
+
+def get_workstation_r2_health_probe(
+    db, *, intent_id: str, node_id: str,
+) -> dict | None:
+    from schema import TABLE_WORKSTATION_R2_HEALTH_PROBES
+
+    frame = db.query(f"""SELECT intent_id,node_id,object_key,sha256,
+            byte_size,created_at
+        FROM {TABLE_WORKSTATION_R2_HEALTH_PROBES}
+        WHERE intent_id=:id AND node_id=:node""", {
+        "id": str(intent_id), "node": str(node_id),
+    })
+    if frame.empty:
+        return None
+    return dict(frame.iloc[0])
+
+
+def delete_workstation_r2_health_probe(
+    db, *, intent_id: str, node_id: str, object_key: str,
+) -> bool:
+    """Delete the private object before releasing its durable cleanup row."""
+    from schema import TABLE_WORKSTATION_R2_HEALTH_PROBES
+
+    try:
+        delete(str(object_key))
+        db.execute_count(f"""DELETE FROM {TABLE_WORKSTATION_R2_HEALTH_PROBES}
+            WHERE intent_id=:id AND node_id=:node AND object_key=:key""", {
+            "id": str(intent_id),
+            "node": str(node_id),
+            "key": str(object_key),
+        })
+    except Exception:
+        # Keep the row when either R2 or PostgreSQL is unavailable. The
+        # retention worker can safely retry the idempotent object deletion.
+        return False
+    return True
+
+
+def prune_workstation_r2_health_probes(
+    db,
+    *,
+    now: dt.datetime | None = None,
+    limit: int = WORKSTATION_R2_HEALTH_PRUNE_BATCH,
+) -> dict:
+    """Remove abandoned Workstation functional probes after their fixed TTL."""
+    from schema import TABLE_WORKSTATION_R2_HEALTH_PROBES
+
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is not None:
+        current = current.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    bounded_limit = max(1, min(int(limit), WORKSTATION_R2_HEALTH_PRUNE_BATCH))
+    frame = db.query(f"""SELECT intent_id,node_id,object_key
+        FROM {TABLE_WORKSTATION_R2_HEALTH_PROBES}
+        WHERE created_at<=:cutoff
+        ORDER BY created_at ASC LIMIT :limit""", {
+        "cutoff": current - dt.timedelta(
+            seconds=WORKSTATION_R2_HEALTH_ORPHAN_TTL_SECONDS
+        ),
+        "limit": bounded_limit,
+    })
+    deleted = 0
+    failed = 0
+    rows = frame.to_dict("records")
+    for row in rows:
+        if delete_workstation_r2_health_probe(
+            db,
+            intent_id=str(row.get("intent_id") or ""),
+            node_id=str(row.get("node_id") or ""),
+            object_key=str(row.get("object_key") or ""),
+        ):
+            deleted += 1
+        else:
+            failed += 1
+    return {"examined": len(rows), "deleted": deleted, "failed": failed}
 
 
 def _b64url(data: bytes) -> str:

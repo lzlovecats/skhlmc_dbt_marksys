@@ -1,15 +1,15 @@
-"""Shared bounded text client for the selected outbound local-AI node."""
+"""Shared bounded client for the single outbound AI Workstation."""
 
 from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+import inspect
 from typing import Callable
 
 from ai_model_config import (
     LMC_AI_DEFAULT_MODE,
-    LMC_AI_MODEL_SETS,
-    lmc_ai_available_model_sets,
+    lmc_ai_models_ready,
     resolve_lmc_ai_mode_options,
 )
 from core.lmc_ai_runtime import (
@@ -20,7 +20,7 @@ from core.lmc_ai_runtime import (
     WorkstationBusyError,
     WorkstationJob,
 )
-from core.lmc_ai_store import get_active_node_id, get_model_set, require_lmc_ai_schema
+from core.lmc_ai_store import get_workstation_id, require_lmc_ai_schema
 from system_limits import LMC_AI_QUEUE_MAX
 
 
@@ -28,16 +28,14 @@ class LocalAIError(RuntimeError):
     pass
 
 
-LOCAL_AI_UNSELECTED_MESSAGE = (
-    "尚未選用自家 AI 電腦，請聯絡 Developer 設定。"
-)
-LOCAL_AI_OFFLINE_MESSAGE = "目前選用的自家 AI 電腦離線。"
-LOCAL_AI_NOT_READY_MESSAGE = "目前選用的自家 AI 電腦尚未完成準備。"
-LOCAL_AI_DRAINING_MESSAGE = "目前選用的自家 AI 電腦正在暫停接單。"
+LOCAL_AI_UNCONFIGURED_MESSAGE = "尚未設定自家 AI Workstation，請聯絡 Developer。"
+LOCAL_AI_OFFLINE_MESSAGE = "自家 AI Workstation 離線。"
+LOCAL_AI_NOT_READY_MESSAGE = "自家 AI Workstation 尚未完成準備。"
+LOCAL_AI_DRAINING_MESSAGE = "自家 AI Workstation 正在暫停接單。"
 
 
-def resolve_mode(mode: str | None, model_set: str | None = None) -> tuple[str, dict]:
-    options = resolve_lmc_ai_mode_options(model_set)
+def resolve_mode(mode: str | None) -> tuple[str, dict]:
+    options = resolve_lmc_ai_mode_options()
     selected = str(mode or LMC_AI_DEFAULT_MODE).strip()
     selected = {"complex": "daily", "thinking": "deep"}.get(selected, selected)
     if selected not in options:
@@ -56,11 +54,10 @@ async def _generate_on_runtime_loop(
     system_prompt: str,
     user_prompt: str,
     mode: str,
-    model_set: str,
     operation_stage: str,
     on_provider_attempt: Callable[[], None] | None,
 ) -> tuple[str, dict]:
-    _selected, mode_config = resolve_mode(mode, model_set)
+    _selected, mode_config = resolve_mode(mode)
     try:
         job, _position = await RUNTIME.submit(
             node_id=node_id,
@@ -127,38 +124,35 @@ async def _await_owner_loop(coroutine):
     return await asyncio.wrap_future(future)
 
 
-def _selected_service(db) -> tuple[str, str]:
+def _workstation_service(db) -> str:
     require_lmc_ai_schema(db)
-    return str(get_active_node_id(db) or ""), get_model_set(db)
+    return str(get_workstation_id(db) or "")
 
 
 async def _availability(db) -> tuple[dict, str]:
-    """Return a public-safe selected-node status and its private node id."""
+    """Return public-safe Workstation status and its private node id."""
 
     try:
-        node_id, model_set = await asyncio.to_thread(_selected_service, db)
+        node_id = await asyncio.to_thread(_workstation_service, db)
     except RuntimeError as exc:
         return {
             "available": False,
-            "selected": False,
+            "configured": False,
             "state": "unavailable",
             "busy": False,
             "queue_length": 0,
             "message": str(exc),
             "modes": [],
         }, ""
-    mode_options = resolve_lmc_ai_mode_options(model_set)
-    model_set_label = str(LMC_AI_MODEL_SETS[model_set]["label"])
+    mode_options = resolve_lmc_ai_mode_options()
     if not node_id:
         return {
             "available": False,
-            "selected": False,
+            "configured": False,
             "state": "unconfigured",
             "busy": False,
             "queue_length": 0,
-            "message": LOCAL_AI_UNSELECTED_MESSAGE,
-            "model_set": model_set,
-            "model_set_label": model_set_label,
+            "message": LOCAL_AI_UNCONFIGURED_MESSAGE,
             "modes": [
                 {
                     "id": mode,
@@ -166,7 +160,7 @@ async def _availability(db) -> tuple[dict, str]:
                     "model": config["model"],
                     "thinking": bool(config["thinking"]),
                     "available": False,
-                    "message": LOCAL_AI_UNSELECTED_MESSAGE,
+                    "message": LOCAL_AI_UNCONFIGURED_MESSAGE,
                 }
                 for mode, config in mode_options.items()
             ],
@@ -187,9 +181,9 @@ async def _availability(db) -> tuple[dict, str]:
         state = "unavailable"
         message = LOCAL_AI_NOT_READY_MESSAGE
         service_available = False
-    elif model_set not in lmc_ai_available_model_sets(snapshot.get("models")):
+    elif not lmc_ai_models_ready(snapshot.get("models")):
         state = "unavailable"
-        message = "目前選用的自家 AI 電腦未完成所選模型組合 preflight。"
+        message = "自家 AI Workstation 未完成 Gemma profile preflight。"
         service_available = False
     elif snapshot.get("draining"):
         state = "draining"
@@ -214,7 +208,7 @@ async def _availability(db) -> tuple[dict, str]:
         service_available = True
     else:
         state = "online"
-        message = "自家 AI 已選用並在線。"
+        message = "自家 AI Workstation 已在線。"
         service_available = True
 
     available_models = set(
@@ -226,9 +220,7 @@ async def _availability(db) -> tuple[dict, str]:
         if not service_available:
             mode_message = message
         elif not mode_available:
-            mode_message = (
-                f"目前選用的自家 AI 電腦未提供「{config['label']}」模式。"
-            )
+            mode_message = f"自家 AI Workstation 未提供「{config['label']}」模式。"
         else:
             mode_message = message
         modes.append({
@@ -241,20 +233,18 @@ async def _availability(db) -> tuple[dict, str]:
         })
     return {
         "available": service_available,
-        "selected": True,
+        "configured": True,
         "state": state,
         "busy": bool((snapshot or {}).get("busy")),
         "queue_length": int((snapshot or {}).get("queue_length") or 0),
         "queue_capacity": LMC_AI_QUEUE_MAX,
         "message": message,
-        "model_set": model_set,
-        "model_set_label": model_set_label,
         "modes": modes,
     }, node_id
 
 
 async def local_ai_availability(db) -> dict:
-    """Inspect the manually selected node without exposing its identifier."""
+    """Inspect the single Workstation without exposing its identifier."""
 
     status, _node_id = await _availability(db)
     return status
@@ -270,11 +260,10 @@ async def generate_local_text(
     operation_stage: str = "local_feature",
     on_provider_attempt: Callable[[], None] | None = None,
 ) -> tuple[str, dict]:
-    """Generate on the manually selected node without any cloud fallback."""
+    """Generate on the single Workstation without any cloud fallback."""
 
     status, node_id = await _availability(db)
-    model_set = str(status.get("model_set") or "")
-    selected_mode, _mode_config = resolve_mode(mode, model_set)
+    selected_mode, _mode_config = resolve_mode(mode)
     mode_status = next(
         (item for item in status["modes"] if item["id"] == selected_mode),
         None,
@@ -292,15 +281,14 @@ async def generate_local_text(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         mode=selected_mode,
-        model_set=model_set,
         operation_stage=operation_stage,
         on_provider_attempt=on_provider_attempt,
     ))
 
 
-async def _selected_snapshot(db) -> tuple[str, dict | None]:
+async def _workstation_snapshot(db) -> tuple[str, dict | None]:
     try:
-        node_id, _model_set = await asyncio.to_thread(_selected_service, db)
+        node_id = await asyncio.to_thread(_workstation_service, db)
     except RuntimeError as exc:
         raise LocalAIError(str(exc)) from exc
     if not node_id:
@@ -313,9 +301,9 @@ async def _selected_snapshot(db) -> tuple[str, dict | None]:
 
 
 async def workstation_capabilities(db) -> dict:
-    """Return public-safe capabilities for only the selected healthy node."""
+    """Return public-safe capabilities for the single healthy Workstation."""
 
-    node_id, snapshot = await _selected_snapshot(db)
+    node_id, snapshot = await _workstation_snapshot(db)
     advertised = (snapshot or {}).get("capabilities") or {}
     ready = bool(
         node_id
@@ -332,7 +320,6 @@ async def workstation_capabilities(db) -> dict:
         "asr": bool(ready and advertised.get("asr")),
         "local_tts": bool(ready and advertised.get("local_tts")),
         "rag": bool(ready and advertised.get("rag")),
-        "controlled_web_search": bool(ready and advertised.get("controlled_web_search")),
         "tts_training": bool(ready and advertised.get("tts_training")),
         "manager_mode": str(manager.get("mode") or "unavailable"),
         "voice_session_active": bool(manager.get("voice_session_active")),
@@ -350,6 +337,8 @@ async def _run_workstation_on_runtime_loop(
     stage: str,
     payload: dict,
     upload_callback=None,
+    upload_finish_callback=None,
+    on_stage=None,
 ) -> dict:
     try:
         job = await RUNTIME.submit_workstation(
@@ -361,6 +350,7 @@ async def _run_workstation_on_runtime_loop(
             stage=stage,
             payload=payload,
             upload_callback=upload_callback,
+            upload_finish_callback=upload_finish_callback,
         )
     except (NodeUnavailableError, WorkstationBusyError, ValueError) as exc:
         raise LocalAIError(str(exc)) from exc
@@ -374,6 +364,10 @@ async def _run_workstation_on_runtime_loop(
             if event == "error":
                 terminal = True
                 raise LocalAIError(str(event_payload.get("message") or "AI Workstation 未能完成今次工作。"))
+            if event == "stage" and on_stage is not None:
+                callback_result = on_stage(str(event_payload.get("stage") or ""))
+                if inspect.isawaitable(callback_result):
+                    await callback_result
     finally:
         if not terminal:
             await RUNTIME.cancel_workstation(node_id, job)
@@ -389,10 +383,12 @@ async def run_workstation_job(
     stage: str = "",
     payload: dict | None = None,
     upload_callback=None,
+    upload_finish_callback=None,
+    on_stage=None,
 ) -> dict:
-    node_id, snapshot = await _selected_snapshot(db)
+    node_id, snapshot = await _workstation_snapshot(db)
     if not node_id or not snapshot or snapshot.get("protocol", 0) < 2:
-        raise LocalAIError("目前選用的自家 AI 電腦未支援 Workstation 工作。")
+        raise LocalAIError("自家 AI Workstation 未連線或未支援呢類工作。")
     return await _await_owner_loop(_run_workstation_on_runtime_loop(
         node_id=node_id,
         operation_id=operation_id,
@@ -402,4 +398,6 @@ async def run_workstation_job(
         stage=stage,
         payload=dict(payload or {}),
         upload_callback=upload_callback,
+        upload_finish_callback=upload_finish_callback,
+        on_stage=on_stage,
     ))

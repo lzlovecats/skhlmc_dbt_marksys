@@ -1,0 +1,5 @@
+httpx==0.28.1
+websockets==16.1
+
+# Qwen3-ASR stays in a separate GPU environment. The Debian package never runs
+# pip or downloads model weights during installation or request handling.

@@ -387,7 +387,7 @@
           ><button data-pane="research">🌐 搵料易</button
           ><button data-pane="live">🎙️ 打Free De</button
           ><button data-pane="mock">🏟️ 打Mock</button
-          ><button data-pane="localPractice">🤖 與自家AI練習</button
+          ><button data-pane="localPractice">🤖 __LMC_AI_PRACTICE_LABEL__</button
           ><button data-pane="room">🎧 連線練習</button>
         </nav>
         <section id="prep" class="pane active">
@@ -876,7 +876,7 @@
         </section>
         <section id="localPractice" class="pane">
           <form id="localPracticeForm" class="card">
-            <h2>與自家AI練習</h2>
+            <h2>__LMC_AI_PRACTICE_LABEL__</h2>
             <div id="localPracticeWarnings"></div>
             <div data-topic-source="topics" data-topic-target="localPracticeTopic"></div>
             <label>辯題<input id="localPracticeTopic" maxlength="500" required /></label>
@@ -907,12 +907,12 @@
             </p>
             <div class="notice">ℹ️ 自家AI將會使用「快速回覆」模式。</div>
             <div class="notice warn">
-              ⚠️ Workstation RAG／最新網頁搜尋尚未接駁時，練習只會使用自家模型已有知識，最新資料未能核實。
+              ⚠️ Workstation RAG 尚未接駁時，練習只會使用自家模型已有知識；目前不提供網頁搜尋。
             </div>
             <p class="caption">
               自家語音服務未準備好時仍可輸入文字；AI 讀音會依次嘗試自家 TTS、Azure TTS，最後保留文字。
             </p>
-            <button class="primary">開始與自家AI練習</button>
+            <button class="primary">開始__LMC_AI_PRACTICE_LABEL__</button>
           </form>
         </section>
         <section id="room" class="pane">

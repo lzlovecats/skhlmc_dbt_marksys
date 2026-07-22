@@ -1,0 +1,11 @@
+[Unit]
+Description=Evaluate LMC AI Workstation power schedule every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=lmc-ai-power.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,29 @@
+[Unit]
+Description=LMC AI Workstation Manager
+After=network-online.target ollama.service lmc-ai-privileged.service
+Wants=network-online.target
+Requires=lmc-ai-privileged.service
+
+[Service]
+Type=simple
+User=lmc-ai
+Group=lmc-ai
+SupplementaryGroups=video render
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.manager.main
+Restart=on-failure
+RestartSec=5
+UMask=0027
+StateDirectory=lmc-ai-workstation
+CacheDirectory=lmc-ai-workstation
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/lmc-ai-workstation /var/lib/lmc-ai-workstation /var/cache/lmc-ai-workstation /srv/lmc-ai/models /srv/lmc-ai/datasets /srv/lmc-ai/checkpoints /srv/lmc-ai/rag
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

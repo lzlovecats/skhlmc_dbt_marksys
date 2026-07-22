@@ -64,12 +64,6 @@ TABLE_LLM_TRAINING_SUBMISSIONS = "llm_training_submissions"
 TABLE_AI_DATASET_SNAPSHOTS = "ai_dataset_snapshots"
 TABLE_AI_DATASET_SNAPSHOT_ITEMS = "ai_dataset_snapshot_items"
 TABLE_AI_MODEL_VERSIONS = "ai_model_versions"
-TABLE_AI_EVAL_CASES = "ai_eval_cases"
-TABLE_AI_EVAL_CAMPAIGNS = "ai_eval_campaigns"
-TABLE_AI_EVAL_OUTPUTS = "ai_eval_outputs"
-TABLE_AI_EVAL_REVIEWS = "ai_eval_reviews"
-# Compatibility alias for the previous unprovisioned eval placeholder.
-TABLE_AI_EVAL_RUNS = TABLE_AI_EVAL_CAMPAIGNS
 TABLE_RAG_DOCUMENTS = "rag_documents"
 TABLE_RAG_CHUNKS = "rag_chunks"
 TABLE_AI_TRAINING_AUDIT = "ai_training_audit"
@@ -107,6 +101,7 @@ TABLE_OFFICIAL_AI_JUDGE_RUNS = "official_ai_judge_runs"
 TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS = "official_ai_judge_attempts"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
 TABLE_LMC_AI_NODES = "lmc_ai_nodes"
+TABLE_WORKSTATION_R2_HEALTH_PROBES = "workstation_r2_health_probes"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
@@ -2825,6 +2820,8 @@ CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_TRANSACTIONS} (
 
 # Table: AI_FUND_USAGE_LOGS
 # Estimated AI usage costs for transparency and monthly review.
+# ``lmc_ai_eval`` is retained only as a legacy shared-ledger value so existing
+# usage rows remain readable after the dedicated evaluation tables are removed.
 CREATE_AI_FUND_USAGE_LOGS = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_AI_FUND_USAGE_LOGS} (
     id                  SERIAL      PRIMARY KEY,
@@ -2896,8 +2893,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_LMC_AI_NODES} (
 );
 CREATE INDEX IF NOT EXISTS idx_lmc_ai_nodes_enabled_created
     ON {TABLE_LMC_AI_NODES}(enabled, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_lmc_ai_single_enabled_workstation
+    ON {TABLE_LMC_AI_NODES}(enabled) WHERE enabled = TRUE;
 COMMENT ON TABLE {TABLE_LMC_AI_NODES} IS
-    'skhlmc-feature:lmc_ai:20260720_0010';
+    'skhlmc-feature:lmc_ai:20260722_0003';
 
 REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM PUBLIC;
 DO $lmc_ai_privileges$
@@ -2916,164 +2915,51 @@ BEGIN
 END $lmc_ai_privileges$;
 """
 
-# Private, immutable inputs and campaign records for the fixed local-AI blind
-# evaluation. Browsers can only reach these tables through the server router.
-CREATE_AI_EVAL = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CASES} (
-    case_id TEXT PRIMARY KEY,
-    suite_id TEXT NOT NULL,
-    suite_version INTEGER NOT NULL CHECK (suite_version >= 1),
-    task_type TEXT NOT NULL CHECK (task_type IN (
-        'speech_review','strategy','attack_defence','mock_judgement','cantonese_style'
-    )),
-    title TEXT NOT NULL CHECK (CHAR_LENGTH(title) BETWEEN 1 AND 200),
-    input_json JSONB NOT NULL CHECK (JSONB_TYPEOF(input_json)='object'),
-    rubric_json JSONB NOT NULL CHECK (JSONB_TYPEOF(rubric_json)='object'),
-    reference_text TEXT NOT NULL CHECK (OCTET_LENGTH(reference_text) <= 16384),
-    content_hash TEXT NOT NULL UNIQUE CHECK (
-        CHAR_LENGTH(content_hash)=64 AND content_hash=LOWER(content_hash)
-        AND content_hash ~ '^[0-9a-f]+$'
-    ),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+# Short-lived direct-R2 functional probes issued to authenticated Workstations.
+# Object bytes remain private in R2 and a retention worker removes abandoned
+# uploads. One open row per node provides a hard abuse/concurrency bound.
+CREATE_WORKSTATION_R2_HEALTH_PROBES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_WORKSTATION_R2_HEALTH_PROBES} (
+    intent_id   TEXT        PRIMARY KEY,
+    node_id     TEXT        NOT NULL UNIQUE
+                            REFERENCES {TABLE_LMC_AI_NODES}(node_id)
+                            ON DELETE CASCADE,
+    object_key  TEXT        NOT NULL UNIQUE,
+    sha256      TEXT        NOT NULL,
+    byte_size   INTEGER     NOT NULL CHECK (byte_size > 0),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT workstation_r2_health_intent_id
+        CHECK (CHAR_LENGTH(intent_id) = 32 AND intent_id ~ '^[0-9a-f]+$'),
+    CONSTRAINT workstation_r2_health_object_key
+        CHECK (
+            CHAR_LENGTH(object_key) BETWEEN 1 AND 512
+            AND object_key LIKE 'pending/workstation-health/%'
+        ),
+    CONSTRAINT workstation_r2_health_sha256
+        CHECK (
+            CHAR_LENGTH(sha256) = 64
+            AND sha256 = LOWER(sha256)
+            AND sha256 ~ '^[0-9a-f]+$'
+        )
 );
-COMMENT ON TABLE {TABLE_AI_EVAL_CASES} IS 'skhlmc-feature:eval:20260721_0002';
+CREATE INDEX IF NOT EXISTS idx_workstation_r2_health_created
+    ON {TABLE_WORKSTATION_R2_HEALTH_PROBES}(created_at);
 
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_CAMPAIGNS} (
-    campaign_id TEXT PRIMARY KEY CHECK (CHAR_LENGTH(campaign_id)=32),
-    suite_id TEXT NOT NULL,
-    suite_version INTEGER NOT NULL,
-    suite_hash TEXT NOT NULL CHECK (CHAR_LENGTH(suite_hash)=64),
-    prompt_version INTEGER NOT NULL,
-    prompt_hash TEXT NOT NULL CHECK (CHAR_LENGTH(prompt_hash)=64),
-    persona_hash TEXT NOT NULL CHECK (CHAR_LENGTH(persona_hash)=64),
-    model_profile_version INTEGER NOT NULL,
-    model_manifest JSONB NOT NULL CHECK (JSONB_TYPEOF(model_manifest)='object'),
-    bound_node_id TEXT NOT NULL REFERENCES {TABLE_LMC_AI_NODES}(node_id) ON DELETE RESTRICT,
-    status TEXT NOT NULL CHECK (status IN ('generating','reviewing','closed','invalidated')),
-    created_by TEXT NOT NULL CHECK (CHAR_LENGTH(created_by) BETWEEN 1 AND 100),
-    note TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(note) <= 500),
-    required_votes INTEGER NOT NULL DEFAULT 3 CHECK (required_votes=3),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,
-    reviewing_at TIMESTAMPTZ,
-    closed_at TIMESTAMPTZ,
-    invalidated_at TIMESTAMPTZ,
-    invalidated_by TEXT CHECK (invalidated_by IS NULL OR CHAR_LENGTH(invalidated_by) BETWEEN 1 AND 100),
-    invalidation_reason TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(invalidation_reason) <= 500),
-    summary_json JSONB,
-    summary_hash TEXT CHECK (summary_hash IS NULL OR CHAR_LENGTH(summary_hash)=64),
-    exported_at TIMESTAMPTZ,
-    exported_by TEXT CHECK (exported_by IS NULL OR CHAR_LENGTH(exported_by) BETWEEN 1 AND 100),
-    CHECK (status<>'closed' OR (summary_json IS NOT NULL AND summary_hash IS NOT NULL)),
-    CHECK (
-        (exported_at IS NULL AND exported_by IS NULL)
-        OR
-        (exported_at IS NOT NULL AND exported_by IS NOT NULL
-         AND status IN ('closed','invalidated'))
-    )
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_eval_one_active_campaign
-    ON {TABLE_AI_EVAL_CAMPAIGNS} ((TRUE))
-    WHERE status IN ('generating','reviewing');
-
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_OUTPUTS} (
-    campaign_id TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CAMPAIGNS}(campaign_id) ON DELETE RESTRICT,
-    case_id TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CASES}(case_id) ON DELETE RESTRICT,
-    mode TEXT NOT NULL CHECK (mode IN ('daily','complex','deep')),
-    generation_order SMALLINT NOT NULL CHECK (generation_order BETWEEN 0 AND 2),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','succeeded','failed')),
-    attempt_count SMALLINT NOT NULL DEFAULT 0 CHECK (attempt_count BETWEEN 0 AND 3),
-    active_attempt SMALLINT CHECK (active_attempt BETWEEN 1 AND 3),
-    lease_token TEXT,
-    lease_expires_at TIMESTAMPTZ,
-    operation_id TEXT CHECK (operation_id IS NULL OR CHAR_LENGTH(operation_id) <= 200),
-    model_tag TEXT,
-    model_digest TEXT CHECK (model_digest IS NULL OR CHAR_LENGTH(model_digest)=64),
-    model_profile_version INTEGER,
-    runtime_name TEXT,
-    runtime_version TEXT,
-    backend_fingerprint TEXT CHECK (backend_fingerprint IS NULL OR CHAR_LENGTH(backend_fingerprint)=64),
-    persona_hash TEXT CHECK (persona_hash IS NULL OR CHAR_LENGTH(persona_hash)=64),
-    prompt_hash TEXT CHECK (prompt_hash IS NULL OR CHAR_LENGTH(prompt_hash)=64),
-    thinking_enabled BOOLEAN,
-    answer_text TEXT CHECK (answer_text IS NULL OR OCTET_LENGTH(answer_text) <= 16384),
-    answer_hash TEXT CHECK (answer_hash IS NULL OR CHAR_LENGTH(answer_hash)=64),
-    input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
-    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
-    duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
-    error_code TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(error_code) <= 80),
-    error_message TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(error_message) <= 500),
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (campaign_id,case_id,mode),
-    UNIQUE (campaign_id,case_id,generation_order)
-);
-CREATE INDEX IF NOT EXISTS idx_ai_eval_outputs_claim
-    ON {TABLE_AI_EVAL_OUTPUTS}(campaign_id,status,generation_order,case_id);
-
-CREATE TABLE IF NOT EXISTS {TABLE_AI_EVAL_REVIEWS} (
-    review_id TEXT PRIMARY KEY CHECK (CHAR_LENGTH(review_id)=32),
-    campaign_id TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CAMPAIGNS}(campaign_id) ON DELETE RESTRICT,
-    case_id TEXT NOT NULL REFERENCES {TABLE_AI_EVAL_CASES}(case_id) ON DELETE RESTRICT,
-    pair_key TEXT NOT NULL CHECK (pair_key IN ('daily_complex','daily_deep','complex_deep')),
-    reviewer_user_id TEXT NOT NULL REFERENCES {TABLE_ACCOUNTS}(user_id) ON DELETE RESTRICT,
-    left_mode TEXT NOT NULL CHECK (left_mode IN ('daily','complex','deep')),
-    right_mode TEXT NOT NULL CHECK (right_mode IN ('daily','complex','deep')),
-    overall TEXT CHECK (overall IN ('left','right','tie','both_bad')),
-    cantonese TEXT CHECK (cantonese IN ('left','right','tie','both_bad')),
-    reasoning TEXT CHECK (reasoning IN ('left','right','tie','both_bad')),
-    usefulness TEXT CHECK (usefulness IN ('left','right','tie','both_bad')),
-    factual TEXT CHECK (factual IN ('left','right','tie','both_bad')),
-    privacy TEXT CHECK (privacy IN ('left','right','tie','both_bad')),
-    note TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(note) <= 500),
-    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'),
-    released_at TIMESTAMPTZ,
-    released_by TEXT CHECK (released_by IS NULL OR CHAR_LENGTH(released_by) BETWEEN 1 AND 100),
-    release_reason TEXT NOT NULL DEFAULT '' CHECK (CHAR_LENGTH(release_reason) <= 500),
-    submitted_at TIMESTAMPTZ,
-    UNIQUE (campaign_id,case_id,pair_key,reviewer_user_id),
-    CHECK (left_mode<>right_mode),
-    CHECK (expires_at>assigned_at),
-    CHECK (
-        (released_at IS NULL AND released_by IS NULL AND release_reason='')
-        OR
-        (released_at IS NOT NULL AND released_by IS NOT NULL AND submitted_at IS NULL)
-    ),
-    CHECK (
-        (submitted_at IS NULL AND overall IS NULL AND cantonese IS NULL
-         AND reasoning IS NULL AND usefulness IS NULL AND factual IS NULL AND privacy IS NULL)
-        OR
-        (submitted_at IS NOT NULL AND overall IS NOT NULL AND cantonese IS NOT NULL
-         AND reasoning IS NOT NULL AND usefulness IS NOT NULL AND factual IS NOT NULL AND privacy IS NOT NULL)
-    )
-);
-CREATE INDEX IF NOT EXISTS idx_ai_eval_reviews_quorum
-    ON {TABLE_AI_EVAL_REVIEWS}(campaign_id,case_id,pair_key,submitted_at);
-CREATE INDEX IF NOT EXISTS idx_ai_eval_reviews_pending
-    ON {TABLE_AI_EVAL_REVIEWS}(campaign_id,reviewer_user_id,expires_at)
-    WHERE submitted_at IS NULL AND released_at IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_eval_usage_operation_stage
-    ON {TABLE_AI_FUND_USAGE_LOGS}(operation_id,operation_stage)
-    WHERE feature='lmc_ai_eval';
-"""
-
-LOCK_AI_EVAL_PRIVILEGES = f"""
-REVOKE ALL PRIVILEGES ON TABLE {TABLE_AI_EVAL_CASES}, {TABLE_AI_EVAL_CAMPAIGNS},
-    {TABLE_AI_EVAL_OUTPUTS}, {TABLE_AI_EVAL_REVIEWS} FROM PUBLIC;
-DO $$
-DECLARE role_name TEXT;
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_WORKSTATION_R2_HEALTH_PROBES} FROM PUBLIC;
+DO $workstation_r2_health_privileges$
+DECLARE
+    role_name TEXT;
 BEGIN
-    FOR role_name IN SELECT rolname FROM pg_roles
-        WHERE rolname IN ('anon','authenticated')
+    FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated']
     LOOP
-        EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE {TABLE_AI_EVAL_CASES}, {TABLE_AI_EVAL_CAMPAIGNS}, {TABLE_AI_EVAL_OUTPUTS}, {TABLE_AI_EVAL_REVIEWS} FROM '
-            || quote_ident(role_name);
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+            EXECUTE FORMAT(
+                'REVOKE ALL PRIVILEGES ON TABLE {TABLE_WORKSTATION_R2_HEALTH_PROBES} FROM %I',
+                role_name
+            );
+        END IF;
     END LOOP;
-END $$;
+END $workstation_r2_health_privileges$;
 """
 
 # Table: LATENESS_FUND_RECORDS
@@ -3585,8 +3471,7 @@ ALL_SCHEMAS = [
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
     CREATE_AI_FUND_USAGE_LOGS,        # → accounts
     CREATE_LMC_AI_NODES,              # private local-AI computer registry
-    CREATE_AI_EVAL,                    # fixed local-AI blind evaluation
-    LOCK_AI_EVAL_PRIVILEGES,
+    CREATE_WORKSTATION_R2_HEALTH_PROBES,  # bounded direct-R2 health intents
     CREATE_LATENESS_FUND_RECORDS,     # → accounts
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps
@@ -3649,16 +3534,12 @@ def init_db(conn) -> None:
             for ddl in ALL_SCHEMAS:
                 s.execute(text(ddl))
             from core.ai_training_defaults import seed_default_tts_scripts
-            from core.ai_eval_defaults import seed_default_eval_cases
             seed_default_tts_scripts(s)
-            seed_default_eval_cases(s)
             s.commit()
     else:
         _assert_bootstrap_target(conn)
         for ddl in ALL_SCHEMAS:
             conn.execute(text(ddl))
         from core.ai_training_defaults import seed_default_tts_scripts
-        from core.ai_eval_defaults import seed_default_eval_cases
         seed_default_tts_scripts(conn)
-        seed_default_eval_cases(conn)
         conn.commit()

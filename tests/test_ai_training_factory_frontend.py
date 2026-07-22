@@ -95,6 +95,27 @@ def test_factory_preview_requires_exact_payload_and_all_confirmations():
     assert "factoryState.bootstrap?.third_party_warning" in FACTORY_SCRIPT
 
 
+def test_factory_generation_shows_a_written_chinese_ai_progress_caption():
+    assert 'id="factoryGenerateStatus"' in PAGE
+    assert 'role="status"' in PAGE
+    assert 'aria-live="polite"' in PAGE
+
+    generate = FACTORY_SCRIPT.split("async function generateFactoryJob", 1)[1].split(
+        "function renderFactoryJobs", 1
+    )[0]
+    request = generate.index(
+        "/api/ai-training/factory/jobs/${encodeURIComponent(jobId)}/generate"
+    )
+    assert generate.index('"AI 正在生成資料，請稍候。"') < request
+    assert generate.index('classList.remove("hidden")') < request
+    assert '$("factoryPreviewCancel").disabled = true;' in generate
+    assert '$("factoryGenerateBtn").textContent = "AI 正在生成資料…";' in generate
+    assert 'classList.add("hidden")' in generate.split("} finally {", 1)[1]
+    assert '$("factoryPreviewCancel").disabled = false;' in generate.split(
+        "} finally {", 1
+    )[1]
+
+
 def test_factory_matches_generic_api_ids_and_pagination_shape():
     factory_id = FACTORY_SCRIPT.split("factoryId = (item)", 1)[1].split(
         "factoryPageCount", 1

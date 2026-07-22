@@ -6,7 +6,6 @@ from ai_name import LMC_AI_MODEL_LABEL
 # Local committee AI node defaults. Runtime code must never pull a model itself;
 # preflight advertises only models which passed the GPU/offload gate.
 LMC_AI_MODEL_PROFILE_VERSION = 5
-LMC_AI_DEFAULT_MODEL_SET = "gemma"
 LMC_AI_DEFAULT_MODE = "daily"
 
 # Keep each user-facing tier independently switchable even when two tiers use
@@ -15,26 +14,21 @@ LMC_AI_FAST_MODEL_TAG = "gemma4:e2b-it-qat"
 LMC_AI_DAILY_MODEL_TAG = "gemma4:e4b-it-qat"
 LMC_AI_DEEP_MODEL_TAG = "gemma4:e4b-it-qat"
 
-LMC_AI_MODEL_SETS = {
-    "gemma": {
-        "label": "Gemma 4",
-        "modes": {
-            "fast": {
-                "label": "快速回覆",
-                "model": LMC_AI_FAST_MODEL_TAG,
-                "thinking": False,
-            },
-            "daily": {
-                "label": "日常預設",
-                "model": LMC_AI_DAILY_MODEL_TAG,
-                "thinking": False,
-            },
-            "deep": {
-                "label": "深入思考",
-                "model": LMC_AI_DEEP_MODEL_TAG,
-                "thinking": True,
-            },
-        },
+LMC_AI_MODE_OPTIONS = {
+    "fast": {
+        "label": "快速回覆",
+        "model": LMC_AI_FAST_MODEL_TAG,
+        "thinking": False,
+    },
+    "daily": {
+        "label": "日常預設",
+        "model": LMC_AI_DAILY_MODEL_TAG,
+        "thinking": False,
+    },
+    "deep": {
+        "label": "深入思考",
+        "model": LMC_AI_DEEP_MODEL_TAG,
+        "thinking": True,
     },
 }
 
@@ -46,23 +40,8 @@ LMC_AI_FEATURE_MODES = {
     "ai_coach": "daily",
 }
 
-# Phase-2 evaluation database rows retain their original immutable mode IDs;
-# this maps them onto the current three user-facing tiers.
-LMC_AI_EVAL_MODE_TIERS = {
-    "daily": "fast",
-    "complex": "daily",
-    "deep": "deep",
-}
-
-
-def resolve_lmc_ai_model_set(value: object = None) -> str:
-    selected = str(value or LMC_AI_DEFAULT_MODEL_SET).strip().lower()
-    return selected if selected in LMC_AI_MODEL_SETS else LMC_AI_DEFAULT_MODEL_SET
-
-
-def resolve_lmc_ai_mode_options(model_set: object = None) -> dict:
-    selected = resolve_lmc_ai_model_set(model_set)
-    return LMC_AI_MODEL_SETS[selected]["modes"]
+def resolve_lmc_ai_mode_options() -> dict:
+    return LMC_AI_MODE_OPTIONS
 
 
 def get_lmc_ai_feature_mode(feature: str) -> str:
@@ -75,30 +54,22 @@ def get_lmc_ai_feature_mode(feature: str) -> str:
 def lmc_ai_all_models() -> tuple[str, ...]:
     return tuple(dict.fromkeys(
         str(config["model"])
-        for model_set in LMC_AI_MODEL_SETS.values()
-        for config in model_set["modes"].values()
+        for config in LMC_AI_MODE_OPTIONS.values()
     ))
 
 
-def lmc_ai_required_models(model_set: object = None) -> tuple[str, ...]:
+def lmc_ai_required_models() -> tuple[str, ...]:
     return tuple(dict.fromkeys(
         str(config["model"])
-        for config in resolve_lmc_ai_mode_options(model_set).values()
+        for config in LMC_AI_MODE_OPTIONS.values()
     ))
 
 
-def lmc_ai_available_model_sets(models: object) -> tuple[str, ...]:
+def lmc_ai_models_ready(models: object) -> bool:
     advertised = {str(model) for model in (models or ()) if str(model)}
-    return tuple(
-        model_set
-        for model_set in LMC_AI_MODEL_SETS
-        if set(lmc_ai_required_models(model_set)).issubset(advertised)
-    )
+    return set(lmc_ai_required_models()).issubset(advertised)
 
 
-# Compatibility names retained for installed node code and existing imports.
-# Runtime routing still resolves the selected Gemma mode explicitly.
-LMC_AI_MODE_OPTIONS = resolve_lmc_ai_mode_options(LMC_AI_DEFAULT_MODEL_SET)
 LMC_AI_DEFAULT_MODEL = LMC_AI_MODE_OPTIONS["fast"]["model"]
 LMC_AI_DEEP_MODEL = LMC_AI_MODE_OPTIONS["deep"]["model"]
 # The legacy names do not enable automatic model fallback. They identify the
@@ -107,8 +78,7 @@ LMC_AI_PRIMARY_MODEL = LMC_AI_DEFAULT_MODEL
 LMC_AI_FALLBACK_MODEL = LMC_AI_DEEP_MODEL
 LMC_AI_CONTEXT_LENGTH = 8192
 
-# This option represents the outbound committee-node runtime, not the separate
-# registry-gated OpenAI-compatible CUSTOM_LLM_OPTION below.
+# This is the one self-hosted runtime: an outbound Workstation connection.
 LMC_AI_INTERACTIVE_OPTION = {
     "label": LMC_AI_MODEL_LABEL,
     "provider": "custom",
@@ -120,7 +90,7 @@ LMC_AI_INTERACTIVE_OPTION = {
     "audio_input_price_per_million": 0,
     "output_price_per_million": 0,
     "web_search_price_per_call": 0,
-    "pricing_note": "由目前選用的自家 AI 電腦處理；內容不會自動轉交雲端模型。",
+    "pricing_note": "由唯一自家 AI Workstation 處理；內容不會自動轉交雲端模型。",
     "paid_rate_note": "沒有按 token 收費；電力及硬件成本另計。",
     "selection_label": "日常預設",
     "pricing_label": "自家",
@@ -356,29 +326,6 @@ GEMINI_LIVE_PROVIDER = "gemini"
 RAG_EMBEDDING_MODEL = "gemini-embedding-2"
 RAG_EMBEDDING_VERSION = "gemini-embedding-2@2026-04"
 LOCAL_TTS_TRAINING_ENGINE = "GPT-SoVITS"
-
-# Deployment-selected models/providers are dynamic values rather than fixed
-# public model slugs, but their selectors and defaults are still model choices.
-# Keep those names here too so API/proxy modules never invent a second source
-# of truth for a custom LLM, custom TTS checkpoint or Azure voice.
-CUSTOM_LLM_OPTION = {
-    "label": "自家辯論 LLM",
-    "provider": "custom",
-    "base_url_secret": "CUSTOM_LLM_BASE_URL",
-    "model_secret": "CUSTOM_LLM_MODEL",
-    "api_key_secret": "CUSTOM_LLM_API_KEY",
-    "registry_model_type": "llm",
-    "supports_audio": False,
-    "supports_web_search": False,
-    "input_price_per_million": 0,
-    "output_price_per_million": 0,
-    "web_search_price_per_call": 0,
-    "pricing_note": "自家OpenAI-compatible endpoint。",
-    "paid_rate_note": "成本由本地／GPU服務承擔。",
-    "selection_label": "自家模型",
-    "pricing_label": "自家",
-    "is_premium": False,
-}
 
 TTS_PROVIDER_SECRET = "TTS_PROVIDER"
 AZURE_TTS_PROVIDER = "azure"

@@ -66,12 +66,6 @@
       requestGeneration: Object.create(null),
       loading: Object.create(null),
     };
-  const localEvalState = {
-    bootstrap: null,
-    assignments: [],
-    busy: false,
-    generation: 0,
-  };
   const toast = (x) => VoteUI.toast($("toast"), x),
     busy = (x) => VoteUI.setBusy($("busy"), x),
     api = async (url, opt = {}) => {
@@ -874,7 +868,11 @@
     $("factoryRightsConfirmed").checked = false;
     $("factoryAnonymizedConfirmed").checked = false;
     $("factoryThirdPartyConfirmed").checked = false;
+    $("factoryGenerateStatus").textContent = "";
+    $("factoryGenerateStatus").classList.add("hidden");
+    $("factoryPreviewCancel").disabled = false;
     $("factoryGenerateBtn").disabled = false;
+    $("factoryGenerateBtn").textContent = "確認並生成";
     $("factoryPreviewDialog").showModal();
   }
 
@@ -1042,6 +1040,10 @@
     );
     if (!jobId) return toast("⚠️ 預覽缺少工作識別碼，請重新預覽。");
     factorySetLoading("generate", true, $("factoryGenerateBtn"));
+    $("factoryGenerateStatus").textContent = "AI 正在生成資料，請稍候。";
+    $("factoryGenerateStatus").classList.remove("hidden");
+    $("factoryPreviewCancel").disabled = true;
+    $("factoryGenerateBtn").textContent = "AI 正在生成資料…";
     try {
       await api(
         `/api/ai-training/factory/jobs/${encodeURIComponent(jobId)}/generate`,
@@ -1074,6 +1076,10 @@
       );
       await loadFactoryJobs(true);
     } finally {
+      $("factoryGenerateStatus").textContent = "";
+      $("factoryGenerateStatus").classList.add("hidden");
+      $("factoryPreviewCancel").disabled = false;
+      $("factoryGenerateBtn").textContent = "確認並生成";
       factorySetLoading("generate", false, $("factoryGenerateBtn"));
     }
   }
@@ -1926,464 +1932,6 @@
         }),
     );
   }
-  function localEvalDate(value) {
-    if (!value) return "—";
-    const date = new Date(value);
-    return Number.isNaN(date.getTime())
-      ? String(value)
-      : date.toLocaleString("zh-HK");
-  }
-
-  function setLocalEvalNotice(message, kind = "") {
-    const notice = $("localEvalNotice");
-    notice.className = `notice${kind ? ` ${kind}` : ""}`;
-    notice.textContent = message || "";
-    notice.classList.toggle("hidden", !message);
-  }
-
-  function localEvalMetric(label, value, current = 0, maximum = 0) {
-    const card = document.createElement("div");
-    card.className = "local-eval-metric";
-    const number = document.createElement("strong");
-    number.textContent = String(value);
-    const caption = document.createElement("span");
-    caption.className = "caption";
-    caption.textContent = label;
-    card.append(number, caption);
-    if (maximum > 0) {
-      const progress = document.createElement("progress");
-      progress.max = maximum;
-      progress.value = Math.min(maximum, Math.max(0, current));
-      progress.setAttribute("aria-label", label);
-      card.append(progress);
-    }
-    return card;
-  }
-
-  function localEvalButton(label, handler, options = {}) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.className = options.className || "";
-    button.disabled = Boolean(options.disabled || localEvalState.busy);
-    button.onclick = handler;
-    return button;
-  }
-
-  function renderLocalEvalStages(status) {
-    const stages = [
-      $("localEvalStageGenerate"),
-      $("localEvalStageReview"),
-      $("localEvalStageResults"),
-    ];
-    stages.forEach((stage) => stage.classList.remove("active", "done"));
-    if (status === "generating") stages[0].classList.add("active");
-    if (status === "reviewing") {
-      stages[0].classList.add("done");
-      stages[1].classList.add("active");
-    }
-    if (status === "closed") {
-      stages[0].classList.add("done");
-      stages[1].classList.add("done");
-      stages[2].classList.add("active", "done");
-    }
-  }
-
-  function renderLocalEvalResults(summary) {
-    const section = $("localEvalResults");
-    const body = $("localEvalResultsBody");
-    body.replaceChildren();
-    section.classList.toggle("hidden", !summary);
-    if (!summary) return;
-
-    const modeLabels = localEvalState.bootstrap?.manager?.mode_labels || {};
-    const tableWrap = document.createElement("div");
-    tableWrap.className = "table-wrap";
-    const scoreTable = document.createElement("table");
-    const head = document.createElement("tr");
-    ["回答模式", "整體", "粵語", "推理", "實用", "事實", "私隱安全"].forEach((label) => {
-      const cell = document.createElement("th");
-      cell.textContent = label;
-      head.append(cell);
-    });
-    const thead = document.createElement("thead");
-    thead.append(head);
-    scoreTable.append(thead);
-    const tbody = document.createElement("tbody");
-    Object.entries(summary.mode_scores || {}).forEach(([mode, scores]) => {
-      const row = document.createElement("tr");
-      [
-        modeLabels[mode] || mode,
-        scores.overall,
-        scores.cantonese,
-        scores.reasoning,
-        scores.usefulness,
-        scores.factual,
-        scores.privacy,
-      ].forEach((value, index) => {
-        const cell = document.createElement(index ? "td" : "th");
-        cell.textContent = index
-          ? `${(Number(value || 0) * 100).toFixed(1)}%`
-          : String(value);
-        row.append(cell);
-      });
-      tbody.append(row);
-    });
-    scoreTable.append(tbody);
-    tableWrap.append(scoreTable);
-
-    const risk = document.createElement("p");
-    risk.className = "caption";
-    risk.textContent = `兩個回答都不合格：${(summary.both_bad_cases || []).length} 題；私隱／安全雙失敗：${(summary.safety_failure_cases || []).length} 題。`;
-    const details = document.createElement("details");
-    const title = document.createElement("summary");
-    title.textContent = "查看各組模式比較";
-    const list = document.createElement("ul");
-    Object.values(summary.head_to_head || {}).forEach((pair) => {
-      const item = document.createElement("li");
-      item.textContent = `${modeLabels[pair.mode_a] || pair.mode_a} 勝 ${Number(pair.mode_a_wins || 0)}；${modeLabels[pair.mode_b] || pair.mode_b} 勝 ${Number(pair.mode_b_wins || 0)}；相若 ${Number(pair.ties || 0)}；兩個都不合格 ${Number(pair.both_bad || 0)}`;
-      list.append(item);
-    });
-    details.append(title, list);
-    body.append(tableWrap, risk, details);
-  }
-
-  function renderLocalEvalAssignments(campaign) {
-    const section = $("localEvalAssignmentsCard");
-    const list = $("localEvalAssignments");
-    const assignments = localEvalState.assignments;
-    section.classList.toggle("hidden", campaign?.status !== "reviewing");
-    list.replaceChildren();
-    if (campaign?.status !== "reviewing") return;
-    if (!assignments.length) {
-      const empty = document.createElement("p");
-      empty.className = "caption";
-      empty.textContent = "目前沒有尚未提交的比較。";
-      list.append(empty);
-      return;
-    }
-    const modeLabels = localEvalState.bootstrap?.manager?.mode_labels || {};
-    const pairLabels = {
-      daily_complex: `${modeLabels.daily || "daily"} vs ${modeLabels.complex || "complex"}`,
-      daily_deep: `${modeLabels.daily || "daily"} vs ${modeLabels.deep || "deep"}`,
-      complex_deep: `${modeLabels.complex || "complex"} vs ${modeLabels.deep || "deep"}`,
-    };
-    assignments.forEach((item) => {
-      const row = document.createElement("article");
-      row.className = "local-eval-row";
-      const heading = document.createElement("strong");
-      heading.textContent = pairLabels[item.pair_key] || "匿名回答比較";
-      const meta = document.createElement("p");
-      meta.className = "caption";
-      meta.textContent = `${item.case_id}・${item.expired ? "已逾時" : `到期：${localEvalDate(item.expires_at)}`}`;
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      actions.append(localEvalButton("提早釋放", () => releaseLocalEvalAssignment(item.review_id), { className: "danger" }));
-      row.append(heading, meta, actions);
-      list.append(row);
-    });
-  }
-
-  function renderLocalEvalHistory() {
-    const list = $("localEvalHistory");
-    list.replaceChildren();
-    const campaigns = Array.isArray(localEvalState.bootstrap?.campaigns)
-      ? localEvalState.bootstrap.campaigns
-      : [];
-    if (!campaigns.length) {
-      const empty = document.createElement("p");
-      empty.className = "caption";
-      empty.textContent = "尚未建立任何評測。";
-      list.append(empty);
-      return;
-    }
-    const labels = {
-      generating: "準備回答中",
-      reviewing: "收集回饋中",
-      closed: "已完成",
-      invalidated: "已作廢",
-    };
-    campaigns.forEach((item, index) => {
-      const row = document.createElement("article");
-      row.className = "local-eval-row";
-      const header = document.createElement("div");
-      header.className = "local-eval-history-head";
-      const summary = document.createElement("div");
-      const heading = document.createElement("strong");
-      heading.textContent = `${index === 0 ? "最新・" : ""}${labels[item.status] || item.status}`;
-      const date = document.createElement("p");
-      date.className = "caption";
-      date.textContent = `建立時間：${localEvalDate(item.created_at)}${item.exported_at ? `・已下載完整紀錄：${localEvalDate(item.exported_at)}` : ""}`;
-      const identifier = document.createElement("div");
-      identifier.className = "local-eval-id";
-      identifier.textContent = `測試編號：${item.campaign_id}`;
-      summary.append(heading, date, identifier);
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      if (["closed", "invalidated"].includes(item.status)) {
-        const requiresExport = item.status === "closed" && !item.exported_at;
-        actions.append(localEvalButton("下載完整紀錄", () => downloadLocalEval(item.campaign_id)));
-        actions.append(localEvalButton("清除資料", () => purgeLocalEval(item.campaign_id, item.status), {
-          className: "danger",
-          disabled: requiresExport,
-        }));
-      }
-      header.append(summary, actions);
-      row.append(header);
-      if (item.status === "closed" && !item.exported_at) {
-        const hint = document.createElement("p");
-        hint.className = "caption";
-        hint.textContent = "已完成測試要先下載完整紀錄，清除按鈕先會開放。";
-        row.append(hint);
-      } else if (item.status === "invalidated" && !item.exported_at) {
-        const hint = document.createElement("p");
-        hint.className = "caption";
-        hint.textContent = "已作廢測試可以直接清除；完整紀錄仍可按需要先下載。";
-        row.append(hint);
-      }
-      list.append(row);
-    });
-  }
-
-  function renderLocalEval() {
-    const payload = localEvalState.bootstrap;
-    const campaign = payload?.campaign;
-    const progress = payload?.progress || {};
-    const status = campaign?.status || "";
-    const statusLabels = {
-      generating: "準備回答中",
-      reviewing: "收集回饋中",
-      closed: "已完成",
-      invalidated: "已作廢",
-    };
-    const statusNode = $("localEvalStatus");
-    statusNode.className = `local-eval-status${status ? ` ${status}` : ""}`;
-    statusNode.textContent = statusLabels[status] || "未有測試";
-    $("localEvalCurrentId").textContent = campaign
-      ? `測試編號：${campaign.campaign_id}`
-      : "";
-    renderLocalEvalStages(status);
-
-    const metrics = $("localEvalMetrics");
-    metrics.replaceChildren();
-    const succeeded = Number(progress.generation?.succeeded || 0);
-    const failed = Number(progress.generation?.failed || 0);
-    const answerTotal = Number(progress.generation?.total || 0);
-    const submitted = Number(progress.quorum?.submitted || 0);
-    const required = Number(progress.quorum?.required || 0);
-    const covered = Number(progress.quorum?.covered_pairs || 0);
-    const pairs = Number(progress.quorum?.total_pairs || 0);
-    if (campaign) {
-      metrics.append(
-        localEvalMetric("已準備回答", `${succeeded} / ${answerTotal}`, succeeded, answerTotal),
-        localEvalMetric("已有回饋的比較", `${covered} / ${pairs}`, covered, pairs),
-        localEvalMetric("已收集回饋", `${submitted} / ${required}`, submitted, required),
-      );
-    }
-
-    const buttonIds = [
-      "localEvalCreate",
-      "localEvalGenerate",
-      "localEvalOpen",
-      "localEvalClose",
-      "localEvalInvalidate",
-      "localEvalRefresh",
-    ];
-    buttonIds.forEach((id) => { $(id).disabled = localEvalState.busy; });
-    $("localEvalCreate").classList.toggle("hidden", !payload?.can_create_campaign);
-    $("localEvalGenerate").classList.toggle("hidden", status !== "generating");
-    $("localEvalOpen").classList.toggle("hidden", status !== "generating");
-    $("localEvalClose").classList.toggle("hidden", status !== "reviewing");
-    $("localEvalDanger").classList.toggle("hidden", !campaign || status === "invalidated");
-    $("localEvalGenerate").disabled = localEvalState.busy || (answerTotal > 0 && succeeded >= answerTotal);
-    $("localEvalOpen").disabled = localEvalState.busy || answerTotal <= 0 || succeeded < answerTotal;
-    $("localEvalClose").disabled = localEvalState.busy || submitted < required || covered < pairs;
-
-    if (!campaign) {
-      $("localEvalTitle").textContent = "建立新一輪測試";
-      $("localEvalDetail").textContent = "每輪使用固定題目，並為三種回答模式準備匿名答案。";
-      $("localEvalActionHelp").textContent = "建立時會鎖定目前選用的 AI 電腦、模型版本及提示設定。";
-    } else if (status === "generating") {
-      $("localEvalTitle").textContent = "第 1 步：準備固定回答";
-      $("localEvalDetail").textContent = "每次生成一個回答；系統會保留已完成項目，失敗項目可以安全重試。";
-      $("localEvalActionHelp").textContent = answerTotal > 0 && succeeded >= answerTotal
-        ? `${answerTotal} 個回答已經全部準備好，可以開放委員回饋。`
-        : `尚欠 ${Math.max(0, answerTotal - succeeded)} 個回答${failed ? `；有 ${failed} 個項目等待重試` : ""}。AI 電腦需要保持在線及空閒。`;
-    } else if (status === "reviewing") {
-      $("localEvalTitle").textContent = "第 2 步：收集委員回饋";
-      $("localEvalDetail").textContent = "委員會喺自家 AI 的「測試並回饋」分頁匿名比較回答。";
-      $("localEvalActionHelp").textContent = submitted >= required && covered >= pairs
-        ? "所有比較已收齊回饋，可以結束收集並建立結果。"
-        : `仍需收集 ${Math.max(0, required - submitted)} 份回饋；未齊之前不能建立結果。`;
-    } else if (status === "closed") {
-      $("localEvalTitle").textContent = "第 3 步：結果已建立";
-      $("localEvalDetail").textContent = "請檢視描述性結果，並下載完整紀錄作留存。";
-      $("localEvalActionHelp").textContent = payload?.can_create_campaign
-        ? "可以建立新一輪測試；舊結果會保留喺下方紀錄。"
-        : "請先處理或清除舊紀錄，保留數量低於上限後先可建立新一輪。";
-    } else {
-      $("localEvalTitle").textContent = "今輪測試已作廢";
-      $("localEvalDetail").textContent = "系統不會再派發今輪比較，資料仍保留供下載及審計。";
-      $("localEvalActionHelp").textContent = payload?.can_create_campaign
-        ? "可以建立新一輪測試。"
-        : "已達保留上限；下載紀錄後可清除不再需要的舊測試。";
-    }
-
-    renderLocalEvalResults(status === "closed" ? payload?.manager?.summary : null);
-    renderLocalEvalAssignments(campaign);
-    renderLocalEvalHistory();
-  }
-
-  async function loadLocalEvalManager() {
-    const generation = ++localEvalState.generation;
-    setLocalEvalNotice("正在讀取評測狀態…");
-    try {
-      const payload = await api("/api/lmc-ai/ab-tests/bootstrap", { method: "GET" });
-      if (generation !== localEvalState.generation) return;
-      localEvalState.bootstrap = payload;
-      localEvalState.assignments = [];
-      if (payload.campaign?.status === "reviewing") {
-        const pending = await api(
-          `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(payload.campaign.campaign_id)}/assignments`,
-          { method: "GET" },
-        );
-        if (generation !== localEvalState.generation) return;
-        localEvalState.assignments = Array.isArray(pending.assignments)
-          ? pending.assignments
-          : [];
-      }
-      setLocalEvalNotice("評測狀態已更新。", "ok");
-      renderLocalEval();
-    } catch (error) {
-      if (generation !== localEvalState.generation) return;
-      setLocalEvalNotice(error.message || "未能讀取評測狀態。", "err");
-      renderLocalEval();
-    }
-  }
-
-  async function localEvalAction(path, body, successMessage) {
-    if (localEvalState.busy) return;
-    localEvalState.busy = true;
-    renderLocalEval();
-    setLocalEvalNotice("正在處理，請勿關閉頁面…", "warn");
-    try {
-      await api(path, {
-        method: "POST",
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      toast(`✅ ${successMessage}`);
-      await loadLocalEvalManager();
-    } catch (error) {
-      setLocalEvalNotice(error.message || "評測操作失敗。", "err");
-    } finally {
-      localEvalState.busy = false;
-      renderLocalEval();
-    }
-  }
-
-  function askLocalEvalAction({ title, text, reason = false, confirmation = "", danger = false }) {
-    return new Promise((resolve) => {
-      const dialog = $("localEvalActionDialog");
-      const reasonInput = $("localEvalReason");
-      const confirmationInput = $("localEvalConfirmation");
-      $("localEvalActionTitle").textContent = title;
-      $("localEvalActionText").textContent = text;
-      $("localEvalReasonWrap").classList.toggle("hidden", !reason);
-      $("localEvalConfirmationWrap").classList.toggle("hidden", !confirmation);
-      reasonInput.value = "";
-      reasonInput.required = reason;
-      confirmationInput.value = "";
-      confirmationInput.required = Boolean(confirmation);
-      confirmationInput.setCustomValidity("");
-      confirmationInput.oninput = () => confirmationInput.setCustomValidity(
-        confirmation && confirmationInput.value !== confirmation
-          ? "必須輸入完整測試編號。"
-          : "",
-      );
-      const confirmButton = $("localEvalActionConfirm");
-      confirmButton.className = danger ? "danger" : "primary";
-      confirmButton.textContent = danger ? "確認執行" : "確認";
-      dialog.returnValue = "";
-      dialog.onclose = () => {
-        if (dialog.returnValue !== "ok") {
-          resolve(null);
-          return;
-        }
-        resolve({
-          reason: reasonInput.value.trim(),
-          confirmation: confirmationInput.value.trim(),
-        });
-      };
-      dialog.showModal();
-    });
-  }
-
-  async function downloadLocalEval(campaignId) {
-    if (localEvalState.busy) return;
-    localEvalState.busy = true;
-    renderLocalEval();
-    setLocalEvalNotice("正在準備完整紀錄…", "warn");
-    try {
-      const response = await fetch(
-        `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/export.json`,
-        { method: "POST", credentials: "same-origin", cache: "no-store" },
-      );
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || `HTTP ${response.status}`);
-      }
-      const blobValue = await response.blob();
-      const url = URL.createObjectURL(blobValue);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `lmc-ai-eval-${campaignId}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      toast("✅ 完整紀錄已下載");
-      await loadLocalEvalManager();
-    } catch (error) {
-      setLocalEvalNotice(error.message || "未能下載完整紀錄。", "err");
-    } finally {
-      localEvalState.busy = false;
-      renderLocalEval();
-    }
-  }
-
-  async function purgeLocalEval(campaignId, status) {
-    const answer = await askLocalEvalAction({
-      title: "清除評測資料",
-      text: status === "invalidated"
-        ? "已作廢測試毋須先下載。清除後只會保留最小審計記錄，回答及回饋資料不能復原。"
-        : "清除後只會保留最小審計記錄，回答及回饋資料不能復原。",
-      reason: true,
-      confirmation: campaignId,
-      danger: true,
-    });
-    if (!answer) return;
-    await localEvalAction(
-      `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/purge`,
-      answer,
-      "評測資料已清除",
-    );
-  }
-
-  async function releaseLocalEvalAssignment(reviewId) {
-    const campaignId = localEvalState.bootstrap?.campaign?.campaign_id;
-    if (!campaignId) return;
-    const answer = await askLocalEvalAction({
-      title: "提早釋放比較",
-      text: "釋放後，呢組比較可以重新派畀其他評審。",
-      reason: true,
-      danger: true,
-    });
-    if (!answer) return;
-    await localEvalAction(
-      `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/assignments/${encodeURIComponent(reviewId)}/release`,
-      { reason: answer.reason },
-      "比較已釋放",
-    );
-  }
-
   async function loadAdmin() {
     const [stats, inv, ready] = await Promise.all([
       api("/api/ai-training/admin/stats"),
@@ -2396,9 +1944,6 @@
     $("llmStats").textContent =
       stats.llm.map((x) => `${x.status}: ${x.count}`).join(" ｜ ") ||
       "暫無資料";
-    const evalStatus = ready.eval_provisioned
-      ? `${ready.active_eval_cases} / ${ready.gates.llm_eval_cases}`
-      : "尚未啟用";
     const speakerStatus = (ready.speakers || [])
       .map(
         (speaker) =>
@@ -2439,7 +1984,7 @@
       : "";
     syncLlmExport();
     $("readinessSummary").innerHTML =
-      `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}｜固定Eval：${evalStatus}</p>${speakerStatus || "<p>暫無聲線資料。</p>"}`;
+      `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}</p>${speakerStatus || "<p>暫無聲線資料。</p>"}`;
     window.inventory = inv;
     renderScriptInventory();
     $("manuscriptInventory").innerHTML =
@@ -2569,80 +2114,8 @@
         $(b.dataset.admin).classList.add("active");
         b.classList.add("active");
         if (b.dataset.admin === "factory") void loadFactoryWorkspace();
-        if (b.dataset.admin === "local-ai-eval") void loadLocalEvalManager();
       }),
   );
-  $("localEvalRefresh").onclick = () => loadLocalEvalManager();
-  $("localEvalCreate").onclick = async () => {
-    const confirmed = await confirmAsk(
-      "建立新一輪測試",
-      "系統會鎖定目前選用的 AI 電腦、模型版本及提示設定，並建立整輪待生成回答。",
-    );
-    if (confirmed) {
-      await localEvalAction(
-        "/api/lmc-ai/ab-tests/campaigns",
-        { note: "" },
-        "新一輪測試已建立",
-      );
-    }
-  };
-  $("localEvalGenerate").onclick = () => {
-    const campaignId = localEvalState.bootstrap?.campaign?.campaign_id;
-    if (campaignId) {
-      void localEvalAction(
-        `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/generate-next`,
-        undefined,
-        "回答已準備，進度已更新",
-      );
-    }
-  };
-  $("localEvalOpen").onclick = async () => {
-    const campaignId = localEvalState.bootstrap?.campaign?.campaign_id;
-    if (!campaignId) return;
-    const confirmed = await confirmAsk(
-      "開放委員回饋",
-      "開放後，委員可以喺自家 AI 的「測試並回饋」分頁開始提交匿名評分。",
-    );
-    if (confirmed) {
-      await localEvalAction(
-        `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/open-review`,
-        undefined,
-        "已開放委員回饋",
-      );
-    }
-  };
-  $("localEvalClose").onclick = async () => {
-    const campaignId = localEvalState.bootstrap?.campaign?.campaign_id;
-    if (!campaignId) return;
-    const confirmed = await confirmAsk(
-      "結束收集並建立結果",
-      "結束後不會再派發新比較；系統會用已鎖定的回饋建立描述性結果。",
-    );
-    if (confirmed) {
-      await localEvalAction(
-        `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/close`,
-        undefined,
-        "測試已完成，結果已建立",
-      );
-    }
-  };
-  $("localEvalInvalidate").onclick = async () => {
-    const campaignId = localEvalState.bootstrap?.campaign?.campaign_id;
-    if (!campaignId) return;
-    const answer = await askLocalEvalAction({
-      title: "將今輪測試作廢",
-      text: "作廢後不會再準備回答或派發比較；現有資料會保留供下載及審計。",
-      reason: true,
-      danger: true,
-    });
-    if (answer) {
-      await localEvalAction(
-        `/api/lmc-ai/ab-tests/campaigns/${encodeURIComponent(campaignId)}/invalidate`,
-        { reason: answer.reason },
-        "今輪測試已作廢",
-      );
-    }
-  };
   document.querySelectorAll("[data-factory-pane]").forEach(
     (button) =>
       (button.onclick = () => {
@@ -2689,9 +2162,13 @@
       `${$("factoryTranscriptContent").value.length.toLocaleString()} / ${maximum.toLocaleString()} 字`;
   });
   $("factoryPreviewCancel").onclick = () => {
+    if (factoryState.loading.generate) return;
     factoryState.preview = null;
     $("factoryPreviewDialog").close();
   };
+  $("factoryPreviewDialog").addEventListener("cancel", (event) => {
+    if (factoryState.loading.generate) event.preventDefault();
+  });
   $("factoryCancelRetry").onclick = () => {
     setFactoryRetryMode();
     factoryState.selectedSource = null;

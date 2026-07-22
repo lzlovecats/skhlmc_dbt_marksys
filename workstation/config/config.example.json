@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "node": {
+    "name": "LMC AI Workstation 1",
+    "server_url": "https://example.invalid",
+    "token_file": "/etc/lmc-ai-workstation/credentials/node-token"
+  },
+  "paths": {
+    "state": "/var/lib/lmc-ai-workstation",
+    "cache": "/var/cache/lmc-ai-workstation",
+    "data": "/srv/lmc-ai",
+    "releases": "/opt/lmc-ai-workstation"
+  },
+  "power": {
+    "enabled": false,
+    "timezone": "Asia/Hong_Kong",
+    "suspend_at": "00:00",
+    "wake_at": "08:00"
+  },
+  "workloads": {
+    "ollama": {
+      "enabled": true,
+      "url": "http://127.0.0.1:11434",
+      "voice_keep_alive": "0",
+      "text_keep_alive": "5m"
+    },
+    "asr": {
+      "enabled": false,
+      "model": "",
+      "device": "cuda",
+      "compute_type": "float16",
+      "runtime_python": "/srv/lmc-ai/vendor/asr-runtime/bin/python"
+    },
+    "rag": {
+      "enabled": false,
+      "embedding_model": "",
+      "active_link": "/srv/lmc-ai/rag/current"
+    },
+    "gpt_sovits": {
+      "enabled": false,
+      "url": "http://127.0.0.1:9880",
+      "runtime_root": "/srv/lmc-ai/vendor/GPT-SoVITS",
+      "model_version": "",
+      "reference_audio": "/srv/lmc-ai/models/gpt-sovits/reference.wav",
+      "reference_text_file": "/srv/lmc-ai/models/gpt-sovits/reference.txt",
+      "inference_config": "/srv/lmc-ai/models/gpt-sovits/tts_infer.json",
+      "approval_receipt": "/srv/lmc-ai/models/gpt-sovits/active-receipt.json",
+      "language": "yue"
+    }
+  },
+  "gui": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "update": {
+    "enabled": false,
+    "channel": "stable",
+    "manifest_url": "https://example.invalid/api/lmc-ai/workstation/releases/stable",
+    "public_key_file": "/usr/share/lmc-ai-workstation/release-signing-public-key.pem",
+    "auth_token_file": "/etc/lmc-ai-workstation/credentials/node-token"
+  }
+}

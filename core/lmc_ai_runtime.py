@@ -17,9 +17,9 @@ from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
     LMC_AI_MODEL_PROFILE_VERSION,
     lmc_ai_all_models,
-    lmc_ai_available_model_sets,
+    lmc_ai_models_ready,
 )
-from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
+from ai_name import LMC_AI_EMOJI, LMC_AI_NAME, LMC_AI_PRACTICE_LABEL
 from system_limits import (
     LMC_AI_CONTEXT_MAX_CHARS,
     LMC_AI_HEARTBEAT_TIMEOUT_SECONDS,
@@ -105,11 +105,14 @@ class WorkstationJob:
     deadline_epoch: int
     payload: dict
     upload_callback: Callable[["WorkstationJob", dict], Awaitable[dict]] | None = None
+    upload_finish_callback: Callable[["WorkstationJob", dict], Awaitable[dict]] | None = None
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     created_monotonic: float = field(default_factory=time.monotonic)
     started: bool = False
     finished: bool = False
     terminal_published: bool = False
+    upload_verified: bool = False
+    verified_result: dict = field(default_factory=dict)
     timeout_task: asyncio.Task | None = None
 
 
@@ -128,12 +131,15 @@ class ConnectedNode:
     model_digests: dict[str, str]
     capabilities: dict
     manager: dict
+    health: dict
+    control: dict
     ready: bool
     draining: bool
     connected_monotonic: float = field(default_factory=time.monotonic)
     last_heartbeat_monotonic: float = field(default_factory=time.monotonic)
     active: ChatJob | None = None
     workstation_active: WorkstationJob | None = None
+    control_active: WorkstationJob | None = None
     queue: deque[ChatJob] = field(default_factory=deque)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     monitor_task: asyncio.Task | None = None
@@ -192,11 +198,10 @@ class LocalAIRuntime:
             "fine_tuned": False,
             "thinking_control": True,
             "manager": True,
-            "direct_r2": True,
         }
         workstation_boolean = {
             "chat", "rag", "asr", "local_tts", "tts_training",
-            "controlled_web_search", "direct_r2", "fine_tuned",
+            "direct_r2", "fine_tuned",
             "thinking_control", "manager",
         }
         if not isinstance(capabilities, dict):
@@ -230,14 +235,14 @@ class LocalAIRuntime:
             raise ValueError("node models must be a list")
         ready = bool(payload.get("ready"))
         if (
-            (not models and (ready or protocol == 1))
+            (not models and (protocol == 1 or clean_capabilities.get("chat")))
             or (models and model not in models)
             or len(models) > len(allowed_models)
             or any(item not in allowed_models for item in models)
         ):
-            raise ValueError("node advertised an unsupported model set")
-        if models and not lmc_ai_available_model_sets(models):
-            raise ValueError("node model profile has no complete supported model set")
+            raise ValueError("node advertised an unsupported model profile")
+        if models and not lmc_ai_models_ready(models):
+            raise ValueError("node model profile is incomplete")
         raw_digests = payload.get("model_digests")
         if raw_digests is None:
             model_digests = {}
@@ -253,8 +258,25 @@ class LocalAIRuntime:
         else:
             raise ValueError("node model digests must be an object")
         manager = payload.get("manager") if protocol == 2 else {}
+        health = {}
+        control = {}
         if protocol == 2:
+            workstation_version = str(payload.get("workstation_version") or "")
+            runtime = str(payload.get("runtime") or "")
+            runtime_version = str(payload.get("runtime_version") or "")
+            if (
+                runtime != "lmc-ai-workstation"
+                or runtime_version != workstation_version
+                or not re.fullmatch(
+                    r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
+                    workstation_version,
+                )
+            ):
+                raise ValueError("Workstation runtime identity is invalid")
             manager = LocalAIRuntime._validate_manager(manager)
+            health, control = LocalAIRuntime._validate_workstation_status(
+                payload.get("health") or {}, payload.get("control") or {},
+            )
         return {
             "protocol": int(protocol),
             "workstation_version": str(payload.get("workstation_version") or "")[:80] if protocol == 2 else "",
@@ -266,6 +288,8 @@ class LocalAIRuntime:
             "model_digests": model_digests,
             "capabilities": clean_capabilities,
             "manager": manager,
+            "health": health,
+            "control": control,
             "ready": ready,
             "draining": bool(payload.get("draining")),
         }
@@ -289,6 +313,7 @@ class LocalAIRuntime:
             "draining": bool(value.get("draining")),
             "voice_session_active": bool(value.get("voice_session_active")),
             "voice_session_pending": bool(value.get("voice_session_pending")),
+            "voice_expires_epoch": max(0, int(value.get("voice_expires_epoch") or 0)),
             "active_operation": {
                 "operation_id": str((active or {}).get("operation_id") or "")[:200],
                 "kind": str((active or {}).get("kind") or "")[:80],
@@ -299,6 +324,68 @@ class LocalAIRuntime:
             "last_error_code": str(value.get("last_error_code") or "")[:100],
             "updated_epoch": max(0, int(value.get("updated_epoch") or 0)),
         }
+
+    @staticmethod
+    def _validate_workstation_status(health: object, control: object) -> tuple[dict, dict]:
+        if not isinstance(health, dict) or not isinstance(control, dict):
+            raise ValueError("Workstation remote status is invalid")
+        checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
+        clean_checks = {}
+        for name, value in checks.items():
+            if not isinstance(name, str) or len(name) > 40 or not isinstance(value, dict):
+                continue
+            clean_checks[name] = {
+                key: (
+                    [str(entry)[:200] for entry in item[:20] if isinstance(entry, str)]
+                    if isinstance(item, list) else item
+                ) for key, item in value.items()
+                if isinstance(key, str) and len(key) <= 40
+                and isinstance(item, (bool, int, float, str, list))
+            }
+        workloads = control.get("workloads") if isinstance(control.get("workloads"), dict) else {}
+        profiles = control.get("installed_profiles") if isinstance(control.get("installed_profiles"), dict) else {}
+        power = control.get("power") if isinstance(control.get("power"), dict) else {}
+        update = control.get("update") if isinstance(control.get("update"), dict) else {}
+        clean_control = {
+            "workloads": {
+                key: workloads.get(key)
+                for key in (
+                    "llm_enabled", "asr_enabled", "rag_enabled", "tts_enabled",
+                    "asr_model_id", "tts_voice_id",
+                )
+                if isinstance(workloads.get(key), (bool, str))
+            },
+            "installed_profiles": {
+                key: [str(item)[:100] for item in value[:100] if isinstance(item, str)]
+                for key in ("asr", "tts")
+                if isinstance((value := profiles.get(key)), list)
+            },
+            "power": {
+                key: power.get(key)
+                for key in ("enabled", "timezone", "suspend_at", "wake_at")
+                if isinstance(power.get(key), (bool, str))
+            },
+            "update": {
+                key: update.get(key)
+                for key in ("enabled", "channel")
+                if isinstance(update.get(key), (bool, str))
+            },
+            "audit": [
+                {
+                    "epoch": max(0, int(row.get("epoch") or 0)),
+                    "action": str(row.get("action") or "")[:80],
+                    "outcome": str(row.get("outcome") or "")[:40],
+                    "code": str(row.get("code") or "")[:100],
+                }
+                for row in (control.get("audit") or [])[-20:]
+                if isinstance(row, dict)
+            ],
+        }
+        return ({
+            "healthy": bool(health.get("healthy")),
+            "checked_epoch": max(0, int(health.get("checked_epoch") or 0)),
+            "checks": clean_checks,
+        }, clean_control)
 
     async def register(
         self, node_id: str, websocket, hello: dict, *, pending: bool = False
@@ -362,7 +449,7 @@ class LocalAIRuntime:
             pass
 
     async def fail_queued(self, node_id: str, reason: str) -> None:
-        """Keep an in-flight answer but stop queued work after active-node switch."""
+        """Keep in-flight work but stop queued work while draining the Workstation."""
         async with self._lock:
             node = self._nodes.get(node_id)
         if node is not None:
@@ -401,6 +488,7 @@ class LocalAIRuntime:
                 "ready": node.ready,
                 "draining": node.draining,
                 "busy": node.active is not None,
+                "control_busy": node.control_active is not None,
                 "queue_length": len(node.queue),
                 "name": node.name,
                 "runtime": node.runtime,
@@ -410,6 +498,8 @@ class LocalAIRuntime:
                 "model_digests": dict(node.model_digests),
                 "capabilities": dict(node.capabilities),
                 "manager": dict(node.manager),
+                "health": dict(node.health),
+                "control": dict(node.control),
                 "fingerprint": node.fingerprint,
                 "last_heartbeat_seconds": max(
                     0, int(time.monotonic() - node.last_heartbeat_monotonic)
@@ -447,6 +537,8 @@ class LocalAIRuntime:
                 or node_id in self._blocked_new_jobs
                 or not node.ready
                 or node.draining
+                or node.workstation_active is not None
+                or node.control_active is not None
             ):
                 raise NodeUnavailableError("自家 AI 暫時未能提供服務。")
             if node.protocol >= 2 and (
@@ -509,15 +601,18 @@ class LocalAIRuntime:
         stage: str,
         payload: dict,
         upload_callback: Callable[[WorkstationJob, dict], Awaitable[dict]] | None = None,
+        upload_finish_callback: Callable[[WorkstationJob, dict], Awaitable[dict]] | None = None,
         deadline_epoch: int = 0,
     ) -> WorkstationJob:
         capability = {
             "voice.reserve": "manager",
             "voice.release": "manager",
+            "asr.prepare": "asr",
             "asr": "asr",
             "rag": "rag",
             "voice_text": "chat",
             "tts": "local_tts",
+            "control": "manager",
         }.get(str(job_kind))
         if capability is None:
             raise ValueError("unsupported Workstation job kind")
@@ -534,14 +629,17 @@ class LocalAIRuntime:
             if (
                 node is None
                 or node.protocol < 2
-                or not node.ready
-                or node.draining
+                or (job_kind != "control" and (not node.ready or node.draining))
                 or not node.capabilities.get(capability)
             ):
                 raise NodeUnavailableError("AI Workstation 暫時未能提供所需功能。")
-            if node.workstation_active is not None:
+            if job_kind == "control" and node.control_active is not None:
+                raise WorkstationBusyError("AI Workstation control 正在處理另一項工作。")
+            if job_kind != "control" and node.workstation_active is not None:
                 raise WorkstationBusyError("AI Workstation 正在處理另一個語音工作。")
-            if job_kind not in {"voice.reserve", "voice.release"} and node.active is not None:
+            if job_kind != "control" and node.control_active is not None:
+                raise WorkstationBusyError("AI Workstation 正在處理 remote control。")
+            if job_kind not in {"voice.reserve", "voice.release", "control"} and node.active is not None:
                 raise WorkstationBusyError("AI Workstation 正在完成文字工作。")
             deadline = int(deadline_epoch or 0)
             now_epoch = int(time.time())
@@ -557,9 +655,18 @@ class LocalAIRuntime:
                 deadline_epoch=deadline,
                 payload=dict(payload),
                 upload_callback=upload_callback,
+                upload_finish_callback=upload_finish_callback,
             )
-            node.workstation_active = job
+            if job_kind == "control":
+                node.control_active = job
+            else:
+                node.workstation_active = job
             job.timeout_task = asyncio.create_task(self._workstation_timeout(node, job))
+        if job_kind == "voice.reserve":
+            await self._fail_queued(
+                node,
+                f"{LMC_AI_PRACTICE_LABEL}正在取得專用資源，原有排隊文字工作已停止。",
+            )
         try:
             await self._send(node, {
                 "type": "workstation.job.start",
@@ -657,10 +764,14 @@ class LocalAIRuntime:
                     "draining": bool(payload.get("draining")),
                     "capabilities": capabilities,
                     "manager": manager,
+                    "health": payload.get("health") or {},
+                    "control": payload.get("control") or {},
                 }
                 clean_status = self.validate_hello(hello_like)
                 node.capabilities = clean_status["capabilities"]
                 node.manager = clean_status["manager"]
+                node.health = clean_status["health"]
+                node.control = clean_status["control"]
             reported_model = str(payload.get("model") or "").strip()
             reported_models = payload.get("models")
             reported_digests = payload.get("model_digests")
@@ -669,7 +780,7 @@ class LocalAIRuntime:
             if reported_model and reported_model not in allowed_models:
                 raise ValueError("node reported an unsupported model")
             if reported_models is not None and not isinstance(reported_models, list):
-                raise ValueError("node reported an invalid model set")
+                raise ValueError("node reported an invalid model profile")
             if isinstance(reported_models, list):
                 candidate = tuple(dict.fromkeys(
                     str(item or "").strip()[:200] for item in reported_models
@@ -677,11 +788,11 @@ class LocalAIRuntime:
                 ))
                 effective_model = reported_model or node.model
                 if (
-                    not candidate
-                    or effective_model not in candidate
-                    or not lmc_ai_available_model_sets(candidate)
+                    (not candidate and clean_status["capabilities"].get("chat"))
+                    or (candidate and effective_model not in candidate)
+                    or (candidate and not lmc_ai_models_ready(candidate))
                 ):
-                    raise ValueError("node reported an invalid model set")
+                    raise ValueError("node reported an invalid model profile")
                 clean_models = candidate
             clean_digests = node.model_digests
             if reported_digests is not None:
@@ -787,7 +898,12 @@ class LocalAIRuntime:
     async def _handle_workstation_message(self, node: ConnectedNode, payload: dict) -> None:
         message_type = str(payload.get("type") or "")
         operation_id = str(payload.get("operation_id") or "")
-        job = node.workstation_active
+        job = (
+            node.control_active
+            if node.control_active is not None
+            and operation_id == node.control_active.operation_id
+            else node.workstation_active
+        )
         if job is None or operation_id != job.operation_id:
             return
         if message_type == "workstation.job.started":
@@ -822,6 +938,52 @@ class LocalAIRuntime:
             except Exception:
                 await self._finish_workstation(node, job, False, {}, "暫時未能建立語音上載連結。")
             return
+        if message_type == "workstation.upload.complete":
+            if (
+                job.job_kind != "tts"
+                or job.upload_finish_callback is None
+                or job.upload_verified
+            ):
+                await self._finish_workstation(
+                    node, job, False, {}, "Workstation 上載完成訊息無效。"
+                )
+                return
+            result = payload.get("result")
+            if (
+                not isinstance(result, dict)
+                or len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                > LMC_AI_NODE_WS_FRAME_MAX_BYTES // 2
+            ):
+                await self._finish_workstation(
+                    node, job, False, {}, "Workstation 上載結果無效。"
+                )
+                return
+            try:
+                verified = await job.upload_finish_callback(job, result)
+                if not isinstance(verified, dict):
+                    raise ValueError("upload finish callback returned no result")
+                if job.finished:
+                    return
+                job.upload_verified = True
+                job.verified_result = dict(verified)
+                await self._send(node, {
+                    "type": "workstation.upload.verified",
+                    "operation_id": job.operation_id,
+                })
+            except Exception:
+                if not job.finished:
+                    try:
+                        await self._send(node, {
+                            "type": "workstation.upload.rejected",
+                            "operation_id": job.operation_id,
+                            "code": "output_verification_failed",
+                        })
+                    finally:
+                        await self._finish_workstation(
+                            node, job, False, {},
+                            "自家讀音上載未能通過 server 驗證。",
+                        )
+            return
         if message_type == "workstation.job.complete":
             result = payload.get("result")
             if not isinstance(result, dict):
@@ -830,13 +992,20 @@ class LocalAIRuntime:
             if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > LMC_AI_NODE_WS_FRAME_MAX_BYTES // 2:
                 await self._finish_workstation(node, job, False, {}, "AI Workstation 回傳資料超過安全上限。")
                 return
+            if job.job_kind == "tts":
+                if not job.upload_verified:
+                    await self._finish_workstation(
+                        node, job, False, {}, "自家讀音上載尚未完成 server 驗證。"
+                    )
+                    return
+                result = dict(job.verified_result)
             await self._finish_workstation(node, job, True, result, "")
             return
         if message_type == "workstation.job.error":
             code = str(payload.get("code") or "runtime_error")[:80]
             message = {
                 "busy": "AI Workstation 正在處理另一項工作。",
-                "voice_busy": "已有另一節與自家AI練習進行中。",
+                "voice_busy": f"已有另一節{LMC_AI_PRACTICE_LABEL}進行中。",
                 "out_of_memory": "AI Workstation 顯示卡記憶體不足。",
                 "asr_failed": "自家語音辨識未能完成今次錄音。",
                 "empty_transcript": "今次錄音未能辨識到語音。",
@@ -884,7 +1053,11 @@ class LocalAIRuntime:
     async def cancel_workstation(self, node_id: str, job: WorkstationJob) -> None:
         async with self._lock:
             node = self._nodes.get(str(node_id))
-            if node is None or node.workstation_active is not job or job.finished:
+            if (
+                node is None
+                or (node.workstation_active is not job and node.control_active is not job)
+                or job.finished
+            ):
                 return
         try:
             await self._send(node, {
@@ -909,6 +1082,8 @@ class LocalAIRuntime:
             job.finished = True
             if node.workstation_active is job:
                 node.workstation_active = None
+            if node.control_active is job:
+                node.control_active = None
         if job.timeout_task and job.timeout_task is not asyncio.current_task():
             job.timeout_task.cancel()
         if job.terminal_published:
@@ -1010,6 +1185,10 @@ class LocalAIRuntime:
         node.workstation_active = None
         if workstation_job is not None:
             await self._finish_workstation(node, workstation_job, False, {}, reason)
+        control_job = node.control_active
+        node.control_active = None
+        if control_job is not None:
+            await self._finish_workstation(node, control_job, False, {}, reason)
 
     async def _fail_queued(self, node: ConnectedNode, reason: str) -> None:
         async with self._lock:

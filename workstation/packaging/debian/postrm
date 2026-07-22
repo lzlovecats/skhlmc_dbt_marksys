@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+# Purge deliberately retains credentials, manager state, models, datasets,
+# checkpoints and RAG. Operators must use the documented explicit data-removal
+# procedure after checking consent and rollback requirements.
+exit 0

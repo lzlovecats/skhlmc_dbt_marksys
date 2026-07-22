@@ -54,6 +54,20 @@ def audio_extension(mime: str) -> str:
     return _EXTENSIONS[canonical_audio_mime(mime)]
 
 
+def audio_container_matches_mime(mime: str, format_names: object) -> bool:
+    """Validate measured ffprobe format names against a canonical audio MIME."""
+    expected = _FORMAT_NAMES[canonical_audio_mime(mime)]
+    if isinstance(format_names, str):
+        actual = {
+            item.strip().lower() for item in format_names.split(",") if item.strip()
+        }
+    else:
+        actual = {
+            str(item).strip().lower() for item in (format_names or ()) if str(item).strip()
+        }
+    return bool(actual.intersection(expected))
+
+
 def transcode_audio_for_provider(
     audio: bytes,
     mime: str,
@@ -222,7 +236,7 @@ def probe_audio(
     tolerance = max(2.0, duration * 0.2)
     if claimed is not None and abs(duration - claimed) > tolerance:
         raise MediaProbeError("錄音實際長度與瀏覽器回報不符，請重新錄製")
-    if not format_names.intersection(_FORMAT_NAMES[canonical_mime]):
+    if not audio_container_matches_mime(canonical_mime, format_names):
         raise MediaProbeError("錄音宣稱格式與實際檔案格式不符")
     if sample_rate <= 0 or channels <= 0:
         raise MediaProbeError("錄音未包含可讀取的聲音軌")
@@ -292,7 +306,7 @@ def probe_audio_file(
         raise MediaProbeError(f"錄音實際長度必須為 1 至 {int(max_seconds)} 秒")
     if claimed is not None and abs(duration - claimed) > max(2.0, duration * 0.2):
         raise MediaProbeError("錄音實際長度與瀏覽器回報不符，請重新錄製")
-    if not format_names.intersection(_FORMAT_NAMES[canonical_mime]):
+    if not audio_container_matches_mime(canonical_mime, format_names):
         raise MediaProbeError("錄音宣稱格式與實際檔案格式不符")
     if sample_rate <= 0 or channels <= 0:
         raise MediaProbeError("錄音未包含可讀取的聲音軌")

@@ -1,0 +1,22 @@
+[Unit]
+Description=Drain and switch to the previous verified LMC AI Workstation release
+After=network-online.target lmc-ai-manager.service lmc-ai-privileged.service
+Wants=network-online.target
+Requires=lmc-ai-manager.service lmc-ai-privileged.service
+
+[Service]
+Type=oneshot
+User=lmc-ai
+Group=lmc-ai
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.scripts.workstationctl rollback-previous
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lmc-ai-workstation /run/lmc-ai-workstation
+RestrictSUIDSGID=true
+LockPersonality=true
+TimeoutStartSec=20min

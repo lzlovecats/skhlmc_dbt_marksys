@@ -19,18 +19,16 @@ import schema
 import system_limits
 from api import lmc_ai_api as lmc_api
 from api import ai_coach_api
-from api.lmc_ai_api import ChatRequest, _resolve_thinking_enabled
+from api.lmc_ai_api import ChatRequest, _resolve_chat_mode
 from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
     LMC_AI_DAILY_MODEL_TAG,
     LMC_AI_DEEP_MODEL_TAG,
     LMC_AI_DEFAULT_MODE,
-    LMC_AI_DEFAULT_MODEL_SET,
     LMC_AI_FALLBACK_MODEL,
     LMC_AI_FAST_MODEL_TAG,
     LMC_AI_FEATURE_MODES,
     LMC_AI_MODE_OPTIONS,
-    LMC_AI_MODEL_SETS,
     LMC_AI_PRIMARY_MODEL,
 )
 from core import (
@@ -50,11 +48,15 @@ from core.lmc_ai_runtime import (
 )
 from core import lmc_ai_store
 from local_ai import lmc_ai_node
+from fastapi import HTTPException
 
 
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "migrations/20260720_0010_add_lmc_ai_nodes.up.sql"
 DOWN = ROOT / "migrations/20260720_0010_add_lmc_ai_nodes.down.sql"
+SINGLE_WORKSTATION_UP = (
+    ROOT / "migrations/20260722_0003_enforce_single_ai_workstation.up.sql"
+)
 PAGE = (ROOT / "frontend/lmc_ai/index.html").read_text("utf-8")
 SCRIPT = (ROOT / "frontend/lmc_ai/app.js").read_text("utf-8")
 DEV_SETTINGS = (ROOT / "frontend/dev_settings/index.html").read_text("utf-8")
@@ -66,11 +68,13 @@ def test_identity_and_persona_have_one_runtime_source():
     assert ai_name.LMC_AI_NAME
     assert ai_name.LMC_AI_EMOJI
     assert ai_name.LMC_AI_MENTION_TAG == f"@{ai_name.LMC_AI_NAME}".casefold()
+    assert ai_name.LMC_AI_PRACTICE_LABEL == f"同{ai_name.LMC_AI_NAME}練習"
     assert ai_name.LMC_AI_NAME in SYSTEM_PROMPT
     assert ai_name.LMC_AI_EMOJI in SYSTEM_PROMPT
     assert "{{" not in SYSTEM_PROMPT
     assert "system prompt" in SYSTEM_PROMPT
     assert "隱藏推理" in SYSTEM_PROMPT
+    assert "由聖呂中辯技術人員開發嘅內部人工智能助手" in SYSTEM_PROMPT
     assert "RAG：未啟用" in SYSTEM_PROMPT
     assert len(PERSONA_VERSION) == 64
 
@@ -81,6 +85,8 @@ def test_identity_and_persona_have_one_runtime_source():
         ROOT / "api/lmc_ai_api.py",
         ROOT / "core/lmc_ai_runtime.py",
         ROOT / "core/vote_ai.py",
+        ROOT / "frontend/ai_coach/index.html",
+        ROOT / "frontend/local_ai_practice/index.html",
     )
     for path in runtime_files:
         source = path.read_text("utf-8")
@@ -119,25 +125,24 @@ def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
     assert "ADD COLUMN provider_duration_ms" in up
     assert schema.TABLE_LMC_AI_NODES == "lmc_ai_nodes"
     assert schema.CREATE_LMC_AI_NODES in schema.ALL_SCHEMAS
-    assert schema_features.FEATURE_MIGRATION_VERSIONS["lmc_ai"] == "20260720_0010"
+    assert schema.TABLE_WORKSTATION_R2_HEALTH_PROBES == "workstation_r2_health_probes"
+    assert schema.CREATE_WORKSTATION_R2_HEALTH_PROBES in schema.ALL_SCHEMAS
+    assert schema_features.FEATURE_MIGRATION_VERSIONS["lmc_ai"] == "20260722_0003"
+    assert "uq_lmc_ai_single_enabled_workstation" in schema.CREATE_LMC_AI_NODES
     assert "refusing to remove used local AI node or usage data" in down
     assert "key = 'lmc_ai_active_node_id'" in down
     assert "feature = 'lmc_ai_chat'" in down
     assert down.index("DELETE FROM public.app_config") < down.index("DROP TABLE public.lmc_ai_nodes")
+    singleton = SINGLE_WORKSTATION_UP.read_text("utf-8")
+    assert "enabled_count > 1" in singleton
+    assert "uq_lmc_ai_single_enabled_workstation" in singleton
 
 
 def test_limits_and_models_are_centralized_at_the_decided_values():
     assert LMC_AI_PRIMARY_MODEL == LMC_AI_FAST_MODEL_TAG
     assert LMC_AI_FALLBACK_MODEL == LMC_AI_DEEP_MODEL_TAG
     assert LMC_AI_DEFAULT_MODE == "daily"
-    assert LMC_AI_DEFAULT_MODEL_SET == "gemma"
-    assert set(LMC_AI_MODEL_SETS) == {"gemma"}
     assert LMC_AI_MODE_OPTIONS == {
-        "fast": {"label": "快速回覆", "model": LMC_AI_FAST_MODEL_TAG, "thinking": False},
-        "daily": {"label": "日常預設", "model": LMC_AI_DAILY_MODEL_TAG, "thinking": False},
-        "deep": {"label": "深入思考", "model": LMC_AI_DEEP_MODEL_TAG, "thinking": True},
-    }
-    assert LMC_AI_MODEL_SETS["gemma"]["modes"] == {
         "fast": {"label": "快速回覆", "model": LMC_AI_FAST_MODEL_TAG, "thinking": False},
         "daily": {"label": "日常預設", "model": LMC_AI_DAILY_MODEL_TAG, "thinking": False},
         "deep": {"label": "深入思考", "model": LMC_AI_DEEP_MODEL_TAG, "thinking": True},
@@ -145,7 +150,7 @@ def test_limits_and_models_are_centralized_at_the_decided_values():
     assert LMC_AI_FEATURE_MODES == {
         "lmc_ai": "daily", "vote": "fast", "ai_coach": "daily",
     }
-    runbook = (ROOT / "docs/LMC_AI_NODE_RUNBOOK.md").read_text("utf-8")
+    runbook = (ROOT / "docs/AI_WORKSTATION_RUNBOOK.md").read_text("utf-8")
     assert "lmc_ai_required_models" in runbook
     for tag in {
         LMC_AI_FAST_MODEL_TAG,
@@ -155,7 +160,7 @@ def test_limits_and_models_are_centralized_at_the_decided_values():
         assert tag not in runbook
     assert ai_coach_api.AI_COACH_LOCAL_MODE == LMC_AI_FEATURE_MODES["ai_coach"]
     assert LMC_AI_CONTEXT_LENGTH == 8192
-    assert system_limits.LMC_AI_NODE_MAX == 8
+    assert system_limits.LMC_AI_NODE_MAX == 1
     assert system_limits.LMC_AI_QUEUE_MAX == 2
     assert system_limits.LMC_AI_ACTIVE_GENERATIONS == 1
     assert system_limits.LMC_AI_MESSAGE_MAX_CHARS == 3000
@@ -167,6 +172,152 @@ def test_limits_and_models_are_centralized_at_the_decided_values():
     assert system_limits.LMC_AI_BROWSER_HISTORY_MAX_CHARS == 200_000
     assert "lmc_ai_chat" in funds_logic.AI_USAGE_FEATURES
     assert funds_logic.AI_FEATURE_LABELS["lmc_ai_chat"]
+
+
+def test_workstation_r2_health_claim_is_node_scoped_verified_and_deleted(
+    monkeypatch,
+):
+    from core import r2_storage
+    from deploy import proxy
+
+    request = SimpleNamespace(headers={"authorization": "Bearer node-token"})
+    db = object()
+    monkeypatch.setattr(lmc_api, "_db", lambda: db)
+    monkeypatch.setattr(
+        lmc_api, "authenticate_node",
+        lambda _db, token: {"node_id": "node-1"} if token == "node-token" else None,
+    )
+    monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: "claim-secret")
+    monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "sign_upload_claim", lambda claim, _secret: "x" * 40)
+    issued = {}
+    monkeypatch.setattr(
+        r2_storage,
+        "reserve_workstation_r2_health_probe",
+        lambda used_db, **values: issued.update({"db": used_db, **values}) or True,
+    )
+    monkeypatch.setattr(
+        r2_storage, "presign_put",
+        lambda key, mime, sha, size: issued.update(
+            {"key": key, "mime": mime, "sha": sha, "size": size}
+        ) or "https://r2.example/upload",
+    )
+    monkeypatch.setattr(
+        r2_storage, "presign_get",
+        lambda key, **_kwargs: "https://r2.example/download",
+    )
+    digest = "a" * 64
+    started = lmc_api.workstation_r2_health_start(
+        lmc_api.WorkstationR2ProbeStart(
+            sha256=digest,
+            byte_size=system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+        ),
+        request,
+    )
+    payload = json.loads(started.body)
+    assert payload["claim"] == "x" * 40
+    assert issued["key"].startswith("pending/workstation-health/node-1/")
+    assert issued["sha"] == digest
+    assert issued["db"] is db
+    assert issued["intent_id"] in issued["key"]
+    assert issued["object_key"] == issued["key"]
+
+    claim = {
+        "kind": "workstation_r2_health",
+        "intent_id": issued["intent_id"],
+        "node_id": "node-1",
+        "key": issued["key"],
+        "sha256": digest,
+        "byte_size": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+    }
+    deleted = []
+    monkeypatch.setattr(r2_storage, "verify_upload_claim", lambda _value, _secret: claim)
+    monkeypatch.setattr(
+        r2_storage,
+        "get_workstation_r2_health_probe",
+        lambda used_db, **_values: {
+            "object_key": issued["key"],
+            "sha256": digest,
+            "byte_size": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+        } if used_db is db else None,
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "head",
+        lambda _key: {
+            "ContentLength": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+            "Metadata": {"sha256": digest},
+        },
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_workstation_r2_health_probe",
+        lambda used_db, **values: deleted.append((used_db, values)) or True,
+    )
+    assert lmc_api.workstation_r2_health_finish(
+        lmc_api.WorkstationR2ProbeFinish(claim="y" * 40), request,
+    ) == {"ok": True, "deleted": True}
+    assert deleted == [(db, {
+        "intent_id": issued["intent_id"],
+        "node_id": "node-1",
+        "object_key": issued["key"],
+    })]
+
+    deleted.clear()
+    monkeypatch.setattr(
+        r2_storage, "head",
+        lambda _key: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_finish(
+            lmc_api.WorkstationR2ProbeFinish(claim="h" * 40), request,
+        )
+    assert raised.value.status_code == 409
+    assert deleted == [(db, {
+        "intent_id": issued["intent_id"],
+        "node_id": "node-1",
+        "object_key": issued["key"],
+    })]
+
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_workstation_r2_health_probe",
+        lambda _db, **_values: False,
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "head",
+        lambda _key: {
+            "ContentLength": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+            "Metadata": {"sha256": digest},
+        },
+    )
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_finish(
+            lmc_api.WorkstationR2ProbeFinish(claim="d" * 40), request,
+        )
+    assert raised.value.status_code == 409
+
+    monkeypatch.setattr(
+        r2_storage, "reserve_workstation_r2_health_probe",
+        lambda _db, **_values: False,
+    )
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_start(
+            lmc_api.WorkstationR2ProbeStart(
+                sha256=digest,
+                byte_size=system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+            ),
+            request,
+        )
+    assert raised.value.status_code == 409
+
+    claim["node_id"] = "node-2"
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_finish(
+            lmc_api.WorkstationR2ProbeFinish(claim="z" * 40), request,
+        )
+    assert raised.value.status_code == 400
 
 
 class _FakeWebSocket:
@@ -204,6 +355,40 @@ def _hello(**overrides):
             "thinking_control": True,
         },
     }
+    value.update(overrides)
+    return value
+
+
+def _workstation_hello(**overrides):
+    value = _hello(
+        protocol=2,
+        workstation_version="1.0.0",
+        runtime="lmc-ai-workstation",
+        runtime_version="1.0.0",
+        capabilities={
+            "chat": True,
+            "rag": True,
+            "asr": True,
+            "local_tts": True,
+            "tts_training": True,
+            "direct_r2": True,
+            "fine_tuned": False,
+            "thinking_control": True,
+            "manager": True,
+        },
+        manager={
+            "revision": 7,
+            "mode": "idle",
+            "draining": False,
+            "voice_session_active": False,
+            "voice_session_pending": False,
+            "active_operation": None,
+            "sleep_inhibited": False,
+            "reconcile_required": False,
+            "last_error_code": "",
+            "updated_epoch": 1,
+        },
+    )
     value.update(overrides)
     return value
 
@@ -355,7 +540,7 @@ def test_runtime_records_usage_when_thinking_finishes_without_a_final_answer():
     asyncio.run(scenario())
 
 
-def test_runtime_routes_deep_mode_to_e4b_and_refuses_incomplete_model_sets():
+def test_runtime_routes_deep_mode_to_e4b_and_refuses_incomplete_model_profile():
     async def scenario():
         runtime = LocalAIRuntime()
         socket = _FakeWebSocket()
@@ -380,7 +565,7 @@ def test_runtime_routes_deep_mode_to_e4b_and_refuses_incomplete_model_sets():
 
         limited = LocalAIRuntime()
         limited_socket = _FakeWebSocket()
-        with pytest.raises(ValueError, match="complete supported model set"):
+        with pytest.raises(ValueError, match="model profile is incomplete"):
             await limited.register(
                 "node-2", limited_socket,
                 _hello(models=[LMC_AI_PRIMARY_MODEL]),
@@ -389,23 +574,22 @@ def test_runtime_routes_deep_mode_to_e4b_and_refuses_incomplete_model_sets():
     asyncio.run(scenario())
 
 
-def test_shared_availability_requires_selected_ready_node_and_tracks_modes(monkeypatch):
+def test_shared_availability_requires_configured_ready_workstation_and_tracks_modes(monkeypatch):
     runtime = LocalAIRuntime()
     monkeypatch.setattr(lmc_ai_client, "RUNTIME", runtime)
     monkeypatch.setattr(lmc_ai_client, "require_lmc_ai_schema", lambda _db: None)
-    selected = {"node_id": ""}
+    configured = {"node_id": ""}
     monkeypatch.setattr(
-        lmc_ai_client, "get_active_node_id", lambda _db: selected["node_id"],
+        lmc_ai_client, "get_workstation_id", lambda _db: configured["node_id"],
     )
-    monkeypatch.setattr(lmc_ai_client, "get_model_set", lambda _db: "gemma")
 
     async def scenario():
         missing = await lmc_ai_client.local_ai_availability(object())
         assert missing["available"] is False
-        assert missing["selected"] is False
-        assert "尚未選用" in missing["message"]
+        assert missing["configured"] is False
+        assert "尚未設定" in missing["message"]
 
-        selected["node_id"] = "node-1"
+        configured["node_id"] = "node-1"
         offline = await lmc_ai_client.local_ai_availability(object())
         assert offline["state"] == "offline"
         assert "離線" in offline["message"]
@@ -496,8 +680,7 @@ def test_shared_local_client_bridges_sync_worker_loop_to_runtime_owner(monkeypat
     assert owner_ready.wait(timeout=2)
     monkeypatch.setattr(lmc_ai_client, "RUNTIME", runtime)
     monkeypatch.setattr(lmc_ai_client, "require_lmc_ai_schema", lambda _db: None)
-    monkeypatch.setattr(lmc_ai_client, "get_active_node_id", lambda _db: "node-1")
-    monkeypatch.setattr(lmc_ai_client, "get_model_set", lambda _db: "gemma")
+    monkeypatch.setattr(lmc_ai_client, "get_workstation_id", lambda _db: "node-1")
     attempts = []
     try:
         text, usage = asyncio.run(lmc_ai_client.generate_local_text(
@@ -530,7 +713,7 @@ def test_shared_local_client_bridges_sync_worker_loop_to_runtime_owner(monkeypat
         owner_loop.close()
 
 
-def test_clearing_selection_keeps_active_generation_and_fails_only_queue():
+def test_draining_workstation_keeps_active_generation_and_fails_only_queue():
     async def scenario():
         runtime = LocalAIRuntime()
         socket = _FakeWebSocket()
@@ -555,13 +738,13 @@ def test_clearing_selection_keeps_active_generation_and_fails_only_queue():
         )
 
         await runtime.block_new_jobs("node-1")
-        await runtime.fail_queued("node-1", "selection cleared")
+        await runtime.fail_queued("node-1", "workstation draining")
 
         assert node.active is active
         assert list(node.queue) == []
         assert queued.finished is True
         assert await queued.events.get() == ("queued", {"position": 1})
-        assert await queued.events.get() == ("error", {"message": "selection cleared"})
+        assert await queued.events.get() == ("error", {"message": "workstation draining"})
         assert not any(item.get("type") == "chat.cancel" for item in socket.sent)
         with pytest.raises(lmc_runtime.NodeUnavailableError):
             await runtime.submit(
@@ -657,7 +840,289 @@ def test_node_hello_refuses_future_or_unsafe_capabilities():
         )
 
 
-def test_node_hello_requires_current_model_profile_and_one_complete_model_set():
+def test_workstation_protocol_v2_hello_is_strict_and_sanitized():
+    clean = LocalAIRuntime.validate_hello(_workstation_hello())
+    assert clean["protocol"] == 2
+    assert clean["workstation_version"] == "1.0.0"
+    assert clean["manager"]["mode"] == "idle"
+    assert clean["capabilities"]["direct_r2"] is True
+    without_r2 = _workstation_hello()
+    without_r2["capabilities"]["direct_r2"] = False
+    assert LocalAIRuntime.validate_hello(without_r2)["capabilities"]["direct_r2"] is False
+
+    unsafe = _workstation_hello()
+    unsafe["capabilities"] = {**unsafe["capabilities"], "shell": True}
+    with pytest.raises(ValueError, match="Workstation capabilities"):
+        LocalAIRuntime.validate_hello(unsafe)
+    with pytest.raises(ValueError, match="manager mode"):
+        LocalAIRuntime.validate_hello(_workstation_hello(manager={"mode": "unknown"}))
+
+
+def test_workstation_manager_mode_blocks_new_text_jobs():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        hello = _workstation_hello()
+        hello["manager"] = {**hello["manager"], "mode": "voice_coach"}
+        node = await runtime.register("node-1", socket, hello)
+
+        with pytest.raises(lmc_runtime.NodeUnavailableError, match="語音或維護"):
+            await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=node.fingerprint,
+                actor_id="member-1",
+                usage_user_id="member-1",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "new text job"}],
+                finish_callback=_noop_finish,
+            )
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_workstation_job_upload_handshake_and_terminal_result():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+        uploads = []
+        verified_uploads = []
+
+        async def authorize(job, media):
+            uploads.append((job.operation_id, media))
+            return {
+                "intent_id": "intent-1",
+                "upload_url": "https://r2.example.invalid/upload",
+                "headers": {"content-type": "audio/wav"},
+            }
+
+        async def verify_upload(job, result):
+            verified_uploads.append((job.operation_id, result))
+            return dict(result)
+
+        job = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="tts.session-1.turn-1",
+            job_kind="tts",
+            session_id="session-1",
+            turn_id="turn-1",
+            stage="synthesis",
+            payload={"text": "測試讀音"},
+            upload_callback=authorize,
+            upload_finish_callback=verify_upload,
+        )
+        assert socket.sent[-1]["type"] == "workstation.job.start"
+
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.started",
+            "operation_id": job.operation_id,
+        })
+        media = {
+            "mime_type": "audio/wav",
+            "size_bytes": 4096,
+            "sha256": "a" * 64,
+            "duration_ms": 800,
+        }
+        await runtime.handle_node_message(node, {
+            "type": "workstation.upload.request",
+            "operation_id": job.operation_id,
+            "media": media,
+        })
+        assert uploads == [(job.operation_id, media)]
+        assert socket.sent[-1] == {
+            "type": "workstation.upload.authorized",
+            "operation_id": job.operation_id,
+            "intent_id": "intent-1",
+            "upload_url": "https://r2.example.invalid/upload",
+            "headers": {"content-type": "audio/wav"},
+        }
+
+        result = {"intent_id": "intent-1", "uploaded": True}
+        await runtime.handle_node_message(node, {
+            "type": "workstation.upload.complete",
+            "operation_id": job.operation_id,
+            "result": result,
+        })
+        assert verified_uploads == [(job.operation_id, result)]
+        assert socket.sent[-1] == {
+            "type": "workstation.upload.verified",
+            "operation_id": job.operation_id,
+        }
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": job.operation_id,
+            "result": result,
+        })
+        assert await job.events.get() == ("started", {"job_kind": "tts"})
+        assert await job.events.get() == (
+            "complete",
+            {"result": result},
+        )
+        assert node.workstation_active is None
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_workstation_tts_cannot_finish_before_server_verifies_r2_output():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+
+        async def authorize(_job, _media):
+            return {"intent_id": "intent-1", "upload": {"url": "https://r2.invalid"}}
+
+        job = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="tts.unverified",
+            job_kind="tts",
+            session_id="session-1",
+            turn_id="turn-1",
+            stage="synthesis",
+            payload={"text": "測試"},
+            upload_callback=authorize,
+            upload_finish_callback=lambda _job, _result: None,
+        )
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": job.operation_id,
+            "result": {"output": {"intent_id": "intent-1"}},
+        })
+        assert await job.events.get() == (
+            "error",
+            {"message": "自家讀音上載尚未完成 server 驗證。"},
+        )
+        assert node.workstation_active is None
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_remote_control_has_a_separate_slot_from_voice_work():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+        voice = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="asr.session-1.turn-1",
+            job_kind="asr.prepare",
+            session_id="session-1",
+            turn_id="turn-1",
+            stage="asr_model_load",
+            payload={},
+        )
+        control = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="control.drain-1",
+            job_kind="control",
+            session_id="remote-control",
+            turn_id="",
+            stage="drain",
+            payload={"command": {"action": "drain"}},
+        )
+        assert node.workstation_active is voice
+        assert node.control_active is control
+        assert [frame["job_kind"] for frame in socket.sent[-2:]] == [
+            "asr.prepare", "control",
+        ]
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": control.operation_id,
+            "result": {"manager": {"draining": True}},
+        })
+        assert node.control_active is None
+        assert node.workstation_active is voice
+        await runtime.cancel_workstation("node-1", voice)
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_workstation_jobs_require_v2_and_voice_reservation_may_wait_for_text():
+    async def scenario():
+        legacy_runtime = LocalAIRuntime()
+        legacy_socket = _FakeWebSocket()
+        legacy = await legacy_runtime.register("legacy", legacy_socket, _hello())
+        with pytest.raises(lmc_runtime.NodeUnavailableError):
+            await legacy_runtime.submit_workstation(
+                node_id="legacy",
+                operation_id="reserve.legacy",
+                job_kind="voice.reserve",
+                session_id="session-1",
+                turn_id="",
+                stage="reserve",
+                payload={},
+            )
+        await legacy_runtime.unregister(legacy, "test cleanup")
+
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+        chat, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-1",
+            usage_user_id="member-1",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "finish me first"}],
+            finish_callback=_noop_finish,
+        )
+        queued, position = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-2",
+            usage_user_id="member-2",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "queued text"}],
+            finish_callback=_noop_finish,
+        )
+        assert position == 1
+        reserve = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="reserve.session-1",
+            job_kind="voice.reserve",
+            session_id="session-1",
+            turn_id="",
+            stage="reserve",
+            payload={},
+        )
+        assert await queued.events.get() == ("queued", {"position": 1})
+        assert (await queued.events.get())[0] == "error"
+        with pytest.raises(lmc_runtime.NodeUnavailableError):
+            await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=node.fingerprint,
+                actor_id="member-3",
+                usage_user_id="member-3",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "new text"}],
+                finish_callback=_noop_finish,
+            )
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": reserve.operation_id,
+            "result": {"reserved": True},
+        })
+        with pytest.raises(lmc_runtime.WorkstationBusyError, match="文字工作"):
+            await runtime.submit_workstation(
+                node_id="node-1",
+                operation_id="asr.session-1.turn-1",
+                job_kind="asr",
+                session_id="session-1",
+                turn_id="turn-1",
+                stage="transcribe",
+                payload={"download_url": "https://r2.example.invalid/audio"},
+            )
+        await runtime.cancel("node-1", chat)
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_node_hello_requires_current_complete_model_profile():
     assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 5
     assert LocalAIRuntime.validate_hello(_hello())["ready"] is True
 
@@ -667,16 +1132,21 @@ def test_node_hello_requires_current_model_profile_and_one_complete_model_set():
         LocalAIRuntime.validate_hello(missing_profile)
     with pytest.raises(ValueError, match="model profile"):
         LocalAIRuntime.validate_hello(_hello(model_profile_version=1))
-    with pytest.raises(ValueError, match="complete supported model set"):
+    with pytest.raises(ValueError, match="model profile is incomplete"):
         LocalAIRuntime.validate_hello(_hello(
             model=LMC_AI_FALLBACK_MODEL,
             models=[LMC_AI_FALLBACK_MODEL],
         ))
-    gemma_models = list(ai_model_config.lmc_ai_required_models("gemma"))
+    gemma_models = list(ai_model_config.lmc_ai_required_models())
     clean = LocalAIRuntime.validate_hello(_hello(
         model=gemma_models[0], models=gemma_models,
     ))
     assert clean["model"] == LMC_AI_FAST_MODEL_TAG
+
+    with pytest.raises(ValueError, match="runtime identity"):
+        LocalAIRuntime.validate_hello(_workstation_hello(
+            runtime="ollama", runtime_version="1.0.0",
+        ))
 
     assert '"model_profile_version": MODEL_PROFILE_VERSION' in NODE_SOURCE
 
@@ -760,6 +1230,19 @@ def test_node_tokens_are_random_once_and_only_digest_reaches_database(monkeypatc
     assert token not in json.dumps(db.params)
 
 
+def test_store_refuses_a_second_enabled_workstation(monkeypatch):
+    class Db:
+        def query(self, _sql, _params=None):
+            return pd.DataFrame([{"count": 1}])
+
+        def execute(self, _sql, _params=None):
+            raise AssertionError("a second enabled Workstation must not be inserted")
+
+    monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
+    with pytest.raises(ValueError, match="已經設定"):
+        lmc_ai_store.create_node(Db(), "Second AI")
+
+
 def test_node_hello_revalidates_the_current_token_before_registration(monkeypatch):
     class Db:
         sql = ""
@@ -787,181 +1270,84 @@ def test_chat_mode_is_allowlisted_and_legacy_requests_remain_distinguishable():
     assert ChatRequest(**request).mode is None
     assert ChatRequest(**request, mode="thinking").mode == "thinking"
     assert ChatRequest(**request, mode="fast").mode == "fast"
-    assert _resolve_thinking_enabled(None, True) is True
-    assert _resolve_thinking_enabled(None, False) is False
-    assert _resolve_thinking_enabled("thinking", False) is True
-    assert _resolve_thinking_enabled("fast", True) is False
-    assert _resolve_thinking_enabled("daily", False) is False
+    assert _resolve_chat_mode(None)[0] == "daily"
+    assert _resolve_chat_mode("thinking") == ("deep", LMC_AI_MODE_OPTIONS["deep"])
+    assert _resolve_chat_mode("complex") == ("daily", LMC_AI_MODE_OPTIONS["daily"])
+    assert _resolve_chat_mode("fast") == ("fast", LMC_AI_MODE_OPTIONS["fast"])
     with pytest.raises(ValidationError):
         ChatRequest(**request, mode="unlimited")
 
 
-def test_legacy_thinking_setting_stays_typed_for_cached_pre_mode_clients(monkeypatch):
-    writes = []
-    monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
-    monkeypatch.setattr(
-        lmc_ai_store,
-        "get_config",
-        lambda _db, key, default: key == "lmc_ai_thinking_enabled",
-    )
-    monkeypatch.setattr(
-        lmc_ai_store,
-        "set_config",
-        lambda _db, key, value: writes.append((key, value)),
-    )
-
-    assert config_store.CONFIG_SPECS["lmc_ai_thinking_enabled"].value_type == "boolean"
-    assert lmc_ai_store.get_thinking_enabled(object()) is True
-    lmc_ai_store.set_thinking_enabled(object(), False)
-    assert writes == [("lmc_ai_thinking_enabled", False)]
-
-
-def test_model_set_setting_is_typed_validated_and_defaults_to_gemma(monkeypatch):
-    writes = []
-    monkeypatch.setattr(lmc_ai_store, "require_lmc_ai_schema", lambda _db: None)
-    monkeypatch.setattr(
-        lmc_ai_store,
-        "get_config",
-        lambda _db, _key, _default: "retired-model-profile",
-    )
-    monkeypatch.setattr(
-        lmc_ai_store,
-        "set_config",
-        lambda _db, key, value: writes.append((key, value)),
-    )
-
-    assert config_store.CONFIG_SPECS["lmc_ai_model_set"].value_type == "string"
-    assert lmc_ai_store.get_model_set(object()) == "gemma"
-    lmc_ai_store.set_model_set(object(), "gemma")
-    assert writes == [("lmc_ai_model_set", "gemma")]
-    with pytest.raises(ValueError, match="模型組合"):
-        lmc_ai_store.set_model_set(object(), "unknown")
-
-
-def test_developer_can_select_only_the_complete_gemma_model_set(monkeypatch):
-    monkeypatch.setattr(lmc_api, "_developer_required", lambda _request: None)
-    monkeypatch.setattr(lmc_api, "_db", lambda: object())
-    monkeypatch.setattr(lmc_api, "require_lmc_ai_schema", lambda _db: None)
-    active = {"node_id": "node-1"}
-    monkeypatch.setattr(
-        lmc_api, "get_active_node_id", lambda _db: active["node_id"],
-    )
-    writes = []
-    monkeypatch.setattr(
-        lmc_api, "set_model_set", lambda _db, value: writes.append(value),
-    )
-
-    async def gemma_snapshot(_node_id):
-        return {
-            "online": True,
-            "ready": True,
-            "draining": False,
-            "models": [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL],
-        }
-
-    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", gemma_snapshot)
-    saved = asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
-        lmc_api.ModelSetSelection(model_set="gemma"), object(),
-    ))
-    assert saved == {"ok": True, "model_set": "gemma"}
-    assert writes == ["gemma"]
-
-    async def incomplete_snapshot(_node_id):
-        return {
-            "online": True,
-            "ready": True,
-            "draining": False,
-            "models": [LMC_AI_PRIMARY_MODEL],
-        }
-
-    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", incomplete_snapshot)
-    with pytest.raises(lmc_api.HTTPException) as exc_info:
-        asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
-            lmc_api.ModelSetSelection(model_set="gemma"), object(),
-        ))
-    assert exc_info.value.status_code == 409
-    assert writes == ["gemma"]
-
-    active["node_id"] = ""
-    gemma_models = list(ai_model_config.lmc_ai_required_models("gemma"))
-
-    async def all_snapshots():
-        return {
-            "node-g": {
-                "online": True, "ready": True, "draining": False,
-                "models": gemma_models,
-            },
-        }
-
-    monkeypatch.setattr(lmc_api.RUNTIME, "all_snapshots", all_snapshots)
-    saved = asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
-        lmc_api.ModelSetSelection(model_set="gemma"), object(),
-    ))
-    assert saved == {"ok": True, "model_set": "gemma"}
-    assert writes == ["gemma", "gemma"]
-
-    with pytest.raises(lmc_api.HTTPException) as exc_info:
-        asyncio.run(lmc_api.developer_set_lmc_ai_model_set(
-            lmc_api.ModelSetSelection(model_set="unknown"), object(),
-        ))
-    assert exc_info.value.status_code == 400
-
-
-def test_cached_pre_mode_api_contract_remains_functional(monkeypatch):
-    monkeypatch.setattr(lmc_api, "_developer_required", lambda _request: None)
-    monkeypatch.setattr(lmc_api, "_db", lambda: object())
-    monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [])
-    monkeypatch.setattr(lmc_api, "get_active_node_id", lambda _db: "")
-    monkeypatch.setattr(lmc_api, "get_model_set", lambda _db: "gemma")
-    monkeypatch.setattr(lmc_api, "get_thinking_enabled", lambda _db: True)
-    writes = []
-    monkeypatch.setattr(
-        lmc_api,
-        "set_thinking_enabled",
-        lambda _db, enabled: writes.append(enabled),
-    )
-
-    async def snapshots():
-        return {}
-
-    monkeypatch.setattr(lmc_api.RUNTIME, "all_snapshots", snapshots)
-    nodes = asyncio.run(lmc_api.developer_lmc_ai_nodes(object()))
-    saved = asyncio.run(
-        lmc_api.developer_set_lmc_ai_thinking(
-            lmc_api.ThinkingSetting(enabled=False), object()
+def test_developer_workstation_control_body_is_closed():
+    assert lmc_api.WorkstationControlBody(
+        command={"action": "drain"}
+    ).command == {"action": "drain"}
+    with pytest.raises(ValidationError):
+        lmc_api.WorkstationControlBody(
+            command={"action": "drain"}, shell="id",
         )
+
+
+def test_parallel_local_ai_runtime_settings_are_removed():
+    for key in (
+        "lmc_ai_active_node_id", "lmc_ai_model_set", "lmc_ai_thinking_enabled",
+    ):
+        assert key not in config_store.CONFIG_SPECS
+    assert "get_active_node_id" not in API_SOURCE
+    assert "ModelSetSelection" not in API_SOURCE
+    assert "ThinkingSetting" not in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/active-node")' not in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/model-set")' not in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/thinking")' not in API_SOURCE
+
+
+def test_developer_api_returns_only_the_single_enabled_workstation(monkeypatch):
+    monkeypatch.setattr(lmc_api, "_developer_required", lambda _request: None)
+    monkeypatch.setattr(lmc_api, "_db", lambda: object())
+    monkeypatch.setattr(
+        lmc_api, "list_node_rows", lambda _db: [{
+            "node_id": "node-a", "display_name": "AI 01",
+            "last_connected_at": None, "last_disconnected_at": None,
+        }],
     )
 
-    assert nodes["thinking_enabled"] is True
-    assert saved == {"ok": True, "thinking_enabled": False}
-    assert writes == [False]
-
-
-def test_member_operation_status_lists_every_registered_node_without_ids(monkeypatch):
-    monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [
-        {"node_id": "node-a", "display_name": "AI 01"},
-        {"node_id": "node-b", "display_name": "AI 02"},
-    ])
-
-    async def snapshots():
+    async def snapshot(_node_id):
         return {
-            "node-a": {
-                "name": "AI 01", "ready": True, "busy": True,
-                "queue_length": 1,
-                "models": [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL],
-            }
+            "name": "AI 01", "ready": True, "busy": False,
+            "models": list(ai_model_config.lmc_ai_required_models()),
         }
 
-    monkeypatch.setattr(lmc_api.RUNTIME, "all_snapshots", snapshots)
-    result = asyncio.run(lmc_api._public_nodes(object(), "node-a"))
+    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", snapshot)
+    result = asyncio.run(lmc_api.developer_lmc_ai_nodes(object()))
 
-    assert [item["name"] for item in result] == ["AI 01", "AI 02"]
-    assert result[0]["state"] == "busy" and result[0]["selected"] is True
-    assert result[1]["state"] == "offline" and result[1]["selected"] is False
-    assert all("node_id" not in item for item in result)
+    assert result["workstation"]["node_id"] == "node-a"
+    assert result["workstation"]["models_ready"] is True
+    assert "nodes" not in result
 
 
-def test_cached_pre_mode_bootstrap_uses_the_legacy_global_fingerprint(monkeypatch):
+def test_member_operation_status_exposes_one_workstation_without_private_id(monkeypatch):
+    monkeypatch.setattr(lmc_api, "list_node_rows", lambda _db: [{
+        "node_id": "node-a", "display_name": "AI 01",
+        "last_connected_at": "now", "last_disconnected_at": None,
+    }])
+
+    async def snapshot(_node_id):
+        return {
+            "name": "AI 01", "ready": True, "busy": True,
+            "queue_length": 1,
+            "models": list(ai_model_config.lmc_ai_required_models()),
+        }
+
+    monkeypatch.setattr(lmc_api.RUNTIME, "snapshot", snapshot)
+    result = asyncio.run(lmc_api._public_workstation(object(), "node-a"))
+
+    assert result["name"] == "AI 01"
+    assert result["state"] == "busy"
+    assert result["queue_length"] == 1
+    assert "node_id" not in result
+
+
+def test_cached_pre_mode_bootstrap_uses_daily_fingerprint(monkeypatch):
     monkeypatch.setattr(
         lmc_api,
         "require_page_user_or_developer",
@@ -976,23 +1362,24 @@ def test_cached_pre_mode_bootstrap_uses_the_legacy_global_fingerprint(monkeypatc
     )
 
     async def active_service(_db):
-        return "node-1", {"online": True, "ready": True}, True, {
+        return "node-1", {"online": True, "ready": True}, {
             "fast": "f" * 64,
             "daily": "t" * 64,
             "deep": "d" * 64,
             "complex": "t" * 64,
             "thinking": "d" * 64,
-        }, "gemma"
+        }
 
     monkeypatch.setattr(lmc_api, "_active_service", active_service)
 
-    async def public_nodes(_db, _active_node_id):
-        return []
+    async def public_workstation(_db, _node_id):
+        return {"name": "AI 01", "state": "online"}
 
-    monkeypatch.setattr(lmc_api, "_public_nodes", public_nodes)
+    monkeypatch.setattr(lmc_api, "_public_workstation", public_workstation)
     result = asyncio.run(lmc_api.lmc_ai_bootstrap(object()))
 
-    assert result["backend_fingerprint"] == "d" * 64
+    assert result["backend_fingerprint"] == "t" * 64
+    assert result["workstation"] == {"name": "AI 01", "state": "online"}
     assert result["backend_fingerprints"] == {
         "fast": "f" * 64,
         "daily": "t" * 64,
@@ -1034,7 +1421,7 @@ def test_browser_offers_three_conversation_scoped_model_modes_and_node_status():
     assert 'data-panel="operationsPanel"' in PAGE
     assert 'id="nodeGrid"' in PAGE
     assert "backend_fingerprints" in API_SOURCE
-    assert "_resolve_thinking_enabled" in API_SOURCE
+    assert "_resolve_chat_mode" in API_SOURCE
     assert "mode: conversation.mode" in SCRIPT
     assert "normalizeMode" in SCRIPT
     assert "renderModeOptions" in SCRIPT
@@ -1082,26 +1469,25 @@ def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
     assert "自家 AI 電腦資料暫時未能讀取" in load_block
 
 
-def test_new_developer_ui_hides_model_set_and_global_thinking_controls():
+def test_new_developer_ui_has_only_single_workstation_credential_controls():
     assert 'id="refreshLmcNodes"' in DEV_SETTINGS
-    assert 'id="clearLmcSelection"' in DEV_SETTINGS
+    assert 'id="clearLmcSelection"' not in DEV_SETTINGS
     assert 'id="lmcThinkingEnabled"' not in DEV_SETTINGS
     assert 'id="saveLmcThinking"' not in DEV_SETTINGS
     assert "let lmcLoadGeneration = 0" in DEV_SETTINGS
     assert "loadGeneration !== lmcLoadGeneration" in DEV_SETTINGS
-    assert 'JSON.stringify({ node_id: "" })' in DEV_SETTINGS
-    assert '"/api/developer/lmc-ai/active-node"' in DEV_SETTINGS
+    assert 'data-lmc-select' not in DEV_SETTINGS
+    assert '"/api/developer/lmc-ai/active-node"' not in DEV_SETTINGS
     assert '"/api/developer/lmc-ai/thinking"' not in DEV_SETTINGS
     assert 'id="lmcModelSet"' not in DEV_SETTINGS
     assert '"/api/developer/lmc-ai/model-set"' not in DEV_SETTINGS
 
-    assert "class ThinkingSetting" in API_SOURCE
-    assert "node_id: str = Field(max_length=64)" in API_SOURCE
-    assert "set_thinking_enabled" in API_SOURCE
-    assert "get_thinking_enabled" in API_SOURCE
-    assert '"thinking_enabled": thinking_enabled' in API_SOURCE
-    assert '@router.post("/api/developer/lmc-ai/thinking")' in API_SOURCE
-    assert '@router.post("/api/developer/lmc-ai/model-set")' in API_SOURCE
+    assert "class ThinkingSetting" not in API_SOURCE
+    assert "class ModelSetSelection" not in API_SOURCE
+    assert "get_workstation_id" in API_SOURCE
+    assert 'return {"workstation": None}' in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/thinking")' not in API_SOURCE
+    assert '@router.post("/api/developer/lmc-ai/model-set")' not in API_SOURCE
 
 
 def test_chat_page_serves_and_renders_the_versioned_assistant_avatar():
@@ -1119,9 +1505,9 @@ def test_chat_page_serves_and_renders_the_versioned_assistant_avatar():
 def test_node_cli_has_no_runtime_pull_or_output_token_cap_and_config_is_private(tmp_path):
     assert "ollama pull" not in NODE_SOURCE
     assert '"think": bool(think)' in NODE_SOURCE
-    assert "for model_set, model_set_config in MODEL_SETS.items()" in NODE_SOURCE
+    assert "for mode in MODE_OPTIONS.values()" in NODE_SOURCE
     assert "_model_probe(model, think=thinking)" in NODE_SOURCE
-    assert "available_model_sets=complete_sets" in NODE_SOURCE
+    assert "available_model_sets" not in NODE_SOURCE
     assert 'thinking_enabled = payload.get("think") is True' in NODE_SOURCE
     assert '"think": thinking_enabled' in NODE_SOURCE
     assert '"thinking_control": True' in NODE_SOURCE
@@ -1224,7 +1610,7 @@ def test_node_server_url_normalization_is_idempotent_and_repairs_duplicate_path(
     assert lmc_ai_node._normalise_server(expected + "/api/lmc-ai/nodes/connect") == expected
 
 
-def test_node_preflight_accepts_the_complete_gemma_set_and_reports_failure(tmp_path, monkeypatch):
+def test_node_preflight_accepts_the_complete_gemma_profile_and_reports_failure(tmp_path, monkeypatch):
     path = tmp_path / "node.json"
     lmc_ai_node._save(
         path,
@@ -1260,7 +1646,7 @@ def test_node_preflight_accepts_the_complete_gemma_set_and_reports_failure(tmp_p
     assert selected["preflight_ready"] is True
     assert selected["effective_model"] == LMC_AI_PRIMARY_MODEL
     assert selected["available_models"] == [LMC_AI_PRIMARY_MODEL, LMC_AI_FALLBACK_MODEL]
-    assert selected["available_model_sets"] == ["gemma"]
+    assert "available_model_sets" not in selected
     assert selected["model_profile_version"] == lmc_ai_node.MODEL_PROFILE_VERSION
     assert probes == [
         (LMC_AI_FAST_MODEL_TAG, False),
@@ -1275,7 +1661,7 @@ def test_node_preflight_accepts_the_complete_gemma_set_and_reports_failure(tmp_p
             RuntimeError(f"{model} thinking={think} failed")
         ),
     )
-    with pytest.raises(SystemExit, match="沒有完整模型組合"):
+    with pytest.raises(SystemExit, match="Gemma profile 未通過"):
         lmc_ai_node.preflight(SimpleNamespace(config=path))
     refused = lmc_ai_node._load(path)
     assert refused["preflight_ready"] is False

@@ -25,7 +25,9 @@ def test_ai_coach_html_versions_shared_ai_parity_without_placeholder(monkeypatch
     assert f'src="/shared/vote-ui.js?v={proxy.APP_VERSION}"' in html
     assert f'src="/shared/markdown.js?v={proxy.APP_VERSION}"' in html
     assert f'src="/shared/ai-parity.js?v={proxy.APP_VERSION}"' in html
+    assert proxy.LMC_AI_PRACTICE_LABEL in html
     assert "__APP_VERSION__" not in html
+    assert "__LMC_AI_PRACTICE_LABEL__" not in html
 
 
 def test_local_ai_practice_versions_assets_and_server_limits(monkeypatch):
@@ -44,7 +46,9 @@ def test_local_ai_practice_versions_assets_and_server_limits(monkeypatch):
         f'src="/ai-coach/local-practice/app.js?v={proxy.APP_VERSION}"' in html
     )
     assert f'maxlength="{proxy.LMC_AI_MESSAGE_MAX_CHARS}"' in html
+    assert proxy.LMC_AI_PRACTICE_LABEL in html
     assert "__APP_VERSION__" not in html
+    assert "__LMC_AI_PRACTICE_LABEL__" not in html
     assert "__LOCAL_PRACTICE_MESSAGE_MAX_CHARS__" not in html
 
 

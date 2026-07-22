@@ -1,0 +1,11 @@
+[Unit]
+Description=Check idle gate for pending Ubuntu security-update reboot
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=1min
+Unit=lmc-ai-reboot.service
+
+[Install]
+WantedBy=timers.target

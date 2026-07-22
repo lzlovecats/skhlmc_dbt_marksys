@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="theme-color" content="#0e1117" />
-    <title>與自家AI練習</title>
+    <title>__LMC_AI_PRACTICE_LABEL__</title>
     <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
     <style>
       :root { color-scheme:dark; --coach-accent:#8b5cf6; }
@@ -38,7 +38,7 @@
       <header class="topbar">
         <div>
           <p class="caption"><a href="/">主頁</a>　·　<a href="/ai-coach">← 返回 AI 辯論易</a></p>
-          <h1>🤖 與自家AI練習</h1>
+          <h1>🤖 __LMC_AI_PRACTICE_LABEL__</h1>
           <p class="caption">正方先開始，之後正反方嚴格一問一答；自家AI使用「快速回覆」模式。</p>
         </div>
         <button id="stopPractice" class="danger" type="button">停止並取得評語</button>
@@ -67,7 +67,7 @@
       <section id="feedbackCard" class="card hidden">
         <h2>完場評語</h2>
         <div id="feedback" class="feedback"></div>
-        <div class="actions"><button id="downloadFeedback" type="button">下載評語</button></div>
+        <div class="actions"><button id="downloadFeedback" type="button">下載練習紀錄及評語</button></div>
       </section>
 
       <section id="composer" class="card composer">
@@ -77,6 +77,7 @@
         <div class="actions">
           <button id="startTurn" class="primary" type="button">開始我的回合</button>
           <button id="recordTurn" type="button" disabled>錄音</button>
+          <button id="retryRecording" type="button" class="hidden">重試相同錄音</button>
           <button id="sendTurn" class="primary" type="button" disabled>完成並送出</button>
           <span id="charCount" class="caption">0 / __LOCAL_PRACTICE_MESSAGE_MAX_CHARS__</span>
         </div>

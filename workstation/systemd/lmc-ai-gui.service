@@ -1,0 +1,27 @@
+[Unit]
+Description=LMC AI Workstation localhost Manager GUI
+After=lmc-ai-manager.service lmc-ai-privileged.service
+Requires=lmc-ai-manager.service lmc-ai-privileged.service
+
+[Service]
+Type=simple
+User=lmc-ai
+Group=lmc-ai
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.gui.server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/lmc-ai-workstation
+ReadWritePaths=/run/lmc-ai-workstation
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

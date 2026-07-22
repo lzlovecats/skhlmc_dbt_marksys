@@ -39,6 +39,7 @@ from system_limits import (
     AI_FACTORY_INSTRUCTION_MAX_CHARS,
     AI_FACTORY_RAG_CLAIM_MAX,
     AI_FACTORY_RAG_CONTENT_MAX_CHARS,
+    AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE,
     AI_FACTORY_SFT_ASSISTANT_MAX_CHARS,
     AI_FACTORY_SFT_USER_MAX_CHARS,
     AI_FACTORY_SOURCE_MAX_CHARS,
@@ -136,30 +137,38 @@ _RECIPE_DEFINITIONS = {
         "instruction": AI_DATA_FACTORY_RAG_KNOWLEDGE_INSTRUCTION,
         "sft_message_count": None,
         # This value is both the confirmed cost budget and the provider hard
-        # cap. Keep headroom above the typical ~1,000-token card so structured
-        # JSON can close cleanly instead of ending with finish_reason=length.
-        "estimated_output_tokens_per_candidate": 2_000,
+        # cap. Production exhausted the previous 2,000-token allowance per
+        # card on both Gemini and OpenRouter before the JSON could close.
+        "estimated_output_tokens_per_candidate": (
+            AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        ),
     },
     RAG_ARGUMENT_DECOMPOSITION_RECIPE: {
         "artifact_kind": "rag_argument_decomposition",
         "temperature": 0.2,
         "instruction": AI_DATA_FACTORY_RAG_ARGUMENT_INSTRUCTION,
         "sft_message_count": None,
-        "estimated_output_tokens_per_candidate": 1_600,
+        "estimated_output_tokens_per_candidate": (
+            AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        ),
     },
     SFT_SPEECH_CRITIQUE_RECIPE: {
         "artifact_kind": "sft_speech_critique",
         "temperature": 0.4,
         "instruction": AI_DATA_FACTORY_SFT_SPEECH_INSTRUCTION,
         "sft_message_count": 3,
-        "estimated_output_tokens_per_candidate": 1_800,
+        "estimated_output_tokens_per_candidate": (
+            AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        ),
     },
     SFT_ATTACK_DEFENCE_RECIPE: {
         "artifact_kind": "sft_attack_defence",
         "temperature": 0.4,
         "instruction": AI_DATA_FACTORY_SFT_ATTACK_DEFENCE_INSTRUCTION,
         "sft_message_count": 7,
-        "estimated_output_tokens_per_candidate": 3_600,
+        "estimated_output_tokens_per_candidate": (
+            AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        ),
     },
 }
 

@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euo pipefail
+
+service_user="lmc-ai"
+service_group="lmc-ai"
+config_dir="/etc/lmc-ai-workstation"
+data_root="/srv/lmc-ai"
+
+if ! getent group "$service_group" >/dev/null; then
+  addgroup --system "$service_group"
+fi
+if ! getent passwd "$service_user" >/dev/null; then
+  adduser --system --ingroup "$service_group" --home /var/lib/lmc-ai-workstation \
+    --no-create-home --shell /usr/sbin/nologin "$service_user"
+fi
+for hardware_group in video render; do
+  if getent group "$hardware_group" >/dev/null; then
+    adduser "$service_user" "$hardware_group"
+  fi
+done
+
+install -d -o root -g "$service_group" -m 0750 "$config_dir" "$config_dir/credentials"
+install -d -o "$service_user" -g "$service_group" -m 0750 \
+  /var/lib/lmc-ai-workstation /var/cache/lmc-ai-workstation \
+  "$data_root" "$data_root/models" "$data_root/datasets" \
+  "$data_root/checkpoints" "$data_root/rag" "$data_root/vendor"
+install -d -o root -g "$service_group" -m 0750 "$data_root/health"
+install -d -o root -g "$service_group" -m 0750 \
+  /var/lib/lmc-ai-workstation/release
+install -d -o "$service_user" -g "$service_group" -m 0770 \
+  "$data_root/models/ollama"
+
+if [[ ! -e "$config_dir/config.json" ]]; then
+  install -o root -g "$service_group" -m 0640 \
+    /usr/share/lmc-ai-workstation/config.example.json "$config_dir/config.json"
+fi
+if [[ -L "$config_dir/config.json" || ! -f "$config_dir/config.json" ]]; then
+  echo "Workstation config must be a regular file" >&2
+  exit 1
+fi
+chown root:"$service_group" "$config_dir/config.json"
+chmod 0640 "$config_dir/config.json"
+
+systemctl daemon-reload
+systemctl try-restart ollama.service >/dev/null 2>&1 || true
+systemctl enable --now lmc-ai-privileged.service lmc-ai-manager.service lmc-ai-gui.service
+systemctl enable --now lmc-ai-health.timer lmc-ai-full-health.timer \
+  lmc-ai-power.timer lmc-ai-reboot.timer lmc-ai-update.timer
+if [[ -s "$config_dir/credentials/node-token" ]]; then
+  systemctl enable --now lmc-ai-node.service
+else
+  systemctl enable lmc-ai-node.service
+fi
+
+exit 0

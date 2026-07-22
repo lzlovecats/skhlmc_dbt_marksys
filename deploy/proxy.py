@@ -95,7 +95,10 @@ from api.match_topic_release_api import router as match_topic_release_router
 from api.funds_api import router as funds_router
 from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
-from api.local_ai_practice_api import router as local_ai_practice_router
+from api.local_ai_practice_api import (
+    local_practice_media_retention_loop,
+    router as local_ai_practice_router,
+)
 from api.competition_prep_api import router as competition_prep_router
 from api.ai_training_api import router as ai_training_router
 from api.ai_factory_api import router as ai_factory_router
@@ -104,7 +107,6 @@ from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
 from api.community_api import router as community_router
 from api.lmc_ai_api import router as lmc_ai_router
-from api.lmc_ai_eval_api import router as lmc_ai_eval_router
 from api.access import (
     has_developer_session,
     interactive_features_suspension,
@@ -118,6 +120,7 @@ from ai_name import (
     LMC_AI_MENTION_TAG,
     LMC_AI_MODEL_LABEL,
     LMC_AI_NAME,
+    LMC_AI_PRACTICE_LABEL,
 )
 from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from system_limits import (
@@ -188,11 +191,19 @@ CACHE_BELL = "public, max-age=86400, must-revalidate"
 @asynccontextmanager
 async def _lifespan(_app):
     sync_task = None
+    local_practice_retention_task = asyncio.create_task(
+        local_practice_media_retention_loop(get_vote_db)
+    )
     if _get_proxy_secret("RENDER_API_KEY") and _get_proxy_secret("RENDER_SERVICE_ID"):
         sync_task = asyncio.create_task(_render_bandwidth_sync_loop())
     try:
         yield
     finally:
+        local_practice_retention_task.cancel()
+        try:
+            await local_practice_retention_task
+        except asyncio.CancelledError:
+            pass
         if sync_task is not None:
             sync_task.cancel()
             try:
@@ -403,7 +414,6 @@ app.include_router(kiosk_router)
 app.include_router(projector_ai_router)
 app.include_router(community_router)
 app.include_router(lmc_ai_router)
-app.include_router(lmc_ai_eval_router)
 logger = logging.getLogger("skh_proxy")
 
 
@@ -2373,7 +2383,9 @@ async def ai_coach_page(request: Request):
     html = (BASE_DIR / "frontend" / "ai_coach" / "index.html").read_text(
         encoding="utf-8"
     )
-    html = html.replace("__APP_VERSION__", APP_VERSION)
+    html = html.replace("__APP_VERSION__", APP_VERSION).replace(
+        "__LMC_AI_PRACTICE_LABEL__", xml_escape(LMC_AI_PRACTICE_LABEL)
+    )
     return Response(
         content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_CACHE)
     )
@@ -2390,6 +2402,9 @@ async def local_ai_practice_page(request: Request):
     ).read_text(encoding="utf-8")
     return Response(
         html.replace("__APP_VERSION__", APP_VERSION).replace(
+            "__LMC_AI_PRACTICE_LABEL__",
+            xml_escape(LMC_AI_PRACTICE_LABEL),
+        ).replace(
             "__LOCAL_PRACTICE_MESSAGE_MAX_CHARS__",
             str(LMC_AI_MESSAGE_MAX_CHARS),
         ),

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from account_access import NON_MEMBER_ACCOUNT_DB_KEYS, sql_account_id_literals
+from ai_name import LMC_AI_PRACTICE_LABEL
 from ai_model_config import (
     NON_MANUAL_DEFAULT_AI_MODEL,
     build_tts_usage_metadata,
@@ -63,8 +64,9 @@ AI_FEATURE_LABELS = {
     "kiosk_match_review_tts": "AI評判易·粵語讀出",
     "official_ai_judge": "正式 AI 第三評判",
     "lmc_ai_chat": "自家 AI 對話",
-    "local_ai_practice": "與自家AI練習",
-    "lmc_ai_eval": "自家 AI 固定盲評",
+    "local_ai_practice": LMC_AI_PRACTICE_LABEL,
+    # Retained only so the shared ledger can still display retired usage rows.
+    "lmc_ai_eval": "已退役·自家 AI 評測",
 }
 AI_USAGE_FEATURES = (
     "speech_review", "strategy", "competition_prep", "web_research", "fact_check",
@@ -73,7 +75,7 @@ AI_USAGE_FEATURES = (
     "tts_script_analysis", "llm_review",
     "data_factory_generation",
     "kiosk_match_review", "tts", "kiosk_match_review_tts", "official_ai_judge",
-    "lmc_ai_chat", "local_ai_practice", "lmc_ai_eval",
+    "lmc_ai_chat", "local_ai_practice",
 )
 TTS_USAGE_FEATURES = frozenset(("tts", "kiosk_match_review_tts"))
 _AI_PRUNE_LOCK = threading.Lock()
