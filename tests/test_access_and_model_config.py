@@ -17,7 +17,6 @@ from ai_model_config import (
     AI_FEATURE_MODEL_LABELS,
     AI_MODEL_OPTIONS,
     AZURE_TTS_PROVIDER,
-    CUSTOM_LLM_OPTION,
     CUSTOM_TTS_PROVIDER,
     DEFAULT_TTS_PROVIDER,
     GEMINI_LIVE_MODEL,
@@ -127,11 +126,7 @@ def test_interactive_provider_settings_resolve_to_an_eligible_default():
     assert default_model == "Gemini 3.1 Pro"
 
 
-def test_deployment_selected_llm_tts_and_voice_have_central_selectors():
-    assert CUSTOM_LLM_OPTION["label"] == "自家辯論 LLM"
-    assert CUSTOM_LLM_OPTION["model_secret"] == "CUSTOM_LLM_MODEL"
-    assert CUSTOM_LLM_OPTION["registry_model_type"] == "llm"
-
+def test_deployment_selected_tts_and_voice_have_central_selectors():
     assert TTS_PROVIDER_SECRET == "TTS_PROVIDER"
     assert set(TTS_PROVIDER_OPTIONS) == {
         AZURE_TTS_PROVIDER,

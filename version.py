@@ -5,8 +5,8 @@ read this constant, so the version shown to users and the default
 ``fixed_version`` for bug reports stay in sync without a database setting.
 """
 
-APP_VERSION = "4.11.0"
+APP_VERSION = "4.12.0"
 
 # Minimum ledger version required by this application release. A database may
 # be ahead during a staged rollout, but it must never be behind this marker.
-REQUIRED_SCHEMA_MIGRATION = "20260722_0002"
+REQUIRED_SCHEMA_MIGRATION = "20260722_0003"

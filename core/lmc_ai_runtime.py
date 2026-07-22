@@ -17,7 +17,7 @@ from ai_model_config import (
     LMC_AI_CONTEXT_LENGTH,
     LMC_AI_MODEL_PROFILE_VERSION,
     lmc_ai_all_models,
-    lmc_ai_available_model_sets,
+    lmc_ai_models_ready,
 )
 from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
 from system_limits import (
@@ -237,9 +237,9 @@ class LocalAIRuntime:
             or len(models) > len(allowed_models)
             or any(item not in allowed_models for item in models)
         ):
-            raise ValueError("node advertised an unsupported model set")
-        if models and not lmc_ai_available_model_sets(models):
-            raise ValueError("node model profile has no complete supported model set")
+            raise ValueError("node advertised an unsupported model profile")
+        if models and not lmc_ai_models_ready(models):
+            raise ValueError("node model profile is incomplete")
         raw_digests = payload.get("model_digests")
         if raw_digests is None:
             model_digests = {}
@@ -377,7 +377,7 @@ class LocalAIRuntime:
             pass
 
     async def fail_queued(self, node_id: str, reason: str) -> None:
-        """Keep an in-flight answer but stop queued work after active-node switch."""
+        """Keep in-flight work but stop queued work while draining the Workstation."""
         async with self._lock:
             node = self._nodes.get(node_id)
         if node is not None:
@@ -692,7 +692,7 @@ class LocalAIRuntime:
             if reported_model and reported_model not in allowed_models:
                 raise ValueError("node reported an unsupported model")
             if reported_models is not None and not isinstance(reported_models, list):
-                raise ValueError("node reported an invalid model set")
+                raise ValueError("node reported an invalid model profile")
             if isinstance(reported_models, list):
                 candidate = tuple(dict.fromkeys(
                     str(item or "").strip()[:200] for item in reported_models
@@ -702,9 +702,9 @@ class LocalAIRuntime:
                 if (
                     not candidate
                     or effective_model not in candidate
-                    or not lmc_ai_available_model_sets(candidate)
+                    or not lmc_ai_models_ready(candidate)
                 ):
-                    raise ValueError("node reported an invalid model set")
+                    raise ValueError("node reported an invalid model profile")
                 clean_models = candidate
             clean_digests = node.model_digests
             if reported_digests is not None:

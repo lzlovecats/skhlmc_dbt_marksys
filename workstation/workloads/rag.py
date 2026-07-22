@@ -105,6 +105,8 @@ class LocalRagIndex:
             return {"ok": False, "code": "index_unavailable"}
 
     def health(self) -> dict:
+        if not self.config.enabled:
+            return {"ok": False, "code": "disabled"}
         link = self.config.active_link
         try:
             if not link.is_symlink():

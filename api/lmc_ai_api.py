@@ -16,10 +16,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from ai_model_config import (
     LMC_AI_DEFAULT_MODE,
-    LMC_AI_MODEL_SETS,
     get_lmc_ai_feature_mode,
-    lmc_ai_available_model_sets,
-    lmc_ai_required_models,
+    lmc_ai_models_ready,
     resolve_lmc_ai_mode_options,
 )
 from ai_name import LMC_AI_EMOJI, LMC_AI_NAME
@@ -40,17 +38,12 @@ from core.lmc_ai_runtime import (
 from core.lmc_ai_store import (
     authenticate_node,
     create_node,
-    get_active_node_id,
-    get_model_set,
-    get_thinking_enabled,
+    get_workstation_id,
     list_node_rows,
     mark_node_disconnected,
     require_lmc_ai_schema,
     revoke_node,
     rotate_node_token,
-    set_active_node_id,
-    set_model_set,
-    set_thinking_enabled,
     update_node_hello,
 )
 from system_limits import (
@@ -96,25 +89,12 @@ class ChatRequest(BaseModel):
     )
     expected_fingerprint: str = Field(min_length=64, max_length=64)
     has_history: bool
-    # None identifies a cached pre-mode browser and follows the temporary
-    # legacy global setting. New browsers always send an explicit mode.
+    # Cached pre-mode browsers omit this and receive the fixed daily default.
     mode: Literal["daily", "complex", "deep", "fast", "thinking"] | None = None
 
 
 class NodeCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=LMC_AI_NODE_NAME_MAX_CHARS)
-
-
-class NodeSelection(BaseModel):
-    node_id: str = Field(max_length=64)
-
-
-class ModelSetSelection(BaseModel):
-    model_set: str = Field(min_length=1, max_length=40)
-
-
-class ThinkingSetting(BaseModel):
-    enabled: bool
 
 
 class WorkstationR2ProbeStart(BaseModel):
@@ -378,31 +358,11 @@ def _validated_messages(body: ChatRequest) -> list[dict]:
     return messages
 
 
-def _resolve_thinking_enabled(
-    mode: str | None, legacy_enabled: bool, model_set: str | None = None
-) -> bool:
-    return _resolve_chat_mode(mode, legacy_enabled, model_set)[1]["thinking"]
-
-
-def _resolve_chat_mode(
-    mode: str | None, legacy_enabled: bool, model_set: str | None = None
-) -> tuple[str, dict]:
-    options = resolve_lmc_ai_mode_options(model_set)
-    if mode is None:
-        matching = [
-            mode_id
-            for mode_id, config in options.items()
-            if bool(config["thinking"]) is bool(legacy_enabled)
-        ]
-        selected = (
-            LMC_AI_DEFAULT_MODE
-            if LMC_AI_DEFAULT_MODE in matching
-            else matching[0]
-            if matching
-            else LMC_AI_DEFAULT_MODE
-        )
-    else:
-        selected = {"complex": "daily", "thinking": "deep"}.get(mode, mode)
+def _resolve_chat_mode(mode: str | None) -> tuple[str, dict]:
+    options = resolve_lmc_ai_mode_options()
+    selected = {"complex": "daily", "thinking": "deep"}.get(
+        mode, mode or LMC_AI_DEFAULT_MODE
+    )
     if selected not in options:
         selected = LMC_AI_DEFAULT_MODE
     return selected, dict(options[selected])
@@ -410,37 +370,33 @@ def _resolve_chat_mode(
 
 async def _active_service(
     db,
-) -> tuple[str, dict | None, bool, dict[str, str], str]:
-    active_node_id = get_active_node_id(db)
-    model_set = get_model_set(db)
-    mode_options = resolve_lmc_ai_mode_options(model_set)
-    legacy_thinking_enabled = get_thinking_enabled(db)
-    snapshot = await RUNTIME.snapshot(active_node_id) if active_node_id else None
+) -> tuple[str, dict | None, dict[str, str]]:
+    node_id = get_workstation_id(db)
+    mode_options = resolve_lmc_ai_mode_options()
+    snapshot = await RUNTIME.snapshot(node_id) if node_id else None
     fingerprints = {}
     if snapshot:
         available_models = set(snapshot.get("models") or [snapshot.get("model")])
         for mode, config in mode_options.items():
             if config["model"] in available_models:
                 fingerprints[mode] = backend_fingerprint(
-                    active_node_id, config["model"], config["thinking"],
+                    node_id, config["model"], config["thinking"],
                     model_digest=(snapshot.get("model_digests") or {}).get(config["model"], ""),
                 )
-        # Cached pre-mode clients continue to work during the node rollout.
+        # Cached mode aliases continue to work without a global thinking flag.
         if "daily" in fingerprints:
             fingerprints["complex"] = fingerprints["daily"]
         if "deep" in fingerprints:
             fingerprints["thinking"] = fingerprints["deep"]
-    return active_node_id, snapshot, legacy_thinking_enabled, fingerprints, model_set
+    return node_id, snapshot, fingerprints
 
 
-def _public_status(
-    active_node_id: str, snapshot: dict | None, model_set: str
-) -> dict:
-    if not active_node_id:
+def _public_status(node_id: str, snapshot: dict | None) -> dict:
+    if not node_id:
         state = "unconfigured"
     elif not snapshot or not snapshot.get("online") or not snapshot.get("ready"):
         state = "unavailable"
-    elif model_set not in lmc_ai_available_model_sets(snapshot.get("models")):
+    elif not lmc_ai_models_ready(snapshot.get("models")):
         state = "unavailable"
     elif snapshot.get("draining"):
         state = "draining"
@@ -454,8 +410,6 @@ def _public_status(
         "queue_capacity": LMC_AI_QUEUE_MAX,
         "rag_enabled": False,
         "fine_tuned": False,
-        "model_set": model_set,
-        "model_set_label": LMC_AI_MODEL_SETS[model_set]["label"],
         "modes": [
             {
                 "id": mode,
@@ -466,56 +420,33 @@ def _public_status(
                     (snapshot or {}).get("models") or [(snapshot or {}).get("model")]
                 ),
             }
-            for mode, config in resolve_lmc_ai_mode_options(model_set).items()
+            for mode, config in resolve_lmc_ai_mode_options().items()
         ],
     }
 
 
-def _model_set_options(
-    snapshot: dict | None = None, *, available_sets: object = None
-) -> list[dict]:
-    available = (
-        set(lmc_ai_available_model_sets((snapshot or {}).get("models") or []))
-        if available_sets is None
-        else {str(item) for item in (available_sets or ())}
-    )
-    return [
-        {
-            "id": model_set,
-            "label": config["label"],
-            "available": model_set in available,
-            "models": list(lmc_ai_required_models(model_set)),
-        }
-        for model_set, config in LMC_AI_MODEL_SETS.items()
-    ]
-
-
-async def _public_nodes(db, active_node_id: str) -> list[dict]:
+async def _public_workstation(db, node_id: str) -> dict | None:
     rows = list_node_rows(db)
-    live = await RUNTIME.all_snapshots()
-    nodes = []
-    for source in rows:
-        row = dict(source)
-        node_id = str(row.get("node_id") or "")
-        runtime = live.get(node_id) or {}
-        if runtime.get("draining"):
-            state = "draining"
-        elif runtime.get("busy"):
-            state = "busy"
-        elif runtime.get("ready"):
-            state = "online"
-        else:
-            state = "offline"
-        nodes.append({
-            "name": str(runtime.get("name") or row.get("display_name") or "AI 電腦"),
-            "state": state,
-            "selected": node_id == active_node_id,
-            "queue_length": int(runtime.get("queue_length") or 0),
-            "models": list(runtime.get("models") or []),
-            "last_connected_at": row.get("last_connected_at"),
-            "last_disconnected_at": row.get("last_disconnected_at"),
-        })
-    return nodes
+    if not rows or not node_id:
+        return None
+    row = dict(rows[0])
+    runtime = await RUNTIME.snapshot(node_id) or {}
+    if runtime.get("draining"):
+        state = "draining"
+    elif runtime.get("busy"):
+        state = "busy"
+    elif runtime.get("ready"):
+        state = "online"
+    else:
+        state = "offline"
+    return {
+        "name": str(runtime.get("name") or row.get("display_name") or "AI Workstation"),
+        "state": state,
+        "queue_length": int(runtime.get("queue_length") or 0),
+        "models": list(runtime.get("models") or []),
+        "last_connected_at": row.get("last_connected_at"),
+        "last_disconnected_at": row.get("last_disconnected_at"),
+    }
 
 
 @router.get("/api/lmc-ai/bootstrap")
@@ -524,19 +455,11 @@ async def lmc_ai_bootstrap(request: Request):
     db = _db()
     try:
         require_lmc_ai_schema(db)
-        (
-            active_node_id,
-            snapshot,
-            legacy_thinking_enabled,
-            fingerprints,
-            model_set,
-        ) = (
-            await _active_service(db)
-        )
-        nodes = await _public_nodes(db, active_node_id)
+        node_id, snapshot, fingerprints = await _active_service(db)
+        workstation = await _public_workstation(db, node_id)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
-    status = _public_status(active_node_id, snapshot, model_set)
+    status = _public_status(node_id, snapshot)
     suspension = interactive_features_suspension(request)
     if suspension.get("active"):
         status = {**status, "state": "suspended"}
@@ -546,7 +469,7 @@ async def lmc_ai_bootstrap(request: Request):
         "identity": {"id": actor_id, "developer": actor_id == "developer"},
         "service": status,
         "default_mode": get_lmc_ai_feature_mode("lmc_ai"),
-        "nodes": nodes,
+        "workstation": workstation,
         "suspension": suspension,
         "history_limits": {
             "messages": LMC_AI_BROWSER_HISTORY_MAX_MESSAGES,
@@ -555,13 +478,7 @@ async def lmc_ai_bootstrap(request: Request):
             "context_characters": LMC_AI_CONTEXT_MAX_CHARS,
             "request_messages": LMC_AI_REQUEST_MESSAGES_MAX,
         },
-        # Cached pre-mode browsers use the singular fingerprint and continue
-        # following the legacy global setting during this release transition.
-        "backend_fingerprint": fingerprints.get(
-            _resolve_chat_mode(
-                None, legacy_thinking_enabled, model_set
-            )[0]
-        ),
+        "backend_fingerprint": fingerprints.get(LMC_AI_DEFAULT_MODE),
         "backend_fingerprints": fingerprints,
     }
 
@@ -609,20 +526,10 @@ async def lmc_ai_chat(body: ChatRequest, request: Request):
     db = _db()
     try:
         require_lmc_ai_schema(db)
-        (
-            active_node_id,
-            _snapshot,
-            legacy_thinking_enabled,
-            _fingerprints,
-            model_set,
-        ) = (
-            await _active_service(db)
-        )
-        _mode, mode_config = _resolve_chat_mode(
-            body.mode, legacy_thinking_enabled, model_set
-        )
+        node_id, _snapshot, _fingerprints = await _active_service(db)
+        _mode, mode_config = _resolve_chat_mode(body.mode)
         job, _position = await RUNTIME.submit(
-            node_id=active_node_id,
+            node_id=node_id,
             expected_fingerprint=body.expected_fingerprint,
             actor_id=actor_id,
             usage_user_id=None if actor_id == "developer" else actor_id,
@@ -651,7 +558,7 @@ async def lmc_ai_chat(body: ChatRequest, request: Request):
             raise
         finally:
             if not terminal:
-                await RUNTIME.cancel(active_node_id, job)
+                await RUNTIME.cancel(node_id, job)
 
     return StreamingResponse(
         event_stream(),
@@ -670,49 +577,21 @@ async def developer_lmc_ai_nodes(request: Request):
     db = _db()
     try:
         rows = list_node_rows(db)
-        active_node_id = get_active_node_id(db)
-        model_set = get_model_set(db)
-        thinking_enabled = get_thinking_enabled(db)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
-    live = await RUNTIME.all_snapshots()
-    nodes = []
-    for row in rows:
-        node_id = str(row.pop("node_id"))
-        runtime = live.get(node_id) or {}
-        compatible_model_sets = list(lmc_ai_available_model_sets(
-            runtime.get("models") or []
-        ))
-        nodes.append(
-            {
-                **row,
-                **runtime,
-                "node_id": node_id,
-                "short_id": node_id[:8],
-                "selected": node_id == active_node_id,
-                "online": bool(runtime),
-                "compatible_model_sets": compatible_model_sets,
-            }
-        )
-    active_snapshot = live.get(active_node_id) or None
-    available_sets = None
-    if not active_node_id:
-        available_sets = {
-            model_set_id
-            for runtime in live.values()
-            if runtime.get("ready") and not runtime.get("draining")
-            for model_set_id in lmc_ai_available_model_sets(runtime.get("models"))
-        }
-    return {
-        "nodes": nodes,
-        "active_node_id": active_node_id,
-        "model_set": model_set,
-        "model_sets": _model_set_options(
-            active_snapshot, available_sets=available_sets
-        ),
-        # Temporary response compatibility for cached 4.9.3 Developer pages.
-        "thinking_enabled": thinking_enabled,
-    }
+    if not rows:
+        return {"workstation": None}
+    row = dict(rows[0])
+    node_id = str(row.pop("node_id"))
+    runtime = await RUNTIME.snapshot(node_id) or {}
+    return {"workstation": {
+        **row,
+        **runtime,
+        "node_id": node_id,
+        "short_id": node_id[:8],
+        "online": bool(runtime),
+        "models_ready": lmc_ai_models_ready(runtime.get("models") or []),
+    }}
 
 
 @router.post("/api/developer/lmc-ai/nodes")
@@ -749,101 +628,6 @@ async def developer_revoke_lmc_ai_node(node_id: str, request: Request):
         raise HTTPException(503, str(exc)) from exc
     await RUNTIME.disconnect_node(node_id, "AI 電腦已被撤銷。")
     return {"ok": True}
-
-
-@router.post("/api/developer/lmc-ai/active-node")
-async def developer_select_lmc_ai_node(body: NodeSelection, request: Request):
-    _developer_required(request)
-    db = _db()
-    previous_node_id = ""
-    selected_node_id = str(body.node_id or "").strip()
-    blocked_previous = False
-    try:
-        require_lmc_ai_schema(db)
-        previous_node_id = get_active_node_id(db)
-        model_set = get_model_set(db)
-        if selected_node_id:
-            snapshot = await RUNTIME.snapshot(selected_node_id)
-            if not snapshot or not snapshot.get("online") or not snapshot.get("ready"):
-                raise HTTPException(409, "只可選擇已連線並完成 preflight 嘅 AI 電腦。")
-            if snapshot.get("draining"):
-                raise HTTPException(409, "AI 電腦正在 drain，暫時唔可以選用。")
-            if model_set not in lmc_ai_available_model_sets(snapshot.get("models")):
-                raise HTTPException(
-                    409,
-                    "呢部 AI 電腦未完成目前模型組合嘅全部 preflight。",
-                )
-        if previous_node_id and previous_node_id != selected_node_id:
-            await RUNTIME.block_new_jobs(previous_node_id)
-            blocked_previous = True
-        set_active_node_id(db, selected_node_id)
-    except LookupError as exc:
-        if blocked_previous:
-            await RUNTIME.allow_new_jobs(previous_node_id)
-        raise HTTPException(404, str(exc)) from exc
-    except RuntimeError as exc:
-        if blocked_previous:
-            await RUNTIME.allow_new_jobs(previous_node_id)
-        raise HTTPException(503, str(exc)) from exc
-    except Exception:
-        if blocked_previous:
-            await RUNTIME.allow_new_jobs(previous_node_id)
-        raise
-    if selected_node_id:
-        await RUNTIME.allow_new_jobs(selected_node_id)
-    if previous_node_id and previous_node_id != selected_node_id:
-        await RUNTIME.fail_queued(
-            previous_node_id,
-            "Developer 已取消或切換 AI 電腦，請用新對話再試。",
-        )
-    return {"ok": True, "active_node_id": selected_node_id}
-
-
-@router.post("/api/developer/lmc-ai/model-set")
-async def developer_set_lmc_ai_model_set(
-    body: ModelSetSelection, request: Request
-):
-    _developer_required(request)
-    db = _db()
-    try:
-        require_lmc_ai_schema(db)
-        if body.model_set not in LMC_AI_MODEL_SETS:
-            raise HTTPException(400, "不支援的自家 AI 模型組合。")
-        active_node_id = get_active_node_id(db)
-        if active_node_id:
-            candidates = [await RUNTIME.snapshot(active_node_id)]
-        else:
-            candidates = list((await RUNTIME.all_snapshots()).values())
-        compatible = any(
-            snapshot
-            and snapshot.get("online")
-            and snapshot.get("ready")
-            and not snapshot.get("draining")
-            and body.model_set in lmc_ai_available_model_sets(snapshot.get("models"))
-            for snapshot in candidates
-        )
-        if not compatible:
-            raise HTTPException(
-                409,
-                "目前未有可用電腦完成所選模型組合嘅全部 preflight。",
-            )
-        set_model_set(db, body.model_set)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    return {"ok": True, "model_set": body.model_set}
-
-
-@router.post("/api/developer/lmc-ai/thinking")
-async def developer_set_lmc_ai_thinking(body: ThinkingSetting, request: Request):
-    """Compatibility endpoint for cached 4.9.3 Developer pages."""
-    _developer_required(request)
-    try:
-        set_thinking_enabled(_db(), body.enabled)
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    return {"ok": True, "thinking_enabled": body.enabled}
 
 
 @router.websocket("/api/lmc-ai/nodes/connect")

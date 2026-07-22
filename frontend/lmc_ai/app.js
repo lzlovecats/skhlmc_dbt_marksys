@@ -172,12 +172,12 @@
 
   function renderNodes() {
     const grid = $("nodeGrid");
-    const nodes = Array.isArray(bootstrap?.nodes) ? bootstrap.nodes : [];
+    const node = bootstrap?.workstation;
     grid.replaceChildren();
-    if (!nodes.length) {
+    if (!node) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "尚未登記 AI 電腦。";
+      empty.textContent = "尚未設定 AI Workstation。";
       grid.append(empty);
       return;
     }
@@ -187,30 +187,27 @@
       draining: "準備休眠／暫停接單",
       offline: "離線",
     };
-    nodes.forEach((node) => {
-      const card = document.createElement("article");
-      card.className = "node-card";
-      const title = document.createElement("h2");
-      title.textContent = `${node.selected ? "★ " : ""}${node.name || "AI 電腦"}`;
-      const meta = document.createElement("div");
-      meta.className = "node-meta";
-      const modelText = Array.isArray(node.models) && node.models.length
-        ? node.models.join("、")
-        : "等待新 node preflight";
-      [
-        `狀態：${labels[node.state] || "未知"}`,
-        node.selected ? "目前選用" : "備用電腦",
-        `模型：${modelText}`,
-        `排隊：${Number(node.queue_length || 0)}`,
-      ].forEach((text) => {
-        const pill = document.createElement("span");
-        pill.className = "pill";
-        pill.textContent = text;
-        meta.append(pill);
-      });
-      card.append(title, meta);
-      grid.append(card);
+    const card = document.createElement("article");
+    card.className = "node-card";
+    const title = document.createElement("h2");
+    title.textContent = node.name || "AI Workstation";
+    const meta = document.createElement("div");
+    meta.className = "node-meta";
+    const modelText = Array.isArray(node.models) && node.models.length
+      ? node.models.join("、")
+      : "等待 Gemma preflight";
+    [
+      `狀態：${labels[node.state] || "未知"}`,
+      `模型：${modelText}`,
+      `排隊：${Number(node.queue_length || 0)}`,
+    ].forEach((text) => {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = text;
+      meta.append(pill);
     });
+    card.append(title, meta);
+    grid.append(card);
   }
 
   function updateControls() {

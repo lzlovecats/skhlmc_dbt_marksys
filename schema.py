@@ -2893,8 +2893,10 @@ CREATE TABLE IF NOT EXISTS {TABLE_LMC_AI_NODES} (
 );
 CREATE INDEX IF NOT EXISTS idx_lmc_ai_nodes_enabled_created
     ON {TABLE_LMC_AI_NODES}(enabled, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_lmc_ai_single_enabled_workstation
+    ON {TABLE_LMC_AI_NODES}(enabled) WHERE enabled = TRUE;
 COMMENT ON TABLE {TABLE_LMC_AI_NODES} IS
-    'skhlmc-feature:lmc_ai:20260722_0002';
+    'skhlmc-feature:lmc_ai:20260722_0003';
 
 REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM PUBLIC;
 DO $lmc_ai_privileges$

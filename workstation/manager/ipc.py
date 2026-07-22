@@ -73,7 +73,10 @@ class ManagerApplication:
                     prepare_non_ollama=self.executor._prepare_non_ollama_gpu,
                     probe_r2=(
                         UpdateStager(self.config).r2_health_probe
-                        if self.config.update.enabled else None
+                        if (
+                            self.config.update.enabled
+                            or self.config.workloads.gpt_sovits.enabled
+                        ) else None
                     ),
                 )
                 if operation_id:

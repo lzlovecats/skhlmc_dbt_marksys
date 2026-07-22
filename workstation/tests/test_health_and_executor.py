@@ -30,12 +30,13 @@ class _Inhibitor:
         self.active = False
 
 
-def _config(tmp_path):
+def _config(tmp_path, *, update_enabled=False):
     return parse_config({
         "schema_version": 1,
         "node": {"name": "AI Workstation", "server_url": "https://example.com", "token_file": str(tmp_path / "token")},
         "paths": {"state": str(tmp_path / "state"), "cache": str(tmp_path / "cache"), "data": str(tmp_path / "data"), "releases": str(tmp_path / "releases")},
         "power": {}, "workloads": {}, "gui": {},
+        "update": {"enabled": update_enabled},
     })
 
 
@@ -197,7 +198,7 @@ def test_tts_owns_gpu_service_only_for_inference(tmp_path, monkeypatch):
 def test_full_health_executes_direct_r2_probe_instead_of_trusting_old_receipt(
     tmp_path, monkeypatch,
 ):
-    runner = HealthRunner(_config(tmp_path))
+    runner = HealthRunner(_config(tmp_path, update_enabled=True))
     calls = []
 
     def full_probes(**kwargs):
@@ -225,6 +226,49 @@ def test_full_health_executes_direct_r2_probe_instead_of_trusting_old_receipt(
     }
 
 
+def test_full_health_skips_disabled_future_capability_probes(tmp_path):
+    runner = HealthRunner(_config(tmp_path))
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("disabled future capability must not be probed")
+
+    probes = runner._full_probes(
+        set_gpt_service=unexpected,
+        prepare_non_ollama=unexpected,
+        probe_r2=unexpected,
+    )
+
+    assert probes == {}
+    assert runner.rag.health() == {"ok": False, "code": "disabled"}
+
+
+def test_full_health_requires_only_enabled_capabilities(tmp_path, monkeypatch):
+    runner = HealthRunner(_config(tmp_path))
+    monkeypatch.setattr(runner, "_inventory", lambda: {"quota_status": "ok"})
+    for name in ("_os", "_gpu", "_memory", "_disk", "_power_tools", "_ollama_health"):
+        monkeypatch.setattr(runner, name, lambda: {"ok": True})
+    monkeypatch.setattr(
+        runner, "_connection_receipt",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    report = runner.run(
+        full=True,
+        set_gpt_service=lambda _state: None,
+        prepare_non_ollama=lambda: None,
+        probe_r2=None,
+    )
+
+    assert report["healthy"] is True
+    assert report["required"] == [
+        "os", "gpu", "memory", "disk", "power", "ollama", "quota", "wss",
+    ]
+    assert not {
+        "asr", "rag", "gpt_sovits", "r2",
+        "asr_probe", "rag_probe", "gpt_sovits_probe", "r2_probe",
+    }.intersection(report["required"])
+
+
 def test_connection_receipt_rejects_non_object_and_future_timestamp(tmp_path):
     runner = HealthRunner(_config(tmp_path))
     state = tmp_path / "state"
@@ -244,7 +288,7 @@ def test_connection_receipt_rejects_non_object_and_future_timestamp(tmp_path):
 def test_r2_receipt_spans_full_health_interval_and_failure_invalidates_it(
     tmp_path, monkeypatch,
 ):
-    runner = HealthRunner(_config(tmp_path))
+    runner = HealthRunner(_config(tmp_path, update_enabled=True))
     state = tmp_path / "state"
     state.mkdir()
     now = 2_000_000_000

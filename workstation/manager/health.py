@@ -219,88 +219,95 @@ class HealthRunner:
         self, *, set_gpt_service, prepare_non_ollama, probe_r2=None,
     ) -> dict:
         results = {}
-        try:
-            if probe_r2 is None:
-                raise WorkloadError(
-                    "r2_probe_unavailable", "Direct-R2 probe is unavailable."
-                )
-            probe = probe_r2()
-            if not isinstance(probe, dict) or probe.get("ok") is not True:
-                raise WorkloadError("r2_probe_failed", "Direct-R2 probe failed.")
-            results["r2_probe"] = probe
-        except Exception as exc:
+        needs_r2 = bool(
+            self.config.update.enabled or self.config.workloads.gpt_sovits.enabled
+        )
+        if needs_r2:
             try:
-                (self.config.paths.state / "r2-health.json").unlink(
-                    missing_ok=True
-                )
-            except OSError:
-                pass
-            results["r2_probe"] = {
-                "ok": False,
-                "code": (
-                    exc.code if isinstance(exc, WorkloadError)
-                    else "r2_probe_failed"
-                ),
-            }
-        sample = self.config.paths.data / "health" / "asr-cantonese.wav"
-        expected_file = self.config.paths.data / "health" / "asr-cantonese.txt"
-        try:
-            prepare_non_ollama()
-            self.asr.verify_artifacts()
-            expected = expected_file.read_text(encoding="utf-8").strip()
-            if not sample.is_file() or not expected:
-                raise OSError("sample unavailable")
-            transcript = self.asr.transcribe(sample)
-            normalized_expected = "".join(expected.split()).casefold()
-            normalized_actual = "".join(str(transcript.get("text") or "").split()).casefold()
-            if normalized_expected not in normalized_actual:
-                raise WorkloadError("asr_probe_mismatch", "Cantonese ASR probe text did not match.")
-            results["asr_probe"] = self._write_receipt(
-                "asr-preflight.json", self._asr_identity(),
-                transcript_sha256=hashlib.sha256(normalized_actual.encode()).hexdigest(),
-            )
-        except (OSError, WorkloadError):
-            results["asr_probe"] = {"ok": False, "code": "asr_probe_failed"}
-        finally:
-            self.asr.unload()
-        try:
-            retrieval = self.rag.retrieve("香港辯論", top_k=1)
-            if not retrieval.get("results"):
-                raise WorkloadError("rag_probe_empty", "RAG probe returned no result.")
-            results["rag_probe"] = {
-                "ok": True,
-                "bundle_version": retrieval.get("bundle_version"),
-            }
-        except WorkloadError as exc:
-            results["rag_probe"] = {"ok": False, "code": exc.code}
-        output = None
-        started = False
-        try:
-            prepare_non_ollama()
-            self.gpt_sovits.verify_artifacts()
-            set_gpt_service("start")
-            started = True
-            self.gpt_sovits.wait_until_ready()
-            output = self.gpt_sovits.synthesize(
-                "更新後語音健康檢查。", output_dir=self.config.paths.cache,
-            )
-            media = probe_audio(
-                Path(output["path"]), maximum_seconds=30, declared_mime="audio/wav",
-            )
-            results["gpt_sovits_probe"] = self._write_receipt(
-                "gpt-sovits-preflight.json", self._tts_identity(),
-                duration_seconds=media["duration_seconds"],
-            )
-        except (OSError, WorkloadError):
-            results["gpt_sovits_probe"] = {"ok": False, "code": "gpt_sovits_probe_failed"}
-        finally:
-            if output:
-                Path(output["path"]).unlink(missing_ok=True)
-            if started:
+                if probe_r2 is None:
+                    raise WorkloadError(
+                        "r2_probe_unavailable", "Direct-R2 probe is unavailable."
+                    )
+                probe = probe_r2()
+                if not isinstance(probe, dict) or probe.get("ok") is not True:
+                    raise WorkloadError("r2_probe_failed", "Direct-R2 probe failed.")
+                results["r2_probe"] = probe
+            except Exception as exc:
                 try:
-                    set_gpt_service("stop")
-                except WorkloadError:
-                    results["gpt_sovits_probe"] = {"ok": False, "code": "gpt_sovits_stop_failed"}
+                    (self.config.paths.state / "r2-health.json").unlink(
+                        missing_ok=True
+                    )
+                except OSError:
+                    pass
+                results["r2_probe"] = {
+                    "ok": False,
+                    "code": (
+                        exc.code if isinstance(exc, WorkloadError)
+                        else "r2_probe_failed"
+                    ),
+                }
+        if self.config.workloads.asr.enabled:
+            sample = self.config.paths.data / "health" / "asr-cantonese.wav"
+            expected_file = self.config.paths.data / "health" / "asr-cantonese.txt"
+            try:
+                prepare_non_ollama()
+                self.asr.verify_artifacts()
+                expected = expected_file.read_text(encoding="utf-8").strip()
+                if not sample.is_file() or not expected:
+                    raise OSError("sample unavailable")
+                transcript = self.asr.transcribe(sample)
+                normalized_expected = "".join(expected.split()).casefold()
+                normalized_actual = "".join(str(transcript.get("text") or "").split()).casefold()
+                if normalized_expected not in normalized_actual:
+                    raise WorkloadError("asr_probe_mismatch", "Cantonese ASR probe text did not match.")
+                results["asr_probe"] = self._write_receipt(
+                    "asr-preflight.json", self._asr_identity(),
+                    transcript_sha256=hashlib.sha256(normalized_actual.encode()).hexdigest(),
+                )
+            except (OSError, WorkloadError):
+                results["asr_probe"] = {"ok": False, "code": "asr_probe_failed"}
+            finally:
+                self.asr.unload()
+        if self.config.workloads.rag.enabled:
+            try:
+                retrieval = self.rag.retrieve("香港辯論", top_k=1)
+                if not retrieval.get("results"):
+                    raise WorkloadError("rag_probe_empty", "RAG probe returned no result.")
+                results["rag_probe"] = {
+                    "ok": True,
+                    "bundle_version": retrieval.get("bundle_version"),
+                }
+            except WorkloadError as exc:
+                results["rag_probe"] = {"ok": False, "code": exc.code}
+        if self.config.workloads.gpt_sovits.enabled:
+            output = None
+            started = False
+            try:
+                prepare_non_ollama()
+                self.gpt_sovits.verify_artifacts()
+                set_gpt_service("start")
+                started = True
+                self.gpt_sovits.wait_until_ready()
+                output = self.gpt_sovits.synthesize(
+                    "更新後語音健康檢查。", output_dir=self.config.paths.cache,
+                )
+                media = probe_audio(
+                    Path(output["path"]), maximum_seconds=30, declared_mime="audio/wav",
+                )
+                results["gpt_sovits_probe"] = self._write_receipt(
+                    "gpt-sovits-preflight.json", self._tts_identity(),
+                    duration_seconds=media["duration_seconds"],
+                )
+            except (OSError, WorkloadError):
+                results["gpt_sovits_probe"] = {"ok": False, "code": "gpt_sovits_probe_failed"}
+            finally:
+                if output:
+                    Path(output["path"]).unlink(missing_ok=True)
+                if started:
+                    try:
+                        set_gpt_service("stop")
+                    except WorkloadError:
+                        results["gpt_sovits_probe"] = {"ok": False, "code": "gpt_sovits_stop_failed"}
         return results
 
     @staticmethod
@@ -500,11 +507,19 @@ class HealthRunner:
             checks["r2"] = dict(probes.get("r2_probe") or {
                 "ok": False, "code": "r2_probe_failed",
             })
+            enabled = ["quota", "wss"]
+            if self.config.workloads.asr.enabled:
+                enabled.extend(("asr", "asr_probe"))
+            if self.config.workloads.rag.enabled:
+                enabled.extend(("rag", "rag_probe"))
+            if self.config.workloads.gpt_sovits.enabled:
+                enabled.extend((
+                    "gpt_sovits", "gpt_sovits_training", "gpt_sovits_probe",
+                ))
+            if self.config.update.enabled or self.config.workloads.gpt_sovits.enabled:
+                enabled.extend(("r2", "r2_probe"))
             required_capabilities = tuple(dict.fromkeys((
-                *required_capabilities,
-                "asr", "rag", "gpt_sovits", "gpt_sovits_training",
-                "quota", "wss", "r2",
-                "asr_probe", "rag_probe", "gpt_sovits_probe", "r2_probe",
+                *required_capabilities, *enabled,
             )))
         required = tuple(dict.fromkeys((*base, *required_capabilities)))
         healthy = all(bool((checks.get(name) or {}).get("ok")) for name in required)

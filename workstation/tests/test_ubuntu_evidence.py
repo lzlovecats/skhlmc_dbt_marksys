@@ -79,7 +79,7 @@ def test_cold_boot_gate_rejects_late_start_or_graphical_user(monkeypatch):
     assert evidence._cold_boot_check()["ok"] is False
 
 
-def test_full_health_summary_never_copies_provider_details(monkeypatch):
+def test_core_health_summary_never_copies_provider_details(monkeypatch):
     payload = {
         "healthy": False,
         "checked_epoch": 123,
@@ -98,10 +98,27 @@ def test_full_health_summary_never_copies_provider_details(monkeypatch):
             returncode=1, stdout=__import__("json").dumps(payload), stderr=""
         ),
     )
-    result = evidence._full_health_check()
+    result = evidence._core_health_check()
     assert result["ok"] is False
     assert result["checks"] == {"r2": {"ok": False, "code": "r2_failed"}}
     assert "secret" not in __import__("json").dumps(result)
+
+
+def test_acceptance_collector_uses_core_health_not_future_capability_gate(monkeypatch):
+    commands = []
+
+    def command(args, **_kwargs):
+        commands.append(args)
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"healthy":true,"checked_epoch":123,"checks":{"ollama":{"ok":true}}}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(evidence, "_command", command)
+    assert evidence._core_health_check()["ok"] is True
+    assert commands[0][-1] == "health"
+    assert "full-health" not in commands[0]
 
 
 def test_release_gate_reports_invalid_tree_without_aborting_collection(

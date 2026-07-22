@@ -53,7 +53,7 @@ FEATURE_CATALOG: dict[str, FeatureSchema] = {
         "bounded records with explicit review, withdrawal and audit workflows",
     ),
     "lmc_ai": FeatureSchema(
-        "20260722_0002", "active",
+        "20260722_0003", "active",
         (TABLE_LMC_AI_NODES, TABLE_WORKSTATION_R2_HEALTH_PROBES),
         "bounded node registry and 15-minute R2 health probes; conversation content remains browser-local",
     ),

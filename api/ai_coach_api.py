@@ -20,9 +20,7 @@ from pydantic import BaseModel, Field
 
 from ai_model_config import (
     AI_MODEL_OPTIONS,
-    CUSTOM_LLM_OPTION,
     DEFAULT_AI_MODEL,
-    LMC_AI_DEFAULT_MODEL_SET,
     LMC_AI_INTERACTIVE_OPTION,
     get_lmc_ai_feature_mode,
     resolve_lmc_ai_mode_options,
@@ -40,10 +38,7 @@ from prompts import (
     WEB_RESEARCH_SYSTEM_PROMPT, build_fact_check_user_prompt, build_strategy_prompt,
     build_strategy_user_prompt, build_web_research_user_prompt,
 )
-from schema import (
-    TABLE_AI_COACH_LIVE_BRIEFS,
-    TABLE_AI_MODEL_VERSIONS,
-)
+from schema import TABLE_AI_COACH_LIVE_BRIEFS
 from system_limits import (
     AI_COACH_CONCURRENCY, AI_COACH_MATCH_LIMIT, AI_COACH_TOPIC_LIMIT,
     LIVE_BRIEF_MAX_CHARS, LIVE_BRIEF_TTL_MINUTES, LIVE_FREE_MAX_MINUTES,
@@ -191,51 +186,6 @@ async def _require_local_model_available(config, db, mode: str) -> None:
 def _config(label, db=None):
     if label == LMC_AI_MODEL_LABEL:
         return dict(LMC_AI_INTERACTIVE_OPTION)
-    if label == CUSTOM_LLM_OPTION["label"]:
-        from deploy.proxy import _get_proxy_secret
-        base_url = _get_proxy_secret(
-            CUSTOM_LLM_OPTION["base_url_secret"]
-        ).strip().rstrip("/")
-        model = _get_proxy_secret(CUSTOM_LLM_OPTION["model_secret"]).strip()
-        api_key = _get_proxy_secret(CUSTOM_LLM_OPTION["api_key_secret"]).strip()
-        if not base_url or not model or not api_key:
-            raise HTTPException(503, "自家LLM尚未完成設定")
-        if db is not None:
-            from core.schema_features import READY, feature_bundle_state
-
-            try:
-                model_schema_ready = feature_bundle_state(
-                    db, "dataset_model"
-                ) == READY
-            except Exception as exc:
-                raise HTTPException(503, "自家LLM模型schema狀態暫時無法驗證") from exc
-            if not model_schema_ready:
-                raise HTTPException(503, "自家LLM模型registry尚未由正式migration啟用")
-            registered = db.query(
-                f"""SELECT 1 FROM {TABLE_AI_MODEL_VERSIONS}
-                    WHERE model_id=:model AND model_type=:type AND status='deployable'""",
-                {
-                    "model": model,
-                    "type": CUSTOM_LLM_OPTION["registry_model_type"],
-                },
-            )
-            if registered.empty:
-                raise HTTPException(503, "自家LLM未通過deployable評估gate")
-        config = {
-            key: CUSTOM_LLM_OPTION[key]
-            for key in (
-                "provider", "supports_audio", "supports_web_search",
-                "input_price_per_million", "output_price_per_million",
-                "web_search_price_per_call", "pricing_note", "paid_rate_note",
-                "selection_label", "pricing_label", "is_premium",
-            )
-        }
-        config.update({
-            "model": model,
-            "base_url": base_url,
-            "api_key": CUSTOM_LLM_OPTION["api_key_secret"],
-        })
-        return config
     if label not in AI_MODEL_OPTIONS:
         raise HTTPException(400, "不支援的 AI 模型")
     return AI_MODEL_OPTIONS[label]
@@ -738,14 +688,7 @@ def data(request: Request):
     balance=db.query("SELECT COALESCE(SUM(CASE WHEN transaction_type='member_deposit' THEN amount_hkd WHEN transaction_type='provider_topup' THEN -amount_hkd WHEN transaction_type IN ('refund','provider_refund') THEN amount_hkd WHEN transaction_type='member_refund' THEN -amount_hkd WHEN transaction_type='adjustment' THEN amount_hkd ELSE 0 END),0) balance FROM ai_fund_transactions WHERE status='confirmed'")
     from core.config_store import get_config
     low_balance_hkd = float(get_config(db, "ai_fund_low_balance_hkd", 100) or 100)
-    from core.lmc_ai_store import get_model_set
-    try:
-        local_model_set = get_model_set(db)
-    except RuntimeError:
-        # AI Coach itself remains usable with cloud providers while the
-        # independent local-node schema is unavailable.
-        local_model_set = LMC_AI_DEFAULT_MODEL_SET
-    local_mode_options = resolve_lmc_ai_mode_options(local_model_set)
+    local_mode_options = resolve_lmc_ai_mode_options()
     enabled_providers, runtime_default_model = _runtime_model_settings(db)
     models=[{
         "label": LMC_AI_MODEL_LABEL,
@@ -777,14 +720,6 @@ def data(request: Request):
         estimates={f:_estimate(f,item) for f in ("strategy","speech_review","web_research","fact_check")}
         estimates["speech_review_audio"]=_estimate("speech_review",item,has_audio=True)
         models.append({"label":label,"selection_label":item.get("selection_label",""),"supports_audio":item["supports_audio"],"supports_web_search":item["supports_web_search"],"supports_live":item["provider"]=="gemini","note":f"{item['pricing_note']} {item.get('paid_rate_note','')}".strip(),"pricing_label":item.get("pricing_label",""),"is_premium":bool(item.get("is_premium")),"api_key_name":key_name,"available":bool(_get_proxy_secret(key_name)),"estimates":estimates})
-    try:
-        custom = _config(CUSTOM_LLM_OPTION["label"], db)
-        models.append({"label":CUSTOM_LLM_OPTION["label"],"selection_label":custom["selection_label"],"supports_audio":custom["supports_audio"],
-            "supports_web_search":custom["supports_web_search"],"supports_live":False,"note":custom["pricing_note"],"pricing_label":custom["pricing_label"],
-            "is_premium":custom["is_premium"],"api_key_name":CUSTOM_LLM_OPTION["api_key_secret"],"available":True,
-            "estimates":{feature:{"usd":0,"hkd":0} for feature in ("strategy","speech_review","web_research","fact_check","speech_review_audio")}})
-    except HTTPException:
-        pass
     mock_formats = {}
     for name in DEBATE_FORMATS:
         segments = get_full_mock_sequence(name, free_debate_minutes=5 if name == "聯中" else None)
@@ -809,7 +744,6 @@ def data(request: Request):
             for mode, config in local_mode_options.items()
         ],
         "local_default_mode": AI_COACH_LOCAL_MODE,
-        "local_model_set": local_model_set,
         "topics": [dict(x) for x in topics.to_dict("records")],
         "matches": [dict(x) for x in matches.to_dict("records")],
         "formats": {name: get_debate_timer_config(name) for name in DEBATE_FORMATS},
@@ -961,9 +895,9 @@ async def run(body: CoachRequest, request: Request):
         if config.get("local_node"):
             raise HTTPException(
                 400,
-                "自家 AI 暫未支援上網搜尋；請手動改選支援搜尋的 Gemini 模型。",
+                "自家 AI 暫未支援上網搜尋；請手動改選支援搜尋嘅外部 Provider 模型。",
             )
-        # Never present an ungrounded custom-model answer as web research.
+        # Never present an ungrounded external-model answer as web research.
         config = AI_MODEL_OPTIONS[runtime_default_model]
         model_label = runtime_default_model
     await _require_local_model_available(config, db, body.local_mode)
@@ -1010,92 +944,26 @@ async def run(body: CoachRequest, request: Request):
             on_provider_attempt=mark_primary_attempt,
         )
     except HTTPException as exc:
-        if config.get("provider") == "custom" and not config.get("local_node"):
-            primary_error = (
-                str(exc.detail)[:300]
-                if exc.status_code < 500
-                else AI_PROVIDER_PUBLIC_ERROR
-            )
-            if primary_attempted:
-                _usage(
-                    db,
-                    user_id,
-                    body.feature,
-                    model_label,
-                    config,
-                    False,
-                    primary_error,
-                    operation_id=operation_id,
-                    operation_stage="primary",
-                )
-            fallback = AI_MODEL_OPTIONS[runtime_default_model]
-            fallback_attempted = False
-
-            def mark_fallback_attempt():
-                nonlocal fallback_attempted
-                fallback_attempted = True
-
+        if prep_bundle is not None and prep_run_type:
             try:
-                result, actual = await _generate(
-                    fallback,
-                    system,
-                    user,
-                    body,
-                    user_id,
-                    on_provider_attempt=mark_fallback_attempt,
+                prep_logic.release_ai_run(
+                    db, body.prep_project_id, user_id, operation_id, prep_run_type,
                 )
-            except HTTPException as fallback_exc:
-                if prep_bundle is not None and prep_run_type:
-                    try:
-                        prep_logic.release_ai_run(
-                            db, body.prep_project_id, user_id, operation_id, prep_run_type,
-                        )
-                    except Exception:
-                        pass
-                public_error = (
-                    str(fallback_exc.detail)[:300]
-                    if fallback_exc.status_code < 500
-                    else AI_PROVIDER_PUBLIC_ERROR
-                )
-                if fallback_attempted:
-                    _usage(
-                        db,
-                        user_id,
-                        body.feature,
-                        runtime_default_model,
-                        fallback,
-                        False,
-                        public_error,
-                        operation_id=operation_id,
-                        operation_stage="fallback",
-                    )
-                raise HTTPException(
-                    fallback_exc.status_code, public_error,
-                ) from fallback_exc
-            config = fallback
-            model_label = runtime_default_model
-            completed_stage = "fallback"
-        else:
-            if prep_bundle is not None and prep_run_type:
-                try:
-                    prep_logic.release_ai_run(
-                        db, body.prep_project_id, user_id, operation_id, prep_run_type,
-                    )
-                except Exception:
-                    pass
-            if primary_attempted:
-                _usage(
-                    db,
-                    user_id,
-                    body.feature,
-                    model_label,
-                    config,
-                    False,
-                    exc.detail,
-                    operation_id=operation_id,
-                    operation_stage="primary",
-                )
-            raise
+            except Exception:
+                pass
+        if primary_attempted:
+            _usage(
+                db,
+                user_id,
+                body.feature,
+                model_label,
+                config,
+                False,
+                exc.detail,
+                operation_id=operation_id,
+                operation_stage="primary",
+            )
+        raise
     if prep_bundle is not None and prep_run_type:
         try:
             prep_logic.complete_ai_run(

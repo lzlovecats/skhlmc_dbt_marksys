@@ -393,11 +393,11 @@ def _preflight_check() -> dict:
         return _result(False, "ubuntu_preflight_unavailable")
 
 
-def _full_health_check() -> dict:
+def _core_health_check() -> dict:
     try:
         result = _command([
             "/usr/bin/python3", "-m",
-            "workstation.scripts.workstationctl", "full-health",
+            "workstation.scripts.workstationctl", "health",
         ], timeout=20 * 60)
         value = json.loads(result.stdout)
         checks = value.get("checks") if isinstance(value, dict) else None
@@ -413,7 +413,7 @@ def _full_health_check() -> dict:
         ok = bool(result.returncode == 0 and value.get("healthy") and safe_checks)
         return _result(
             ok,
-            "functional_health_failed" if not ok else "",
+            "core_health_failed" if not ok else "",
             checked_epoch=max(0, int(value.get("checked_epoch") or 0)),
             checks=safe_checks,
         )
@@ -421,7 +421,7 @@ def _full_health_check() -> dict:
         OSError, ValueError, TypeError, json.JSONDecodeError,
         subprocess.TimeoutExpired,
     ):
-        return _result(False, "functional_health_unavailable")
+        return _result(False, "core_health_unavailable")
 
 
 def collect() -> dict:
@@ -434,7 +434,7 @@ def collect() -> dict:
         "identity_permissions": _identity_and_permissions_check(),
         "release": _release_check(),
         "network_power_preflight": _preflight_check(),
-        "functional_health": _full_health_check(),
+        "core_health": _core_health_check(),
     }
     automated_ok = all(item.get("ok") is True for item in checks.values())
     try:
@@ -444,7 +444,7 @@ def collect() -> dict:
     except (OSError, UnicodeError):
         boot_id = ""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "automated_ok": automated_ok,
         "manual_gates_complete": False,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -485,7 +485,7 @@ def main() -> int:
     arguments = parser.parse_args()
     if os.geteuid() != 0:
         print(json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "automated_ok": False,
             "error": "root_required",
         }, separators=(",", ":")))
@@ -497,7 +497,7 @@ def main() -> int:
         _atomic_json(arguments.output, report)
     except Exception:
         print(json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "automated_ok": False,
             "error": "acceptance_collection_failed",
         }, separators=(",", ":")))
