@@ -177,6 +177,27 @@ def test_release_extract_counts_directories_and_files_together(
     assert raised.value.code == "release_archive_invalid"
 
 
+def test_release_extract_accepts_standard_relative_root_directory(tmp_path):
+    archive = tmp_path / "release.tar.gz"
+    content = b"ready\n"
+    with tarfile.open(archive, "w:gz") as bundle:
+        # build_deb.sh archives ".", which emits this harmless root entry.
+        root = tarfile.TarInfo("./")
+        root.type = tarfile.DIRTYPE
+        root.mode = 0o755
+        bundle.addfile(root)
+
+        ready = tarfile.TarInfo("./release.ready")
+        ready.size = len(content)
+        ready.mode = 0o644
+        bundle.addfile(ready, io.BytesIO(content))
+
+    destination = tmp_path / "unpacked"
+    _safe_extract(archive, destination)
+
+    assert (destination / "release.ready").read_bytes() == content
+
+
 def test_sealed_release_tree_is_root_owned_and_service_readable(
     tmp_path, monkeypatch,
 ):

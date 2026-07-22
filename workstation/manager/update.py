@@ -149,6 +149,8 @@ def _safe_extract(archive: Path, destination: Path) -> None:
                     or not (member.isdir() or member.isfile())
                 ):
                     raise WorkloadError("release_archive_invalid", "Release archive contains an unsafe entry.")
+                if member.isdir() and not pure.parts:
+                    continue
                 if member.isfile():
                     total += max(0, int(member.size))
                     if total > WORKSTATION_RELEASE_UNPACKED_MAX_BYTES:
