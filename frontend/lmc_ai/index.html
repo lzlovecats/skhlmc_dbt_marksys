@@ -28,7 +28,9 @@
       .empty { margin:auto; max-width:34rem; text-align:center; color:var(--muted); }
       .message { max-width:min(88%,48rem); border:1px solid var(--border); background:var(--card); border-radius:14px; padding:.75rem .9rem; overflow-wrap:anywhere; }
       .message.user { align-self:flex-end; background:var(--user); }
-      .message.assistant { align-self:flex-start; }
+      .message-row { max-width:min(92%,52rem); display:flex; align-items:flex-end; gap:.55rem; align-self:flex-start; }
+      .message-row .message { min-width:0; max-width:100%; }
+      .assistant-avatar { width:2.35rem; height:2.35rem; flex:0 0 2.35rem; border:1px solid var(--border); border-radius:50%; object-fit:cover; object-position:center 42%; background:var(--card); }
       .message .who { display:block; color:#c4b5fd; font-size:.78rem; font-weight:700; margin-bottom:.35rem; }
       .message.user .who { color:#bfdbfe; }
       .message p:first-child { margin-top:0; } .message p:last-child { margin-bottom:0; }
@@ -77,7 +79,7 @@
       .review-options label { display:flex; align-items:center; gap:.3rem; min-height:2.7rem; margin:0; border:1px solid var(--border); border-radius:8px; padding:.45rem .55rem; cursor:pointer; }
       .review-options label:has(input:checked) { border-color:var(--accent); background:#26214a; color:#fff; }
       .review-options input { width:auto; }
-      @media (max-width:640px) { .message{max-width:94%} header{display:block}.header-actions{margin-top:.6rem}.mode-picker .caption{display:none} }
+      @media (max-width:640px) { .message{max-width:94%}.message-row{max-width:98%}.message-row .message{max-width:calc(100% - 2.9rem)} header{display:block}.header-actions{margin-top:.6rem}.mode-picker .caption{display:none} }
       @media (max-width:640px) { .comparison{grid-template-columns:1fr}.tabs{display:flex;overflow:auto}.tab{white-space:nowrap}.ab-steps{grid-template-columns:1fr}.ab-status-head{display:block}.review-options{grid-template-columns:1fr 1fr} }
     </style>
   </head>
@@ -112,7 +114,7 @@
         <div class="actions"><button id="loginButton" class="primary" type="button">登入</button><span id="loginError" class="caption"></span></div>
       </section>
       <section id="chatPanel" class="panel" role="tabpanel" aria-labelledby="chatTab">
-        <section id="conversation" aria-live="polite"></section>
+        <section id="conversation" data-avatar-src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__" aria-live="polite"></section>
       </section>
       <section id="operationsPanel" class="panel hidden" role="tabpanel" aria-labelledby="operationsTab">
         <p class="muted">顯示所有已登記 AI 電腦；實際工作只會送到 Developer 目前選用的一部。</p>

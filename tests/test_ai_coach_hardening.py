@@ -63,8 +63,52 @@ def test_ai_coach_ui_prices_search_fallback_with_actual_default_model():
     assert "下列估算已按替代模型顯示" in sync_model
     assert "Live 賽前搵料會自動改用" in sync_model
     assert "亦不會自動轉用雲端" in sync_model
-    assert "!country.supported || !searchReady" in sync_model
+    assert "!country.supported || !model.supports_live || !searchReady" in sync_model
     assert '$("researchForm"), $("factForm")' in sync_model
+
+
+def test_ai_coach_offline_local_defaults_to_gemini_flash_without_duplicate_status():
+    api_source = (ROOT / "api/ai_coach_api.py").read_text(encoding="utf-8")
+    source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
+    sync_model = source.split("function syncModel()", 1)[1].split(
+        "async function prepareLive", 1,
+    )[0]
+
+    assert '"offline_default_model": DEFAULT_AI_MODEL' in api_source
+    assert "function selectOfflineFallbackIfNeeded" in source
+    assert "const fallback = modelByLabel(meta?.offline_default_model);" in source
+    assert "selectOfflineFallbackIfNeeded();" in sync_model
+    assert "const selectedStatus = selectedModelStatus();" in sync_model
+    assert "button.disabled = model.local_node && !selectedStatus.available;" in sync_model
+    assert "if (model.local_node && !selectedStatus.available)" not in sync_model
+
+
+def test_ai_coach_local_live_warnings_are_consolidated_and_use_fast_mode_copy():
+    page = (ROOT / "frontend/ai_coach/index.html").read_text(encoding="utf-8")
+    source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
+    sync_model = source.split("function syncModel()", 1)[1].split(
+        "async function prepareLive", 1,
+    )[0]
+
+    assert "Gemini Live自由辯論練習" not in page
+    assert "Gemini Live Mock練習" not in page
+    assert "<h2>自由辯論練習</h2>" in page
+    assert "<h2>Mock練習</h2>" in page
+    assert "自家AI將會使用「快速回覆」模式。" in sync_model
+    assert "const localLiveWarning" in sync_model
+    assert "model.local_node\n      ? localLiveWarning + countryWarning" in sync_model
+    assert "目前模型不支援Live，請使用Gemini模型。" in sync_model
+    assert "目前模型為 ${esc(model.label)}" not in sync_model
+    assert "!model.supports_live || !searchReady" in sync_model
+
+
+def test_ai_coach_requires_the_server_owned_local_default_mode():
+    source = (ROOT / "frontend/shared/ai-parity.js").read_text(encoding="utf-8")
+
+    assert 'meta.local_default_mode || "daily"' not in source
+    assert "function requireLocalDefaultMode" in source
+    assert "const localDefaultMode = requireLocalDefaultMode(meta);" in source
+    assert 'throw new Error("自家 AI 回答模式設定無效。")' in source
 
 
 def test_speech_review_audio_estimate_includes_representative_audio_tokens():
@@ -178,7 +222,7 @@ def test_ai_coach_browser_disables_offline_local_and_unavailable_9b_mode():
     assert 'api("/api/ai-coach/local-status")' in source
     assert "localOption.disabled = !meta?.local_ai?.available" in source
     assert "option.disabled = !Boolean(" in source
-    assert '$("localAiStatus").classList.toggle("hidden", !model.local_node)' in source
+    assert '!model.local_node && Boolean(localStatus.available)' in source
     assert "selectedModelStatus" in source
     assert 'setInterval(refreshLocalAiStatus, 10000)' in source
     assert "AICoachSelectedModelStatus" in prep
@@ -1407,6 +1451,36 @@ def test_prepare_live_validates_claim_then_4gb_gate_before_paid_work(monkeypatch
     assert "4GB" in raised.value.detail
 
 
+def test_prepare_live_rejects_non_gemini_before_research_or_provider_work(monkeypatch):
+    monkeypatch.setattr(ai_coach_api, "_context", lambda _request: "alice")
+    monkeypatch.setattr(proxy, "_new_live_practice_claim", lambda *_args: "signed-claim")
+    monkeypatch.setattr(proxy, "_bandwidth_essential_gate_error", lambda: None)
+    monkeypatch.setattr(proxy, "get_vote_db", lambda: object())
+    monkeypatch.setattr(
+        ai_coach_api,
+        "_runtime_model_settings",
+        lambda _db: (("openrouter",), "GPT-5.4 Mini"),
+    )
+    monkeypatch.setattr(
+        ai_coach_api,
+        "_generate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider work must not start")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(ai_coach_api.prepare_live(
+            ai_coach_api.LivePrepareRequest(
+                topic="辯題", mode="free", model_label="GPT-5.4 Mini",
+            ),
+            _request("US"),
+        ))
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "目前模型不支援Live，請使用Gemini模型。"
+
+
 def test_prepare_live_provider_failure_has_safe_ledger_reason_and_no_store(monkeypatch):
     ledger = []
 
@@ -1539,6 +1613,11 @@ def test_ai_coach_data_is_private_no_store(monkeypatch):
     payload = json.loads(response.body)
     assert payload["country_status"]["supported"] is True
     assert payload["server_tts_configured"] is False
+    assert payload["offline_default_model"] == ai_coach_api.DEFAULT_AI_MODEL
+    models = {item["label"]: item for item in payload["models"]}
+    assert models[ai_model_config.LMC_AI_INTERACTIVE_OPTION["label"]]["supports_live"] is False
+    assert models["Gemini 2.5 Flash"]["supports_live"] is True
+    assert models["GPT-5.4 Mini"]["supports_live"] is False
 
 
 def test_actual_audio_over_six_minutes_is_allowed_up_to_google_boundary(monkeypatch, tmp_path):

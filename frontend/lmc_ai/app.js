@@ -2,10 +2,9 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const DEFAULT_MODE = "daily";
   let bootstrap = null;
   let storageKey = "";
-  let conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
+  let conversation = { fingerprint: "", mode: "", messages: [] };
   let abortController = null;
   let provisional = [];
   let backendChanged = false;
@@ -38,11 +37,21 @@
     return `lmc-ai-chat:v1:${encodeURIComponent(identity)}`;
   }
 
+  function requireDefaultMode(source = bootstrap) {
+    const modes = source?.service?.modes;
+    const selected = source?.default_mode;
+    if (!Array.isArray(modes) || typeof selected !== "string" ||
+        !modes.some((mode) => mode.id === selected)) {
+      throw new Error("自家 AI 回答模式設定無效。");
+    }
+    return selected;
+  }
+
   function normalizeMode(value) {
     const migrated = { complex: "daily", thinking: "deep" }[value] || value;
-    const allowed = (bootstrap?.service?.modes || []).map((item) => item.id);
-    const fallback = bootstrap?.default_mode || DEFAULT_MODE;
-    return (allowed.length ? allowed : ["fast", "daily", "deep"]).includes(migrated)
+    const allowed = bootstrap.service.modes.map((item) => item.id);
+    const fallback = requireDefaultMode();
+    return allowed.includes(migrated)
       ? migrated
       : fallback;
   }
@@ -53,7 +62,7 @@
     if (fingerprints && typeof fingerprints[selected] === "string") {
       return fingerprints[selected];
     }
-    return selected === DEFAULT_MODE && typeof bootstrap?.backend_fingerprint === "string"
+    return selected === requireDefaultMode() && typeof bootstrap?.backend_fingerprint === "string"
       ? bootstrap.backend_fingerprint
       : "";
   }
@@ -80,7 +89,7 @@
   }
 
   function loadLocal() {
-    conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
+    conversation = { fingerprint: "", mode: requireDefaultMode(), messages: [] };
     try {
       const value = JSON.parse(localStorage.getItem(storageKey) || "null");
       if (value && typeof value.fingerprint === "string" && Array.isArray(value.messages)) {
@@ -94,7 +103,7 @@
         }
       }
     } catch (_) {
-      conversation = { fingerprint: "", mode: DEFAULT_MODE, messages: [] };
+      conversation = { fingerprint: "", mode: requireDefaultMode(), messages: [] };
     }
   }
 
@@ -117,6 +126,20 @@
     if (item.role === "assistant") body.innerHTML = SafeMarkdown.render(item.content);
     else body.textContent = item.content;
     bubble.append(who, body);
+    if (item.role === "assistant") {
+      const row = document.createElement("div");
+      row.className = "message-row assistant";
+      const avatar = document.createElement("img");
+      avatar.className = "assistant-avatar";
+      avatar.src = $("conversation").dataset.avatarSrc;
+      avatar.alt = `${bootstrap.name} 頭像`;
+      avatar.width = 38;
+      avatar.height = 38;
+      avatar.loading = "lazy";
+      avatar.decoding = "async";
+      row.append(avatar, bubble);
+      return row;
+    }
     return bubble;
   }
 
@@ -147,7 +170,6 @@
   function renderStatus() {
     const service = bootstrap.service;
     let label = statusLabels[service.state] || "服務狀態未知";
-    if (service.model_set_label) label += `・${service.model_set_label}`;
     if (service.queue_length) label += `・${service.queue_length} 個工作排隊`;
     $("serviceStatus").textContent = label;
     $("statusDot").className = `dot ${service.state === "online" ? "online" : service.state === "busy" ? "busy" : "offline"}`;
@@ -432,6 +454,7 @@
       }
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+      requireDefaultMode(data);
       const identityChanged = !bootstrap || bootstrap.identity.id !== data.identity.id;
       bootstrap = data;
       if (identityChanged) {
@@ -446,6 +469,13 @@
     } catch (error) {
       $("serviceStatus").textContent = error.message || "未能讀取服務狀態";
       $("statusDot").className = "dot offline";
+      if (error.message === "自家 AI 回答模式設定無效。") {
+        bootstrap = null;
+        abortController?.abort();
+        $("messageInput").disabled = true;
+        $("thinkingMode").disabled = true;
+        $("sendButton").disabled = true;
+      }
     }
   }
 

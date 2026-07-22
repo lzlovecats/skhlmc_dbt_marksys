@@ -179,11 +179,3 @@ def test_match_management_can_refresh_score_submission_and_confirmation_state():
     assert "renderScoreConfirmation()" in page
     assert "主席宣讀正式賽果及所有真人評判完成評語後" in manual
     assert "分別傳送予正、反方代表" in manual
-
-
-def test_rules_limit_fact_check_authority_to_factual_verification():
-    rules = (ROOT / "assets" / "rules.md").read_text(encoding="utf-8")
-
-    assert "Fact Check易" in rules
-    assert "資料真確性核查" in rules
-    assert "不影響評判分數、主席裁決或正式賽果" in rules

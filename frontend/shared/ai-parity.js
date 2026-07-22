@@ -52,6 +52,15 @@
 
   const modelByLabel = (label) =>
     meta?.models.find((model) => model.label === label);
+  function requireLocalDefaultMode(source) {
+    const modes = source?.local_modes;
+    const selected = source?.local_default_mode;
+    if (!Array.isArray(modes) || typeof selected !== "string" ||
+        !modes.some((mode) => mode.id === selected)) {
+      throw new Error("自家 AI 回答模式設定無效。");
+    }
+    return selected;
+  }
   const currentModel = () => modelByLabel($("globalModel").value);
   const localModeStatus = (mode = $("localMode").value) =>
     meta?.local_ai?.modes?.find((item) => item.id === mode) || null;
@@ -83,6 +92,13 @@
     const fallback = modelByLabel(meta?.external_default_model);
     return fallback?.supports_web_search ? fallback : null;
   };
+  function selectOfflineFallbackIfNeeded() {
+    if (!currentModel()?.local_node || meta?.local_ai?.available) return false;
+    const fallback = modelByLabel(meta?.offline_default_model);
+    if (!fallback?.available) return false;
+    $("globalModel").value = fallback.label;
+    return true;
+  }
   const hkd = (amount) => `HKD ${Number(amount || 0).toFixed(4)}`;
   const estimateText = (estimate) =>
     `US$${Number(estimate?.usd || 0).toFixed(4)} ≈ ${hkd(estimate?.hkd)} / 次`;
@@ -532,10 +548,15 @@
   }
 
   function syncModel() {
+    selectOfflineFallbackIfNeeded();
     const model = currentModel();
     if (!model) return;
+    const localStatus = meta?.local_ai || {};
     $("localModeWrap").classList.toggle("hidden", !model.local_node);
-    $("localAiStatus").classList.toggle("hidden", !model.local_node);
+    $("localAiStatus").classList.toggle(
+      "hidden",
+      !model.local_node && Boolean(localStatus.available),
+    );
     const localOption = Array.from($("globalModel").options).find(
       (option) => modelByLabel(option.value)?.local_node,
     );
@@ -546,7 +567,6 @@
       );
     });
     const selectedStatus = selectedModelStatus();
-    const localStatus = meta?.local_ai || {};
     const unavailableModeMessages = Array.from(new Set(
       (localStatus.modes || [])
         .filter((item) => !item.available && item.message !== localStatus.message)
@@ -587,8 +607,6 @@
       warnings.push("你正在使用高級模型。請確保不要濫用，避免資金用盡。");
     if (!model.available)
       warnings.push(`未設定 ${model.api_key_name}，此模型暫時未能使用。`);
-    if (model.local_node && !selectedStatus.available)
-      warnings.push(selectedStatus.message);
     if (meta.fund.balance_hkd < meta.fund.low_balance_hkd)
       warnings.push(
         `AI基金餘額偏低：HKD ${meta.fund.balance_hkd.toFixed(2)}。建議新增資金。`,
@@ -621,11 +639,11 @@
       searchWarning + searchAvailabilityWarning;
     $("factWarning").innerHTML =
       searchWarning + searchAvailabilityWarning;
-    const liveProviderWarning = model.label.startsWith("Gemini")
+    const liveProviderWarning = model.supports_live
       ? ""
-      : model.local_node
-        ? `<div class="notice warn">⚠️ 目前模型為 ${esc(model.label)}，不支援 Live，亦不會自動轉雲端；請手動改選支援搜尋的 Gemini 模型。</div>`
-        : `<div class="notice warn">⚠️ 目前模型為 ${esc(model.label)}，不支援 Live；開始時會改用 Gemini Live。</div>`;
+      : '<div class="notice warn">⚠️ 目前模型不支援Live，請使用Gemini模型。</div>';
+    const localLiveWarning =
+      '<div class="notice warn">⚠️ 目前自家 AI 尚未支援 Free De／Mock；現階段請改選支援搜尋的 Gemini 模型。自家AI將會使用「快速回覆」模式。</div>';
     const liveResearchWarning = model.supports_web_search
       ? searchAvailabilityWarning
       : searchModel
@@ -647,19 +665,34 @@
         : country.status === "unknown"
           ? `<div class="notice">ℹ️ ${esc(country.message || "地區資料不明，系統會允許嘗試直接連接 Google。")}</div>`
           : "";
-    $("liveWarnings").innerHTML =
-      liveProviderWarning + liveResearchWarning + ttsWarning + countryWarning;
-    $("mockWarnings").innerHTML =
-      liveProviderWarning + liveResearchWarning + ttsWarning +
-      (country.status === "blocked"
+    const mockCountryWarning = country.status === "blocked"
         ? `<div class="notice warn">⚠️ ${esc(country.message || "請先連接至 Google 支援地區網絡／VPN，再按重新檢查。")}
           <button id="mockCountryRetry" type="button">重新檢查</button></div>`
         : country.status === "unknown"
           ? `<div class="notice">ℹ️ ${esc(country.message || "地區資料不明，系統會允許嘗試直接連接 Google。")}</div>`
-          : "");
+          : "";
+    const liveWarnings = model.local_node
+      ? localLiveWarning + countryWarning
+      : liveProviderWarning + liveResearchWarning + ttsWarning + countryWarning;
+    const mockWarnings = model.local_node
+      ? localLiveWarning + mockCountryWarning
+      : liveProviderWarning + liveResearchWarning + ttsWarning + mockCountryWarning;
+    $("liveWarnings").innerHTML = liveWarnings;
+    $("mockWarnings").innerHTML = mockWarnings;
+    const fastMode = meta?.local_ai?.modes?.find((item) => item.id === "fast");
+    const localPracticeReady = Boolean(
+      meta?.local_ai?.available && fastMode?.available,
+    );
+    $("localPracticeWarnings").innerHTML = localPracticeReady
+      ? ""
+      : `<div class="notice warn">⚠️ ${esc(fastMode?.message || meta?.local_ai?.message || "自家 AI 暫時未準備好，相關練習暫時不可開始。")}</div>`;
+    $("localPracticeForm").querySelector("button.primary").disabled =
+      !localPracticeReady;
     [$("liveForm"), $("mockForm")].forEach((form) => {
       const submit = form.querySelector("button.primary");
-      if (submit) submit.disabled = !country.supported || !searchReady;
+      if (submit) {
+        submit.disabled = !country.supported || !model.supports_live || !searchReady;
+      }
     });
     [$("researchForm"), $("factForm")].forEach((form) => {
       const submit = form.querySelector("button.primary");
@@ -714,6 +747,47 @@
     const minutes = linked ? Number($("liveMinutes").value) : 2.5;
     $("liveEstimate").textContent =
       `Live token 時長約 ${Math.max(3, Math.ceil(minutes * 2 + 2))} 分鐘；實際成本會記錄到 AI基金。`;
+  }
+
+  function syncLocalPractice() {
+    const linked = $("localPracticeFormat").value === "聯中";
+    $("localPracticeMinutesWrap").classList.toggle("hidden", !linked);
+    $("localPracticeFixed").classList.toggle("hidden", linked);
+  }
+
+  function newLocalPracticeId() {
+    if (crypto.randomUUID) return crypto.randomUUID().replaceAll("-", "");
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function startLocalPractice() {
+    busy(true);
+    const stored = sessionStorage.localAiPracticeSession || "";
+    const sessionId = /^[0-9a-f]{32,64}$/.test(stored)
+      ? stored
+      : newLocalPracticeId();
+    sessionStorage.localAiPracticeSession = sessionId;
+    try {
+      await api("/api/ai-coach/local-practice/start", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: sessionId,
+          topic: $("localPracticeTopic").value.trim(),
+          side: $("localPracticeSide").value,
+          debate_format: $("localPracticeFormat").value,
+          minutes: $("localPracticeFormat").value === "聯中"
+            ? Number($("localPracticeMinutes").value)
+            : 2.5,
+        }),
+      });
+      sessionStorage.localAiPracticeSession = sessionId;
+      location.href = `/ai-coach/local-practice?session=${encodeURIComponent(sessionId)}`;
+    } catch (error) {
+      toast(`⚠️ ${error.message}`);
+      busy(false);
+    }
   }
 
   let mockPlanRequest = 0;
@@ -896,6 +970,7 @@
         })),
       ]);
       meta = { ...data, local_ai: localStatus };
+      const localDefaultMode = requireLocalDefaultMode(meta);
       const budget = meta.bandwidth_budget || {};
       const usedGb = Number(budget.total_bytes || 0) / 1e9;
       const fmtLimit = (bytes) =>
@@ -914,7 +989,7 @@
       $("localMode").innerHTML = (meta.local_modes || [])
         .map((mode) => `<option value="${esc(mode.id)}">${esc(mode.label)}</option>`)
         .join("");
-      $("localMode").value = meta.local_default_mode || "daily";
+      $("localMode").value = localDefaultMode;
       document.querySelectorAll("[data-topic-source]").forEach(topicSource);
       $("login").classList.add("hidden");
       $("app").classList.remove("hidden");
@@ -922,6 +997,7 @@
       renderQaFields();
       syncReviewPositions();
       syncLive();
+      syncLocalPractice();
       await syncMock();
       syncRoom();
       if (sessionStorage.aiRoom) {
@@ -1044,6 +1120,7 @@
   $("cancelRetake").addEventListener("click", cancelReviewRetake);
   $("liveFormat").addEventListener("change", syncLive);
   $("liveMinutes").addEventListener("input", syncLive);
+  $("localPracticeFormat").addEventListener("change", syncLocalPractice);
   $("mockFormat").addEventListener("change", syncMock);
   $("mockMinutes").addEventListener("change", syncMock);
   [$("roomStructure"), $("roomFormat")].forEach((element) =>
@@ -1175,6 +1252,10 @@
       $("mockFormat").value,
       minutes,
     );
+  });
+  $("localPracticeForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    startLocalPractice();
   });
   $("createRoom").addEventListener("submit", async (event) => {
     event.preventDefault();

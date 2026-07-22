@@ -32,21 +32,17 @@ python3 -m venv local_ai/.venv
 local_ai/.venv/bin/pip install -r local_ai/requirements-node.txt
 ```
 
-Runtime 唔會自行下載模型。至少準備以下其中一套完整模型組合；Qwen 組合：
+Runtime 唔會自行下載模型。`fast`、`daily`、`deep` 三個模式嘅 model tag
+只喺 `ai_model_config.py` 設定。先由同一設定列出目前需要嘅完整模型組合：
 
 ```bash
-ollama pull qwen3.5:4b
-ollama pull qwen3.5:9b
+local_ai/.venv/bin/python -c 'from ai_model_config import lmc_ai_required_models; print(*lmc_ai_required_models(), sep="\n")'
 ```
 
-Gemma 4 組合使用較適合 8GB 顯存嘅 QAT tags：
+對輸出嘅每一個 model tag 執行 `ollama pull <model-tag>`。如果 `daily` 同
+`deep` 使用相同 tag，列表會自動去重，只需下載一次。
 
-```bash
-ollama pull gemma4:e2b-it-qat
-ollama pull gemma4:e4b-it-qat
-```
-
-可以同時安裝兩套，再由 Developer Settings 切換；亦可以只安裝其中一套。
+舊模型檔唔會由程式自動刪除；佢哋亦唔會被 preflight、節點連線或工作路由使用。
 
 ## 3. Developer 建立 token 同命名
 
@@ -73,26 +69,25 @@ local_ai/.venv/bin/python local_ai/lmc_ai_node.py status
 ```
 
 Preflight 會驗證 `nvidia-smi`、Ollama、localhost binding，並以 8K context
-逐一測試每套組合嘅三個實際模式。每次測試必須在 60 秒內完成、產生正式答案，
-而且 GPU offload 至少 90%。同一套組合只要有一個模式 load/OOM、空白、逾時或
-offload 不合格，成套都唔可選；另一套完整通過時，node 仍然可以 online/ready。
+逐一測試 Gemma 組合嘅三個實際模式。每次測試必須在 60 秒內完成、產生正式答案，
+而且 GPU offload 至少 90%。只要有一個模式 load/OOM、空白、逾時或 offload
+不合格，node 就唔可以 online/ready。
 RTX 3060 最終結果以真機 preflight 為準；唔好移除 8K context 上限或直接設定
 模型標示嘅更大 context。
 
-Node online/ready 後，返 Developer console 手動按「選用呢部」，再揀已完成
-preflight 嘅「Qwen 3.5」或「Gemma 4」模型組合。切換組合只影響新對話及新工作；
-已生成或排隊工作會沿用提交時綁定嘅模型。`🔄 重新整理`只更新電腦狀態；
+Node online/ready 後，返 Developer console 手動按「選用呢部」。系統只容許選用
+已完整通過 Gemma preflight 嘅電腦。`🔄 重新整理`只更新電腦狀態；
 「取消選用所有電腦」會停止新工作、取消排隊工作，但容許目前生成完成。選中
 電腦離線或 drain 時，服務會停低，唔會自動轉到另一部。
 
 每位使用者在「自家 AI 專區」或「AI 辯論易」選擇回答模式：
 
-- 快速回覆：Qwen 4B / Gemma E2B、`think=false`
-- 日常預設：Qwen 4B `think=true` / Gemma E4B `think=false`
-- 深入思考：Qwen 9B / Gemma E4B、`think=true`
+- 快速回覆：Gemma E2B、`think=false`
+- 日常預設：Gemma E4B、`think=false`
+- 深入思考：Gemma E4B、`think=true`
 
 每段 browser 對話固定一個模式，已有內容時切換會先確認並清除該段本機
-對話。Qwen 3.5 同 Gemma 4 經 Ollama 使用 boolean `think=true/false`，不提供
+對話。Gemma 4 經 Ollama 使用 boolean `think=true/false`，不提供
 `low`／`medium`／`high` 強度；推理 stream 只在 node 內消耗，網站只轉送
 最終答案。若推理完成但冇正式答案，node 會回報失敗並保留實際 token usage，
 唔會再將空白答案記成成功。Vote Page 固定使用「快速回覆」；AI Coach 預設
@@ -149,4 +144,4 @@ ollama ps
 nvidia-smi
 ```
 
-官方參考：[Ollama GPU 支援](https://docs.ollama.com/gpu)、[Linux 服務](https://docs.ollama.com/linux)、[Qwen 9B](https://ollama.com/library/qwen3.5:9b)、[Qwen 4B](https://ollama.com/library/qwen3.5:4b)、[Gemma 4](https://ollama.com/library/gemma4)。
+官方參考：[Ollama GPU 支援](https://docs.ollama.com/gpu)、[Linux 服務](https://docs.ollama.com/linux)、[Gemma 4](https://ollama.com/library/gemma4)。

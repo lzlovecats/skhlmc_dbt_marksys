@@ -837,7 +837,7 @@
             : requiredMode?.message || LOCAL_AI_STATUS.message;
           status.textContent = `自家 AI：${localMessage || "狀態不明。"}`;
           document.getElementById("voteAiModeLabel").textContent = requiredMode
-            ? `Vote Page 使用「${requiredMode.label}」${requiredMode.thinking ? "（Thinking）" : "（非 Thinking）"}。`
+            ? `投票頁使用「${requiredMode.label}」模式。`
             : "暫時未能讀取 Vote Page 回答模式。";
           status.style.color = requiredMode?.available
             ? "var(--muted)"

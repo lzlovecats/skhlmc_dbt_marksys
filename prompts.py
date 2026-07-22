@@ -21,7 +21,7 @@ from scoring import (
     COHERENCE_MAX,
     GRAND_TOTAL,
 )
-from debate_timing import get_full_mock_sequence
+from debate_timing import DEBATE_SPEECH_CHARS_PER_MINUTE, get_full_mock_sequence
 
 
 # ─────────────────────────────────────────────────────────────
@@ -773,7 +773,7 @@ LIVE_RUNTIME_PROMPTS = {
         "【環節提示】而家輪到「{label}」，本環節時間約 {secs} 秒。"
         "如果呢段屬於你（{side}）：若係台上發言（主辯／副辯／結辯等單人發言），"
         "請立即用語音以呢個身分正式發言，直接讀出約 {word_min} - {word_max} 字嘅可讀稿，唔好讀出字數或準備過程，"
-        "以 300 字約 1 分鐘估算，優先唔好超過 {secs} 秒；若係自由辯論、台下問答或交互答問呢類互動環節，"
+        f"以 {DEBATE_SPEECH_CHARS_PER_MINUTE} 字約 1 分鐘估算，優先唔好超過 {{secs}} 秒；若係自由辯論、台下問答或交互答問呢類互動環節，"
         "就唔使夾夠時間，保持短而尖銳嘅攻防節奏即可。"
         "如果係我方（用戶）發言，你只用一句簡短示意後等我發言，唔好搶答。"
     ),

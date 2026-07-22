@@ -95,6 +95,7 @@ from api.match_topic_release_api import router as match_topic_release_router
 from api.funds_api import router as funds_router
 from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
+from api.local_ai_practice_api import router as local_ai_practice_router
 from api.competition_prep_api import router as competition_prep_router
 from api.ai_training_api import router as ai_training_router
 from api.ai_factory_api import router as ai_factory_router
@@ -204,6 +205,9 @@ async def _lifespan(_app):
 app = FastAPI(lifespan=_lifespan)
 ESSENTIAL_ONLY_BLOCKED_PATHS = {
     "/api/lmc-ai/chat",
+    "/api/ai-coach/local-practice/start",
+    "/api/ai-coach/local-practice/turn",
+    "/api/ai-coach/local-practice/stop",
     "/api/ai-training/llm",
     "/api/ai-training/recordings/quality-check",
     "/api/ai-training/coverage/ai",
@@ -390,6 +394,7 @@ app.include_router(match_topic_release_router)
 app.include_router(funds_router)
 app.include_router(chairperson_router)
 app.include_router(ai_coach_router)
+app.include_router(local_ai_practice_router)
 app.include_router(competition_prep_router)
 app.include_router(ai_training_router)
 app.include_router(ai_factory_router)
@@ -2374,6 +2379,34 @@ async def ai_coach_page(request: Request):
     )
 
 
+@app.get("/ai-coach/local-practice")
+async def local_ai_practice_page(request: Request):
+    blocked = _scheduled_feature_page_block(request)
+    if blocked is not None:
+        return blocked
+    require_page_user(request, "ai_coach")
+    html = (
+        BASE_DIR / "frontend" / "local_ai_practice" / "index.html"
+    ).read_text(encoding="utf-8")
+    return Response(
+        html.replace("__APP_VERSION__", APP_VERSION).replace(
+            "__LOCAL_PRACTICE_MESSAGE_MAX_CHARS__",
+            str(LMC_AI_MESSAGE_MAX_CHARS),
+        ),
+        media_type="text/html",
+        headers=_cache_headers(CACHE_NO_STORE),
+    )
+
+
+@app.get("/ai-coach/local-practice/app.js")
+async def local_ai_practice_script():
+    return FileResponse(
+        BASE_DIR / "frontend" / "local_ai_practice" / "app.js",
+        media_type="application/javascript",
+        headers=_cache_headers(CACHE_HTML),
+    )
+
+
 @app.get("/ai-coach/room/{code}")
 async def ai_coach_room_page(code: str, request: Request):
     user_id = require_page_user(request, "ai_room")
@@ -2438,6 +2471,15 @@ async def lmc_ai_script():
         BASE_DIR / "frontend" / "lmc_ai" / "app.js",
         media_type="text/javascript",
         headers=_cache_headers(CACHE_NO_CACHE),
+    )
+
+
+@app.get("/lmc-ai/shiba-avatar.jpg")
+async def lmc_ai_avatar():
+    return FileResponse(
+        BASE_DIR / "frontend" / "lmc_ai" / "shiba-avatar.jpg",
+        media_type="image/jpeg",
+        headers=_binary_cache_headers(CACHE_STATIC),
     )
 
 
