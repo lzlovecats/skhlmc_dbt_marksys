@@ -210,6 +210,7 @@ AI_FACTORY_CANDIDATE_DEFAULT = _limit("AI_FACTORY_CANDIDATE_DEFAULT", 3, minimum
 AI_FACTORY_CANDIDATE_MAX = _limit("AI_FACTORY_CANDIDATE_MAX", 5, minimum=1, maximum=5, group="ai", description="Maximum generated candidates per data-factory job")
 AI_FACTORY_RAG_CONTENT_MAX_CHARS = _limit("AI_FACTORY_RAG_CONTENT_MAX_CHARS", 3_000, minimum=500, maximum=3_000, group="ai", description="Characters in one reviewed RAG card")
 AI_FACTORY_RAG_CLAIM_MAX = _limit("AI_FACTORY_RAG_CLAIM_MAX", 8, minimum=1, maximum=8, group="ai", description="Claims in one argument-decomposition RAG card")
+AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE = _limit("AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE", 10_000, minimum=10_000, maximum=10_000, group="ai", description="Confirmed provider output-token budget per standard data-factory candidate")
 AI_FACTORY_SFT_USER_MAX_CHARS = _limit("AI_FACTORY_SFT_USER_MAX_CHARS", 4_000, minimum=500, maximum=4_000, group="ai", description="User-message characters in one SFT item")
 AI_FACTORY_SFT_ASSISTANT_MAX_CHARS = _limit("AI_FACTORY_SFT_ASSISTANT_MAX_CHARS", 6_000, minimum=500, maximum=6_000, group="ai", description="Assistant-message characters in one SFT item")
 AI_FACTORY_PREVIEW_TTL_SECONDS = _limit("AI_FACTORY_PREVIEW_TTL_SECONDS", 900, minimum=60, maximum=900, group="ai", description="Lifetime of an exact provider-bound data-factory preview")
@@ -229,7 +230,7 @@ AI_FACTORY_TRANSCRIPT_MAX_CHARS = _limit("AI_FACTORY_TRANSCRIPT_MAX_CHARS", 200_
 AI_FACTORY_TRANSCRIPT_CORE_CHARS = _limit("AI_FACTORY_TRANSCRIPT_CORE_CHARS", 11_000, minimum=5_000, maximum=15_000, group="ai", description="Non-overlapping transcript characters owned by one structure window")
 AI_FACTORY_TRANSCRIPT_OVERLAP_CHARS = _limit("AI_FACTORY_TRANSCRIPT_OVERLAP_CHARS", 2_000, minimum=500, maximum=4_000, group="ai", description="Context characters supplied on each side of a transcript structure window")
 AI_FACTORY_TRANSCRIPT_BOUNDARY_MAX = _limit("AI_FACTORY_TRANSCRIPT_BOUNDARY_MAX", 80, minimum=10, maximum=80, group="ai", description="Speaker boundaries returned by one transcript structure window")
-AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS = _limit("AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS", 8_000, minimum=2_000, maximum=8_000, group="ai", description="Provider output tokens for one transcript structure window")
+AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS = _limit("AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS", 10_000, minimum=10_000, maximum=10_000, group="ai", description="Provider output tokens for one transcript structure window")
 AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS = _limit("AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS", 4_000, minimum=500, maximum=4_000, group="api", description="Transcript context characters returned on each side of a reviewed segment")
 AI_FACTORY_TRANSCRIPT_MAX_TOTAL = _limit("AI_FACTORY_TRANSCRIPT_MAX_TOTAL", 500, minimum=10, maximum=500, group="database", description="Full-match transcripts retained by the data factory")
 AI_FACTORY_TRANSCRIPT_RUN_MAX_TOTAL = _limit("AI_FACTORY_TRANSCRIPT_RUN_MAX_TOTAL", 2_000, minimum=10, maximum=2_000, group="database", description="Transcript structure runs retained by the data factory")
@@ -277,20 +278,50 @@ LOCAL_PRACTICE_FEEDBACK_MAX_CHARS = _limit("LOCAL_PRACTICE_FEEDBACK_MAX_CHARS", 
 LOCAL_PRACTICE_TURN_MAX = _limit("LOCAL_PRACTICE_TURN_MAX", 40, minimum=4, maximum=40, group="ai", description="Maximum completed AI turns in one local-AI practice")
 LOCAL_PRACTICE_AUDIO_MAX_BYTES = _limit("LOCAL_PRACTICE_AUDIO_MAX_BYTES", 25 * MIB, minimum=MIB, maximum=50 * MIB, group="storage", description="Direct-R2 input audio bytes for one local-AI practice turn")
 LOCAL_PRACTICE_AUDIO_MAX_SECONDS = _limit("LOCAL_PRACTICE_AUDIO_MAX_SECONDS", 180, minimum=30, maximum=300, group="ai", description="Maximum measured input-audio duration for one local-AI practice turn")
+LOCAL_PRACTICE_FAILED_INPUT_RETRY_TTL_SECONDS = _limit("LOCAL_PRACTICE_FAILED_INPUT_RETRY_TTL_SECONDS", 15 * 60, minimum=15 * 60, maximum=15 * 60, group="storage", description="Failed local-practice input recording retry retention")
+LOCAL_PRACTICE_TTS_OUTPUT_TTL_SECONDS = _limit("LOCAL_PRACTICE_TTS_OUTPUT_TTL_SECONDS", 60 * 60, minimum=60 * 60, maximum=60 * 60, group="storage", description="Maximum local-practice synthesized output retention")
+LOCAL_PRACTICE_MEDIA_PRUNE_INTERVAL_SECONDS = _limit("LOCAL_PRACTICE_MEDIA_PRUNE_INTERVAL_SECONDS", 60, minimum=30, maximum=300, group="runtime", description="Local-practice temporary-media retention sweep interval")
+LOCAL_PRACTICE_MEDIA_PRUNE_BATCH = _limit("LOCAL_PRACTICE_MEDIA_PRUNE_BATCH", 100, minimum=1, maximum=500, group="storage", description="Temporary local-practice media deleted per retention sweep")
 WORKSTATION_JOB_TIMEOUT_SECONDS = _limit("WORKSTATION_JOB_TIMEOUT_SECONDS", 180, minimum=30, maximum=600, group="ai", description="End-to-end Workstation workload deadline")
+WORKSTATION_PAIR_CONNECT_TIMEOUT_SECONDS = _limit("WORKSTATION_PAIR_CONNECT_TIMEOUT_SECONDS", 45, minimum=20, maximum=90, group="runtime", description="Maximum first-run wait for a freshly accepted Workstation WSS connection")
+WORKSTATION_OPERATION_TIMING_MAX_STAGES = _limit("WORKSTATION_OPERATION_TIMING_MAX_STAGES", 24, minimum=8, maximum=64, group="ai", description="Maximum numeric stage timings retained per Workstation operation")
+WORKSTATION_OPERATION_TIMING_MAX_MS = _limit("WORKSTATION_OPERATION_TIMING_MAX_MS", 24 * 60 * 60 * 1000, minimum=60_000, maximum=48 * 60 * 60 * 1000, group="ai", description="Maximum retained duration for one Workstation operation stage")
 WORKSTATION_VOICE_RESERVE_TIMEOUT_SECONDS = _limit("WORKSTATION_VOICE_RESERVE_TIMEOUT_SECONDS", 180, minimum=30, maximum=300, group="ai", description="Wait for an already-started text job before reserving Voice Coach")
 WORKSTATION_TRANSFER_CHUNK_BYTES = _limit("WORKSTATION_TRANSFER_CHUNK_BYTES", MIB, minimum=64 * KIB, maximum=4 * MIB, group="storage", description="Direct-R2 Workstation transfer chunk bytes")
 WORKSTATION_RAG_BUNDLE_MAX_BYTES = _limit("WORKSTATION_RAG_BUNDLE_MAX_BYTES", 128 * MIB, minimum=MIB, maximum=512 * MIB, group="storage", description="Maximum compressed Workstation RAG bundle bytes")
 WORKSTATION_RAG_DOCUMENT_MAX = _limit("WORKSTATION_RAG_DOCUMENT_MAX", 10_000, minimum=100, maximum=50_000, group="ai", description="Maximum documents in one local Workstation RAG bundle")
 WORKSTATION_RAG_DOCUMENT_MAX_CHARS = _limit("WORKSTATION_RAG_DOCUMENT_MAX_CHARS", 20_000, minimum=500, maximum=100_000, group="ai", description="Characters in one local Workstation RAG document")
+WORKSTATION_RAG_INDEX_MAX_BYTES = _limit("WORKSTATION_RAG_INDEX_MAX_BYTES", GB, minimum=128 * MIB, maximum=4 * GB, group="storage", description="Maximum generated local Workstation RAG index bytes")
+WORKSTATION_RAG_INDEX_LINE_MAX_BYTES = _limit("WORKSTATION_RAG_INDEX_LINE_MAX_BYTES", 512 * KIB, minimum=64 * KIB, maximum=2 * MIB, group="ai", description="Maximum one-document line bytes in a local Workstation RAG index")
 WORKSTATION_RAG_TOP_K_MAX = _limit("WORKSTATION_RAG_TOP_K_MAX", 8, minimum=1, maximum=20, group="ai", description="Maximum local Workstation RAG retrieval results")
-WORKSTATION_WEB_SEARCH_MAX_RESULTS = _limit("WORKSTATION_WEB_SEARCH_MAX_RESULTS", 5, minimum=1, maximum=10, group="ai", description="Ollama Web Search results requested once per practice")
-WORKSTATION_WEB_FETCH_MAX_PAGES = _limit("WORKSTATION_WEB_FETCH_MAX_PAGES", 3, minimum=1, maximum=5, group="ai", description="Maximum selected public webpages fetched once per practice")
-WORKSTATION_WEB_FETCH_MAX_BYTES = _limit("WORKSTATION_WEB_FETCH_MAX_BYTES", MIB, minimum=64 * KIB, maximum=2 * MIB, group="api", description="Maximum bytes fetched from one public webpage")
-WORKSTATION_WEB_FETCH_TIMEOUT_SECONDS = _limit("WORKSTATION_WEB_FETCH_TIMEOUT_SECONDS", 12, minimum=3, maximum=30, group="ai", description="Timeout for one controlled public webpage fetch")
-WORKSTATION_WEB_SOURCE_MAX_CHARS = _limit("WORKSTATION_WEB_SOURCE_MAX_CHARS", 30_000, minimum=1_000, maximum=60_000, group="ai", description="Maximum extracted characters across controlled web sources")
 WORKSTATION_TTS_OUTPUT_MAX_BYTES = _limit("WORKSTATION_TTS_OUTPUT_MAX_BYTES", 4 * MIB, minimum=64 * KIB, maximum=8 * MIB, group="storage", description="Maximum GPT-SoVITS output bytes per practice turn")
+WORKSTATION_VOICE_PROMPT_MAX_CHARS = _limit("WORKSTATION_VOICE_PROMPT_MAX_CHARS", 30_000, minimum=6_000, maximum=60_000, group="ai", description="Combined prompt characters for one Workstation Voice Coach generation")
+WORKSTATION_TTS_TRAINING_MAX_SECONDS = _limit("WORKSTATION_TTS_TRAINING_MAX_SECONDS", 12 * 60 * 60, minimum=30 * 60, maximum=24 * 60 * 60, group="ai", description="Maximum bounded GPT-SoVITS training run")
+WORKSTATION_DATASET_PREPARATION_MAX_SECONDS = _limit("WORKSTATION_DATASET_PREPARATION_MAX_SECONDS", 2 * 60 * 60, minimum=10 * 60, maximum=6 * 60 * 60, group="ai", description="Maximum bounded GPT-SoVITS dataset preparation run")
+WORKSTATION_UPDATE_MANIFEST_MAX_BYTES = _limit("WORKSTATION_UPDATE_MANIFEST_MAX_BYTES", MIB, minimum=64 * KIB, maximum=4 * MIB, group="api", description="Maximum signed Workstation update envelope bytes")
+WORKSTATION_RELEASE_ARCHIVE_MAX_BYTES = _limit("WORKSTATION_RELEASE_ARCHIVE_MAX_BYTES", 512 * MIB, minimum=10 * MIB, maximum=2 * GB, group="storage", description="Maximum Workstation application release archive bytes")
+WORKSTATION_RELEASE_FILE_MAX = _limit("WORKSTATION_RELEASE_FILE_MAX", 5_000, minimum=100, maximum=20_000, group="storage", description="Maximum regular files in a Workstation release archive")
+WORKSTATION_RELEASE_UNPACKED_MAX_BYTES = _limit("WORKSTATION_RELEASE_UNPACKED_MAX_BYTES", GB, minimum=100 * MIB, maximum=4 * GB, group="storage", description="Maximum unpacked Workstation application release bytes")
+WORKSTATION_UPDATE_DRAIN_TIMEOUT_SECONDS = _limit("WORKSTATION_UPDATE_DRAIN_TIMEOUT_SECONDS", 15 * 60, minimum=60, maximum=60 * 60, group="runtime", description="Maximum wait for managed workloads to drain before an app update")
+WORKSTATION_UPDATE_HEALTH_TIMEOUT_SECONDS = _limit("WORKSTATION_UPDATE_HEALTH_TIMEOUT_SECONDS", 5 * 60, minimum=60, maximum=15 * 60, group="runtime", description="Maximum post-switch full-health deadline before app rollback")
+WORKSTATION_R2_HEALTH_PROBE_BYTES = _limit("WORKSTATION_R2_HEALTH_PROBE_BYTES", 4 * KIB, minimum=KIB, maximum=16 * KIB, group="storage", description="Direct-R2 Workstation health-probe object bytes")
+WORKSTATION_R2_HEALTH_API_MAX_BYTES = _limit("WORKSTATION_R2_HEALTH_API_MAX_BYTES", 64 * KIB, minimum=16 * KIB, maximum=MIB, group="api", description="Maximum Workstation direct-R2 health-control response bytes")
+WORKSTATION_R2_HEALTH_ORPHAN_TTL_SECONDS = _limit("WORKSTATION_R2_HEALTH_ORPHAN_TTL_SECONDS", 15 * 60, minimum=15 * 60, maximum=15 * 60, group="storage", description="Maximum retention for an unfinished direct-R2 Workstation health probe")
+WORKSTATION_R2_HEALTH_PRUNE_BATCH = _limit("WORKSTATION_R2_HEALTH_PRUNE_BATCH", 100, minimum=1, maximum=500, group="storage", description="Orphaned Workstation R2 health probes deleted per retention sweep")
+WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS = _limit("WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS", 7 * 60 * 60, minimum=6 * 60 * 60, maximum=24 * 60 * 60, group="runtime", description="Maximum successful direct-R2 receipt age between six-hour functional Workstation health probes")
+WORKSTATION_MODEL_BUNDLE_MANIFEST_MAX_BYTES = _limit("WORKSTATION_MODEL_BUNDLE_MANIFEST_MAX_BYTES", MIB, minimum=64 * KIB, maximum=4 * MIB, group="storage", description="Maximum signed Workstation model-inventory bundle bytes")
+WORKSTATION_MODEL_PULL_MAX_SECONDS = _limit("WORKSTATION_MODEL_PULL_MAX_SECONDS", 4 * 60 * 60, minimum=30 * 60, maximum=12 * 60 * 60, group="ai", description="Maximum explicit Developer-approved Ollama model pull run")
+WORKSTATION_MODEL_PULL_STATUS_MAX_BYTES = _limit("WORKSTATION_MODEL_PULL_STATUS_MAX_BYTES", 4 * MIB, minimum=256 * KIB, maximum=16 * MIB, group="ai", description="Maximum streamed Ollama pull status bytes")
+WORKSTATION_ASR_BENCHMARK_REPORT_MAX_BYTES = _limit("WORKSTATION_ASR_BENCHMARK_REPORT_MAX_BYTES", 16 * MIB, minimum=MIB, maximum=64 * MIB, group="ai", description="Maximum reviewed local ASR benchmark report bytes")
+WORKSTATION_ASR_APPROVAL_RECEIPT_MAX_BYTES = _limit("WORKSTATION_ASR_APPROVAL_RECEIPT_MAX_BYTES", 64 * KIB, minimum=4 * KIB, maximum=MIB, group="ai", description="Maximum local ASR model approval receipt bytes")
+WORKSTATION_DATASET_QUOTA_BYTES = _limit("WORKSTATION_DATASET_QUOTA_BYTES", 120 * GB, minimum=20 * GB, maximum=500 * GB, group="storage", description="Managed Workstation dataset hard quota")
+WORKSTATION_CHECKPOINT_QUOTA_BYTES = _limit("WORKSTATION_CHECKPOINT_QUOTA_BYTES", 160 * GB, minimum=20 * GB, maximum=500 * GB, group="storage", description="Managed Workstation checkpoint hard quota")
+WORKSTATION_CACHE_QUOTA_BYTES = _limit("WORKSTATION_CACHE_QUOTA_BYTES", 20 * GB, minimum=5 * GB, maximum=100 * GB, group="storage", description="Managed Workstation cache hard quota")
 WORKSTATION_MIN_FREE_DISK_BYTES = _limit("WORKSTATION_MIN_FREE_DISK_BYTES", 20 * GB, minimum=5 * GB, maximum=100 * GB, group="storage", description="Free-space gate for Workstation managed workloads")
+WORKSTATION_MIN_RAM_BYTES = _limit("WORKSTATION_MIN_RAM_BYTES", 15 * GB, minimum=8 * GB, maximum=64 * GB, group="runtime", description="Minimum OS-visible RAM for the v1 16 GB physical Workstation profile after firmware reservations")
+WORKSTATION_MIN_AVAILABLE_RAM_BYTES = _limit("WORKSTATION_MIN_AVAILABLE_RAM_BYTES", 2 * GB, minimum=512 * MIB, maximum=8 * GB, group="runtime", description="Minimum currently available RAM for a healthy Workstation")
+WORKSTATION_MIN_GPU_VRAM_MIB = _limit("WORKSTATION_MIN_GPU_VRAM_MIB", 8 * 1024, minimum=4 * 1024, maximum=24 * 1024, group="runtime", description="Minimum GPU VRAM MiB for the v1 Workstation model profile")
+WORKSTATION_MAX_GPU_TEMPERATURE_C = _limit("WORKSTATION_MAX_GPU_TEMPERATURE_C", 90, minimum=70, maximum=100, group="runtime", description="Maximum healthy Workstation GPU temperature Celsius")
 DATASET_ARCHIVE_MAX_ITEMS = _limit("DATASET_ARCHIVE_MAX_ITEMS", 5_000, minimum=100, maximum=5_000, group="ai", description="Files accepted from an offline training archive")
 DATASET_ARCHIVE_MAX_BYTES = _limit("DATASET_ARCHIVE_MAX_BYTES", 10 * GB, minimum=MIB, maximum=10 * GB, group="ai", description="Uncompressed bytes accepted from an offline training archive")
 DATASET_MANIFEST_MAX_BYTES = _limit("DATASET_MANIFEST_MAX_BYTES", 10 * MIB, minimum=64 * KIB, maximum=10 * MIB, group="ai", description="Offline recordings manifest bytes loaded in RAM")
@@ -440,6 +471,15 @@ def _validate_relationships() -> None:
         raise RuntimeError(
             "OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS must be at least "
             "OPENROUTER_WEB_SEARCH_MAX_RESULTS"
+        )
+    if (
+        AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        * AI_FACTORY_CANDIDATE_MAX
+        > AI_PROVIDER_OUTPUT_MAX_TOKENS
+    ):
+        raise RuntimeError(
+            "AI_PROVIDER_OUTPUT_MAX_TOKENS must cover the largest RAG "
+            "standard data-factory batch"
         )
     if LIVE_TOKEN_RESPONSE_CACHE_TTL_SECONDS >= LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS:
         raise RuntimeError(

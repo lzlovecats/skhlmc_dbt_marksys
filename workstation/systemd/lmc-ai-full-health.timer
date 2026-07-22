@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically run functional LMC AI Workstation health probes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=lmc-ai-full-health.service
+
+[Install]
+WantedBy=timers.target

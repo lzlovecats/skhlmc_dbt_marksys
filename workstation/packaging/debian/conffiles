@@ -1,0 +1,3 @@
+/etc/lmc-ai-workstation/config.json
+/etc/apt/apt.conf.d/52lmc-ai-workstation-unattended
+/etc/systemd/system/ollama.service.d/lmc-ai-workstation.conf

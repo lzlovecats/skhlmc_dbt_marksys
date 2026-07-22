@@ -1,0 +1,17 @@
+[Unit]
+Description=LMC AI Workstation bounded health preflight
+After=lmc-ai-manager.service
+Requires=lmc-ai-manager.service
+
+[Service]
+Type=oneshot
+User=lmc-ai
+Group=lmc-ai
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.scripts.workstationctl health
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/lmc-ai-workstation

@@ -1,0 +1,22 @@
+[Unit]
+Description=LMC AI Workstation functional health probes
+After=network-online.target lmc-ai-manager.service lmc-ai-node.service lmc-ai-privileged.service
+Wants=network-online.target
+Requires=lmc-ai-manager.service lmc-ai-privileged.service
+ConditionPathExists=/etc/lmc-ai-workstation/credentials/node-token
+
+[Service]
+Type=oneshot
+User=lmc-ai
+Group=lmc-ai
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.scripts.workstationctl full-health
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/lmc-ai-workstation
+RestrictSUIDSGID=true
+LockPersonality=true
+TimeoutStartSec=15min

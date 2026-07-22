@@ -105,11 +105,14 @@ class WorkstationJob:
     deadline_epoch: int
     payload: dict
     upload_callback: Callable[["WorkstationJob", dict], Awaitable[dict]] | None = None
+    upload_finish_callback: Callable[["WorkstationJob", dict], Awaitable[dict]] | None = None
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     created_monotonic: float = field(default_factory=time.monotonic)
     started: bool = False
     finished: bool = False
     terminal_published: bool = False
+    upload_verified: bool = False
+    verified_result: dict = field(default_factory=dict)
     timeout_task: asyncio.Task | None = None
 
 
@@ -192,11 +195,10 @@ class LocalAIRuntime:
             "fine_tuned": False,
             "thinking_control": True,
             "manager": True,
-            "direct_r2": True,
         }
         workstation_boolean = {
             "chat", "rag", "asr", "local_tts", "tts_training",
-            "controlled_web_search", "direct_r2", "fine_tuned",
+            "direct_r2", "fine_tuned",
             "thinking_control", "manager",
         }
         if not isinstance(capabilities, dict):
@@ -254,6 +256,18 @@ class LocalAIRuntime:
             raise ValueError("node model digests must be an object")
         manager = payload.get("manager") if protocol == 2 else {}
         if protocol == 2:
+            workstation_version = str(payload.get("workstation_version") or "")
+            runtime = str(payload.get("runtime") or "")
+            runtime_version = str(payload.get("runtime_version") or "")
+            if (
+                runtime != "lmc-ai-workstation"
+                or runtime_version != workstation_version
+                or not re.fullmatch(
+                    r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
+                    workstation_version,
+                )
+            ):
+                raise ValueError("Workstation runtime identity is invalid")
             manager = LocalAIRuntime._validate_manager(manager)
         return {
             "protocol": int(protocol),
@@ -289,6 +303,7 @@ class LocalAIRuntime:
             "draining": bool(value.get("draining")),
             "voice_session_active": bool(value.get("voice_session_active")),
             "voice_session_pending": bool(value.get("voice_session_pending")),
+            "voice_expires_epoch": max(0, int(value.get("voice_expires_epoch") or 0)),
             "active_operation": {
                 "operation_id": str((active or {}).get("operation_id") or "")[:200],
                 "kind": str((active or {}).get("kind") or "")[:80],
@@ -447,6 +462,7 @@ class LocalAIRuntime:
                 or node_id in self._blocked_new_jobs
                 or not node.ready
                 or node.draining
+                or node.workstation_active is not None
             ):
                 raise NodeUnavailableError("自家 AI 暫時未能提供服務。")
             if node.protocol >= 2 and (
@@ -509,6 +525,7 @@ class LocalAIRuntime:
         stage: str,
         payload: dict,
         upload_callback: Callable[[WorkstationJob, dict], Awaitable[dict]] | None = None,
+        upload_finish_callback: Callable[[WorkstationJob, dict], Awaitable[dict]] | None = None,
         deadline_epoch: int = 0,
     ) -> WorkstationJob:
         capability = {
@@ -557,9 +574,15 @@ class LocalAIRuntime:
                 deadline_epoch=deadline,
                 payload=dict(payload),
                 upload_callback=upload_callback,
+                upload_finish_callback=upload_finish_callback,
             )
             node.workstation_active = job
             job.timeout_task = asyncio.create_task(self._workstation_timeout(node, job))
+        if job_kind == "voice.reserve":
+            await self._fail_queued(
+                node,
+                "與自家AI練習正在取得專用資源，原有排隊文字工作已停止。",
+            )
         try:
             await self._send(node, {
                 "type": "workstation.job.start",
@@ -822,6 +845,52 @@ class LocalAIRuntime:
             except Exception:
                 await self._finish_workstation(node, job, False, {}, "暫時未能建立語音上載連結。")
             return
+        if message_type == "workstation.upload.complete":
+            if (
+                job.job_kind != "tts"
+                or job.upload_finish_callback is None
+                or job.upload_verified
+            ):
+                await self._finish_workstation(
+                    node, job, False, {}, "Workstation 上載完成訊息無效。"
+                )
+                return
+            result = payload.get("result")
+            if (
+                not isinstance(result, dict)
+                or len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                > LMC_AI_NODE_WS_FRAME_MAX_BYTES // 2
+            ):
+                await self._finish_workstation(
+                    node, job, False, {}, "Workstation 上載結果無效。"
+                )
+                return
+            try:
+                verified = await job.upload_finish_callback(job, result)
+                if not isinstance(verified, dict):
+                    raise ValueError("upload finish callback returned no result")
+                if job.finished:
+                    return
+                job.upload_verified = True
+                job.verified_result = dict(verified)
+                await self._send(node, {
+                    "type": "workstation.upload.verified",
+                    "operation_id": job.operation_id,
+                })
+            except Exception:
+                if not job.finished:
+                    try:
+                        await self._send(node, {
+                            "type": "workstation.upload.rejected",
+                            "operation_id": job.operation_id,
+                            "code": "output_verification_failed",
+                        })
+                    finally:
+                        await self._finish_workstation(
+                            node, job, False, {},
+                            "自家讀音上載未能通過 server 驗證。",
+                        )
+            return
         if message_type == "workstation.job.complete":
             result = payload.get("result")
             if not isinstance(result, dict):
@@ -830,6 +899,13 @@ class LocalAIRuntime:
             if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > LMC_AI_NODE_WS_FRAME_MAX_BYTES // 2:
                 await self._finish_workstation(node, job, False, {}, "AI Workstation 回傳資料超過安全上限。")
                 return
+            if job.job_kind == "tts":
+                if not job.upload_verified:
+                    await self._finish_workstation(
+                        node, job, False, {}, "自家讀音上載尚未完成 server 驗證。"
+                    )
+                    return
+                result = dict(job.verified_result)
             await self._finish_workstation(node, job, True, result, "")
             return
         if message_type == "workstation.job.error":

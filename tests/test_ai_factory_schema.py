@@ -60,7 +60,7 @@ PERMANENT_FACTORY_AUDIT_ACTIONS = {
 def test_data_factory_feature_is_explicit_and_old_optional_bundles_stay_disabled():
     assert schema_features.FEATURE_MIGRATION_VERSIONS == {
         "data_factory": "20260720_0009",
-        "lmc_ai": "20260720_0010",
+        "lmc_ai": "20260722_0002",
         "dataset_model": None,
         "rag": None,
     }
@@ -289,6 +289,11 @@ def test_factory_resource_limits_match_the_reviewed_v0_contract():
     assert system_limits.AI_FACTORY_CANDIDATE_MAX == 5
     assert system_limits.AI_FACTORY_RAG_CONTENT_MAX_CHARS == 3_000
     assert system_limits.AI_FACTORY_RAG_CLAIM_MAX == 8
+    assert (
+        system_limits.AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        == 10_000
+    )
+    assert system_limits.AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS == 10_000
     assert system_limits.AI_FACTORY_SFT_USER_MAX_CHARS == 4_000
     assert system_limits.AI_FACTORY_SFT_ASSISTANT_MAX_CHARS == 6_000
     assert system_limits.AI_FACTORY_PREVIEW_TTL_SECONDS == 900
@@ -299,7 +304,10 @@ def test_factory_resource_limits_match_the_reviewed_v0_contract():
     assert system_limits.AI_FACTORY_TOPIC_TAG_MAX_CHARS == 40
     assert system_limits.AI_FACTORY_RELEASE_MAX_ITEMS == 500
     assert system_limits.AI_FACTORY_RELEASE_MAX_BYTES == 5 * 1024 * 1024
-    assert system_limits.AI_PROVIDER_OUTPUT_MAX_TOKENS >= 18_000
+    assert system_limits.AI_PROVIDER_OUTPUT_MAX_TOKENS >= (
+        system_limits.AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
+        * system_limits.AI_FACTORY_CANDIDATE_MAX
+    )
 
     specs = system_limits.effective_limits()
     assert specs["AI_FACTORY_ATTEMPT_MAX"]["maximum"] == 3

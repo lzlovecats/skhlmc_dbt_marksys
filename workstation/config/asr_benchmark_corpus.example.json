@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "id": "cantonese-short",
+      "audio": "audio/01-cantonese-short.wav",
+      "reference": "我方認為呢個政策可以改善社會流動。",
+      "categories": ["cantonese", "short"],
+      "keywords": ["政策", "社會流動"]
+    },
+    {
+      "id": "english-numbers",
+      "audio": "audio/02-english-numbers.wav",
+      "reference": "AI 模型喺二零二六年錄得百分之三十增長。",
+      "categories": ["cantonese", "english", "numbers", "short"],
+      "keywords": ["AI", "二零二六", "百分之三十"]
+    },
+    {
+      "id": "debate-terms",
+      "audio": "audio/03-debate-terms.wav",
+      "reference": "對方混淆必要條件同充分條件，亦未履行舉證責任。",
+      "categories": ["cantonese", "debate_terms", "short"],
+      "keywords": ["必要條件", "充分條件", "舉證責任"]
+    },
+    {
+      "id": "background-noise",
+      "audio": "audio/04-background-noise.wav",
+      "reference": "即使現場有背景聲，我方嘅比較標準仍然清楚。",
+      "categories": ["cantonese", "background_noise", "short"],
+      "keywords": ["背景聲", "比較標準"]
+    },
+    {
+      "id": "long-turn",
+      "audio": "audio/05-long-turn.wav",
+      "reference": "請填入一段真實長回合嘅完整人工逐字稿，並保留標點。",
+      "categories": ["cantonese", "debate_terms", "long"],
+      "keywords": ["長回合"]
+    }
+  ]
+}

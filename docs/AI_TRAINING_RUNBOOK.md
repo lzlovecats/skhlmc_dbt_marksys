@@ -1,13 +1,15 @@
 # AI Training 錄音 → 本機廣東話 TTS 訓練手冊
 
-最後核對：2026-07-14
+最後核對：2026-07-22
 
 本文件講解如何在一部 NVIDIA Linux Desktop，把本系統 AI Training 頁面下載的
 `accepted` 錄音整理成可重現資料集，做廣東話 TTS 小資料微調、離線評估及保存模型。
 最後一節簡述日後微調開源辯論 LLM 的路線。
 
-> 這是研究環境 runbook，不是 production deployment 指引。第一輪目標是建立可重現
-> baseline，不是由零 pretrain，也不是訓練完成便取代 Azure TTS。
+> 這是資料準備及研究 runbook，不是 production deployment 指引。正式 Workstation
+> 安裝、模型批准、服務操作、rollback及真機驗收以
+> [`AI_WORKSTATION_RUNBOOK.md`](AI_WORKSTATION_RUNBOOK.md) 為唯一來源。第一輪目標係
+> 建立可重現 baseline，不係由零 pretrain，亦唔係訓練完成就取代 Azure TTS。
 
 ## 0. 建議入口：本機拖放資料準備器
 
@@ -58,19 +60,22 @@ Browser 會自動開啟「GPT-SoVITS 本機資料準備器」。把 AI Training 
 - R2 直接下載連結、原檔 SHA-256、稿句、錄音格式、sample rate、時長及錄音者資料；
 - 每段錄音的授權、審核及撤回流程。
 
-現時未有：
+現時亦有未部署嘅 Workstation dataset preparation、GPT-SoVITS training／approval adapter、
+版本化 checkpoint 目錄及真機 acceptance 工具；佢哋唔會自動啟用訓練結果。仍然未有：
 
-- repo 內置的 TTS training script 或鎖定模型版本；
-- 已 provision 的 dataset/model registry；相關 endpoint 回覆 `503` 是預期行為；
-- 下載到 workstation 後，自動把撤回通知同步到本機 dataset/checkpoint 的機制。
+- 獲人工批准及正式發布嘅自家 TTS model；
+- production 已 provision 嘅 dataset/model registry；相關 endpoint 回覆 `503` 係預期行為；
+- 下載到 Workstation 後，自動將撤回通知同步到本機 dataset/checkpoint 嘅機制。
 
-因此本手冊會先在 workstation 建立不可變的本機 manifest。等
+因此本手冊會先喺 Workstation 建立不可變嘅本機 manifest。等
 `ai_dataset_snapshots`、`ai_dataset_snapshot_items` 及 `ai_model_versions` 正式
 provision 後，才以 server snapshot ID 取代這個過渡做法；完整 gate 以本手冊各節為準。
 
-## 2. 標準 workstation
+## 2. 研究機硬件基準
 
-建議基準：
+以下係獨立研究機基準；如果直接使用正式 AI Workstation，其固定 Ubuntu、account、
+remote access、無 full-disk encryption 產品決定同實體保管要求，以
+`AI_WORKSTATION_RUNBOOK.md` 為準，唔好再建立第二套 production 操作方式。建議基準：
 
 - Ubuntu 22.04/24.04 x86-64；
 - 一張 NVIDIA RTX GPU；12 GB VRAM 可做小資料 baseline，16–24 GB 較寬鬆；

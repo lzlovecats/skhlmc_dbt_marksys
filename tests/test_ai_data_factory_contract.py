@@ -509,13 +509,72 @@ def test_cost_estimate_reserves_structured_rag_output_headroom_and_no_search():
         "output_price_per_million": 9.0,
     }, prompt, requested_count=2, model_label="Gemini 3.5 Flash")
     assert estimate["input_tokens"] > 0
-    # The conservative preflight budget must exceed the typical 1,000-token
-    # content estimate per card. Production proved that treating 2 x 1,000 as
-    # a hard cap truncates a valid structured response at finish_reason=length.
-    assert estimate["output_tokens"] == 4_000
+    # The preview and provider hard cap use the same loose 10,000-token budget
+    # per card, so the confirmed maximum cost cannot be understated.
+    assert estimate["output_tokens"] == 20_000
     assert estimate["search_calls"] == 0
     assert estimate["estimated_cost_usd"] > 0
     assert estimate["estimated_cost_hkd"] > estimate["estimated_cost_usd"]
+
+
+def test_rag_knowledge_preview_reserves_production_safe_loose_output_cap():
+    """Three cards must not repeat production's 5,999-token truncation."""
+    prompt = factory.build_factory_prompt(
+        factory.RAG_KNOWLEDGE_CARD_RECIPE,
+        source_text=SOURCE,
+        requested_count=3,
+        side="pro",
+        stage="opening",
+        allowed_topic_tags=[TAG],
+    )
+
+    estimate = factory.estimate_factory_cost(
+        {
+            "provider": "openrouter",
+            "input_price_per_million": 0.435,
+            "output_price_per_million": 0.87,
+        },
+        prompt,
+        requested_count=3,
+        model_label="DeepSeek V4 Pro",
+    )
+
+    assert estimate["output_tokens"] == 30_000
+
+
+@pytest.mark.parametrize(
+    "recipe_id",
+    (
+        factory.RAG_ARGUMENT_DECOMPOSITION_RECIPE,
+        factory.SFT_SPEECH_CRITIQUE_RECIPE,
+        factory.SFT_ATTACK_DEFENCE_RECIPE,
+    ),
+)
+def test_every_standard_factory_recipe_uses_the_loose_per_candidate_cap(
+    recipe_id,
+):
+    """Every legal structured recipe needs room to close its JSON envelope."""
+    prompt = factory.build_factory_prompt(
+        recipe_id,
+        source_text=SOURCE,
+        requested_count=3,
+        side="pro",
+        stage="opening",
+        allowed_topic_tags=[TAG],
+    )
+
+    estimate = factory.estimate_factory_cost(
+        {
+            "provider": "gemini",
+            "input_price_per_million": 1.5,
+            "output_price_per_million": 9.0,
+        },
+        prompt,
+        requested_count=3,
+        model_label="Gemini 3.5 Flash",
+    )
+
+    assert estimate["output_tokens"] == 30_000
 
 
 def test_gemini_structured_json_requires_stop_preserves_text_and_bounds_response(monkeypatch):

@@ -836,10 +836,17 @@ def data(request: Request):
 @router.get("/local-status")
 async def local_status(request: Request):
     _context(request)
-    from core.lmc_ai_client import local_ai_availability
+    from core.lmc_ai_client import local_ai_availability, workstation_capabilities
     from deploy.proxy import get_vote_db
 
-    status = await local_ai_availability(get_vote_db())
+    db = get_vote_db()
+    status = await local_ai_availability(db)
+    try:
+        status["workstation_capabilities"] = await workstation_capabilities(db)
+    except Exception:
+        status["workstation_capabilities"] = {
+            "workstation": False,
+        }
     return JSONResponse(status, headers={"Cache-Control": "no-store"})
 
 

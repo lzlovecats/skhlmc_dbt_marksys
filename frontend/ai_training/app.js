@@ -868,7 +868,11 @@
     $("factoryRightsConfirmed").checked = false;
     $("factoryAnonymizedConfirmed").checked = false;
     $("factoryThirdPartyConfirmed").checked = false;
+    $("factoryGenerateStatus").textContent = "";
+    $("factoryGenerateStatus").classList.add("hidden");
+    $("factoryPreviewCancel").disabled = false;
     $("factoryGenerateBtn").disabled = false;
+    $("factoryGenerateBtn").textContent = "確認並生成";
     $("factoryPreviewDialog").showModal();
   }
 
@@ -1036,6 +1040,10 @@
     );
     if (!jobId) return toast("⚠️ 預覽缺少工作識別碼，請重新預覽。");
     factorySetLoading("generate", true, $("factoryGenerateBtn"));
+    $("factoryGenerateStatus").textContent = "AI 正在生成資料，請稍候。";
+    $("factoryGenerateStatus").classList.remove("hidden");
+    $("factoryPreviewCancel").disabled = true;
+    $("factoryGenerateBtn").textContent = "AI 正在生成資料…";
     try {
       await api(
         `/api/ai-training/factory/jobs/${encodeURIComponent(jobId)}/generate`,
@@ -1068,6 +1076,10 @@
       );
       await loadFactoryJobs(true);
     } finally {
+      $("factoryGenerateStatus").textContent = "";
+      $("factoryGenerateStatus").classList.add("hidden");
+      $("factoryPreviewCancel").disabled = false;
+      $("factoryGenerateBtn").textContent = "確認並生成";
       factorySetLoading("generate", false, $("factoryGenerateBtn"));
     }
   }
@@ -2150,9 +2162,13 @@
       `${$("factoryTranscriptContent").value.length.toLocaleString()} / ${maximum.toLocaleString()} 字`;
   });
   $("factoryPreviewCancel").onclick = () => {
+    if (factoryState.loading.generate) return;
     factoryState.preview = null;
     $("factoryPreviewDialog").close();
   };
+  $("factoryPreviewDialog").addEventListener("cancel", (event) => {
+    if (factoryState.loading.generate) event.preventDefault();
+  });
   $("factoryCancelRetry").onclick = () => {
     setFactoryRetryMode();
     factoryState.selectedSource = null;

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_release_schema_contract_tracks_repository_head():
     migrations = sorted((ROOT / "migrations").glob("*.up.sql"))
-    assert APP_VERSION == "4.10.6"
+    assert APP_VERSION == "4.11.0"
     assert migrations[-1].name.startswith(REQUIRED_SCHEMA_MIGRATION)
     assert "eval" not in FEATURE_MIGRATION_VERSIONS
 
@@ -28,6 +28,20 @@ def test_repository_head_permanently_removes_retired_local_ai_comparison_data():
         assert f"DROP TABLE public.{table};" in up
     assert "DROP INDEX public.uq_ai_eval_usage_operation_stage;" in up
     assert "irreversible" in down
+
+
+def test_workstation_r2_probe_schema_is_private_bounded_and_rollback_safe():
+    up = (ROOT / "migrations/20260722_0002_add_workstation_r2_health_probes.up.sql").read_text(
+        encoding="utf-8"
+    )
+    down = (ROOT / "migrations/20260722_0002_add_workstation_r2_health_probes.down.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "UNIQUE" in up
+    assert "REFERENCES public.lmc_ai_nodes(node_id)" in up
+    assert "REVOKE ALL PRIVILEGES" in up
+    assert "skhlmc-feature:lmc_ai:20260722_0002" in up
+    assert "refusing to remove unfinished" in down
 
 
 def test_optional_feature_catalog_owns_each_table_once():

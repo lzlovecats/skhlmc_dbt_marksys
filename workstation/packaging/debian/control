@@ -1,0 +1,13 @@
+Package: lmc-ai-workstation
+Version: 1.0.0
+Section: admin
+Priority: optional
+Architecture: amd64
+Maintainer: SKHLMC Debate Team
+Depends: python3 (>= 3.11), python3-httpx, python3-websockets, python3-cryptography, ffmpeg, util-linux, iproute2, ufw, unattended-upgrades, gnome-remote-desktop, xdg-utils
+Recommends: openssh-client
+Description: SKHLMC AI Workstation Manager and outbound node
+ Installs the localhost Manager GUI, outbound authenticated website node,
+ health/power timers and allowlisted privileged helper. Large models, node
+ credentials, Tailscale enrolment and GPT-SoVITS upstream are never downloaded
+ by package installation.

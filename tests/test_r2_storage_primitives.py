@@ -2,6 +2,8 @@
 
 import json
 from contextlib import contextmanager
+import datetime as dt
+import pandas as pd
 
 from core import r2_storage
 
@@ -167,3 +169,189 @@ def test_discard_releases_completed_temp_but_not_provider_started_or_consumed_ob
     assert "status IN ('issued','completed','processing','orphan_deleted')" in sql
     assert "provider_processing" not in sql and "consumed" not in sql
     assert params["id"] == "intent-1"
+
+
+def test_local_practice_media_retention_claims_exact_ttls_before_delete(monkeypatch):
+    now = dt.datetime(2026, 7, 22, 12, 0, 0)
+    rows = pd.DataFrame([
+        {
+            "intent_id": "failed-input",
+            "media_kind": "local_practice_input",
+            "object_keys": ["pending/local-practice/input/a.webm"],
+            "intent_metadata": {},
+            "status": "completed",
+            "created_at": now - dt.timedelta(minutes=20),
+            "completed_at": now - dt.timedelta(minutes=15),
+        },
+        {
+            "intent_id": "output",
+            "media_kind": "local_practice_tts_output",
+            "object_keys": ["pending/local-practice/output/a.wav"],
+            "intent_metadata": {},
+            "status": "completed",
+            "created_at": now - dt.timedelta(hours=2),
+            "completed_at": now - dt.timedelta(hours=1),
+        },
+        {
+            "intent_id": "retry-open",
+            "media_kind": "local_practice_input",
+            "object_keys": ["pending/local-practice/input/recent.webm"],
+            "intent_metadata": {},
+            "status": "completed",
+            "created_at": now - dt.timedelta(minutes=14),
+            "completed_at": now - dt.timedelta(minutes=14),
+        },
+        {
+            "intent_id": "non-sliding-retry",
+            "media_kind": "local_practice_input",
+            "object_keys": ["pending/local-practice/input/retry.webm"],
+            "intent_metadata": {
+                "retry_started_at": (now - dt.timedelta(minutes=15)).isoformat(),
+            },
+            "status": "completed",
+            "created_at": now - dt.timedelta(minutes=20),
+            "completed_at": now - dt.timedelta(minutes=1),
+        },
+        {
+            "intent_id": "expired-issued",
+            "media_kind": "local_practice_input",
+            "object_keys": ["pending/local-practice/input/issued.webm"],
+            "intent_metadata": {},
+            "status": "issued",
+            "created_at": now - dt.timedelta(minutes=15),
+            "completed_at": None,
+        },
+        {
+            "intent_id": "cleanup-pending",
+            "media_kind": "local_practice_input",
+            "object_keys": ["pending/local-practice/input/cleanup.webm"],
+            "intent_metadata": {
+                "processing_started_at": now.isoformat(),
+                "cleanup_pending_at": now.isoformat(),
+            },
+            "status": "processing",
+            "created_at": now - dt.timedelta(minutes=1),
+            "completed_at": None,
+        },
+    ])
+
+    class Db:
+        def __init__(self):
+            self.claims = []
+
+        def query(self, statement, params):
+            assert "local_practice_input" in statement
+            assert params["limit"] >= 3
+            return rows
+
+        def execute_count(self, statement, params):
+            self.claims.append((" ".join(statement.split()), params))
+            return 1
+
+    deleted = []
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_intent_objects",
+        lambda _db, intent_id, keys: deleted.append((intent_id, keys)) or True,
+    )
+    db = Db()
+    result = r2_storage.prune_local_practice_media(db, now=now)
+    assert result == {"examined": 5, "deleted": 5, "failed": 0}
+    assert [item[0] for item in deleted] == [
+        "failed-input", "output", "non-sliding-retry",
+        "expired-issued", "cleanup-pending",
+    ]
+    assert all("status='completed'" in sql for sql, _params in db.claims)
+    assert all("status='processing'" in sql for sql, _params in db.claims)
+
+
+def test_failed_processing_retry_anchor_is_write_once():
+    captured = []
+
+    class Db:
+        def execute_count(self, statement, params):
+            captured.append((" ".join(statement.split()), params))
+            return 1
+
+    assert r2_storage.release_processing_upload_intent(
+        Db(), "intent", user_id="alice", media_kind="local_practice_input",
+    )
+    sql, params = captured[0]
+    assert "? 'retry_started_at'" in sql
+    assert "{retry_started_at}" in sql
+    assert params["started"]
+
+
+def test_workstation_health_probe_is_single_per_node_and_deleted_r2_first(monkeypatch):
+    executions = []
+
+    class Db:
+        def execute_count(self, statement, params):
+            executions.append((" ".join(statement.split()), params))
+            return 1
+
+    db = Db()
+    assert r2_storage.reserve_workstation_r2_health_probe(
+        db,
+        intent_id="a" * 32,
+        node_id="node-1",
+        object_key="pending/workstation-health/node-1/" + "a" * 32 + ".bin",
+        sha256="b" * 64,
+        byte_size=4096,
+    )
+    assert "ON CONFLICT (node_id) DO NOTHING" in executions[0][0]
+
+    calls = []
+    monkeypatch.setattr(r2_storage, "delete", lambda key: calls.append(("r2", key)))
+
+    class DeleteDb:
+        def execute_count(self, statement, params):
+            calls.append(("db", " ".join(statement.split()), params))
+            return 1
+
+    assert r2_storage.delete_workstation_r2_health_probe(
+        DeleteDb(),
+        intent_id="a" * 32,
+        node_id="node-1",
+        object_key="pending/workstation-health/node-1/" + "a" * 32 + ".bin",
+    )
+    assert [call[0] for call in calls] == ["r2", "db"]
+
+
+def test_workstation_health_probe_retention_retries_failed_deletes(monkeypatch):
+    now = dt.datetime(2026, 7, 22, 12, 0, 0)
+    rows = pd.DataFrame([
+        {
+            "intent_id": "a" * 32,
+            "node_id": "node-1",
+            "object_key": "pending/workstation-health/node-1/a.bin",
+        },
+        {
+            "intent_id": "b" * 32,
+            "node_id": "node-2",
+            "object_key": "pending/workstation-health/node-2/b.bin",
+        },
+    ])
+
+    class Db:
+        def query(self, statement, params):
+            assert "workstation_r2_health_probes" in statement
+            assert params["cutoff"] == now - dt.timedelta(minutes=15)
+            assert params["limit"] == 100
+            return rows
+
+    attempts = []
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_workstation_r2_health_probe",
+        lambda _db, **values: attempts.append(values) is None,
+    )
+    # Make only the first delete succeed; the second remains durably retryable.
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_workstation_r2_health_probe",
+        lambda _db, **values: attempts.append(values) or len(attempts) == 1,
+    )
+    result = r2_storage.prune_workstation_r2_health_probes(Db(), now=now)
+    assert result == {"examined": 2, "deleted": 1, "failed": 1}
+    assert [item["node_id"] for item in attempts] == ["node-1", "node-2"]

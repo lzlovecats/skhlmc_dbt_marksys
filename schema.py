@@ -101,6 +101,7 @@ TABLE_OFFICIAL_AI_JUDGE_RUNS = "official_ai_judge_runs"
 TABLE_OFFICIAL_AI_JUDGE_ATTEMPTS = "official_ai_judge_attempts"
 TABLE_AI_COACH_LIVE_BRIEFS = "ai_coach_live_briefs"
 TABLE_LMC_AI_NODES = "lmc_ai_nodes"
+TABLE_WORKSTATION_R2_HEALTH_PROBES = "workstation_r2_health_probes"
 TABLE_APP_CONFIG = "app_config"
 VIEW_COMMITTEE_VOTE_ACTIVITY = "committee_vote_activity_view"
 
@@ -2893,7 +2894,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_LMC_AI_NODES} (
 CREATE INDEX IF NOT EXISTS idx_lmc_ai_nodes_enabled_created
     ON {TABLE_LMC_AI_NODES}(enabled, created_at DESC);
 COMMENT ON TABLE {TABLE_LMC_AI_NODES} IS
-    'skhlmc-feature:lmc_ai:20260720_0010';
+    'skhlmc-feature:lmc_ai:20260722_0002';
 
 REVOKE ALL PRIVILEGES ON TABLE {TABLE_LMC_AI_NODES} FROM PUBLIC;
 DO $lmc_ai_privileges$
@@ -2910,6 +2911,53 @@ BEGIN
         END IF;
     END LOOP;
 END $lmc_ai_privileges$;
+"""
+
+# Short-lived direct-R2 functional probes issued to authenticated Workstations.
+# Object bytes remain private in R2 and a retention worker removes abandoned
+# uploads. One open row per node provides a hard abuse/concurrency bound.
+CREATE_WORKSTATION_R2_HEALTH_PROBES = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_WORKSTATION_R2_HEALTH_PROBES} (
+    intent_id   TEXT        PRIMARY KEY,
+    node_id     TEXT        NOT NULL UNIQUE
+                            REFERENCES {TABLE_LMC_AI_NODES}(node_id)
+                            ON DELETE CASCADE,
+    object_key  TEXT        NOT NULL UNIQUE,
+    sha256      TEXT        NOT NULL,
+    byte_size   INTEGER     NOT NULL CHECK (byte_size > 0),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT workstation_r2_health_intent_id
+        CHECK (CHAR_LENGTH(intent_id) = 32 AND intent_id ~ '^[0-9a-f]+$'),
+    CONSTRAINT workstation_r2_health_object_key
+        CHECK (
+            CHAR_LENGTH(object_key) BETWEEN 1 AND 512
+            AND object_key LIKE 'pending/workstation-health/%'
+        ),
+    CONSTRAINT workstation_r2_health_sha256
+        CHECK (
+            CHAR_LENGTH(sha256) = 64
+            AND sha256 = LOWER(sha256)
+            AND sha256 ~ '^[0-9a-f]+$'
+        )
+);
+CREATE INDEX IF NOT EXISTS idx_workstation_r2_health_created
+    ON {TABLE_WORKSTATION_R2_HEALTH_PROBES}(created_at);
+
+REVOKE ALL PRIVILEGES ON TABLE {TABLE_WORKSTATION_R2_HEALTH_PROBES} FROM PUBLIC;
+DO $workstation_r2_health_privileges$
+DECLARE
+    role_name TEXT;
+BEGIN
+    FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated']
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=role_name) THEN
+            EXECUTE FORMAT(
+                'REVOKE ALL PRIVILEGES ON TABLE {TABLE_WORKSTATION_R2_HEALTH_PROBES} FROM %I',
+                role_name
+            );
+        END IF;
+    END LOOP;
+END $workstation_r2_health_privileges$;
 """
 
 # Table: LATENESS_FUND_RECORDS
@@ -3421,6 +3469,7 @@ ALL_SCHEMAS = [
     CREATE_AI_FUND_TRANSACTIONS,      # → accounts
     CREATE_AI_FUND_USAGE_LOGS,        # → accounts
     CREATE_LMC_AI_NODES,              # private local-AI computer registry
+    CREATE_WORKSTATION_R2_HEALTH_PROBES,  # bounded direct-R2 health intents
     CREATE_LATENESS_FUND_RECORDS,     # → accounts
     CREATE_LATENESS_FUND_EXPENSES,    # → accounts
     CREATE_LATENESS_FUND_PERIODS,     # no deps

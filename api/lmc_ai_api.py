@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import re
 from typing import Literal
+import uuid
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
 
@@ -60,7 +62,10 @@ from system_limits import (
     LMC_AI_NODE_WS_FRAME_MAX_BYTES,
     LMC_AI_QUEUE_MAX,
     LMC_AI_REQUEST_MESSAGES_MAX,
+    WORKSTATION_R2_HEALTH_PROBE_BYTES,
+    WORKSTATION_UPDATE_MANIFEST_MAX_BYTES,
 )
+from version import APP_VERSION, REQUIRED_SCHEMA_MIGRATION
 
 
 router = APIRouter(tags=["lmc-ai"])
@@ -110,6 +115,242 @@ class ModelSetSelection(BaseModel):
 
 class ThinkingSetting(BaseModel):
     enabled: bool
+
+
+class WorkstationR2ProbeStart(BaseModel):
+    sha256: str = Field(min_length=64, max_length=64)
+    byte_size: int = Field(
+        ge=WORKSTATION_R2_HEALTH_PROBE_BYTES,
+        le=WORKSTATION_R2_HEALTH_PROBE_BYTES,
+    )
+
+
+class WorkstationR2ProbeFinish(BaseModel):
+    claim: str = Field(min_length=40, max_length=4_096)
+
+
+def _authenticated_node_request(request: Request) -> dict:
+    authorization = str(request.headers.get("authorization") or "")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Node bearer token is required.")
+    raw_token = authorization[7:].strip()
+    if not raw_token or len(raw_token) > 512:
+        raise HTTPException(401, "Node bearer token is invalid.")
+    try:
+        auth = authenticate_node(_db(), raw_token)
+    except RuntimeError as exc:
+        raise HTTPException(503, "Node authentication is unavailable.") from exc
+    if not auth:
+        raise HTTPException(401, "Node bearer token is invalid.")
+    return auth
+
+
+@router.get("/api/lmc-ai/workstation/releases/{channel}")
+def workstation_release_manifest(channel: str, request: Request):
+    _authenticated_node_request(request)
+    if channel not in {"stable", "candidate"}:
+        raise HTTPException(404, "Release channel does not exist.")
+    from core import r2_storage
+    from workstation.manager.release_manifest import validate_manifest
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / f"workstation_release_{channel}.json"
+    )
+    try:
+        raw = path.read_bytes()
+        if len(raw) > WORKSTATION_UPDATE_MANIFEST_MAX_BYTES:
+            raise ValueError("manifest too large")
+        signed = json.loads(raw)
+        if not isinstance(signed, dict) or set(signed) != {"manifest", "signature"}:
+            raise ValueError("invalid signed manifest")
+        manifest = validate_manifest(signed["manifest"])
+        if manifest["channel"] != channel:
+            raise ValueError("channel mismatch")
+        release = manifest["components"]["release_archive"]
+        url = r2_storage.presign_get(
+            release["r2_key"], mime_type="application/gzip",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "No signed Workstation release is published.") from exc
+    except Exception as exc:
+        raise HTTPException(503, "Published Workstation release is invalid.") from exc
+    return JSONResponse(
+        {**signed, "downloads": {"release_archive": url}},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/api/lmc-ai/workstation/artifacts/{channel}/{component_name}")
+def workstation_signed_artifact(
+    channel: str, component_name: str, request: Request,
+):
+    _authenticated_node_request(request)
+    if channel not in {"stable", "candidate"} or component_name not in {
+        "model_bundle", "rag_bundle",
+    }:
+        raise HTTPException(404, "Signed artifact does not exist.")
+    from core import r2_storage
+    from workstation.manager.release_manifest import validate_manifest
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / f"workstation_release_{channel}.json"
+    )
+    try:
+        raw = path.read_bytes()
+        if len(raw) > WORKSTATION_UPDATE_MANIFEST_MAX_BYTES:
+            raise ValueError("manifest too large")
+        signed = json.loads(raw)
+        if not isinstance(signed, dict) or set(signed) != {"manifest", "signature"}:
+            raise ValueError("signed manifest invalid")
+        manifest = validate_manifest(signed["manifest"])
+        if manifest["channel"] != channel:
+            raise ValueError("channel mismatch")
+        component = manifest["components"][component_name]
+        url = r2_storage.presign_get(
+            component["r2_key"],
+            mime_type=(
+                "application/json"
+                if component_name == "model_bundle"
+                else "application/gzip"
+            ),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "No signed artifact is published.") from exc
+    except Exception as exc:
+        raise HTTPException(503, "Published signed artifact is invalid.") from exc
+    return JSONResponse({
+        **signed,
+        "component": component_name,
+        "download_url": url,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/lmc-ai/workstation/health/r2/start")
+def workstation_r2_health_start(body: WorkstationR2ProbeStart, request: Request):
+    auth = _authenticated_node_request(request)
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+
+    digest = str(body.sha256 or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise HTTPException(400, "Health probe hash is invalid.")
+    if not r2_storage.configured():
+        raise HTTPException(503, "R2 is unavailable.")
+    secret = _get_relay_cookie_secret()
+    if not secret:
+        raise HTTPException(503, "Health probe signing is unavailable.")
+    nonce = uuid.uuid4().hex
+    key = f"pending/workstation-health/{auth['node_id']}/{nonce}.bin"
+    db = _db()
+    try:
+        reserved = r2_storage.reserve_workstation_r2_health_probe(
+            db,
+            intent_id=nonce,
+            node_id=auth["node_id"],
+            object_key=key,
+            sha256=digest,
+            byte_size=body.byte_size,
+        )
+    except Exception as exc:
+        raise HTTPException(503, "R2 health probe reservation is unavailable.") from exc
+    if not reserved:
+        raise HTTPException(409, "A Workstation R2 health probe is already pending.")
+    try:
+        claim = r2_storage.sign_upload_claim({
+            "kind": "workstation_r2_health",
+            "intent_id": nonce,
+            "node_id": auth["node_id"],
+            "key": key,
+            "sha256": digest,
+            "byte_size": body.byte_size,
+        }, secret)
+        upload = r2_storage.presign_put(
+            key, "application/octet-stream", digest, body.byte_size,
+        )
+        download = r2_storage.presign_get(
+            key, mime_type="application/octet-stream",
+        )
+    except Exception as exc:
+        r2_storage.delete_workstation_r2_health_probe(
+            db,
+            intent_id=nonce,
+            node_id=auth["node_id"],
+            object_key=key,
+        )
+        raise HTTPException(503, "R2 health probe URLs are unavailable.") from exc
+    return JSONResponse({
+        "claim": claim,
+        "upload": {
+            "url": upload,
+            "headers": {
+                "Content-Type": "application/octet-stream",
+                "x-amz-meta-sha256": digest,
+            },
+        },
+        "download_url": download,
+    }, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/lmc-ai/workstation/health/r2/finish")
+def workstation_r2_health_finish(body: WorkstationR2ProbeFinish, request: Request):
+    auth = _authenticated_node_request(request)
+    from core import r2_storage
+    from deploy.proxy import _get_relay_cookie_secret
+
+    claim = r2_storage.verify_upload_claim(body.claim, _get_relay_cookie_secret())
+    intent_id = str((claim or {}).get("intent_id") or "")
+    expected_key = (
+        f"pending/workstation-health/{auth['node_id']}/{intent_id}.bin"
+    )
+    if (
+        not claim
+        or claim.get("kind") != "workstation_r2_health"
+        or claim.get("node_id") != auth["node_id"]
+        or not re.fullmatch(r"[0-9a-f]{32}", intent_id)
+        or str(claim.get("key") or "") != expected_key
+        or int(claim.get("byte_size") or 0) != WORKSTATION_R2_HEALTH_PROBE_BYTES
+        or not re.fullmatch(r"[0-9a-f]{64}", str(claim.get("sha256") or ""))
+    ):
+        raise HTTPException(400, "R2 health probe claim is invalid.")
+    key = str(claim["key"])
+    db = _db()
+    try:
+        intent = r2_storage.get_workstation_r2_health_probe(
+            db, intent_id=intent_id, node_id=auth["node_id"],
+        )
+    except Exception as exc:
+        raise HTTPException(503, "R2 health probe reservation is unavailable.") from exc
+    if (
+        not intent
+        or str(intent.get("object_key") or "") != key
+        or str(intent.get("sha256") or "").lower()
+        != str(claim["sha256"]).lower()
+        or int(intent.get("byte_size") or 0) != int(claim["byte_size"])
+    ):
+        raise HTTPException(409, "R2 health probe reservation does not match.")
+    verified = False
+    try:
+        remote = r2_storage.head(key)
+        verified = (
+            int(remote.get("ContentLength") or 0) == int(claim["byte_size"])
+            and str((remote.get("Metadata") or {}).get("sha256") or "").lower()
+            == str(claim["sha256"]).lower()
+        )
+    except Exception:
+        verified = False
+    deleted = r2_storage.delete_workstation_r2_health_probe(
+        db,
+        intent_id=intent_id,
+        node_id=auth["node_id"],
+        object_key=key,
+    )
+    if not verified or not deleted:
+        raise HTTPException(409, "R2 health probe verification or deletion failed.")
+    return {"ok": True, "deleted": True}
 
 
 def _validated_messages(body: ChatRequest) -> list[dict]:
@@ -652,7 +893,13 @@ async def lmc_ai_node_connect(websocket: WebSocket):
             return
         await websocket.send_text(
             json.dumps(
-                {"type": "hello.accepted", "protocol": hello["protocol"], "node_id": node_id},
+                {
+                    "type": "hello.accepted",
+                    "protocol": hello["protocol"],
+                    "node_id": node_id,
+                    "website_version": APP_VERSION,
+                    "database_migration_requirement": REQUIRED_SCHEMA_MIGRATION,
+                },
                 separators=(",", ":"),
             )
         )

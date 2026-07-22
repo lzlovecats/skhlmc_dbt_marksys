@@ -15,6 +15,7 @@ from schema import (
     TABLE_AI_FACTORY_TRANSCRIPT_ATTEMPTS, TABLE_AI_FACTORY_TRANSCRIPT_RUNS,
     TABLE_AI_FACTORY_TRANSCRIPT_SEGMENTS, TABLE_AI_FACTORY_TRANSCRIPT_WINDOWS,
     TABLE_AI_FACTORY_TRANSCRIPTS, TABLE_AI_MODEL_VERSIONS, TABLE_LMC_AI_NODES,
+    TABLE_WORKSTATION_R2_HEALTH_PROBES,
     TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
 )
 
@@ -52,8 +53,9 @@ FEATURE_CATALOG: dict[str, FeatureSchema] = {
         "bounded records with explicit review, withdrawal and audit workflows",
     ),
     "lmc_ai": FeatureSchema(
-        "20260720_0010", "active", (TABLE_LMC_AI_NODES,),
-        "bounded node registry; conversation content remains browser-local",
+        "20260722_0002", "active",
+        (TABLE_LMC_AI_NODES, TABLE_WORKSTATION_R2_HEALTH_PROBES),
+        "bounded node registry and 15-minute R2 health probes; conversation content remains browser-local",
     ),
     "dataset_model": FeatureSchema(
         None, "disabled",

@@ -81,6 +81,25 @@ def test_transcript_cost_uses_the_shared_conservative_mixed_language_estimate():
     )
 
 
+def test_transcript_window_uses_the_loose_factory_output_cap():
+    text = "司儀開場。正方主辯開始發言。" * 20
+    prompt = build_transcript_prompt(
+        text, build_transcript_window_plan(len(text))[0]
+    )
+    config = {
+        "provider": "gemini",
+        "model": "gemini-test",
+        "input_price_per_million": 1,
+        "output_price_per_million": 9,
+    }
+
+    payload = transcript_provider_payload("測試模型", config, prompt)
+    estimate = estimate_transcript_cost(config, [prompt])
+
+    assert payload["max_output_tokens"] == 10_000
+    assert estimate["output_tokens"] == 10_000
+
+
 def test_boundary_output_is_strict_and_first_window_must_start_at_zero():
     window = build_transcript_window_plan(100)[0]
     valid = json.dumps({

@@ -50,6 +50,7 @@ from core.lmc_ai_runtime import (
 )
 from core import lmc_ai_store
 from local_ai import lmc_ai_node
+from fastapi import HTTPException
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,7 +120,9 @@ def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
     assert "ADD COLUMN provider_duration_ms" in up
     assert schema.TABLE_LMC_AI_NODES == "lmc_ai_nodes"
     assert schema.CREATE_LMC_AI_NODES in schema.ALL_SCHEMAS
-    assert schema_features.FEATURE_MIGRATION_VERSIONS["lmc_ai"] == "20260720_0010"
+    assert schema.TABLE_WORKSTATION_R2_HEALTH_PROBES == "workstation_r2_health_probes"
+    assert schema.CREATE_WORKSTATION_R2_HEALTH_PROBES in schema.ALL_SCHEMAS
+    assert schema_features.FEATURE_MIGRATION_VERSIONS["lmc_ai"] == "20260722_0002"
     assert "refusing to remove used local AI node or usage data" in down
     assert "key = 'lmc_ai_active_node_id'" in down
     assert "feature = 'lmc_ai_chat'" in down
@@ -145,7 +148,7 @@ def test_limits_and_models_are_centralized_at_the_decided_values():
     assert LMC_AI_FEATURE_MODES == {
         "lmc_ai": "daily", "vote": "fast", "ai_coach": "daily",
     }
-    runbook = (ROOT / "docs/LMC_AI_NODE_RUNBOOK.md").read_text("utf-8")
+    runbook = (ROOT / "docs/AI_WORKSTATION_RUNBOOK.md").read_text("utf-8")
     assert "lmc_ai_required_models" in runbook
     for tag in {
         LMC_AI_FAST_MODEL_TAG,
@@ -167,6 +170,152 @@ def test_limits_and_models_are_centralized_at_the_decided_values():
     assert system_limits.LMC_AI_BROWSER_HISTORY_MAX_CHARS == 200_000
     assert "lmc_ai_chat" in funds_logic.AI_USAGE_FEATURES
     assert funds_logic.AI_FEATURE_LABELS["lmc_ai_chat"]
+
+
+def test_workstation_r2_health_claim_is_node_scoped_verified_and_deleted(
+    monkeypatch,
+):
+    from core import r2_storage
+    from deploy import proxy
+
+    request = SimpleNamespace(headers={"authorization": "Bearer node-token"})
+    db = object()
+    monkeypatch.setattr(lmc_api, "_db", lambda: db)
+    monkeypatch.setattr(
+        lmc_api, "authenticate_node",
+        lambda _db, token: {"node_id": "node-1"} if token == "node-token" else None,
+    )
+    monkeypatch.setattr(proxy, "_get_relay_cookie_secret", lambda: "claim-secret")
+    monkeypatch.setattr(r2_storage, "configured", lambda: True)
+    monkeypatch.setattr(r2_storage, "sign_upload_claim", lambda claim, _secret: "x" * 40)
+    issued = {}
+    monkeypatch.setattr(
+        r2_storage,
+        "reserve_workstation_r2_health_probe",
+        lambda used_db, **values: issued.update({"db": used_db, **values}) or True,
+    )
+    monkeypatch.setattr(
+        r2_storage, "presign_put",
+        lambda key, mime, sha, size: issued.update(
+            {"key": key, "mime": mime, "sha": sha, "size": size}
+        ) or "https://r2.example/upload",
+    )
+    monkeypatch.setattr(
+        r2_storage, "presign_get",
+        lambda key, **_kwargs: "https://r2.example/download",
+    )
+    digest = "a" * 64
+    started = lmc_api.workstation_r2_health_start(
+        lmc_api.WorkstationR2ProbeStart(
+            sha256=digest,
+            byte_size=system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+        ),
+        request,
+    )
+    payload = json.loads(started.body)
+    assert payload["claim"] == "x" * 40
+    assert issued["key"].startswith("pending/workstation-health/node-1/")
+    assert issued["sha"] == digest
+    assert issued["db"] is db
+    assert issued["intent_id"] in issued["key"]
+    assert issued["object_key"] == issued["key"]
+
+    claim = {
+        "kind": "workstation_r2_health",
+        "intent_id": issued["intent_id"],
+        "node_id": "node-1",
+        "key": issued["key"],
+        "sha256": digest,
+        "byte_size": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+    }
+    deleted = []
+    monkeypatch.setattr(r2_storage, "verify_upload_claim", lambda _value, _secret: claim)
+    monkeypatch.setattr(
+        r2_storage,
+        "get_workstation_r2_health_probe",
+        lambda used_db, **_values: {
+            "object_key": issued["key"],
+            "sha256": digest,
+            "byte_size": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+        } if used_db is db else None,
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "head",
+        lambda _key: {
+            "ContentLength": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+            "Metadata": {"sha256": digest},
+        },
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_workstation_r2_health_probe",
+        lambda used_db, **values: deleted.append((used_db, values)) or True,
+    )
+    assert lmc_api.workstation_r2_health_finish(
+        lmc_api.WorkstationR2ProbeFinish(claim="y" * 40), request,
+    ) == {"ok": True, "deleted": True}
+    assert deleted == [(db, {
+        "intent_id": issued["intent_id"],
+        "node_id": "node-1",
+        "object_key": issued["key"],
+    })]
+
+    deleted.clear()
+    monkeypatch.setattr(
+        r2_storage, "head",
+        lambda _key: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_finish(
+            lmc_api.WorkstationR2ProbeFinish(claim="h" * 40), request,
+        )
+    assert raised.value.status_code == 409
+    assert deleted == [(db, {
+        "intent_id": issued["intent_id"],
+        "node_id": "node-1",
+        "object_key": issued["key"],
+    })]
+
+    monkeypatch.setattr(
+        r2_storage,
+        "delete_workstation_r2_health_probe",
+        lambda _db, **_values: False,
+    )
+    monkeypatch.setattr(
+        r2_storage,
+        "head",
+        lambda _key: {
+            "ContentLength": system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+            "Metadata": {"sha256": digest},
+        },
+    )
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_finish(
+            lmc_api.WorkstationR2ProbeFinish(claim="d" * 40), request,
+        )
+    assert raised.value.status_code == 409
+
+    monkeypatch.setattr(
+        r2_storage, "reserve_workstation_r2_health_probe",
+        lambda _db, **_values: False,
+    )
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_start(
+            lmc_api.WorkstationR2ProbeStart(
+                sha256=digest,
+                byte_size=system_limits.WORKSTATION_R2_HEALTH_PROBE_BYTES,
+            ),
+            request,
+        )
+    assert raised.value.status_code == 409
+
+    claim["node_id"] = "node-2"
+    with pytest.raises(HTTPException) as raised:
+        lmc_api.workstation_r2_health_finish(
+            lmc_api.WorkstationR2ProbeFinish(claim="z" * 40), request,
+        )
+    assert raised.value.status_code == 400
 
 
 class _FakeWebSocket:
@@ -204,6 +353,40 @@ def _hello(**overrides):
             "thinking_control": True,
         },
     }
+    value.update(overrides)
+    return value
+
+
+def _workstation_hello(**overrides):
+    value = _hello(
+        protocol=2,
+        workstation_version="1.0.0",
+        runtime="lmc-ai-workstation",
+        runtime_version="1.0.0",
+        capabilities={
+            "chat": True,
+            "rag": True,
+            "asr": True,
+            "local_tts": True,
+            "tts_training": True,
+            "direct_r2": True,
+            "fine_tuned": False,
+            "thinking_control": True,
+            "manager": True,
+        },
+        manager={
+            "revision": 7,
+            "mode": "idle",
+            "draining": False,
+            "voice_session_active": False,
+            "voice_session_pending": False,
+            "active_operation": None,
+            "sleep_inhibited": False,
+            "reconcile_required": False,
+            "last_error_code": "",
+            "updated_epoch": 1,
+        },
+    )
     value.update(overrides)
     return value
 
@@ -657,6 +840,247 @@ def test_node_hello_refuses_future_or_unsafe_capabilities():
         )
 
 
+def test_workstation_protocol_v2_hello_is_strict_and_sanitized():
+    clean = LocalAIRuntime.validate_hello(_workstation_hello())
+    assert clean["protocol"] == 2
+    assert clean["workstation_version"] == "1.0.0"
+    assert clean["manager"]["mode"] == "idle"
+    assert clean["capabilities"]["direct_r2"] is True
+    without_r2 = _workstation_hello()
+    without_r2["capabilities"]["direct_r2"] = False
+    assert LocalAIRuntime.validate_hello(without_r2)["capabilities"]["direct_r2"] is False
+
+    unsafe = _workstation_hello()
+    unsafe["capabilities"] = {**unsafe["capabilities"], "shell": True}
+    with pytest.raises(ValueError, match="Workstation capabilities"):
+        LocalAIRuntime.validate_hello(unsafe)
+    with pytest.raises(ValueError, match="manager mode"):
+        LocalAIRuntime.validate_hello(_workstation_hello(manager={"mode": "unknown"}))
+
+
+def test_workstation_manager_mode_blocks_new_text_jobs():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        hello = _workstation_hello()
+        hello["manager"] = {**hello["manager"], "mode": "voice_coach"}
+        node = await runtime.register("node-1", socket, hello)
+
+        with pytest.raises(lmc_runtime.NodeUnavailableError, match="語音或維護"):
+            await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=node.fingerprint,
+                actor_id="member-1",
+                usage_user_id="member-1",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "new text job"}],
+                finish_callback=_noop_finish,
+            )
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_workstation_job_upload_handshake_and_terminal_result():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+        uploads = []
+        verified_uploads = []
+
+        async def authorize(job, media):
+            uploads.append((job.operation_id, media))
+            return {
+                "intent_id": "intent-1",
+                "upload_url": "https://r2.example.invalid/upload",
+                "headers": {"content-type": "audio/wav"},
+            }
+
+        async def verify_upload(job, result):
+            verified_uploads.append((job.operation_id, result))
+            return dict(result)
+
+        job = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="tts.session-1.turn-1",
+            job_kind="tts",
+            session_id="session-1",
+            turn_id="turn-1",
+            stage="synthesis",
+            payload={"text": "測試讀音"},
+            upload_callback=authorize,
+            upload_finish_callback=verify_upload,
+        )
+        assert socket.sent[-1]["type"] == "workstation.job.start"
+
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.started",
+            "operation_id": job.operation_id,
+        })
+        media = {
+            "mime_type": "audio/wav",
+            "size_bytes": 4096,
+            "sha256": "a" * 64,
+            "duration_ms": 800,
+        }
+        await runtime.handle_node_message(node, {
+            "type": "workstation.upload.request",
+            "operation_id": job.operation_id,
+            "media": media,
+        })
+        assert uploads == [(job.operation_id, media)]
+        assert socket.sent[-1] == {
+            "type": "workstation.upload.authorized",
+            "operation_id": job.operation_id,
+            "intent_id": "intent-1",
+            "upload_url": "https://r2.example.invalid/upload",
+            "headers": {"content-type": "audio/wav"},
+        }
+
+        result = {"intent_id": "intent-1", "uploaded": True}
+        await runtime.handle_node_message(node, {
+            "type": "workstation.upload.complete",
+            "operation_id": job.operation_id,
+            "result": result,
+        })
+        assert verified_uploads == [(job.operation_id, result)]
+        assert socket.sent[-1] == {
+            "type": "workstation.upload.verified",
+            "operation_id": job.operation_id,
+        }
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": job.operation_id,
+            "result": result,
+        })
+        assert await job.events.get() == ("started", {"job_kind": "tts"})
+        assert await job.events.get() == (
+            "complete",
+            {"result": result},
+        )
+        assert node.workstation_active is None
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_workstation_tts_cannot_finish_before_server_verifies_r2_output():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+
+        async def authorize(_job, _media):
+            return {"intent_id": "intent-1", "upload": {"url": "https://r2.invalid"}}
+
+        job = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="tts.unverified",
+            job_kind="tts",
+            session_id="session-1",
+            turn_id="turn-1",
+            stage="synthesis",
+            payload={"text": "測試"},
+            upload_callback=authorize,
+            upload_finish_callback=lambda _job, _result: None,
+        )
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": job.operation_id,
+            "result": {"output": {"intent_id": "intent-1"}},
+        })
+        assert await job.events.get() == (
+            "error",
+            {"message": "自家讀音上載尚未完成 server 驗證。"},
+        )
+        assert node.workstation_active is None
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
+def test_workstation_jobs_require_v2_and_voice_reservation_may_wait_for_text():
+    async def scenario():
+        legacy_runtime = LocalAIRuntime()
+        legacy_socket = _FakeWebSocket()
+        legacy = await legacy_runtime.register("legacy", legacy_socket, _hello())
+        with pytest.raises(lmc_runtime.NodeUnavailableError):
+            await legacy_runtime.submit_workstation(
+                node_id="legacy",
+                operation_id="reserve.legacy",
+                job_kind="voice.reserve",
+                session_id="session-1",
+                turn_id="",
+                stage="reserve",
+                payload={},
+            )
+        await legacy_runtime.unregister(legacy, "test cleanup")
+
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+        chat, _ = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-1",
+            usage_user_id="member-1",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "finish me first"}],
+            finish_callback=_noop_finish,
+        )
+        queued, position = await runtime.submit(
+            node_id="node-1",
+            expected_fingerprint=node.fingerprint,
+            actor_id="member-2",
+            usage_user_id="member-2",
+            operation_stage="member_chat",
+            messages=[{"role": "user", "content": "queued text"}],
+            finish_callback=_noop_finish,
+        )
+        assert position == 1
+        reserve = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="reserve.session-1",
+            job_kind="voice.reserve",
+            session_id="session-1",
+            turn_id="",
+            stage="reserve",
+            payload={},
+        )
+        assert await queued.events.get() == ("queued", {"position": 1})
+        assert (await queued.events.get())[0] == "error"
+        with pytest.raises(lmc_runtime.NodeUnavailableError):
+            await runtime.submit(
+                node_id="node-1",
+                expected_fingerprint=node.fingerprint,
+                actor_id="member-3",
+                usage_user_id="member-3",
+                operation_stage="member_chat",
+                messages=[{"role": "user", "content": "new text"}],
+                finish_callback=_noop_finish,
+            )
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": reserve.operation_id,
+            "result": {"reserved": True},
+        })
+        with pytest.raises(lmc_runtime.WorkstationBusyError, match="文字工作"):
+            await runtime.submit_workstation(
+                node_id="node-1",
+                operation_id="asr.session-1.turn-1",
+                job_kind="asr",
+                session_id="session-1",
+                turn_id="turn-1",
+                stage="transcribe",
+                payload={"download_url": "https://r2.example.invalid/audio"},
+            )
+        await runtime.cancel("node-1", chat)
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
 def test_node_hello_requires_current_model_profile_and_one_complete_model_set():
     assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 5
     assert LocalAIRuntime.validate_hello(_hello())["ready"] is True
@@ -677,6 +1101,11 @@ def test_node_hello_requires_current_model_profile_and_one_complete_model_set():
         model=gemma_models[0], models=gemma_models,
     ))
     assert clean["model"] == LMC_AI_FAST_MODEL_TAG
+
+    with pytest.raises(ValueError, match="runtime identity"):
+        LocalAIRuntime.validate_hello(_workstation_hello(
+            runtime="ollama", runtime_version="1.0.0",
+        ))
 
     assert '"model_profile_version": MODEL_PROFILE_VERSION' in NODE_SOURCE
 

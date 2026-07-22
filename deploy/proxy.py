@@ -95,7 +95,10 @@ from api.match_topic_release_api import router as match_topic_release_router
 from api.funds_api import router as funds_router
 from api.chairperson_api import router as chairperson_router
 from api.ai_coach_api import router as ai_coach_router
-from api.local_ai_practice_api import router as local_ai_practice_router
+from api.local_ai_practice_api import (
+    local_practice_media_retention_loop,
+    router as local_ai_practice_router,
+)
 from api.competition_prep_api import router as competition_prep_router
 from api.ai_training_api import router as ai_training_router
 from api.ai_factory_api import router as ai_factory_router
@@ -187,11 +190,19 @@ CACHE_BELL = "public, max-age=86400, must-revalidate"
 @asynccontextmanager
 async def _lifespan(_app):
     sync_task = None
+    local_practice_retention_task = asyncio.create_task(
+        local_practice_media_retention_loop(get_vote_db)
+    )
     if _get_proxy_secret("RENDER_API_KEY") and _get_proxy_secret("RENDER_SERVICE_ID"):
         sync_task = asyncio.create_task(_render_bandwidth_sync_loop())
     try:
         yield
     finally:
+        local_practice_retention_task.cancel()
+        try:
+            await local_practice_retention_task
+        except asyncio.CancelledError:
+            pass
         if sync_task is not None:
             sync_task.cancel()
             try:

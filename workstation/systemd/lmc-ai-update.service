@@ -1,0 +1,23 @@
+[Unit]
+Description=Verify, stage and health-gate a signed LMC AI Workstation update
+After=network-online.target lmc-ai-manager.service lmc-ai-privileged.service
+Wants=network-online.target
+Requires=lmc-ai-manager.service lmc-ai-privileged.service
+ConditionPathExists=/etc/lmc-ai-workstation/credentials/node-token
+
+[Service]
+Type=oneshot
+User=lmc-ai
+Group=lmc-ai
+WorkingDirectory=/opt/lmc-ai-workstation/current
+Environment=PYTHONPATH=/opt/lmc-ai-workstation/current
+ExecStart=/usr/bin/python3 -m workstation.scripts.workstationctl update-check
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/cache/lmc-ai-workstation /var/lib/lmc-ai-workstation /run/lmc-ai-workstation
+RestrictSUIDSGID=true
+LockPersonality=true
+TimeoutStartSec=40min

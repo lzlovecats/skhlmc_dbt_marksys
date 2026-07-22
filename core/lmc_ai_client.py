@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+import inspect
 from typing import Callable
 
 from ai_model_config import (
@@ -332,7 +333,6 @@ async def workstation_capabilities(db) -> dict:
         "asr": bool(ready and advertised.get("asr")),
         "local_tts": bool(ready and advertised.get("local_tts")),
         "rag": bool(ready and advertised.get("rag")),
-        "controlled_web_search": bool(ready and advertised.get("controlled_web_search")),
         "tts_training": bool(ready and advertised.get("tts_training")),
         "manager_mode": str(manager.get("mode") or "unavailable"),
         "voice_session_active": bool(manager.get("voice_session_active")),
@@ -350,6 +350,8 @@ async def _run_workstation_on_runtime_loop(
     stage: str,
     payload: dict,
     upload_callback=None,
+    upload_finish_callback=None,
+    on_stage=None,
 ) -> dict:
     try:
         job = await RUNTIME.submit_workstation(
@@ -361,6 +363,7 @@ async def _run_workstation_on_runtime_loop(
             stage=stage,
             payload=payload,
             upload_callback=upload_callback,
+            upload_finish_callback=upload_finish_callback,
         )
     except (NodeUnavailableError, WorkstationBusyError, ValueError) as exc:
         raise LocalAIError(str(exc)) from exc
@@ -374,6 +377,10 @@ async def _run_workstation_on_runtime_loop(
             if event == "error":
                 terminal = True
                 raise LocalAIError(str(event_payload.get("message") or "AI Workstation 未能完成今次工作。"))
+            if event == "stage" and on_stage is not None:
+                callback_result = on_stage(str(event_payload.get("stage") or ""))
+                if inspect.isawaitable(callback_result):
+                    await callback_result
     finally:
         if not terminal:
             await RUNTIME.cancel_workstation(node_id, job)
@@ -389,6 +396,8 @@ async def run_workstation_job(
     stage: str = "",
     payload: dict | None = None,
     upload_callback=None,
+    upload_finish_callback=None,
+    on_stage=None,
 ) -> dict:
     node_id, snapshot = await _selected_snapshot(db)
     if not node_id or not snapshot or snapshot.get("protocol", 0) < 2:
@@ -402,4 +411,6 @@ async def run_workstation_job(
         stage=stage,
         payload=dict(payload or {}),
         upload_callback=upload_callback,
+        upload_finish_callback=upload_finish_callback,
+        on_stage=on_stage,
     ))
