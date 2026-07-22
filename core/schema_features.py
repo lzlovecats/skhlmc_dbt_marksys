@@ -8,8 +8,7 @@ from dataclasses import dataclass
 
 from schema import (
     TABLE_AI_DATASET_SNAPSHOT_ITEMS, TABLE_AI_DATASET_SNAPSHOTS,
-    TABLE_AI_EVAL_CAMPAIGNS, TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_OUTPUTS,
-    TABLE_AI_EVAL_REVIEWS, TABLE_AI_FACTORY_ATTEMPTS, TABLE_AI_FACTORY_ITEMS,
+    TABLE_AI_FACTORY_ATTEMPTS, TABLE_AI_FACTORY_ITEMS,
     TABLE_AI_FACTORY_ITEM_TAGS, TABLE_AI_FACTORY_JOBS,
     TABLE_AI_FACTORY_RELEASE_ITEMS, TABLE_AI_FACTORY_RELEASES,
     TABLE_AI_FACTORY_SOURCES, TABLE_AI_FACTORY_TOPIC_TAGS,
@@ -55,14 +54,6 @@ FEATURE_CATALOG: dict[str, FeatureSchema] = {
     "lmc_ai": FeatureSchema(
         "20260720_0010", "active", (TABLE_LMC_AI_NODES,),
         "bounded node registry; conversation content remains browser-local",
-    ),
-    "eval": FeatureSchema(
-        "20260721_0002", "active",
-        (
-            TABLE_AI_EVAL_CASES, TABLE_AI_EVAL_CAMPAIGNS,
-            TABLE_AI_EVAL_OUTPUTS, TABLE_AI_EVAL_REVIEWS,
-        ),
-        "10 campaigns; terminal campaigns require export before explicit purge",
     ),
     "dataset_model": FeatureSchema(
         None, "disabled",

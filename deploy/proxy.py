@@ -104,7 +104,6 @@ from api.kiosk_api import router as kiosk_router, require_kiosk_user
 from api.projector_ai_api import router as projector_ai_router
 from api.community_api import router as community_router
 from api.lmc_ai_api import router as lmc_ai_router
-from api.lmc_ai_eval_api import router as lmc_ai_eval_router
 from api.access import (
     has_developer_session,
     interactive_features_suspension,
@@ -403,7 +402,6 @@ app.include_router(kiosk_router)
 app.include_router(projector_ai_router)
 app.include_router(community_router)
 app.include_router(lmc_ai_router)
-app.include_router(lmc_ai_eval_router)
 logger = logging.getLogger("skh_proxy")
 
 

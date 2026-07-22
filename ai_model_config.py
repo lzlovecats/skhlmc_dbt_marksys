@@ -46,15 +46,6 @@ LMC_AI_FEATURE_MODES = {
     "ai_coach": "daily",
 }
 
-# Phase-2 evaluation database rows retain their original immutable mode IDs;
-# this maps them onto the current three user-facing tiers.
-LMC_AI_EVAL_MODE_TIERS = {
-    "daily": "fast",
-    "complex": "daily",
-    "deep": "deep",
-}
-
-
 def resolve_lmc_ai_model_set(value: object = None) -> str:
     selected = str(value or LMC_AI_DEFAULT_MODEL_SET).strip().lower()
     return selected if selected in LMC_AI_MODEL_SETS else LMC_AI_DEFAULT_MODEL_SET
