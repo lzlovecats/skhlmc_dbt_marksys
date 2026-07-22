@@ -17,6 +17,8 @@
   let recordingStream = null;
   let recordingChunks = [];
   let recordingStopTimer = 0;
+  let asrWarmupPromise = null;
+  let asrWarmupController = null;
   let retryRecording = null;
   let acceptanceTurn = null;
   const messageMaximum = $("turnText").maxLength;
@@ -465,6 +467,12 @@
     recordingStream = null;
   }
 
+  function cancelAsrWarmup() {
+    asrWarmupController?.abort();
+    asrWarmupController = null;
+    asrWarmupPromise = null;
+  }
+
   async function submitRecordedBlob(blob, expectedTurn) {
     const maximum = Number(capabilities?.audio_max_bytes || 0);
     if (!blob.size || (maximum && blob.size > maximum)) {
@@ -510,6 +518,11 @@
     requestActive = true;
     $("stage").textContent = "轉錄中…";
     render();
+    if (asrWarmupPromise) {
+      await asrWarmupPromise.catch(() => null);
+      asrWarmupPromise = null;
+      asrWarmupController = null;
+    }
     let pollBusy = false;
     const poll = setInterval(async () => {
       if (pollBusy) return;
@@ -576,6 +589,7 @@
         if (event.data?.size) recordingChunks.push(event.data);
       };
       mediaRecorder.onerror = () => {
+        cancelAsrWarmup();
         stopRecordingTracks();
         showNotice("錄音失敗，請改用文字或再試。")
         render();
@@ -595,6 +609,15 @@
         }
       };
       mediaRecorder.start(1000);
+      asrWarmupController = new AbortController();
+      asrWarmupPromise = api("/api/ai-coach/local-practice/asr/warmup", {
+        method: "POST",
+        signal: asrWarmupController.signal,
+        body: JSON.stringify({
+          session_id: sessionId,
+          expected_turn: expectedTurn,
+        }),
+      }).catch(() => null);
       const maximumSeconds = Math.max(1, Number(capabilities?.audio_max_seconds || 180));
       recordingStopTimer = setTimeout(() => {
         if (mediaRecorder?.state === "recording") mediaRecorder.stop();
@@ -602,6 +625,7 @@
       showNotice("");
       render();
     } catch (_error) {
+      cancelAsrWarmup();
       stopRecordingTracks();
       showNotice("未能取得咪高峰權限，請改用文字。")
       render();

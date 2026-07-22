@@ -16,6 +16,7 @@ from system_limits import (
     WORKSTATION_VOICE_PROMPT_MAX_CHARS,
 )
 from workstation.version import WORKSTATION_PROTOCOL_VERSION, WORKSTATION_VERSION
+from workstation.remote_control import validate_remote_command
 
 
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}")
@@ -48,6 +49,33 @@ def advertised_capabilities(health: dict) -> dict:
     }
 
 
+def public_health_summary(health: dict) -> dict:
+    checks = health.get("checks") if isinstance(health, dict) else {}
+    checks = checks if isinstance(checks, dict) else {}
+    allowed = (
+        "os", "gpu", "memory", "disk", "power", "ollama", "asr", "rag",
+        "gpt_sovits", "gpt_sovits_training", "quota", "wss", "r2",
+    )
+    clean_checks = {}
+    for name in allowed:
+        source = checks.get(name) if isinstance(checks.get(name), dict) else {}
+        clean_checks[name] = {
+            key: value for key, value in source.items()
+            if key in {
+                "ok", "code", "name", "driver", "vram_total_mib",
+                "vram_used_mib", "temperature_c", "total_bytes", "used_bytes",
+                "free_bytes", "available_bytes", "backend",
+                "bundle_version", "models",
+            }
+            and isinstance(value, (bool, int, float, str, list))
+        }
+    return {
+        "healthy": bool(health.get("healthy")),
+        "checked_epoch": max(0, int(health.get("checked_epoch") or 0)),
+        "checks": clean_checks,
+    }
+
+
 def hello_frame(
     *,
     name: str,
@@ -57,6 +85,7 @@ def hello_frame(
     model_digests: dict[str, str],
     health: dict,
     manager: dict,
+    control: dict | None = None,
 ) -> dict:
     return {
         "type": "hello",
@@ -72,6 +101,8 @@ def hello_frame(
         "ready": bool(health.get("healthy")),
         "draining": bool(manager.get("draining")),
         "manager": dict(manager),
+        "health": public_health_summary(health),
+        "control": dict(control or {}),
         "capabilities": advertised_capabilities(health),
     }
 
@@ -88,7 +119,8 @@ def validate_server_job(value: object) -> dict:
     operation_id = str(value.get("operation_id") or "")
     job_kind = str(value.get("job_kind") or "")
     if not _ID_RE.fullmatch(operation_id) or job_kind not in {
-        "voice.reserve", "voice.release", "asr", "rag", "voice_text", "tts",
+        "voice.reserve", "voice.release", "asr.prepare", "asr", "rag",
+        "voice_text", "tts", "control",
     }:
         raise ValueError("invalid workstation job identity")
     payload = value.get("payload")
@@ -114,6 +146,10 @@ def validate_server_job(value: object) -> dict:
     elif job_kind == "voice.release":
         if payload:
             raise ValueError("voice release payload is invalid")
+        clean_payload = {}
+    elif job_kind == "asr.prepare":
+        if payload:
+            raise ValueError("ASR prepare payload is invalid")
         clean_payload = {}
     elif job_kind == "asr":
         if set(payload) != {"download", "mime_type", "file_ext"}:
@@ -176,13 +212,17 @@ def validate_server_job(value: object) -> dict:
         if total_chars > WORKSTATION_VOICE_PROMPT_MAX_CHARS:
             raise ValueError("Voice Coach prompt is too large")
         clean_payload = {"messages": clean_messages}
-    else:
+    elif job_kind == "tts":
         if set(payload) != {"text"}:
             raise ValueError("TTS payload is invalid")
         text = str(payload.get("text") or "").strip()
         if not text or len(text) > TTS_TEXT_MAX_CHARS:
             raise ValueError("TTS payload is invalid")
         clean_payload = {"text": text}
+    else:
+        if set(payload) != {"command"}:
+            raise ValueError("remote control payload is invalid")
+        clean_payload = {"command": validate_remote_command(payload["command"])}
     return {
         "operation_id": operation_id,
         "job_kind": job_kind,

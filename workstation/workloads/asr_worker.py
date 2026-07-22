@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned Faster-Whisper worker; invoked only by the Manager adapter."""
+"""Isolated official Qwen3-ASR worker invoked by the Manager adapter."""
 
 from __future__ import annotations
 
@@ -26,54 +26,79 @@ def _write(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def _transcribe(model, audio_path: Path) -> dict:
+    results = model.transcribe(audio=str(audio_path), language="Cantonese")
+    result = results[0] if results else None
+    transcript = str(getattr(result, "text", "") or "").strip()
+    if not transcript:
+        return {"ok": False, "code": "empty_transcript"}
+    if len(transcript) > LOCAL_PRACTICE_CONTEXT_MAX_CHARS:
+        raise ValueError("transcript too long")
+    return {
+        "ok": True,
+        "text": transcript,
+        "language": str(
+            getattr(result, "language", "Cantonese") or "Cantonese"
+        )[:40],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--audio", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--audio", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--serve", action="store_true")
     parser.add_argument("--device", choices=("cuda", "cpu"), required=True)
-    parser.add_argument("--compute-type", required=True)
+    parser.add_argument(
+        "--compute-type",
+        choices=("float16", "bfloat16", "float32"),
+        required=True,
+    )
     arguments = parser.parse_args()
     try:
         model_path = arguments.model.resolve(strict=True)
-        audio_path = arguments.audio.resolve(strict=True)
-        if not model_path.is_dir() or not audio_path.is_file():
+        if (
+            arguments.model.is_symlink()
+            or not model_path.is_dir()
+            or not (model_path / "config.json").is_file()
+        ):
             raise ValueError("local ASR input is invalid")
-        from faster_whisper import WhisperModel
 
-        model = WhisperModel(
+        import torch
+        from qwen_asr import Qwen3ASRModel
+
+        model = Qwen3ASRModel.from_pretrained(
             str(model_path),
-            device=arguments.device,
-            compute_type=arguments.compute_type,
+            dtype=getattr(torch, arguments.compute_type),
+            device_map="cuda:0" if arguments.device == "cuda" else "cpu",
             local_files_only=True,
+            max_inference_batch_size=1,
+            max_new_tokens=LOCAL_PRACTICE_CONTEXT_MAX_CHARS,
         )
-        segments, info = model.transcribe(
-            str(audio_path),
-            language="zh",
-            beam_size=5,
-            vad_filter=True,
-            condition_on_previous_text=True,
-        )
-        parts = []
-        for segment in segments:
-            text = str(getattr(segment, "text", "") or "").strip()
-            if text:
-                parts.append(text)
-            if len("".join(parts)) > LOCAL_PRACTICE_CONTEXT_MAX_CHARS:
-                raise ValueError("transcript too long")
-        transcript = "".join(parts).strip()
-        if not transcript:
-            _write(arguments.output, {"ok": False, "code": "empty_transcript"})
-            return 2
-        _write(arguments.output, {
-            "ok": True,
-            "text": transcript,
-            "language": str(getattr(info, "language", "zh") or "zh")[:20],
-            "language_probability": float(
-                getattr(info, "language_probability", 0) or 0
-            ),
-        })
-        return 0
+        if arguments.serve:
+            print("READY", flush=True)
+            raw = sys.stdin.buffer.readline(4_097)
+            if not raw.endswith(b"\n") or len(raw) > 4_096:
+                raise ValueError("ASR worker command is invalid")
+            command = json.loads(raw)
+            if not isinstance(command, dict) or set(command) != {"audio", "output"}:
+                raise ValueError("ASR worker command is invalid")
+            audio_path = Path(str(command["audio"])).resolve(strict=True)
+            output_path = Path(str(command["output"]))
+        else:
+            if arguments.audio is None or arguments.output is None:
+                raise ValueError("ASR audio and output are required")
+            audio_path = arguments.audio.resolve(strict=True)
+            output_path = arguments.output
+        if (
+            not audio_path.is_file()
+            or output_path.parent.resolve(strict=True) != audio_path.parent
+        ):
+            raise ValueError("local ASR input is invalid")
+        result = _transcribe(model, audio_path)
+        _write(output_path, result)
+        return 0 if result.get("ok") else 2
     except Exception as exc:
         marker = str(exc).casefold()
         code = (
@@ -81,10 +106,12 @@ def main() -> int:
             if any(value in marker for value in ("out of memory", "cuda", "oom"))
             else "asr_failed"
         )
-        try:
-            _write(arguments.output, {"ok": False, "code": code})
-        except OSError:
-            pass
+        output = locals().get("output_path") or arguments.output
+        if output is not None:
+            try:
+                _write(output, {"ok": False, "code": code})
+            except OSError:
+                pass
         return 2
 
 

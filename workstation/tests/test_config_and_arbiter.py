@@ -63,17 +63,20 @@ def test_config_state_and_secrets_reject_symlinks_or_oversize_files(tmp_path):
         StateStore(state).load()
 
 
-def test_asr_cannot_be_enabled_before_real_benchmark_choice(tmp_path):
+def test_asr_requires_an_absolute_local_model_and_supported_qwen_dtype(tmp_path):
     value = _config(tmp_path)
-    value["workloads"] = {"asr": {"enabled": True, "model": "candidate", "benchmark_approved": False}}
-    with pytest.raises(ConfigError, match="benchmark-approved"):
-        parse_config(value)
-    value["workloads"]["asr"].update({
-        "benchmark_approved": True,
-        "runtime_python": str(tmp_path / "asr-runtime/bin/python"),
-    })
+    value["workloads"] = {"asr": {"enabled": True, "model": "candidate"}}
     with pytest.raises(ConfigError, match="absolute local path"):
         parse_config(value)
+    value["workloads"]["asr"].update({
+        "model": str(tmp_path / "Qwen3-ASR-1.7B"),
+        "compute_type": "int8",
+        "runtime_python": str(tmp_path / "asr-runtime/bin/python"),
+    })
+    with pytest.raises(ConfigError, match="compute_type"):
+        parse_config(value)
+    value["workloads"]["asr"]["compute_type"] = "bfloat16"
+    assert parse_config(value).workloads.asr.compute_type == "bfloat16"
 
 
 def test_voice_waits_for_started_text_then_blocks_new_text(tmp_path):

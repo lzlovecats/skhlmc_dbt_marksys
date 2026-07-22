@@ -11,7 +11,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketDisconnect
 
 from ai_model_config import (
@@ -58,6 +58,10 @@ from system_limits import (
     WORKSTATION_R2_HEALTH_PROBE_BYTES,
     WORKSTATION_UPDATE_MANIFEST_MAX_BYTES,
 )
+from workstation.remote_control import (
+    REMOTE_CONTROL_MIN_WORKSTATION_VERSION,
+    validate_remote_command,
+)
 from version import APP_VERSION, REQUIRED_SCHEMA_MIGRATION
 
 
@@ -95,6 +99,11 @@ class ChatRequest(BaseModel):
 
 class NodeCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=LMC_AI_NODE_NAME_MAX_CHARS)
+
+
+class WorkstationControlBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: dict
 
 
 class WorkstationR2ProbeStart(BaseModel):
@@ -628,6 +637,48 @@ async def developer_revoke_lmc_ai_node(node_id: str, request: Request):
         raise HTTPException(503, str(exc)) from exc
     await RUNTIME.disconnect_node(node_id, "AI 電腦已被撤銷。")
     return {"ok": True}
+
+
+@router.post("/api/developer/lmc-ai/nodes/{node_id}/control")
+async def developer_control_lmc_ai_node(
+    node_id: str, body: WorkstationControlBody, request: Request,
+):
+    _developer_required(request)
+    try:
+        command = validate_remote_command(body.command)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        configured = await asyncio.to_thread(get_workstation_id, _db())
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if not configured or str(configured) != str(node_id):
+        raise HTTPException(404, "AI Workstation does not exist.")
+    runtime = await RUNTIME.snapshot(node_id)
+    version_match = re.fullmatch(
+        r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+][A-Za-z0-9.-]+)?",
+        str((runtime or {}).get("workstation_version") or ""),
+    )
+    if not runtime or not version_match or tuple(
+        int(value) for value in version_match.groups()
+    ) < REMOTE_CONTROL_MIN_WORKSTATION_VERSION:
+        raise HTTPException(
+            409, "請先將 AI Workstation 更新至支援 remote control 嘅版本。"
+        )
+    from core.lmc_ai_client import LocalAIError, run_workstation_job
+
+    try:
+        result = await run_workstation_job(
+            _db(),
+            operation_id=f"control.{uuid.uuid4().hex}",
+            job_kind="control",
+            session_id="remote-control",
+            stage=command["action"],
+            payload={"command": command},
+        )
+    except LocalAIError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"ok": True, "result": result}
 
 
 @router.websocket("/api/lmc-ai/nodes/connect")

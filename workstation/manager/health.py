@@ -24,7 +24,7 @@ from system_limits import (
     WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS,
 )
 from workstation.config import WorkstationConfig
-from workstation.workloads.asr import FasterWhisperAdapter
+from workstation.workloads.asr import Qwen3AsrAdapter
 from workstation.workloads.dataset_preparation import DatasetPreparationAdapter
 from workstation.workloads.gpt_sovits import GptSoVitsAdapter
 from workstation.workloads.ollama import OllamaAdapter
@@ -42,7 +42,7 @@ class HealthRunner:
     def __init__(self, config: WorkstationConfig):
         self.config = config
         self.ollama = OllamaAdapter(config.workloads.ollama)
-        self.asr = FasterWhisperAdapter(config.workloads.asr)
+        self.asr = Qwen3AsrAdapter(config.workloads.asr)
         self.rag = LocalRagIndex(config.workloads.rag, self.ollama)
         self.gpt_sovits = GptSoVitsAdapter(config.workloads.gpt_sovits)
         self.dataset_preparation = DatasetPreparationAdapter(config.paths.data)
@@ -103,17 +103,19 @@ class HealthRunner:
             ).encode()
         )
         for path in (
-            self.config.workloads.asr.benchmark_report,
-            self.config.workloads.asr.runtime_provenance,
-            self.config.workloads.asr.approval_receipt,
+            self.config.workloads.asr.runtime_python,
+            Path(self.config.workloads.asr.model) / "config.json",
         ):
             try:
-                digest.update(path.read_bytes())
+                stat = path.stat()
+                digest.update(f"{stat.st_size}\0{stat.st_mtime_ns}".encode())
             except OSError:
                 digest.update(b"missing")
         return digest.hexdigest()
 
     def _ollama_health(self) -> dict:
+        if not self.config.workloads.ollama.enabled:
+            return {"ok": False, "code": "disabled"}
         required = tuple(lmc_ai_required_models())
         status = self.ollama.health(required)
         if not status.get("ok"):
@@ -494,7 +496,9 @@ class HealthRunner:
                 ),
             ),
         }
-        base = ("os", "gpu", "memory", "disk", "power", "ollama")
+        base = ("os", "gpu", "memory", "disk", "power")
+        if self.config.workloads.ollama.enabled:
+            base = (*base, "ollama")
         if full:
             probes = self._full_probes(
                 set_gpt_service=set_gpt_service,

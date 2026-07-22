@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException, Request
 
+import ai_name
 from api import local_ai_practice_api
 from core import funds_logic
 from core.local_ai_practice import (
@@ -276,6 +277,10 @@ def test_local_practice_ui_and_server_contracts_are_wired():
 
     assert 'data-pane="localPractice"' in coach
     assert 'id="localPracticeForm"' in coach
+    assert "__LMC_AI_PRACTICE_LABEL__" in coach
+    assert "__LMC_AI_PRACTICE_LABEL__" in page
+    assert "與自家AI練習" not in coach
+    assert "與自家AI練習" not in page
     assert "自家AI將會使用「快速回覆」模式。" in coach
     assert 'api("/api/ai-coach/local-practice/start"' in parity
     assert 'location.href = `/ai-coach/local-practice?session=' in parity
@@ -614,7 +619,10 @@ def test_local_tts_is_uploaded_directly_by_workstation_and_cached(monkeypatch):
 
 
 def test_local_practice_has_an_explicit_usage_feature():
-    assert funds_logic.AI_FEATURE_LABELS["local_ai_practice"] == "與自家AI練習"
+    assert (
+        funds_logic.AI_FEATURE_LABELS["local_ai_practice"]
+        == ai_name.LMC_AI_PRACTICE_LABEL
+    )
     assert "local_ai_practice" in funds_logic.AI_USAGE_FEATURES
     frontend = (ROOT / "frontend/local_ai_practice/app.js").read_text()
     assert 'r2_upload: "正在直接上載自家讀音…"' in frontend

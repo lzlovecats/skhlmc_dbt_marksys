@@ -15,7 +15,7 @@ RAG 同自家 TTS 會按獨立 acceptance gate 逐步啟用。Ollama Web Search 
 
 - `workstation/manager/`：mode arbitration、durable reconciliation、health、power 及 IPC；
 - `workstation/node/`：protocol v2 authenticated outbound WSS；
-- `workstation/workloads/`：Ollama、benchmark-gated ASR、local RAG、GPT-SoVITS 同
+- `workstation/workloads/`：Ollama、官方 Qwen3-ASR、local RAG、GPT-SoVITS 同
   direct-R2 transfer；
 - `workstation/privileged_helper/`：只接受固定 schema 嘅 suspend、idle reboot、
   allowlisted service restart、配對、排程及 verified release switch；
@@ -67,8 +67,8 @@ credential，再另行獲授權套用 migration／deploy。唔好直接批量改
   一次性 node token；唔好預先將 token 放入 repo、筆記或 shell history；
 - 遙距管理：Tailscale tailnet admin／ACL 已準備，Mac 已安裝 Windows App，並有一個
   Ubuntu Desktop admin 帳戶。RDP credential 要同 Linux 日常 password 不同；
-- AI artifacts：signed Ollama model inventory、離線 ASR runtime wheelhouse／model／廣東話
-  benchmark corpus、固定 GPT-SoVITS upstream及 license/provenance、已 review/publish 嘅
+- AI artifacts：signed Ollama model inventory、Qwen3-ASR-1.7B 本地 model、固定
+  GPT-SoVITS upstream及 license/provenance、已 review/publish 嘅
   signed RAG bundle；
 - 雲端整合：網站端 node、private R2、WSS、release artifact endpoint 已在獲授權環境
   provision。Workstation 只收短期 signed URL，唔保存長期 R2 secret；
@@ -90,14 +90,14 @@ credential，再另行獲授權套用 migration／deploy。唔好直接批量改
    唔好開放 production 工作；
 6. **安裝及審批現階段 AI**：只裝 signed inventory 內嘅 Ollama model，完成 Gemma
    fast／daily／deep preflight。ASR、GPT-SoVITS 同 RAG 只喺啟用相應後續階段時，先做
-   benchmark、blind-listening approval 或 signed bundle atomic activation；
+   functional health、blind-listening approval 或 signed bundle atomic activation；
 7. **設定電源**：按第 5 節設定每日 suspend／RTC wake；有人在場做一次 active-job
    delay、真正 suspend、RTC wake及 WSS reconnect；
 8. **跑階段驗收**：基本文字服務按第 9 節產生 Ubuntu evidence，同完成 text latency、
    RDP、斷電、故障注入、update/rollback、retention 同 privacy smoke。Voice、RAG、ASR
    或 TTS report 只喺準備啟用相應 capability 時加入；
 9. **先驗收、後啟用**：全部 gate 合格先開放唯一 Workstation 接單；保存 evidence、
-   benchmark、簽署 manifest、版本及操作者紀錄。Production migration、deploy、secret、
+   functional-health、簽署 manifest、版本及操作者紀錄。Production migration、deploy、secret、
    artifact publish 或 driver change仍然要逐項另行授權。
 
 ### 0.3 Go-live gate
@@ -112,7 +112,8 @@ credential，再另行獲授權套用 migration／deploy。唔好直接批量改
 - 準備啟用 Voice／RAG／ASR／TTS 時，先額外要求相應 direct-R2、functional health、
   retention、privacy gate，同由 `verify_voice_latency` 接受至少 20 個全部成功嘅 local
   warm turns；
-- 網站顯示唯一 Workstation online及正確 capabilities，「與自家AI練習」以使用者正／反方各
+- 網站顯示唯一 Workstation online及正確 capabilities，「同{LMC_AI_NAME}練習」（名稱由
+  `ai_name.py` 唯一來源產生）以使用者正／反方各
   完成一節，正方先行、fallback及完場評語都正確；
 - logs、diagnostic bundle、browser report同 evidence 冇 token、signed URL、錄音、
   transcript或其他會員資料；
@@ -152,8 +153,8 @@ App update失敗用第 7 節 signed previous-release rollback；模型、RAG、d
      --envelope workstation_release_stable.json \
      --public-key release-signing-public-key.pem \
      --component deb_package \
-     --artifact lmc-ai-workstation_1.0.0_amd64.deb
-   sudo apt install ./lmc-ai-workstation_1.0.0_amd64.deb
+     --artifact lmc-ai-workstation_1.1.0_amd64.deb
+   sudo apt install ./lmc-ai-workstation_1.1.0_amd64.deb
    sudo /opt/lmc-ai-workstation/current/workstation/scripts/preflight_ubuntu.sh
    ```
 
@@ -217,56 +218,52 @@ ss -ltn | grep -E ':(11434|8765|9880|3389)\b'
    下載；完成後逐一重查 digest。安裝程式、開機、health、普通網站 request 都唔會
    pull model。Ollama 固定只聽 `127.0.0.1:11434`，模型放
    `/srv/lmc-ai/models/ollama`；
-4. ASR 必須先用真實廣東話 benchmark corpus 比較準確度、標點、辯論詞、latency
-   同 VRAM。複製 `workstation/config/asr_benchmark_corpus.example.json`，替換成人工
-   校對錄音／逐字稿；corpus 必須包括 `cantonese`、`english`、`numbers`、
-   `debate_terms`、`background_noise`、`short`、`long` 全部 category。候選模型只可
-   係已存在嘅本地目錄，工具唔會下載模型或改 config：
-
-   ASR library 亦唔裝入 Ubuntu system Python。Developer 先喺可上網嘅隔離環境取得及
-   hash-lock 經 review 嘅 faster-whisper／CUDA wheelhouse，離線建立
-   `/srv/lmc-ai/vendor/asr-runtime`，保存 `pip freeze` 同 wheel SHA-256；並寫
-   `PROVENANCE.json`，exact fields 係 `schema_version: 1`、`python_version`、
-   `pip_freeze_sha256`、`wheelhouse_manifest_sha256`。唔可以由
-   Workstation request-time 安裝。用該 pinned interpreter 跑 benchmark：
+4. `.deb` **唔會自動安裝 ASR runtime 或下載 model**。要啟用時，Developer 經
+   Tailscale SSH／RDP 明確建立獨立 Python environment，再安裝 repository 固定嘅官方
+   `qwen-asr` package；唔裝入 Ubuntu system Python，亦唔容許普通 request／開機自動
+   `pip install`：
 
    ```bash
-   sudo -u lmc-ai env PYTHONPATH=/opt/lmc-ai-workstation/current \
-     /srv/lmc-ai/vendor/asr-runtime/bin/python \
-     -m workstation.scripts.benchmark_asr \
-     --corpus /srv/lmc-ai/asr-benchmark/corpus.json \
-     --candidate medium=/srv/lmc-ai/models/asr/candidate-medium \
-     --candidate small=/srv/lmc-ai/models/asr/candidate-small \
-     --output /var/lib/lmc-ai-workstation/asr-benchmark-report.json
+   sudo apt install python3-venv
+   sudo install -d -o lmc-ai -g lmc-ai -m 0750 \
+     /srv/lmc-ai/vendor/asr-runtime /srv/lmc-ai/models/asr
+   sudo -u lmc-ai python3 -m venv /srv/lmc-ai/vendor/asr-runtime
+   sudo -u lmc-ai /srv/lmc-ai/vendor/asr-runtime/bin/pip install \
+     -r /opt/lmc-ai-workstation/current/workstation/requirements-asr.txt
    ```
 
-   Developer 人手比較 CER、punctuation F1、keyword accuracy、p50/p95 latency、real-time
-   factor 同 peak VRAM，保存批准紀錄後，明確建立模型審批 receipt：
+   另行將官方 `Qwen/Qwen3-ASR-1.7B` 完整下載／複製到例如
+   `/srv/lmc-ai/models/asr/Qwen3-ASR-1.7B`；runtime 只接受絕對本地目錄，並以
+   `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1` 運行，唔會 request-time 補下載。
+   Workstation 唔再維護自製 accuracy benchmark、corpus 或 approval receipt；轉 model
+   只需先安裝另一個完整本地 model 目錄，再改
+   `/etc/lmc-ai-workstation/config.json` 內 `workloads.asr.model`。設定示例：
 
-   ```bash
-   sudo -u lmc-ai env PYTHONPATH=/opt/lmc-ai-workstation/current \
-     /usr/bin/python3 -m workstation.scripts.approve_asr_profile \
-     --model /srv/lmc-ai/models/asr/candidate-medium \
-     --runtime-python /srv/lmc-ai/vendor/asr-runtime/bin/python \
-     --runtime-provenance /srv/lmc-ai/vendor/asr-runtime/PROVENANCE.json \
-     --benchmark-report /var/lib/lmc-ai-workstation/asr-benchmark-report.json \
-     --device cuda --compute-type float16
+   ```json
+   {
+     "enabled": true,
+     "model": "/srv/lmc-ai/models/asr/Qwen3-ASR-1.7B",
+     "device": "cuda",
+     "compute_type": "float16",
+     "runtime_python": "/srv/lmc-ai/vendor/asr-runtime/bin/python"
+   }
    ```
 
-   指令拒絕 model symlink，hash 全個 model tree、runtime interpreter、provenance 同
-   benchmark report。先將獲批絕對 model path、`runtime_python`、
-   `runtime_provenance`、`approval_receipt`、上述 `benchmark_report` 寫入 config 並設
-   `benchmark_approved=true`；Manager 會核對所選 model/device/compute profile 確實存在
-   於該 report；平常 health 驗完整 file inventory/size/mtime，每六小時 full health
-   重算 SHA-256，任何 drift 都 fail closed。report、receipt 或 runtime provenance 改變
-   亦會令舊 functional-health receipt 失效。
-   Manager 會為每次 ASR
-   啟動呢個 pinned worker，完成即退出並釋放 CUDA context；
-   另外準備一段經人工核對、無會員／個人資料嘅短廣東話 canary，放成
+   Manager 固定使用 `language="Cantonese"`、batch 1。「同{LMC_AI_NAME}練習」開始錄音
+   後會背景預載官方 Qwen worker；送出錄音時沿用同一個已載入 worker，完成即退出並
+   釋放 CUDA context。預載被取消、voice session 結束或 240 秒冇收到錄音亦會強制
+   卸載，之後 LLM／TTS 先可取得唯一 GPU lease。仍要準備一段經人工核對、無會員／
+   個人資料嘅短廣東話
+   canary，放成
    `/srv/lmc-ai/health/asr-cantonese.wav`，並將必須出現嘅正確文字放成同目錄
    `asr-cantonese.txt`。`/srv/lmc-ai/health` 由 root 擁有；用 Desktop admin 經 sudo
    寫入後設 root:`lmc-ai`、mode 0640，唔可以由 runtime request 改。Full health 會真實
-   轉錄並比較 normalized expected text；缺檔或唔吻合即撤銷 ASR release health；
+   轉錄並比較 normalized expected text；缺檔或唔吻合即撤銷 ASR capability。改完設定後：
+
+   ```bash
+   sudo systemctl restart lmc-ai-manager.service lmc-ai-node.service
+   sudo -u lmc-ai /usr/bin/python3 -m workstation.scripts.workstationctl full-health
+   ```
 5. GPT-SoVITS upstream 必須固定 commit/release、保存 license/provenance，依
    `docs/AI_TRAINING_RUNBOOK.md` 準備 dataset。GUI 訓練會按準備器已產生嘅
    `recommended_config.json`，順序做 text/BERT、HuBERT/32k、v2Pro speaker vector、
@@ -275,6 +272,12 @@ ss -ltn | grep -E ':(11434|8765|9880|3389)\b'
    `auto_activated:false`，唔會自動轉 production 聲線。人工 blind listening、讀音集、
    latency 同 consent gate 合格後，Developer 先明確執行：
 
+   一次完整訓練產生嘅 GPT `.ckpt` 同 SoVITS `.pth` 係同一把聲嘅必要 pair；兩個檔要
+   來自同一個 run，而且要同目前固定嘅 `v2Pro` runtime 相容。兩個 checkpoint 本身未夠
+   啟用，仲需要固定 upstream/base models、reference WAV、對應 reference text、inference
+   config 同 full-health 真實合成。舊 checkpoint family／runtime 未知時唔好直接當可用；
+   先保留原檔，再用下面 activation command 同 full health 驗證。
+
    ```bash
    sudo -u lmc-ai env PYTHONPATH=/opt/lmc-ai-workstation/current \
      /usr/bin/python3 -m workstation.scripts.approve_gpt_sovits_voice \
@@ -282,6 +285,7 @@ ss -ltn | grep -E ':(11434|8765|9880|3389)\b'
      --sovits-weight /srv/lmc-ai/checkpoints/<dataset-id>/<approved>.pth \
      --reference-audio /srv/lmc-ai/models/gpt-sovits/reference.wav \
      --reference-text /srv/lmc-ai/models/gpt-sovits/reference.txt \
+     --output-root /srv/lmc-ai/models/gpt-sovits/voices/<internal-approved-version> \
      --model-version <internal-approved-version>
    ```
 
@@ -291,6 +295,41 @@ ss -ltn | grep -E ':(11434|8765|9880|3389)\b'
    full health 重新計 SHA-256。唔可以由 request-time clone/pull／訓練／啟用；
 6. RAG bundle 必須由網站 review/publish，Workstation 驗 signature/hash 後 build
    新 index，成功先原子切換 `current`；失敗保留上一版。
+
+### 4.1 網站 remote full control
+
+Developer page 會經同一條 outbound WSS 顯示 health、GPU/VRAM/溫度、目前 models、
+Manager mode、active operation、power schedule、已安裝 ASR model ID、TTS voice ID 同
+content-free audit。可執行嘅動作固定係：
+
+首次由 Workstation 1.0.x 升到 1.1.0，舊 Node 本身未識 remote-control job，必須先經
+舊 localhost GUI／Tailscale SSH 完成一次 signed update；網站會拒絕向 1.0.x 假裝發送
+remote action。1.1.0 上線並回報新 version 後，先可由網站控制之後嘅 update／rollback。
+
+- drain、resume、取消目前 operation、ack restart reconciliation、full health；
+- restart allowlisted Node／GUI／Ollama／GPT-SoVITS service、reboot、signed app
+  update／previous-release rollback、每日 suspend/wake schedule；
+- 開關 LLM／ASR／RAG／TTS，並只可選擇 `/srv/lmc-ai/models/asr/<id>` 或已存在
+  `active-receipt.json` 嘅 TTS voice ID；
+- inspect／安裝 signed Ollama model inventory、inspect／安裝／rollback signed RAG bundle。
+
+網站 request schema 唔接受 shell、package 名、URL、local path、checkpoint path 或任意
+service。ASR runtime/model 同 TTS voice 仍然要先由 Developer 經 SSH／RDP 按本節安裝／
+人工批准；remote page 只可啟用及切換已安裝 ID，唔會 request-time `pip install`、下載
+公開 model 或自動啟用剛訓練 checkpoint。
+
+Workload 設定變更會先 drain；有 active voice／training／text operation 時回覆 busy，
+由 Developer 等完成或明確取消，唔會強制搶 GPU。空閒後 root helper 先保存上一份 typed
+config、由 ID 解出固定 managed path、原子寫入，再跑 full health。任何 health gate 失敗
+會即時 swap 回上一份 config、再跑舊設定 health，並保持 draining 供檢查；成功先按變更前
+狀態 resume。每次 remote action 只在
+`/var/lib/lmc-ai-workstation/remote-control-audit.json` 保存時間、action、outcome、error code，
+最多 200 項；唔保存 prompt、錄音、transcript、token、URL 或 path。
+
+網站 remote control 唔取代 Tailscale SSH／RDP：BIOS、driver/kernel、無網絡、system hang、
+GPU black screen、磁碟／硬件故障同首次 model/runtime 安裝仍然要 remote desktop、SSH 或
+現場處理。觸發 reboot／Node restart 後 WSS 會短暫斷線；以新 heartbeat、health 同 audit
+確認結果，唔好因 browser request 中途斷開就重複觸發。
 
 ## 5. Manager mode 與電源
 
@@ -316,6 +355,10 @@ sudo /opt/lmc-ai-workstation/current/workstation/scripts/diagnostic.sh
 Manager restart 時任何未有 terminal ACK 的 operation 會標成 `interrupted`，進入
 `faulted`／drain；先核對網站 job 狀態、R2 intent 及 GPU process，才在 GUI 確認
 reconciliation。唔可以直接當成功或重跑同一 operation ID。
+
+日常操作優先用網站 Developer page；CLI 係 WSS／網站 control plane 唔可用時嘅
+Tailscale SSH 後備。網站顯示嘅 profile selector只列 ID，任何出現任意 path／URL／
+package input 嘅畫面都唔屬於本 runbook 定義嘅安全介面，應立即停止使用並 drain。
 
 GUI 詳細狀態嘅 `recent_operations[].timings_ms` 只保存 bounded 數值，不保存 prompt、
 錄音、逐字稿或 signed URL。真機 latency sign-off 要用呢啲 stage：`r2_download`、

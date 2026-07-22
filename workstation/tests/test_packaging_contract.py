@@ -168,6 +168,19 @@ def test_runtime_uses_ubuntu_python_packages_without_install_time_pip():
     assert '"additional_headers"' in node
 
 
+def test_asr_uses_the_pinned_official_qwen_package_without_deb_auto_install():
+    asr_requirements = (
+        ROOT / "workstation/requirements-asr.txt"
+    ).read_text()
+    postinst = (
+        ROOT / "workstation/packaging/debian/postinst"
+    ).read_text()
+    runbook = (ROOT / "docs/AI_WORKSTATION_RUNBOOK.md").read_text()
+    assert "qwen-asr==0.0.6" in asr_requirements
+    assert "requirements-asr.txt" not in postinst
+    assert ".deb` **唔會自動安裝 ASR runtime 或下載 model**" in runbook
+
+
 def test_runbook_has_machine_and_browser_acceptance_evidence_commands():
     runbook = (ROOT / "docs/AI_WORKSTATION_RUNBOOK.md").read_text()
     assert not (ROOT / "docs/workstation_plan.md").exists()

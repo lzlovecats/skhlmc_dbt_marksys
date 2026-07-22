@@ -4,6 +4,6 @@ The website release remains owned by :mod:`version`.  This separate version is
 the immutable Workstation application release advertised by node protocol v2.
 """
 
-WORKSTATION_VERSION = "1.0.0"
+WORKSTATION_VERSION = "1.1.0"
 WORKSTATION_PROTOCOL_VERSION = 2
 WORKSTATION_CONFIG_SCHEMA_VERSION = 1

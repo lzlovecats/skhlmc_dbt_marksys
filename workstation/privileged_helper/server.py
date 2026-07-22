@@ -33,6 +33,7 @@ from workstation.manager.release_manifest import verify_envelope, verify_release
 from workstation.manager.update import _application_version, _safe_extract
 from workstation.privileged_helper.protocol import PrivilegedRequestError, validate_request
 from workstation.workloads.errors import WorkloadError
+from workstation.remote_control import resolve_workload_paths
 from system_limits import (
     WORKSTATION_PAIR_CONNECT_TIMEOUT_SECONDS,
     WORKSTATION_RELEASE_ARCHIVE_MAX_BYTES,
@@ -353,7 +354,11 @@ class PrivilegedHelper:
             subprocess.run(["systemctl", "suspend"], check=True, timeout=30)
             return {"ok": True}
         if action == "reboot":
-            subprocess.run(["systemctl", "reboot"], check=True, timeout=30)
+            subprocess.run(
+                ["systemctl", "--no-block", "reboot"],
+                check=True,
+                timeout=30,
+            )
             return {"ok": True}
         if action == "trigger_update":
             subprocess.run(
@@ -371,7 +376,11 @@ class PrivilegedHelper:
             return {"ok": True}
         if action == "restart_service":
             self._require_manager_idle(allow_draining=True)
-            subprocess.run(["systemctl", "restart", request["service"]], check=True, timeout=60)
+            subprocess.run(
+                ["systemctl", "--no-block", "restart", request["service"]],
+                check=True,
+                timeout=30,
+            )
             return {"ok": True}
         if action == "set_service_state":
             subprocess.run(
@@ -415,6 +424,63 @@ class PrivilegedHelper:
                 gid=self.service_gid,
             )
             return {"ok": True, "until_epoch": request["until_epoch"]}
+        if action == "set_workloads":
+            self._require_manager_idle(allow_draining=True)
+            current_config = load_config(self.config_path)
+            resolved = resolve_workload_paths(
+                current_config,
+                asr_model_id=request["asr_model_id"],
+                tts_voice_id=request["tts_voice_id"],
+            )
+            _atomic_json(
+                current_config.paths.state / "workloads-config-backup.json",
+                config,
+                mode=0o600,
+                uid=0,
+                gid=self.service_gid,
+            )
+            workloads = config.setdefault("workloads", {})
+            workloads.setdefault("ollama", {})["enabled"] = request["llm_enabled"]
+            asr = workloads.setdefault("asr", {})
+            asr["enabled"] = request["asr_enabled"]
+            if request["asr_model_id"]:
+                asr["model"] = resolved["asr_model"]
+            workloads.setdefault("rag", {})["enabled"] = request["rag_enabled"]
+            tts = workloads.setdefault("gpt_sovits", {})
+            tts["enabled"] = request["tts_enabled"]
+            if request["tts_voice_id"]:
+                tts.update(resolved["tts"])
+            parse_config(config)
+            _atomic_json(
+                self.config_path, config, mode=0o640, uid=0,
+                gid=self.service_gid,
+            )
+            return {"ok": True}
+        if action == "rollback_workloads":
+            self._require_manager_idle(allow_draining=True)
+            config_value = load_config(self.config_path)
+            backup = config_value.paths.state / "workloads-config-backup.json"
+            try:
+                if (
+                    backup.is_symlink() or not backup.is_file()
+                    or backup.stat().st_uid != 0
+                    or not 0 < backup.stat().st_size <= 256 * 1024
+                ):
+                    raise ValueError("backup is invalid")
+                previous = json.loads(backup.read_bytes())
+                parse_config(previous)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise PrivilegedRequestError(
+                    "workload rollback is unavailable"
+                ) from exc
+            _atomic_json(
+                backup, config, mode=0o600, uid=0, gid=self.service_gid,
+            )
+            _atomic_json(
+                self.config_path, previous, mode=0o640, uid=0,
+                gid=self.service_gid,
+            )
+            return {"ok": True}
         if action == "set_update_channel":
             self._require_manager_idle()
             update = config.setdefault("update", {})

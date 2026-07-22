@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import time
 
+from workstation.remote_control import validate_remote_command
+
 
 ALLOWED_SERVICES = frozenset({
     "lmc-ai-manager.service",
@@ -91,6 +93,20 @@ def validate_request(value: object, *, now: int | None = None) -> dict:
         if channel not in {"stable", "candidate"}:
             raise PrivilegedRequestError("update channel is invalid")
         return {"action": action, "channel": channel}
+    if action == "set_workloads":
+        try:
+            clean = validate_remote_command({
+                **value,
+                "action": "workloads_apply",
+            })
+        except ValueError as exc:
+            raise PrivilegedRequestError(str(exc)) from exc
+        clean["action"] = "set_workloads"
+        return clean
+    if action == "rollback_workloads":
+        if set(value) != {"action"}:
+            raise PrivilegedRequestError("workload rollback fields are invalid")
+        return {"action": action}
     if action == "pair_node":
         if set(value) != {"action", "name", "server_url", "token"}:
             raise PrivilegedRequestError("node pairing request fields are invalid")

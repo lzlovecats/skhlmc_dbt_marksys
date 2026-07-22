@@ -14,6 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from ai_name import LMC_AI_PRACTICE_LABEL
 from debate_timing import DEBATE_SPEECH_CHARS_PER_MINUTE
 from prompts import LIVE_RUNTIME_PROMPTS, build_free_debate_live_prompt
 from system_limits import (
@@ -199,7 +200,9 @@ class LocalPracticeStore:
                 None,
             )
             if active is not None:
-                raise LocalPracticeConflict("已有一節與自家AI練習進行中。")
+                raise LocalPracticeConflict(
+                    f"已有一節{LMC_AI_PRACTICE_LABEL}進行中。"
+                )
             ai_side = "反方" if user_side == "正方" else "正方"
             item = _Session(
                 session_id=str(session_id),

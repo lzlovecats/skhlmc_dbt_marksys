@@ -110,6 +110,7 @@ class WorkstationNodeClient:
                 model_digests=dict((health.get("checks", {}).get("ollama", {}) or {}).get("model_digests") or {}),
                 health=health,
                 manager=manager,
+                control=snapshot.get("control") or {},
             )["capabilities"]
             await self.send({
                 "type": "status",
@@ -120,6 +121,17 @@ class WorkstationNodeClient:
                 "model_digests": dict((health.get("checks", {}).get("ollama", {}) or {}).get("model_digests") or {}),
                 "capabilities": capabilities,
                 "manager": manager,
+                "health": hello_frame(
+                    name=self.config.node.name,
+                    model_profile_version=LMC_AI_MODEL_PROFILE_VERSION,
+                    model=resolve_lmc_ai_mode_options()["fast"]["model"],
+                    models=list((health.get("checks", {}).get("ollama", {}) or {}).get("models") or []),
+                    model_digests=dict((health.get("checks", {}).get("ollama", {}) or {}).get("model_digests") or {}),
+                    health=health,
+                    manager=manager,
+                    control=snapshot.get("control") or {},
+                )["health"],
+                "control": snapshot.get("control") or {},
             })
             await self.send({"type": "heartbeat"})
 
@@ -184,7 +196,12 @@ class WorkstationNodeClient:
         try:
             await self.send({"type": "workstation.job.started", "operation_id": operation_id, "job_kind": job["job_kind"]})
             result = None
-            async for event in self.manager.stream({"action": "job.run", "job": job}):
+            manager_request = (
+                {"action": "remote.control", "command": job["payload"]["command"]}
+                if job["job_kind"] == "control"
+                else {"action": "job.run", "job": job}
+            )
+            async for event in self.manager.stream(manager_request):
                 if event.get("event") == "stage":
                     await self.send({"type": "workstation.job.stage", "operation_id": operation_id, "stage": str(event.get("stage") or "")})
                 elif event.get("event") == "provider_started":
@@ -339,6 +356,7 @@ class WorkstationNodeClient:
                 model_digests=dict(ollama.get("model_digests") or {}),
                 health=health,
                 manager=manager,
+                control=snapshot.get("control") or {},
             ))
             accepted = json.loads(await asyncio.wait_for(websocket.recv(), timeout=20))
             if (
@@ -370,11 +388,15 @@ class WorkstationNodeClient:
                     payload = json.loads(raw)
                     message_type = payload.get("type")
                     if message_type in {"chat.start", "workstation.job.start"}:
+                        is_remote_control = (
+                            message_type == "workstation.job.start"
+                            and payload.get("job_kind") == "control"
+                        )
                         is_reservation = (
                             message_type == "workstation.job.start"
                             and payload.get("job_kind") == "voice.reserve"
                         )
-                        if is_reservation and self.active_task is not None and self.control_task is None:
+                        if (is_reservation or is_remote_control) and self.control_task is None:
                             self.control_operation_id = str(
                                 payload.get("operation_id") or ""
                             )

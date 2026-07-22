@@ -112,6 +112,7 @@ class PowerConfig:
 
 @dataclass(frozen=True)
 class OllamaConfig:
+    enabled: bool = True
     url: str = "http://127.0.0.1:11434"
     voice_keep_alive: str = "0"
     text_keep_alive: str = "5m"
@@ -123,16 +124,8 @@ class AsrConfig:
     model: str = ""
     device: str = "cuda"
     compute_type: str = "float16"
-    benchmark_approved: bool = False
     runtime_python: Path = (
         DEFAULT_DATA_ROOT / "vendor" / "asr-runtime" / "bin" / "python"
-    )
-    benchmark_report: Path = DEFAULT_STATE_DIR / "asr-benchmark-report.json"
-    runtime_provenance: Path = (
-        DEFAULT_DATA_ROOT / "vendor" / "asr-runtime" / "PROVENANCE.json"
-    )
-    approval_receipt: Path = (
-        DEFAULT_DATA_ROOT / "models" / "asr" / "active-receipt.json"
     )
 
 
@@ -203,7 +196,14 @@ class WorkstationConfig:
                 "wake_at": self.power.wake_at,
             },
             "workloads": {
-                "asr": {"enabled": self.workloads.asr.enabled, "model": self.workloads.asr.model, "benchmark_approved": self.workloads.asr.benchmark_approved, "runtime_python": str(self.workloads.asr.runtime_python), "benchmark_report": str(self.workloads.asr.benchmark_report), "runtime_provenance": str(self.workloads.asr.runtime_provenance), "approval_receipt": str(self.workloads.asr.approval_receipt)},
+                "ollama": {"enabled": self.workloads.ollama.enabled},
+                "asr": {
+                    "enabled": self.workloads.asr.enabled,
+                    "model": self.workloads.asr.model,
+                    "device": self.workloads.asr.device,
+                    "compute_type": self.workloads.asr.compute_type,
+                    "runtime_python": str(self.workloads.asr.runtime_python),
+                },
                 "rag": {"enabled": self.workloads.rag.enabled, "embedding_model": self.workloads.rag.embedding_model},
                 "gpt_sovits": {"enabled": self.workloads.gpt_sovits.enabled, "model_version": self.workloads.gpt_sovits.model_version},
             },
@@ -261,6 +261,7 @@ def parse_config(raw: object) -> WorkstationConfig:
     workloads_raw = _object(root.get("workloads", {}), "workloads")
     ollama_raw = _object(workloads_raw.get("ollama", {}), "workloads.ollama")
     ollama = OllamaConfig(
+        enabled=bool(ollama_raw.get("enabled", True)),
         url=_local_url(ollama_raw.get("url", "http://127.0.0.1:11434"), "workloads.ollama.url"),
         voice_keep_alive=str(ollama_raw.get("voice_keep_alive", "0"))[:20],
         text_keep_alive=str(ollama_raw.get("text_keep_alive", "5m"))[:20],
@@ -271,7 +272,6 @@ def parse_config(raw: object) -> WorkstationConfig:
         model=str(asr_raw.get("model") or "")[:200],
         device=str(asr_raw.get("device") or "cuda")[:20],
         compute_type=str(asr_raw.get("compute_type") or "float16")[:40],
-        benchmark_approved=bool(asr_raw.get("benchmark_approved")),
         runtime_python=_absolute_path(
             asr_raw.get(
                 "runtime_python",
@@ -279,34 +279,13 @@ def parse_config(raw: object) -> WorkstationConfig:
             ),
             "workloads.asr.runtime_python",
         ),
-        benchmark_report=_absolute_path(
-            asr_raw.get(
-                "benchmark_report",
-                paths.state / "asr-benchmark-report.json",
-            ),
-            "workloads.asr.benchmark_report",
-        ),
-        runtime_provenance=_absolute_path(
-            asr_raw.get(
-                "runtime_provenance",
-                paths.data / "vendor" / "asr-runtime" / "PROVENANCE.json",
-            ),
-            "workloads.asr.runtime_provenance",
-        ),
-        approval_receipt=_absolute_path(
-            asr_raw.get(
-                "approval_receipt",
-                paths.data / "models" / "asr" / "active-receipt.json",
-            ),
-            "workloads.asr.approval_receipt",
-        ),
     )
     if asr.device not in {"cuda", "cpu"} or asr.compute_type not in {
-        "float16", "int8_float16", "int8", "float32",
+        "float16", "bfloat16", "float32",
     }:
         raise ConfigError("ASR device or compute_type is invalid")
-    if asr.enabled and (not asr.model or not asr.benchmark_approved):
-        raise ConfigError("enabled ASR requires a benchmark-approved model")
+    if asr.enabled and not asr.model:
+        raise ConfigError("enabled ASR requires a local model")
     if asr.enabled and not Path(asr.model).is_absolute():
         raise ConfigError("enabled ASR model must be an absolute local path")
     rag_raw = _object(workloads_raw.get("rag", {}), "workloads.rag")

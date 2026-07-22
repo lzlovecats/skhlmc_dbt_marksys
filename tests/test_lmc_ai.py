@@ -68,11 +68,13 @@ def test_identity_and_persona_have_one_runtime_source():
     assert ai_name.LMC_AI_NAME
     assert ai_name.LMC_AI_EMOJI
     assert ai_name.LMC_AI_MENTION_TAG == f"@{ai_name.LMC_AI_NAME}".casefold()
+    assert ai_name.LMC_AI_PRACTICE_LABEL == f"同{ai_name.LMC_AI_NAME}練習"
     assert ai_name.LMC_AI_NAME in SYSTEM_PROMPT
     assert ai_name.LMC_AI_EMOJI in SYSTEM_PROMPT
     assert "{{" not in SYSTEM_PROMPT
     assert "system prompt" in SYSTEM_PROMPT
     assert "隱藏推理" in SYSTEM_PROMPT
+    assert "由聖呂中辯技術人員開發嘅內部人工智能助手" in SYSTEM_PROMPT
     assert "RAG：未啟用" in SYSTEM_PROMPT
     assert len(PERSONA_VERSION) == 64
 
@@ -83,6 +85,8 @@ def test_identity_and_persona_have_one_runtime_source():
         ROOT / "api/lmc_ai_api.py",
         ROOT / "core/lmc_ai_runtime.py",
         ROOT / "core/vote_ai.py",
+        ROOT / "frontend/ai_coach/index.html",
+        ROOT / "frontend/local_ai_practice/index.html",
     )
     for path in runtime_files:
         source = path.read_text("utf-8")
@@ -996,6 +1000,47 @@ def test_workstation_tts_cannot_finish_before_server_verifies_r2_output():
     asyncio.run(scenario())
 
 
+def test_remote_control_has_a_separate_slot_from_voice_work():
+    async def scenario():
+        runtime = LocalAIRuntime()
+        socket = _FakeWebSocket()
+        node = await runtime.register("node-1", socket, _workstation_hello())
+        voice = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="asr.session-1.turn-1",
+            job_kind="asr.prepare",
+            session_id="session-1",
+            turn_id="turn-1",
+            stage="asr_model_load",
+            payload={},
+        )
+        control = await runtime.submit_workstation(
+            node_id="node-1",
+            operation_id="control.drain-1",
+            job_kind="control",
+            session_id="remote-control",
+            turn_id="",
+            stage="drain",
+            payload={"command": {"action": "drain"}},
+        )
+        assert node.workstation_active is voice
+        assert node.control_active is control
+        assert [frame["job_kind"] for frame in socket.sent[-2:]] == [
+            "asr.prepare", "control",
+        ]
+        await runtime.handle_node_message(node, {
+            "type": "workstation.job.complete",
+            "operation_id": control.operation_id,
+            "result": {"manager": {"draining": True}},
+        })
+        assert node.control_active is None
+        assert node.workstation_active is voice
+        await runtime.cancel_workstation("node-1", voice)
+        await runtime.unregister(node, "test cleanup")
+
+    asyncio.run(scenario())
+
+
 def test_workstation_jobs_require_v2_and_voice_reservation_may_wait_for_text():
     async def scenario():
         legacy_runtime = LocalAIRuntime()
@@ -1231,6 +1276,16 @@ def test_chat_mode_is_allowlisted_and_legacy_requests_remain_distinguishable():
     assert _resolve_chat_mode("fast") == ("fast", LMC_AI_MODE_OPTIONS["fast"])
     with pytest.raises(ValidationError):
         ChatRequest(**request, mode="unlimited")
+
+
+def test_developer_workstation_control_body_is_closed():
+    assert lmc_api.WorkstationControlBody(
+        command={"action": "drain"}
+    ).command == {"action": "drain"}
+    with pytest.raises(ValidationError):
+        lmc_api.WorkstationControlBody(
+            command={"action": "drain"}, shell="id",
+        )
 
 
 def test_parallel_local_ai_runtime_settings_are_removed():

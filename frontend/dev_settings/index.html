@@ -220,7 +220,7 @@
           </div>
           <section class="card">
             <h2>自家 AI 電腦</h2>
-            <p class="caption">固定由一部 Workstation 使用 Gemma 4，經單一 token 主動連接 WSS。更換電腦時先 revoke 現有 credential，再建立新 token；系統唔做 multi-node、load balancing 或自動轉雲端。</p>
+            <p class="caption">固定由一部 Workstation 使用 Gemma 4，經單一 token 主動連接 WSS。以下 remote control 只會傳送固定 action 同已安裝 profile ID，唔接受 shell、package、URL 或本機 path。更換電腦時先 revoke 現有 credential，再建立新 token。</p>
             <div class="actions">
               <button id="refreshLmcNodes" type="button">🔄 重新整理</button>
             </div>
@@ -234,6 +234,7 @@
               <button id="copyLmcToken" type="button">複製 token</button>
             </div>
             <div id="lmcNodes"><p class="caption">正在讀取 AI 電腦…</p></div>
+            <pre id="lmcControlResult" class="caption" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
           </section>
         </section>
         <section id="system" class="pane">
@@ -324,6 +325,7 @@
             );
         let data;
         let lmcLoadGeneration = 0;
+        let lmcCurrentNode = null;
         const api = async (u, o = {}) => {
           let r = await fetch(u, {
               credentials: "same-origin",
@@ -557,6 +559,7 @@
           }
           if (loadGeneration !== lmcLoadGeneration) return false;
           const node = result.workstation;
+          lmcCurrentNode = node;
           $("lmcNodeForm").classList.toggle("hidden", Boolean(node));
           if (!node) {
             $("lmcNodes").innerHTML = '<p class="caption">尚未登記 AI 電腦。</p>';
@@ -565,8 +568,40 @@
           const state = !node.online ? "離線" : node.draining ? "Draining" : !node.ready ? "未完成 preflight" : !node.models_ready ? "模型未齊" : node.busy ? `忙碌（排隊 ${Number(node.queue_length || 0)}）` : "在線";
           const runtime = node.online ? `${node.runtime || "—"} ${node.runtime_version || ""}` : (node.last_runtime || "—");
           const models = (node.models?.length ? node.models : [node.model || node.last_model || "—"]).join("、");
-          $("lmcNodes").innerHTML = `<article class="card"><div class="actions"><strong>${esc(node.display_name)}</strong><span class="caption">#${esc(node.short_id)}・${esc(state)}</span></div><p class="caption">Runtime：${esc(runtime)}<br>已通過模型：${esc(models)}<br>最後連線：${esc(node.last_connected_at || "—")}</p><div class="actions"><button type="button" data-lmc-rotate="${esc(node.node_id)}">Rotate token</button><button type="button" class="danger" data-lmc-revoke="${esc(node.node_id)}">Revoke</button></div></article>`;
+          const health = node.health || {};
+          const checks = health.checks || {};
+          const gpu = checks.gpu || {};
+          const control = node.control || {};
+          const workloads = control.workloads || {};
+          const profiles = control.installed_profiles || {};
+          const power = control.power || {};
+          const asrOptions = (profiles.asr || []).map((id) => `<option value="${esc(id)}" ${id === workloads.asr_model_id ? "selected" : ""}>${esc(id)}</option>`).join("");
+          const ttsOptions = (profiles.tts || []).map((id) => `<option value="${esc(id)}" ${id === workloads.tts_voice_id ? "selected" : ""}>${esc(id)}</option>`).join("");
+          const audit = (control.audit || []).slice(-8).reverse().map((row) => `<li>${esc(new Date(Number(row.epoch || 0) * 1000).toLocaleString("zh-HK"))}・${esc(row.action)}・${esc(row.outcome)}${row.code ? `（${esc(row.code)}）` : ""}</li>`).join("") || "<li>未有 remote control 記錄。</li>";
+          $("lmcNodes").innerHTML = `<article class="card" data-lmc-node="${esc(node.node_id)}"><div class="actions"><strong>${esc(node.display_name)}</strong><span class="caption">#${esc(node.short_id)}・${esc(state)}</span></div><p class="caption">Runtime：${esc(runtime)}<br>已通過模型：${esc(models)}<br>健康：${health.healthy ? "正常" : "未通過"}・GPU ${esc(gpu.name || "—")}・VRAM ${esc(gpu.vram_used_mib ?? "—")} / ${esc(gpu.vram_total_mib ?? "—")} MiB・${esc(gpu.temperature_c ?? "—")}°C<br>Manager：${esc(node.manager?.mode || "—")}・工作：${esc(node.manager?.active_operation?.kind || "無")} / ${esc(node.manager?.active_operation?.stage || "—")}<br>最後連線：${esc(node.last_connected_at || "—")}</p><div class="actions"><button type="button" data-lmc-control="status">詳細狀態</button><button type="button" data-lmc-control="drain">Drain</button><button type="button" data-lmc-control="resume">Resume</button><button type="button" data-lmc-control="full_health">Full health</button><button type="button" data-lmc-control="cancel">取消目前工作</button><button type="button" data-lmc-control="ack_reconcile">確認 restart reconcile</button></div><hr><h3>Workload</h3><div class="actions"><label class="check"><input id="lmcLlmEnabled" type="checkbox" ${workloads.llm_enabled ? "checked" : ""}>LLM</label><label class="check"><input id="lmcAsrEnabled" type="checkbox" ${workloads.asr_enabled ? "checked" : ""}>ASR</label><label>ASR model<select id="lmcAsrModel"><option value="">未選</option>${asrOptions}</select></label><label class="check"><input id="lmcRagEnabled" type="checkbox" ${workloads.rag_enabled ? "checked" : ""}>RAG</label><label class="check"><input id="lmcTtsEnabled" type="checkbox" ${workloads.tts_enabled ? "checked" : ""}>TTS</label><label>TTS voice<select id="lmcTtsVoice"><option value="">未選</option>${ttsOptions}</select></label><button type="button" class="primary" data-lmc-control="workloads_apply">套用並 health gate</button><button type="button" data-lmc-control="workloads_rollback">還原上一份設定</button></div><h3>簽署 artifacts / 系統</h3><div class="actions"><button type="button" data-lmc-control="artifact_inspect">檢查 signed catalog</button><button type="button" data-lmc-control="artifact_models_install">安裝核准 LLM models</button><button type="button" data-lmc-control="artifact_rag_install">安裝 RAG bundle</button><button type="button" data-lmc-control="artifact_rag_rollback">RAG rollback</button><select id="lmcRestartService"><option>lmc-ai-node.service</option><option>lmc-ai-gui.service</option><option>ollama.service</option><option>lmc-ai-gpt-sovits.service</option></select><button type="button" data-lmc-control="restart_service">Restart service</button><button type="button" data-lmc-control="update">Update</button><button type="button" data-lmc-control="rollback">Release rollback</button><button type="button" class="danger" data-lmc-control="reboot">Reboot</button></div><h3>電源時間表</h3><div class="actions"><label class="check"><input id="lmcPowerEnabled" type="checkbox" ${power.enabled ? "checked" : ""}>啟用</label><label>休眠<input id="lmcSuspendAt" type="time" value="${esc(power.suspend_at || "00:00")}"></label><label>喚醒<input id="lmcWakeAt" type="time" value="${esc(power.wake_at || "08:00")}"></label><button type="button" data-lmc-control="power_schedule">儲存</button></div><details><summary>Remote audit</summary><ul class="caption">${audit}</ul></details><div class="actions"><button type="button" data-lmc-rotate="${esc(node.node_id)}">Rotate token</button><button type="button" class="danger" data-lmc-revoke="${esc(node.node_id)}">Revoke</button></div></article>`;
           return true;
+        }
+        async function runLmcControl(button) {
+          const card = button.closest("[data-lmc-node]");
+          const nodeId = card?.dataset.lmcNode;
+          const action = button.dataset.lmcControl;
+          if (!nodeId || !action) return;
+          const command = { action };
+          if (action === "cancel") {
+            const operationId = lmcCurrentNode?.manager?.active_operation?.operation_id || "";
+            if (!operationId) throw new Error("目前未有可取消工作。");
+            command.operation_id = operationId;
+          } else if (action === "restart_service") {
+            command.service = $("lmcRestartService").value;
+          } else if (action === "power_schedule") {
+            Object.assign(command, { enabled: $("lmcPowerEnabled").checked, suspend_at: $("lmcSuspendAt").value, wake_at: $("lmcWakeAt").value });
+          } else if (action === "workloads_apply") {
+            Object.assign(command, { llm_enabled: $("lmcLlmEnabled").checked, asr_enabled: $("lmcAsrEnabled").checked, rag_enabled: $("lmcRagEnabled").checked, tts_enabled: $("lmcTtsEnabled").checked, asr_model_id: $("lmcAsrModel").value, tts_voice_id: $("lmcTtsVoice").value });
+          }
+          const result = await api(`/api/developer/lmc-ai/nodes/${encodeURIComponent(nodeId)}/control`, { method: "POST", body: JSON.stringify({ command }) });
+          $("lmcControlResult").textContent = JSON.stringify(result.result || {}, null, 2);
+          await loadLmcNodes();
+          return result;
         }
         async function load() {
           busy(true);
@@ -858,6 +893,26 @@
         );
         document.body.onclick = (e) => {
           let b = e.target;
+          if (b.dataset.lmcControl) {
+            const action = b.dataset.lmcControl;
+            const disruptive = new Set(["workloads_apply", "workloads_rollback", "restart_service", "reboot", "update", "rollback", "artifact_models_install", "artifact_rag_install", "artifact_rag_rollback"]);
+            const proceed = disruptive.has(action)
+              ? askAction("執行 Workstation remote control？", `${action} 會記錄 audit；設定改動會先 drain、做 full health，失敗會自動 rollback。`)
+              : Promise.resolve(true);
+            proceed.then(async (confirmed) => {
+              if (!confirmed) return;
+              busy(true);
+              try {
+                await runLmcControl(b);
+                toast("✅ Workstation action 已接受／完成。");
+              } catch (error) {
+                toast("⚠️ " + error.message);
+                await loadLmcNodes().catch(() => {});
+              } finally {
+                busy(false);
+              }
+            });
+          }
           if (b.dataset.lmcRotate) {
             askAction("Rotate token？", "舊 token 同現有 socket 會即時失效；新 token 只顯示一次。").then(async (confirmed) => {
               if (!confirmed) return;

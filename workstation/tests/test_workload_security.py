@@ -8,51 +8,12 @@ import pytest
 
 from system_limits import LMC_AI_OUTPUT_MAX_BYTES
 from workstation.config import AsrConfig, GptSoVitsConfig, OllamaConfig
-from workstation.workloads.asr import FasterWhisperAdapter
+from workstation.workloads.asr import Qwen3AsrAdapter
 from workstation.workloads.errors import WorkloadError
 from workstation.workloads.gpt_sovits import GptSoVitsAdapter
 from workstation.workloads.ollama import OllamaAdapter
 from workstation.workloads.r2_transfer import download_to_path
 from workstation.scripts import approve_gpt_sovits_voice
-from workstation.scripts.approve_asr_profile import approve as approve_asr_profile
-
-
-def _write_asr_benchmark_report(path: Path, model: Path) -> None:
-    path.write_text(json.dumps({
-        "schema_version": 1,
-        "generated_at_unix": 2_000_000_000,
-        "corpus_sha256": "a" * 64,
-        "required_categories": [
-            "background_noise", "cantonese", "debate_terms", "english",
-            "long", "numbers", "short",
-        ],
-        "sample_count": 7,
-        "results": [{
-            "model_path": str(model.resolve()),
-            "device": "cuda",
-            "compute_type": "float16",
-        }],
-        "approval_written": False,
-    }))
-
-
-def _asr_approval(tmp_path: Path, model: Path, runtime: Path, report: Path) -> dict:
-    if not any(model.iterdir()):
-        (model / "model.bin").write_bytes(b"approved model")
-    provenance = tmp_path / "asr-PROVENANCE.json"
-    provenance.write_text(json.dumps({
-        "schema_version": 1,
-        "python_version": "3.12",
-        "pip_freeze_sha256": "b" * 64,
-        "wheelhouse_manifest_sha256": "c" * 64,
-    }))
-    receipt = tmp_path / "asr-active-receipt.json"
-    approve_asr_profile(
-        model=model, runtime_python=runtime,
-        runtime_provenance=provenance, benchmark_report=report,
-        device="cuda", compute_type="float16", output=receipt,
-    )
-    return {"runtime_provenance": provenance, "approval_receipt": receipt}
 
 
 def test_direct_r2_transfer_rejects_non_https_before_network(tmp_path):
@@ -412,18 +373,13 @@ def test_asr_uses_pinned_worker_python_and_bounded_result(tmp_path, monkeypatch)
     runtime.write_bytes(b"pinned python")
     model = tmp_path / "model"
     model.mkdir()
+    (model / "config.json").write_text("{}")
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
-    report = tmp_path / "benchmark.json"
-    _write_asr_benchmark_report(report, model)
-    approval = _asr_approval(tmp_path, model, runtime, report)
-    adapter = FasterWhisperAdapter(AsrConfig(
+    adapter = Qwen3AsrAdapter(AsrConfig(
         enabled=True,
         model=str(model),
-        benchmark_approved=True,
         runtime_python=runtime,
-        benchmark_report=report,
-        **approval,
     ))
 
     class Completed:
@@ -441,8 +397,7 @@ def test_asr_uses_pinned_worker_python_and_bounded_result(tmp_path, monkeypatch)
             commands.append(command)
             output = Path(command[command.index("--output") + 1])
             output.write_text(json.dumps({
-                "ok": True, "text": "廣東話轉錄", "language": "zh",
-                "language_probability": 0.99,
+                "ok": True, "text": "廣東話轉錄", "language": "Cantonese",
             }))
 
         def poll(self):
@@ -453,6 +408,7 @@ def test_asr_uses_pinned_worker_python_and_bounded_result(tmp_path, monkeypatch)
     assert result["text"] == "廣東話轉錄"
     assert commands[0][0] == str(runtime)
     assert commands[0][commands[0].index("--model") + 1] == str(model)
+    assert commands[0][commands[0].index("--compute-type") + 1] == "float16"
 
 
 def test_asr_worker_start_failure_is_typed_and_does_not_leak_local_error(
@@ -463,18 +419,13 @@ def test_asr_worker_start_failure_is_typed_and_does_not_leak_local_error(
     runtime.write_bytes(b"pinned python")
     model = tmp_path / "model"
     model.mkdir()
+    (model / "config.json").write_text("{}")
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
-    report = tmp_path / "benchmark.json"
-    _write_asr_benchmark_report(report, model)
-    approval = _asr_approval(tmp_path, model, runtime, report)
-    adapter = FasterWhisperAdapter(AsrConfig(
+    adapter = Qwen3AsrAdapter(AsrConfig(
         enabled=True,
         model=str(model),
-        benchmark_approved=True,
         runtime_python=runtime,
-        benchmark_report=report,
-        **approval,
     ))
 
     class Completed:

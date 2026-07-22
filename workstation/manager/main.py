@@ -19,7 +19,9 @@ def main() -> int:
     args = parser.parse_args()
     config = load_config(args.config)
     arbiter = ModeArbiter(StateStore(config.paths.state / "manager-state.json"))
-    serve_manager(ManagerApplication(config, arbiter), args.socket)
+    serve_manager(
+        ManagerApplication(config, arbiter, config_path=args.config), args.socket,
+    )
     return 0
 
 

@@ -140,6 +140,23 @@ def test_capability_advertisement_is_health_derived_and_job_schema_is_closed():
     assert job["job_kind"] == "asr"
     with pytest.raises(ValueError, match="unknown"):
         validate_server_job({**job, "type": "workstation.job.start", "shell": "id"})
+    control = validate_server_job({
+        "type": "workstation.job.start",
+        "operation_id": "control-1",
+        "job_kind": "control",
+        "session_id": "remote-control",
+        "turn_id": "",
+        "stage": "drain",
+        "deadline_epoch": 2_000_000_000,
+        "payload": {"command": {"action": "drain"}},
+    })
+    assert control["payload"] == {"command": {"action": "drain"}}
+    with pytest.raises(ValueError, match="allowlisted"):
+        validate_server_job({
+            **control,
+            "type": "workstation.job.start",
+            "payload": {"command": {"action": "shell", "value": "id"}},
+        })
 
 
 def test_websocket_bearer_header_supports_ubuntu_and_new_runtime_signatures():

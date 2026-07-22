@@ -19,6 +19,7 @@
   },
   "workloads": {
     "ollama": {
+      "enabled": true,
       "url": "http://127.0.0.1:11434",
       "voice_keep_alive": "0",
       "text_keep_alive": "5m"
@@ -28,11 +29,7 @@
       "model": "",
       "device": "cuda",
       "compute_type": "float16",
-      "benchmark_approved": false,
-      "runtime_python": "/srv/lmc-ai/vendor/asr-runtime/bin/python",
-      "benchmark_report": "/var/lib/lmc-ai-workstation/asr-benchmark-report.json",
-      "runtime_provenance": "/srv/lmc-ai/vendor/asr-runtime/PROVENANCE.json",
-      "approval_receipt": "/srv/lmc-ai/models/asr/active-receipt.json"
+      "runtime_python": "/srv/lmc-ai/vendor/asr-runtime/bin/python"
     },
     "rag": {
       "enabled": false,

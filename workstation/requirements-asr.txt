@@ -1,0 +1,2 @@
+# Official Qwen package used by the isolated ASR runtime.
+qwen-asr==0.0.6

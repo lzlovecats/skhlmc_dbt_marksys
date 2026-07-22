@@ -120,6 +120,7 @@ from ai_name import (
     LMC_AI_MENTION_TAG,
     LMC_AI_MODEL_LABEL,
     LMC_AI_NAME,
+    LMC_AI_PRACTICE_LABEL,
 )
 from ai_model_config import NON_MANUAL_DEFAULT_AI_MODEL
 from system_limits import (
@@ -2382,7 +2383,9 @@ async def ai_coach_page(request: Request):
     html = (BASE_DIR / "frontend" / "ai_coach" / "index.html").read_text(
         encoding="utf-8"
     )
-    html = html.replace("__APP_VERSION__", APP_VERSION)
+    html = html.replace("__APP_VERSION__", APP_VERSION).replace(
+        "__LMC_AI_PRACTICE_LABEL__", xml_escape(LMC_AI_PRACTICE_LABEL)
+    )
     return Response(
         content=html, media_type="text/html", headers=_cache_headers(CACHE_NO_CACHE)
     )
@@ -2399,6 +2402,9 @@ async def local_ai_practice_page(request: Request):
     ).read_text(encoding="utf-8")
     return Response(
         html.replace("__APP_VERSION__", APP_VERSION).replace(
+            "__LMC_AI_PRACTICE_LABEL__",
+            xml_escape(LMC_AI_PRACTICE_LABEL),
+        ).replace(
             "__LOCAL_PRACTICE_MESSAGE_MAX_CHARS__",
             str(LMC_AI_MESSAGE_MAX_CHARS),
         ),

@@ -29,7 +29,7 @@ from workstation.config import WorkstationConfig
 from workstation.manager.arbiter import ModeArbiter
 from workstation.manager.inhibitor import SleepInhibitor
 from workstation.privileged_helper.client import PrivilegedActionError, request_privileged
-from workstation.workloads.asr import FasterWhisperAdapter
+from workstation.workloads.asr import Qwen3AsrAdapter
 from workstation.workloads.dataset_preparation import DatasetPreparationAdapter
 from workstation.workloads.errors import WorkloadError
 from workstation.workloads.gpt_sovits import GptSoVitsAdapter
@@ -53,7 +53,7 @@ class JobExecutor:
         self.arbiter = arbiter
         self.inhibitor = inhibitor
         self.ollama = OllamaAdapter(config.workloads.ollama)
-        self.asr = FasterWhisperAdapter(config.workloads.asr)
+        self.asr = Qwen3AsrAdapter(config.workloads.asr)
         self.rag = LocalRagIndex(config.workloads.rag, self.ollama)
         self.gpt_sovits = GptSoVitsAdapter(config.workloads.gpt_sovits)
         self.dataset_preparation = DatasetPreparationAdapter(config.paths.data)
@@ -105,11 +105,18 @@ class JobExecutor:
             ) from exc
 
     def _prepare_non_ollama_gpu(self) -> None:
+        self.asr.unload()
+        if self.config.workloads.gpt_sovits.enabled:
+            self._set_gpt_sovits_service("stop")
+        self.ollama.unload_all()
+
+    def _prepare_asr_gpu(self) -> None:
         if self.config.workloads.gpt_sovits.enabled:
             self._set_gpt_sovits_service("stop")
         self.ollama.unload_all()
 
     def _prepare_ollama_gpu(self) -> None:
+        self.asr.unload()
         if self.config.workloads.gpt_sovits.enabled:
             self._set_gpt_sovits_service("stop")
 
@@ -187,6 +194,7 @@ class JobExecutor:
         return {"reserved": True, "manager": self.arbiter.snapshot()}
 
     def release_voice(self, session_id: str) -> dict:
+        self.asr.unload()
         self.arbiter.release_voice(session_id)
         self._sync_inhibitor()
         return {"released": True, "manager": self.arbiter.snapshot()}
@@ -401,7 +409,10 @@ class JobExecutor:
             )
         if kind == "voice.release":
             return self.release_voice(session_id)
-        mapped_kind = {"asr": "asr", "rag": "rag", "voice_text": "voice_text", "tts": "tts"}[kind]
+        mapped_kind = {
+            "asr.prepare": "asr", "asr": "asr", "rag": "rag",
+            "voice_text": "voice_text", "tts": "tts",
+        }[kind]
         self.arbiter.start_operation(
             operation_id,
             mapped_kind,
@@ -419,7 +430,15 @@ class JobExecutor:
         try:
             self._raise_if_cancelled(cancel_event)
             stage_update(job.get("stage") or kind)
-            if kind == "asr":
+            if kind == "asr.prepare":
+                self._prepare_asr_gpu()
+                self._raise_if_cancelled(cancel_event)
+                stage_update("asr_model_load")
+                result = self.asr.prepare(
+                    timeout_seconds=self._remaining(deadline),
+                    cancel_event=cancel_event,
+                )
+            elif kind == "asr":
                 result = self._asr(
                     payload, deadline, cancel_event=cancel_event, on_stage=stage_update,
                 )
@@ -505,7 +524,7 @@ class JobExecutor:
                 declared_mime=str(payload.get("mime_type") or ""),
             )
             timings["media_probe"] = int((time.monotonic() - started) * 1_000)
-            self._prepare_non_ollama_gpu()
+            self._prepare_asr_gpu()
             self._raise_if_cancelled(cancel_event)
             if on_stage:
                 on_stage("asr")

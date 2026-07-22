@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_release_schema_contract_tracks_repository_head():
     migrations = sorted((ROOT / "migrations").glob("*.up.sql"))
-    assert APP_VERSION == "4.12.0"
+    assert APP_VERSION == "4.12.1"
     assert migrations[-1].name.startswith(REQUIRED_SCHEMA_MIGRATION)
     assert "eval" not in FEATURE_MIGRATION_VERSIONS
 

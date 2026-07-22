@@ -1,6 +1,5 @@
 httpx==0.28.1
 websockets==16.1
 
-# ASR is installed into its separately reviewed GPU environment after a real
-# Cantonese benchmark. The manager imports it only when ASR is enabled.
-# faster-whisper intentionally has no automatic install/pull path here.
+# Qwen3-ASR stays in a separate GPU environment. The Debian package never runs
+# pip or downloads model weights during installation or request handling.

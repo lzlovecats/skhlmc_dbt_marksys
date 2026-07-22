@@ -122,6 +122,35 @@ class AudioTurnBody(RecordingCompleteBody):
     pass
 
 
+@router.post("/asr/warmup")
+async def local_practice_asr_warmup(body: TurnStartBody, request: Request):
+    owner_id = _context(request)
+    session_id = _valid_session_id(body.session_id)
+    session = _store_call(STORE.snapshot, session_id, owner_id)
+    if (
+        session["state"] != "user_speaking"
+        or session["turn_index"] != body.expected_turn
+        or not session.get("voice_reserved")
+    ):
+        raise HTTPException(409, "目前回合未能預載語音辨識。")
+    from core.lmc_ai_client import LocalAIError, run_workstation_job
+    from deploy.proxy import get_vote_db
+
+    try:
+        result = await run_workstation_job(
+            get_vote_db(),
+            operation_id=f"asr-prewarm.{uuid.uuid4().hex}",
+            job_kind="asr.prepare",
+            session_id=session_id,
+            turn_id=f"turn-{body.expected_turn}",
+            stage="asr_model_load",
+            payload={},
+        )
+    except LocalAIError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"ok": True, "prepared": bool(result.get("prepared"))}
+
+
 def _context(request: Request) -> str:
     user_id = require_page_user(request, "ai_coach")
     require_interactive_features_available(request)

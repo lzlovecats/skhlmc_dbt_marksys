@@ -20,8 +20,9 @@ from system_limits import (
     WORKSTATION_TTS_TRAINING_MAX_SECONDS,
     WORKSTATION_DATASET_PREPARATION_MAX_SECONDS,
     WORKSTATION_MODEL_PULL_MAX_SECONDS,
+    WORKSTATION_REMOTE_AUDIT_MAX_ENTRIES,
 )
-from workstation.config import WorkstationConfig
+from workstation.config import DEFAULT_CONFIG_PATH, WorkstationConfig, load_config
 from workstation.manager.arbiter import ArbitrationError, ModeArbiter
 from workstation.manager.executor import JobExecutor
 from workstation.manager.health import HealthRunner
@@ -29,14 +30,21 @@ from workstation.manager.inhibitor import SleepInhibitor
 from workstation.workloads.errors import WorkloadError
 from workstation.manager.artifacts import SignedArtifactManager
 from workstation.manager.update import UpdateStager
+from workstation.remote_control import installed_profiles, validate_remote_command
+from workstation.privileged_helper.client import PrivilegedActionError
+from workstation.node.protocol import public_health_summary
 
 
 DEFAULT_MANAGER_SOCKET = Path("/run/lmc-ai-workstation/manager.sock")
 
 
 class ManagerApplication:
-    def __init__(self, config: WorkstationConfig, arbiter: ModeArbiter):
+    def __init__(
+        self, config: WorkstationConfig, arbiter: ModeArbiter,
+        *, config_path: Path = DEFAULT_CONFIG_PATH,
+    ):
         self.config = config
+        self.config_path = config_path
         self.arbiter = arbiter
         self.inhibitor = SleepInhibitor()
         self.executor = JobExecutor(config, arbiter, self.inhibitor)
@@ -49,6 +57,79 @@ class ManagerApplication:
         self._cancel_events: dict[str, threading.Event] = {}
         self._training_lock = threading.Lock()
         self._training_thread: threading.Thread | None = None
+
+    def _audit(self, action: str, outcome: str, *, code: str = "") -> None:
+        path = self.config.paths.state / "remote-control-audit.json"
+        try:
+            if path.is_file() and not path.is_symlink() and path.stat().st_size <= 256 * 1024:
+                value = json.loads(path.read_bytes())
+            else:
+                value = []
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            value = []
+        rows = value if isinstance(value, list) else []
+        rows.append({
+            "epoch": int(time.time()),
+            "action": str(action)[:80],
+            "outcome": str(outcome)[:40],
+            "code": str(code)[:100],
+        })
+        rows = rows[-WORKSTATION_REMOTE_AUDIT_MAX_ENTRIES:]
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(rows, separators=(",", ":"), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o640)
+        os.replace(temporary, path)
+
+    def _recent_audit(self) -> list[dict]:
+        try:
+            path = self.config.paths.state / "remote-control-audit.json"
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 256 * 1024:
+                return []
+            value = json.loads(path.read_bytes())
+            return list(value[-20:]) if isinstance(value, list) else []
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return []
+
+    def _control_status(self) -> dict:
+        profiles = installed_profiles(self.config)
+        power = self.config.public_dict()["power"]
+        with suppress(OSError, ValueError):
+            power = load_config(self.config_path).public_dict()["power"]
+        return {
+            "workloads": {
+                "llm_enabled": self.config.workloads.ollama.enabled,
+                "asr_enabled": self.config.workloads.asr.enabled,
+                "rag_enabled": self.config.workloads.rag.enabled,
+                "tts_enabled": self.config.workloads.gpt_sovits.enabled,
+                **profiles["selected"],
+            },
+            "power": power,
+            "update": {"enabled": self.config.update.enabled, "channel": self.config.update.channel},
+            "installed_profiles": {
+                "asr": profiles["asr"], "tts": profiles["tts"],
+            },
+            "audit": self._recent_audit(),
+        }
+
+    def _reload_config(self) -> None:
+        with suppress(Exception):
+            self.executor.asr.unload()
+        with suppress(Exception):
+            self.executor.ollama.unload_all()
+        if self.config.workloads.gpt_sovits.enabled:
+            with suppress(Exception):
+                self.executor._set_gpt_sovits_service("stop")
+        config = load_config(self.config_path)
+        self.config = config
+        self.executor = JobExecutor(config, self.arbiter, self.inhibitor)
+        self.health_runner = HealthRunner(config)
+        self.artifacts = SignedArtifactManager(config, self.executor.ollama)
+        self._health_report = {}
+        self._health_checked_monotonic = 0.0
 
     def health(self, *, force: bool = False, full: bool = False) -> dict:
         with self._health_lock:
@@ -133,7 +214,11 @@ class ManagerApplication:
     def handle(self, request: dict, emit) -> None:
         action = str(request.get("action") or "")
         if action == "snapshot":
-            emit("result", {"manager": self.arbiter.snapshot(), "health": self.health()})
+            emit("result", {
+                "manager": self.arbiter.snapshot(),
+                "health": self.health(),
+                "control": self._control_status(),
+            })
             return
         if action == "health":
             emit("result", self.health(
@@ -204,6 +289,9 @@ class ManagerApplication:
         if action == "job.run":
             self._job(request, emit)
             return
+        if action == "remote.control":
+            self._remote_control(request, emit)
+            return
         if action == "training.start":
             self._start_training(request, emit)
             return
@@ -217,6 +305,112 @@ class ManagerApplication:
             self._start_artifact_action(action, emit)
             return
         raise WorkloadError("unsupported_manager_action", "Manager action is not supported.")
+
+    def _remote_control(self, request: dict, emit) -> None:
+        if set(request) != {"action", "command"}:
+            raise WorkloadError("invalid_request", "Remote control request is invalid.")
+        try:
+            command = validate_remote_command(request.get("command"))
+        except ValueError as exc:
+            raise WorkloadError("invalid_request", str(exc)) from exc
+        action = command["action"]
+        self._audit(action, "started")
+        try:
+            if action == "status":
+                result = {
+                    "manager": self.arbiter.snapshot(),
+                    "health": public_health_summary(self.health(force=True)),
+                    "control": self._control_status(),
+                }
+            elif action == "drain":
+                self.arbiter.set_draining(True)
+                result = {"manager": self.arbiter.snapshot()}
+            elif action == "resume":
+                self.arbiter.set_draining(False)
+                result = {"manager": self.arbiter.snapshot()}
+            elif action == "ack_reconcile":
+                self.arbiter.acknowledge_reconcile()
+                result = {"manager": self.arbiter.snapshot()}
+            elif action == "cancel":
+                result = {"cancel_requested": self.cancel(command["operation_id"])}
+            elif action == "full_health":
+                result = {
+                    "health": public_health_summary(
+                        self.health(force=True, full=True)
+                    )
+                }
+            elif action == "artifact_inspect":
+                result = {"components": self.artifacts.inspect()}
+            elif action in {
+                "artifact_models_install", "artifact_rag_install",
+                "artifact_rag_rollback",
+            }:
+                mapped = {
+                    "artifact_models_install": "model.approve",
+                    "artifact_rag_install": "rag.install",
+                    "artifact_rag_rollback": "rag.rollback",
+                }[action]
+                self._start_artifact_action(mapped, emit)
+                self._audit(action, "accepted")
+                return
+            elif action == "power_schedule":
+                result = self.executor._privileged_request({
+                    "action": "set_power_schedule",
+                    "enabled": command["enabled"],
+                    "timezone": "Asia/Hong_Kong",
+                    "suspend_at": command["suspend_at"],
+                    "wake_at": command["wake_at"],
+                })
+            elif action == "restart_service":
+                result = self.executor._privileged_request({
+                    "action": "restart_service", "service": command["service"],
+                })
+            elif action in {"reboot", "update", "rollback"}:
+                privileged_action = {
+                    "reboot": "reboot",
+                    "update": "trigger_update",
+                    "rollback": "trigger_rollback",
+                }[action]
+                result = self.executor._privileged_request({"action": privileged_action})
+            elif action in {"workloads_apply", "workloads_rollback"}:
+                before = self.arbiter.snapshot()
+                self.arbiter.set_draining(True)
+                if before.get("active_operation") or before.get("voice_session_active") or before.get("voice_session_pending"):
+                    raise WorkloadError("busy", "Workstation is draining active work.", retryable=True)
+                privileged = (
+                    {"action": "rollback_workloads"}
+                    if action == "workloads_rollback"
+                    else {**command, "action": "set_workloads"}
+                )
+                self.executor._privileged_request(privileged)
+                self._reload_config()
+                health = self.health(force=True, full=True)
+                if not health.get("healthy"):
+                    self.executor._privileged_request({"action": "rollback_workloads"})
+                    self._reload_config()
+                    self.health(force=True, full=True)
+                    raise WorkloadError(
+                        "health_gate", "Workload settings failed full health and were rolled back."
+                    )
+                if not before.get("draining"):
+                    self.arbiter.set_draining(False)
+                result = {
+                    "health": public_health_summary(health),
+                    "manager": self.arbiter.snapshot(),
+                    "control": self._control_status(),
+                }
+            else:
+                raise WorkloadError("invalid_request", "Remote control action is invalid.")
+            self._audit(action, "succeeded")
+            emit("result", result)
+        except (ArbitrationError, WorkloadError) as exc:
+            self._audit(action, "failed", code=exc.code)
+            raise
+        except (OSError, PrivilegedActionError, ValueError) as exc:
+            self._audit(action, "failed", code="control_failed")
+            raise WorkloadError(
+                "control_failed", "Remote control action could not be completed."
+            ) from exc
 
     def _chat(self, request: dict, emit) -> None:
         operation_id = str(request.get("operation_id") or "")
