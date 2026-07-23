@@ -15,8 +15,8 @@
         --shadow:0 18px 45px rgba(37,43,67,.09);
       }
       * { box-sizing:border-box; }
-      html,body { min-height:100%; }
-      body { margin:0; overflow:hidden; background:var(--page); color:var(--text); font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; }
+      html,body { width:100%; height:100%; min-height:100%; overscroll-behavior:none; }
+      body { margin:0; padding:0; overflow:hidden; background:var(--page); color:var(--text); font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; }
       button,input,textarea,select { font:inherit; color:inherit; }
       button,a.button {
         min-height:2.45rem; border:1px solid var(--border); border-radius:11px; background:var(--surface);
@@ -100,7 +100,10 @@
       .composer { padding:.4rem 1rem calc(.8rem + env(safe-area-inset-bottom)); }
       .composer-box { max-width:58rem; margin:auto; border:1px solid var(--border); border-radius:17px; background:var(--surface); padding:.55rem; box-shadow:var(--shadow); }
       .composer textarea { min-height:4.3rem; max-height:13rem; border:0; box-shadow:none; padding:.45rem; }
+      .composer-box.expanded textarea { height:min(13rem,40dvh); max-height:min(13rem,40dvh); }
       .composer-row { display:flex; align-items:center; gap:.45rem; }
+      .composer-resize-controls { display:flex; align-items:center; gap:.22rem; }
+      .composer-resize-controls button { width:2.25rem; min-height:2.25rem; padding:.2rem; font-weight:800; }
       .counter { margin-left:auto; }
       .document-column { border-left:1px solid var(--border); display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; overflow:hidden; }
       .document-header { padding:.85rem .9rem; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); }
@@ -147,7 +150,7 @@
         .prompt-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
       }
       @media (max-width:850px) {
-        body { overflow:auto; }
+        body { overflow:hidden; }
         .workspace-shell { height:100dvh; display:block; padding-bottom:calc(4.2rem + env(safe-area-inset-bottom)); }
         .sidebar,.chat-column,.document-column { height:calc(100dvh - 4.2rem - env(safe-area-inset-bottom)); border:0; }
         .chat-column { overflow:hidden; }
@@ -171,16 +174,16 @@
         .message-wrap.user { width:auto; max-width:90%; }
         .message-stack,.message { min-width:0; max-width:100%; }
         .message-actions { opacity:1; }
-        .composer { padding:.35rem .55rem .6rem; }
+        .composer { padding:.35rem .55rem .85rem; }
         .composer-row { min-width:0; }
         .composer-row .counter { white-space:nowrap; font-size:.72rem; }
         .document-header { padding-top:calc(.7rem + env(safe-area-inset-top)); }
         .mobile-nav {
-          position:fixed; display:grid; grid-template-columns:repeat(3,1fr); z-index:20; left:0; right:0; bottom:0;
-          height:calc(4.2rem + env(safe-area-inset-bottom)); padding:0 .6rem env(safe-area-inset-bottom);
+          position:fixed; display:grid; grid-template-columns:repeat(4,1fr); z-index:20; left:0; right:0; bottom:0;
+          height:calc(4.2rem + env(safe-area-inset-bottom)); padding:0 .4rem calc(.45rem + env(safe-area-inset-bottom));
           border-top:1px solid var(--border); background:rgba(255,255,255,.96); backdrop-filter:blur(14px);
         }
-        .mobile-nav button { border:0; background:transparent; border-radius:0; display:flex; flex-direction:column; gap:.1rem; font-size:.75rem; }
+        .mobile-nav button,.mobile-nav a { min-width:0; min-height:0; padding:.2rem; border:0; background:transparent; border-radius:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:.1rem; color:inherit; text-decoration:none; font-size:.75rem; }
         .mobile-nav button.active { color:var(--accent); font-weight:750; }
         .mobile-nav .nav-icon { font-size:1.2rem; }
         .mode-picker { min-width:7.7rem; }
@@ -246,10 +249,14 @@
         <section id="conversation" data-avatar-src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__" aria-live="polite"></section>
         <section id="composer" class="composer">
           <div id="contextNotice" class="notice"></div>
-          <div class="composer-box">
+          <div id="composerBox" class="composer-box">
             <textarea id="messageInput" placeholder="有咩要__LMC_AI_NAME__幫手？" maxlength="__LMC_AI_MESSAGE_MAX_CHARS__"></textarea>
             <div class="composer-row">
               <button id="stopButton" type="button" disabled>停止</button>
+              <div class="composer-resize-controls" role="group" aria-label="輸入框大小">
+                <button id="expandComposer" type="button" aria-label="放大輸入框" title="放大輸入框">Ʌ</button>
+                <button id="collapseComposer" type="button" aria-label="縮小輸入框" title="縮小輸入框" disabled>V</button>
+              </div>
               <span id="characterCount" class="caption counter">0 / __LMC_AI_MESSAGE_MAX_CHARS__</span>
               <button id="sendButton" class="primary" type="button">傳送</button>
             </div>
@@ -302,6 +309,7 @@
       <button class="active" data-mobile-target="chat" type="button"><span class="nav-icon">💬</span>對話</button>
       <button data-mobile-target="documents" type="button"><span class="nav-icon">📄</span>文件</button>
       <button data-mobile-target="recent" type="button"><span class="nav-icon">🕘</span>最近</button>
+      <a class="mobile-home-link" href="/" aria-label="返回主頁"><span class="nav-icon">🏠</span>主頁</a>
     </nav>
 
     <section id="loginCard">
