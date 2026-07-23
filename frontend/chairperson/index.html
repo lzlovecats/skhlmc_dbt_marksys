@@ -527,8 +527,18 @@
             busy(false);
           }
         }
+        function configureBellAudioSession() {
+          try {
+            const session = navigator.audioSession;
+            if (session && session.type !== "playback")
+              session.type = "playback";
+          } catch (_) {
+            // Older browsers have no configurable audio-session API.
+          }
+        }
         async function unlockBellAudio() {
           try {
+            configureBellAudioSession();
             if (!audio)
               audio = new (window.AudioContext || window.webkitAudioContext)();
             if (audio.state === "suspended") await audio.resume();
