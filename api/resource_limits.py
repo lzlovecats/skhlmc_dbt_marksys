@@ -70,3 +70,27 @@ def jsonl_response(filename: str, rows, *, max_bytes: int = EXPORT_MAX_BYTES):
         "Content-Disposition": f"attachment; filename={filename}",
         "X-Export-Row-Count": str(len(rows)),
     })
+
+
+def bounded_download_response(
+    filename: str,
+    content: bytes,
+    media_type: str,
+    *,
+    max_bytes: int = EXPORT_MAX_BYTES,
+):
+    """Return a non-row export under the same byte and egress safeguards."""
+    if len(content) > max_bytes:
+        raise HTTPException(
+            413,
+            f"匯出檔案超過每次 {max_bytes // (1024 * 1024)}MB 保護上限，請縮短內容後再試。",
+        )
+    _account_export_bytes(len(content))
+    return Response(
+        content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+        },
+    )

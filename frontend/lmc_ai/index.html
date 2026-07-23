@@ -3,106 +3,341 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#0e1117" />
+    <meta name="theme-color" content="#f7f8fc" />
     <title>__LMC_AI_EMOJI__ 自家AI專區</title>
     <link rel="stylesheet" href="/shared/app-shell.css?v=__APP_VERSION__" />
     <style>
-      :root { color-scheme: dark; --bg:#0e1117; --card:#1b1d27; --border:#343844; --muted:#a7afbf; --accent:#8b5cf6; --user:#23416b; }
+      :root {
+        color-scheme: light;
+        --page:#f7f8fc; --surface:#fff; --surface-2:#f1f3f9; --surface-3:#e9edf8;
+        --text:#1d2433; --muted:#697386; --border:#dce1eb; --accent:#635bdb;
+        --accent-soft:#eeecff; --user:#e7efff; --danger:#ba3b45; --success:#198754;
+        --shadow:0 18px 45px rgba(37,43,67,.09);
+      }
       * { box-sizing:border-box; }
-      body { margin:0; background:var(--bg); color:#f8fafc; font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; }
-      main { width:min(100%,62rem); min-height:100vh; margin:auto; padding:1rem max(1rem,env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)); display:grid; grid-template-rows:auto auto 1fr auto; gap:.8rem; }
-      header { display:flex; gap:.8rem; align-items:flex-start; justify-content:space-between; }
-      h1 { margin:.2rem 0; font-size:1.55rem; }
-      p { margin:.3rem 0; }
-      .muted,.caption { color:var(--muted); font-size:.9rem; }
-      .status-row,.actions { display:flex; gap:.55rem; align-items:center; flex-wrap:wrap; }
-      .pill { display:inline-flex; align-items:center; gap:.4rem; border:1px solid var(--border); border-radius:999px; padding:.35rem .65rem; background:var(--card); font-size:.88rem; }
-      .dot { width:.55rem; height:.55rem; border-radius:50%; background:#94a3b8; }
-      .dot.online { background:#34d399; } .dot.busy { background:#fbbf24; } .dot.offline { background:#fb7185; }
-      .tabs { border-bottom:1px solid var(--border); }
-      .tab { border:0; border-radius:0; background:transparent; display:inline-block; padding:.55rem .8rem; font-weight:700; color:var(--muted); }
-      .tab.active { color:#fff; border-bottom:2px solid var(--accent); }
-      .panel.hidden { display:none; }
+      html,body { min-height:100%; }
+      body { margin:0; overflow:hidden; background:var(--page); color:var(--text); font-family:system-ui,-apple-system,"PingFang HK","Noto Sans CJK HK",sans-serif; }
+      button,input,textarea,select { font:inherit; color:inherit; }
+      button,a.button {
+        min-height:2.45rem; border:1px solid var(--border); border-radius:11px; background:var(--surface);
+        padding:.45rem .72rem; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center;
+        justify-content:center; gap:.35rem;
+      }
+      button:hover,a.button:hover { background:var(--surface-2); }
+      button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+      button.ghost { border-color:transparent; background:transparent; }
+      button.danger { color:var(--danger); }
+      button:disabled { opacity:.48; cursor:not-allowed; }
+      input,textarea,select {
+        width:100%; border:1px solid var(--border); border-radius:11px; background:var(--surface);
+        padding:.68rem .75rem; outline:none;
+      }
+      input:focus,textarea:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(99,91,219,.12); }
+      textarea { resize:vertical; }
+      h1,h2,h3,p { margin-top:0; }
       .hidden { display:none !important; }
-      #conversation { min-height:20rem; overflow:auto; display:flex; flex-direction:column; gap:.85rem; padding:.6rem 0; }
-      .empty { margin:auto; max-width:34rem; text-align:center; color:var(--muted); }
-      .message { max-width:min(88%,48rem); border:1px solid var(--border); background:var(--card); border-radius:14px; padding:.75rem .9rem; overflow-wrap:anywhere; }
-      .message.user { align-self:flex-end; background:var(--user); }
-      .message-row { max-width:min(92%,52rem); display:flex; align-items:flex-end; gap:.55rem; align-self:flex-start; }
-      .message-row .message { min-width:0; max-width:100%; }
-      .assistant-avatar { width:2.35rem; height:2.35rem; flex:0 0 2.35rem; border:1px solid var(--border); border-radius:50%; object-fit:cover; object-position:center 42%; background:var(--card); }
-      .message .who { display:block; color:#c4b5fd; font-size:.78rem; font-weight:700; margin-bottom:.35rem; }
-      .message.user .who { color:#bfdbfe; }
-      .message p:first-child { margin-top:0; } .message p:last-child { margin-bottom:0; }
-      pre { overflow:auto; background:#10131b; padding:.65rem; border-radius:8px; } code { font-family:ui-monospace,monospace; }
-      .notice { display:none; border:1px solid #8a6829; background:#2c2414; color:#fde68a; border-radius:9px; padding:.65rem .8rem; }
+      .caption,.muted { color:var(--muted); font-size:.88rem; }
+      .actions { display:flex; align-items:center; flex-wrap:wrap; gap:.5rem; }
+      .workspace-shell {
+        width:100vw; height:100dvh; display:grid; grid-template-columns:17.5rem minmax(25rem,1fr) minmax(21rem,27rem);
+      }
+      .sidebar,.document-column { background:var(--surface); min-width:0; }
+      .sidebar { border-right:1px solid var(--border); padding:1rem; display:flex; flex-direction:column; gap:.9rem; overflow:hidden; }
+      .brand { display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+      .brand-title { display:flex; align-items:center; gap:.58rem; min-width:0; font-weight:800; }
+      .brand-title img { width:2.25rem; height:2.25rem; border-radius:50%; object-fit:cover; object-position:center 42%; }
+      .brand-title span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .home-link { color:var(--muted); text-decoration:none; font-size:.86rem; }
+      .service-card { border:1px solid var(--border); border-radius:13px; padding:.7rem; background:var(--surface-2); }
+      .service-button { width:100%; border:0; padding:0; min-height:auto; justify-content:flex-start; background:transparent; }
+      .status-dot { width:.58rem; height:.58rem; border-radius:50%; background:#94a3b8; flex:0 0 auto; }
+      .status-dot.online { background:var(--success); }
+      .status-dot.busy { background:#d29400; }
+      .status-dot.offline { background:#d2515d; }
+      .sidebar-tools { display:grid; grid-template-columns:1fr auto; gap:.5rem; }
+      .list-heading { display:flex; align-items:center; justify-content:space-between; margin:.1rem 0; }
+      .list-heading h2 { font-size:.82rem; letter-spacing:.04em; color:var(--muted); margin:0; }
+      .conversation-list { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:.35rem; padding-right:.15rem; }
+      .conversation-item { display:grid; grid-template-columns:1fr auto; align-items:center; gap:.25rem; border-radius:11px; }
+      .conversation-item.active { background:var(--accent-soft); }
+      .conversation-select { min-width:0; min-height:3.25rem; border:0; background:transparent; display:block; text-align:left; padding:.55rem .6rem; }
+      .conversation-title { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:650; }
+      .conversation-meta { display:block; margin-top:.12rem; color:var(--muted); font-size:.76rem; }
+      .conversation-menu { border:0; min-height:2rem; width:2rem; padding:0; background:transparent; }
+      .sidebar-footer { border-top:1px solid var(--border); padding-top:.75rem; }
+      .chat-column { min-width:0; display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; background:var(--page); }
+      .chat-header { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.85rem 1.15rem; border-bottom:1px solid var(--border); background:rgba(247,248,252,.92); }
+      .chat-title { min-width:0; }
+      .chat-title h1 { font-size:1.06rem; margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+      .chat-title p { margin:.15rem 0 0; }
+      .mode-picker { width:auto; min-width:8.7rem; padding:.48rem .62rem; }
+      .prompt-area { padding:.75rem 1.15rem 0; }
+      .prompt-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.55rem; }
+      .prompt-card { min-height:4.7rem; display:block; text-align:left; padding:.7rem; background:var(--surface); box-shadow:0 3px 12px rgba(44,50,75,.04); }
+      .prompt-card strong,.prompt-card span { display:block; }
+      .prompt-card span { color:var(--muted); font-size:.78rem; margin-top:.25rem; line-height:1.35; }
+      .notice { display:none; border:1px solid #e0c06a; background:#fff8df; color:#6d5411; border-radius:11px; padding:.62rem .75rem; margin-bottom:.55rem; }
       .notice.show { display:block; }
-      .composer { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 15%); padding-top:1rem; }
-      textarea,input { width:100%; border:1px solid var(--border); border-radius:10px; background:#12141c; color:#fff; padding:.7rem; font:inherit; }
-      textarea { min-height:5.5rem; resize:vertical; }
-      .mode-picker { display:inline-flex; align-items:center; gap:.45rem; }
-      .mode-picker select { min-height:2.5rem; border:1px solid var(--border); border-radius:9px; background:#20232e; color:#fff; padding:.45rem .65rem; font:inherit; }
-      button,a.button { min-height:2.5rem; border:1px solid var(--border); border-radius:9px; background:#20232e; color:#fff; padding:.45rem .75rem; font:inherit; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
-      button.primary { background:var(--accent); border-color:var(--accent); } button.danger { color:#fecaca; }
-      button:disabled { opacity:.5; cursor:not-allowed; }
-      #loginCard { display:none; border:1px solid var(--border); background:var(--card); border-radius:12px; padding:1rem; }
-      #loginCard.show { display:grid; gap:.65rem; }
+      #conversation { min-height:0; overflow:auto; display:flex; flex-direction:column; gap:.9rem; padding:1rem max(1rem,5vw); }
+      .empty { margin:auto; max-width:31rem; padding:1.5rem; text-align:center; color:var(--muted); }
+      .message-wrap { max-width:min(90%,52rem); align-self:flex-start; display:flex; gap:.55rem; align-items:flex-start; }
+      .message-wrap.user { align-self:flex-end; justify-content:flex-end; }
+      .assistant-avatar { width:2rem; height:2rem; flex:0 0 2rem; border-radius:50%; object-fit:cover; object-position:center 42%; }
+      .message-stack { min-width:0; }
+      .message {
+        border:1px solid var(--border); background:var(--surface); border-radius:16px; padding:.72rem .85rem;
+        overflow-wrap:anywhere; box-shadow:0 3px 12px rgba(44,50,75,.035);
+      }
+      .message.user { background:var(--user); border-color:#cedcff; }
+      .message .who { display:block; color:var(--accent); font-size:.76rem; font-weight:750; margin-bottom:.3rem; }
+      .message.user .who { color:#315991; }
+      .message p:first-child { margin-top:0; } .message p:last-child { margin-bottom:0; }
+      .message-actions { display:flex; flex-wrap:wrap; gap:.18rem; margin-top:.25rem; opacity:.15; transition:opacity .15s; }
+      .message-wrap:hover .message-actions,.message-wrap:focus-within .message-actions { opacity:1; }
+      .message-actions button { border:0; background:transparent; min-height:1.9rem; padding:.2rem .42rem; font-size:.78rem; color:var(--muted); }
+      pre { overflow:auto; background:#f0f2f8; padding:.65rem; border-radius:8px; }
+      code { font-family:ui-monospace,monospace; }
+      .composer { padding:.4rem 1rem calc(.8rem + env(safe-area-inset-bottom)); }
+      .composer-box { max-width:58rem; margin:auto; border:1px solid var(--border); border-radius:17px; background:var(--surface); padding:.55rem; box-shadow:var(--shadow); }
+      .composer textarea { min-height:4.3rem; max-height:13rem; border:0; box-shadow:none; padding:.45rem; }
+      .composer-row { display:flex; align-items:center; gap:.45rem; }
       .counter { margin-left:auto; }
-      .node-grid { display:grid; gap:.7rem; padding:.8rem 0; }
-      .node-card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:.85rem; }
-      .node-card h2 { margin:0 0 .4rem; font-size:1rem; }
-      .node-meta { display:flex; flex-wrap:wrap; gap:.45rem; color:var(--muted); font-size:.86rem; }
-      @media (max-width:640px) { .message{max-width:94%}.message-row{max-width:98%}.message-row .message{max-width:calc(100% - 2.9rem)} header{display:block}.header-actions{margin-top:.6rem}.mode-picker .caption{display:none} }
-      @media (max-width:640px) { .tabs{display:flex;overflow:auto}.tab{white-space:nowrap} }
+      .document-column { border-left:1px solid var(--border); display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; overflow:hidden; }
+      .document-header { padding:.85rem .9rem; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); }
+      .document-header h2 { margin:0; font-size:1rem; }
+      .document-list { display:flex; gap:.4rem; overflow:auto; padding:.6rem .8rem; border-bottom:1px solid var(--border); }
+      .document-chip { max-width:11rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 0 auto; min-height:2.15rem; font-size:.8rem; }
+      .document-chip.active { background:var(--accent-soft); border-color:#c8c2ff; }
+      .document-canvas { min-height:0; overflow:auto; padding:.8rem; display:flex; flex-direction:column; gap:.65rem; }
+      .document-empty { margin:auto; max-width:19rem; text-align:center; color:var(--muted); }
+      #documentTitle { font-size:1.1rem; font-weight:750; }
+      .document-toolbar { display:flex; flex-wrap:wrap; gap:.35rem; }
+      .document-toolbar button { min-height:2.1rem; font-size:.78rem; padding:.35rem .5rem; }
+      #documentEditor { flex:1; min-height:18rem; line-height:1.55; }
+      #documentPreview { flex:1; min-height:18rem; padding:.7rem; border:1px solid var(--border); border-radius:11px; overflow:auto; }
+      .export-bar { border-top:1px solid var(--border); padding:.7rem .8rem calc(.7rem + env(safe-area-inset-bottom)); display:grid; grid-template-columns:1fr auto; gap:.45rem; }
+      dialog { border:1px solid var(--border); border-radius:16px; background:var(--surface); color:var(--text); box-shadow:var(--shadow); padding:0; width:min(92vw,30rem); }
+      dialog::backdrop { background:rgba(21,26,41,.38); }
+      .dialog-body { padding:1rem; }
+      .dialog-body h2 { font-size:1.08rem; }
+      .node-grid { display:grid; gap:.55rem; margin:.8rem 0; }
+      .node-card { border:1px solid var(--border); border-radius:12px; padding:.75rem; background:var(--surface-2); }
+      .node-card h3 { margin:0 0 .35rem; font-size:.95rem; }
+      .node-meta { display:flex; flex-wrap:wrap; gap:.35rem; }
+      .node-meta span { font-size:.78rem; color:var(--muted); }
+      .toast {
+        position:fixed; z-index:40; left:50%; bottom:1.1rem; transform:translate(-50%,1rem);
+        max-width:min(90vw,34rem); border:1px solid var(--border); border-radius:12px;
+        background:var(--text); color:var(--surface); padding:.7rem .9rem; box-shadow:var(--shadow);
+        opacity:0; pointer-events:none; transition:opacity .16s,transform .16s;
+      }
+      .toast.show { opacity:1; transform:translate(-50%,0); }
+      .workspace-readonly {
+        position:fixed; z-index:35; top:max(.7rem,env(safe-area-inset-top)); left:50%;
+        transform:translateX(-50%); width:min(92vw,44rem); border:1px solid #e0c06a;
+        border-radius:12px; background:#fff8df; color:#6d5411; padding:.68rem .85rem;
+        box-shadow:var(--shadow); text-align:center; font-size:.88rem;
+      }
+      #loginCard { display:none; position:fixed; z-index:30; inset:0; background:rgba(247,248,252,.96); place-items:center; padding:1rem; }
+      #loginCard.show { display:grid; }
+      .login-box { width:min(100%,24rem); background:var(--surface); border:1px solid var(--border); border-radius:17px; box-shadow:var(--shadow); padding:1.1rem; display:grid; gap:.65rem; }
+      .mobile-nav { display:none; }
+      @media (max-width:1180px) {
+        .workspace-shell { grid-template-columns:15.5rem minmax(24rem,1fr) minmax(19rem,23rem); }
+        .prompt-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      }
+      @media (max-width:850px) {
+        body { overflow:auto; }
+        .workspace-shell { height:100dvh; display:block; padding-bottom:calc(4.2rem + env(safe-area-inset-bottom)); }
+        .sidebar,.chat-column,.document-column { height:calc(100dvh - 4.2rem - env(safe-area-inset-bottom)); border:0; }
+        .chat-column { overflow:hidden; }
+        .sidebar { display:none; }
+        .chat-column { display:grid; }
+        .document-column { display:none; }
+        body[data-mobile-view="recent"] .sidebar { display:flex; }
+        body[data-mobile-view="recent"] .chat-column,body[data-mobile-view="recent"] .document-column { display:none; }
+        body[data-mobile-view="documents"] .document-column { display:grid; }
+        body[data-mobile-view="documents"] .chat-column,body[data-mobile-view="documents"] .sidebar { display:none; }
+        .brand { padding-top:env(safe-area-inset-top); }
+        .chat-header { grid-template-columns:minmax(0,1fr) auto; display:grid; gap:.4rem; padding:.65rem .7rem; padding-top:calc(.65rem + env(safe-area-inset-top)); }
+        .chat-header .actions { flex-wrap:nowrap; }
+        .chat-header .mode-picker { width:7.5rem; min-width:7.5rem; }
+        .chat-title { overflow:hidden; }
+        .prompt-area { overflow:auto; padding:.6rem .75rem 0; }
+        .prompt-grid { display:flex; width:max-content; }
+        .prompt-card { width:10.5rem; min-height:4.4rem; }
+        #conversation { padding:.8rem; }
+        .message-wrap { width:96%; max-width:96%; min-width:0; }
+        .message-wrap.user { width:auto; max-width:90%; }
+        .message-stack,.message { min-width:0; max-width:100%; }
+        .message-actions { opacity:1; }
+        .composer { padding:.35rem .55rem .6rem; }
+        .composer-row { min-width:0; }
+        .composer-row .counter { white-space:nowrap; font-size:.72rem; }
+        .document-header { padding-top:calc(.7rem + env(safe-area-inset-top)); }
+        .mobile-nav {
+          position:fixed; display:grid; grid-template-columns:repeat(3,1fr); z-index:20; left:0; right:0; bottom:0;
+          height:calc(4.2rem + env(safe-area-inset-bottom)); padding:0 .6rem env(safe-area-inset-bottom);
+          border-top:1px solid var(--border); background:rgba(255,255,255,.96); backdrop-filter:blur(14px);
+        }
+        .mobile-nav button { border:0; background:transparent; border-radius:0; display:flex; flex-direction:column; gap:.1rem; font-size:.75rem; }
+        .mobile-nav button.active { color:var(--accent); font-weight:750; }
+        .mobile-nav .nav-icon { font-size:1.2rem; }
+        .mode-picker { min-width:7.7rem; }
+      }
+      @media (prefers-color-scheme:dark) {
+        :root {
+          color-scheme:dark; --page:#101218; --surface:#181b24; --surface-2:#20242f; --surface-3:#282d39;
+          --text:#f4f6fb; --muted:#aab2c2; --border:#353b49; --accent:#9c92ff; --accent-soft:#29254b;
+          --user:#223653; --shadow:0 18px 45px rgba(0,0,0,.28);
+        }
+        .chat-header { background:rgba(16,18,24,.92); }
+        .notice { background:#302813; color:#f6dc8a; border-color:#705e2c; }
+        .workspace-readonly { background:#302813; color:#f6dc8a; border-color:#705e2c; }
+        pre { background:#101218; }
+        .mobile-nav { background:rgba(24,27,36,.96); }
+        #loginCard { background:rgba(16,18,24,.97); }
+      }
     </style>
   </head>
-  <body>
-    <main>
-      <header>
-        <div>
-          <a href="/" class="caption">← 返回主頁</a>
-          <h1>__LMC_AI_EMOJI__ 自家AI專區</h1>
-          <p class="muted">同 __LMC_AI_NAME__ 對話；RAG 同 Fine-tune 暫未啟用。</p>
+  <body data-mobile-view="chat">
+    <div class="workspace-shell">
+      <aside id="recentPanel" class="sidebar" aria-label="最近項目">
+        <div class="brand">
+          <div class="brand-title">
+            <img src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__" alt="" />
+            <span>__LMC_AI_EMOJI__ 自家AI專區</span>
+          </div>
+          <a class="home-link" href="/">主頁</a>
         </div>
-        <div class="actions header-actions">
-          <button id="newChat" type="button">新對話</button>
-          <button id="deleteChat" class="danger" type="button">刪除對話</button>
+        <div class="service-card">
+          <button id="statusButton" class="service-button" type="button">
+            <span id="statusDot" class="status-dot"></span>
+            <span id="serviceStatus">正在檢查服務…</span>
+          </button>
+          <div id="identityStatus" class="caption" style="margin-top:.35rem"></div>
         </div>
-      </header>
-      <div>
-        <div class="tabs" role="tablist" aria-label="自家 AI 功能">
-          <button id="chatTab" class="tab active" data-panel="chatPanel" role="tab" aria-controls="chatPanel" aria-selected="true" tabindex="0" type="button">對話</button>
-          <button id="operationsTab" class="tab" data-panel="operationsPanel" role="tab" aria-controls="operationsPanel" aria-selected="false" tabindex="-1" type="button">AI運作情況</button>
+        <div class="sidebar-tools">
+          <input id="conversationSearch" type="search" placeholder="搜尋對話" aria-label="搜尋對話" />
+          <button id="newChat" class="primary" type="button" aria-label="新增對話">＋</button>
         </div>
-        <div class="status-row" style="margin-top:.65rem">
-          <span class="pill"><span id="statusDot" class="dot"></span><span id="serviceStatus">正在檢查服務…</span></span>
-          <span id="identityStatus" class="caption"></span>
+        <div class="list-heading"><h2>最近對話</h2><span id="conversationCount" class="caption"></span></div>
+        <div id="conversationList" class="conversation-list"></div>
+        <div class="sidebar-footer">
+          <button id="newDocumentSidebar" type="button" style="width:100%">＋ 新增文件</button>
+          <p class="caption" style="margin:.55rem 0 0">內容只保存在此瀏覽器，系統不會自動刪除或同步至其他裝置。</p>
         </div>
-      </div>
-      <section id="loginCard">
-        <strong>委員登入</strong>
+      </aside>
+
+      <main id="chatPanel" class="chat-column">
+        <header class="chat-header">
+          <div class="chat-title">
+            <h1 id="activeConversationTitle">新對話</h1>
+            <p id="chatSaveStatus" class="caption">儲存在此瀏覽器</p>
+          </div>
+          <div class="actions">
+            <select id="thinkingMode" class="mode-picker" aria-label="回答模式" disabled></select>
+            <button id="mobileStatusButton" class="ghost" type="button" aria-label="服務狀態">●</button>
+          </div>
+        </header>
+        <section class="prompt-area" aria-label="快捷 Prompt">
+          <div id="promptGrid" class="prompt-grid"></div>
+        </section>
+        <section id="conversation" data-avatar-src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__" aria-live="polite"></section>
+        <section id="composer" class="composer">
+          <div id="contextNotice" class="notice"></div>
+          <div class="composer-box">
+            <textarea id="messageInput" placeholder="有咩要__LMC_AI_NAME__幫手？" maxlength="__LMC_AI_MESSAGE_MAX_CHARS__"></textarea>
+            <div class="composer-row">
+              <button id="stopButton" type="button" disabled>停止</button>
+              <span id="characterCount" class="caption counter">0 / __LMC_AI_MESSAGE_MAX_CHARS__</span>
+              <button id="sendButton" class="primary" type="button">傳送</button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside id="documentPanel" class="document-column" aria-label="文件 Canvas">
+        <header class="document-header">
+          <div><h2>文件 Canvas</h2><span id="documentCount" class="caption"></span></div>
+          <div class="actions">
+            <button id="newDocument" type="button">＋ 新文件</button>
+            <button id="deleteDocument" class="danger" type="button">刪除</button>
+          </div>
+        </header>
+        <div id="documentList" class="document-list" aria-label="文件清單"></div>
+        <section id="documentCanvas" class="document-canvas">
+          <div id="documentEmpty" class="document-empty">
+            <h3>建立可編輯文件</h3>
+            <p>可由 AI 回覆建立文件，或新增空白文件。內容會即時保存在此瀏覽器。</p>
+            <button id="emptyNewDocument" class="primary" type="button">新增第一份文件</button>
+          </div>
+          <div id="documentEditorPanel" class="hidden" style="display:flex;flex:1;min-height:0;flex-direction:column;gap:.65rem">
+            <input id="documentTitle" maxlength="200" aria-label="文件標題" />
+            <div class="document-toolbar">
+              <button data-rewrite="shorten" type="button">改短選取內容</button>
+              <button data-rewrite="tone" type="button">轉自然語氣</button>
+              <button data-rewrite="example" type="button">補充例子</button>
+              <button data-rewrite="rewrite" type="button">重寫選取內容</button>
+              <button id="togglePreview" type="button">預覽</button>
+            </div>
+            <textarea id="documentEditor" aria-label="文件內容" placeholder="在此編輯文件內容…"></textarea>
+            <div id="documentPreview" class="hidden"></div>
+            <span id="documentSaveStatus" class="caption">已儲存在此瀏覽器</span>
+          </div>
+        </section>
+        <div class="export-bar">
+          <select id="exportFormat" aria-label="匯出格式">
+            <option value="docx">Word（.docx）</option>
+            <option value="pdf">PDF</option>
+            <option value="markdown">Markdown</option>
+          </select>
+          <button id="exportDocument" class="primary" type="button">匯出</button>
+        </div>
+      </aside>
+    </div>
+    <div id="workspaceReadOnlyBanner" class="workspace-readonly hidden" role="status"></div>
+
+    <nav class="mobile-nav" aria-label="自家 AI 功能">
+      <button class="active" data-mobile-target="chat" type="button"><span class="nav-icon">💬</span>對話</button>
+      <button data-mobile-target="documents" type="button"><span class="nav-icon">📄</span>文件</button>
+      <button data-mobile-target="recent" type="button"><span class="nav-icon">🕘</span>最近</button>
+    </nav>
+
+    <section id="loginCard">
+      <div class="login-box">
+        <h2 style="margin:0">委員登入</h2>
         <input id="loginUser" autocomplete="username" placeholder="帳戶" />
         <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密碼" />
-        <div class="actions"><button id="loginButton" class="primary" type="button">登入</button><span id="loginError" class="caption"></span></div>
-      </section>
-      <section id="chatPanel" class="panel" role="tabpanel" aria-labelledby="chatTab">
-        <section id="conversation" data-avatar-src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__" aria-live="polite"></section>
-      </section>
-      <section id="operationsPanel" class="panel hidden" role="tabpanel" aria-labelledby="operationsTab">
-        <p class="muted">顯示唯一 AI Workstation 嘅即時狀態；系統唔會自動轉用其他電腦或雲端模型。</p>
-        <div id="nodeGrid" class="node-grid" aria-live="polite"></div>
-      </section>
-      <section id="composer" class="composer">
-        <div id="contextNotice" class="notice"></div>
-        <textarea id="messageInput" placeholder="有咩要 __LMC_AI_NAME__ 幫你？" maxlength="__LMC_AI_MESSAGE_MAX_CHARS__"></textarea>
-        <div class="actions" style="margin-top:.55rem">
-          <label class="mode-picker"><span class="caption">回答模式</span><select id="thinkingMode" aria-label="回答模式" disabled></select></label>
-          <button id="sendButton" class="primary" type="button">傳送</button>
-          <button id="stopButton" type="button" disabled>停止生成</button>
-          <span id="characterCount" class="caption counter">0 / __LMC_AI_MESSAGE_MAX_CHARS__</span>
+        <button id="loginButton" class="primary" type="button">登入</button>
+        <span id="loginError" class="caption"></span>
+      </div>
+    </section>
+
+    <dialog id="statusDialog">
+      <div class="dialog-body">
+        <div class="actions" style="justify-content:space-between">
+          <h2 style="margin:0">AI 運作情況</h2>
+          <button data-close-dialog="statusDialog" class="ghost" type="button">關閉</button>
         </div>
-      </section>
-    </main>
+        <p class="muted">顯示唯一 AI Workstation 的即時狀態。系統不會自動轉用其他電腦或雲端模型，RAG 及 Fine-tune 暫未啟用。</p>
+        <div id="nodeGrid" class="node-grid" aria-live="polite"></div>
+      </div>
+    </dialog>
+
+    <dialog id="promptDialog">
+      <div class="dialog-body">
+        <h2>輸入框已有內容</h2>
+        <p class="muted">請選擇如何加入這段預設 Prompt。系統只會放入輸入框，不會自動傳送。</p>
+        <div class="actions" style="justify-content:flex-end">
+          <button data-close-dialog="promptDialog" type="button">取消</button>
+          <button id="appendPrompt" type="button">加在後面</button>
+          <button id="replacePrompt" class="primary" type="button">取代內容</button>
+        </div>
+      </div>
+    </dialog>
+    <div id="workspaceToast" class="toast" role="status" aria-live="polite"></div>
+
     <script src="/shared/markdown.js?v=__APP_VERSION__"></script>
     <script src="/lmc-ai/app.js?v=__APP_VERSION__"></script>
   </body>

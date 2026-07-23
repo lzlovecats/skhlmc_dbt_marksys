@@ -94,7 +94,7 @@ def test_ai_coach_local_live_warnings_are_consolidated_and_use_fast_mode_copy():
     assert "Gemini Live Mock練習" not in page
     assert "<h2>自由辯論練習</h2>" in page
     assert "<h2>Mock練習</h2>" in page
-    assert "自家AI將會使用「快速回覆」模式。" in sync_model
+    assert "自家AI將會使用「快速回應」模式。" in sync_model
     assert "const localLiveWarning" in sync_model
     assert "model.local_node\n      ? localLiveWarning + countryWarning" in sync_model
     assert "目前模型不支援Live，請使用Gemini模型。" in sync_model

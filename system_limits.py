@@ -240,6 +240,8 @@ LMC_AI_PREFLIGHT_TIMEOUT_SECONDS = _limit("LMC_AI_PREFLIGHT_TIMEOUT_SECONDS", 60
 LMC_AI_OUTPUT_MAX_BYTES = _limit("LMC_AI_OUTPUT_MAX_BYTES", 256 * KIB, minimum=KIB, maximum=256 * KIB, group="ai", description="Local AI streamed answer bytes")
 LMC_AI_BROWSER_HISTORY_MAX_MESSAGES = _limit("LMC_AI_BROWSER_HISTORY_MAX_MESSAGES", 100, minimum=2, maximum=100, group="browser", description="Messages retained for one browser-local AI conversation")
 LMC_AI_BROWSER_HISTORY_MAX_CHARS = _limit("LMC_AI_BROWSER_HISTORY_MAX_CHARS", 200_000, minimum=1_000, maximum=200_000, group="browser", description="Characters retained for one browser-local AI conversation")
+LMC_AI_BROWSER_CONVERSATION_MAX = _limit("LMC_AI_BROWSER_CONVERSATION_MAX", 20, minimum=1, maximum=20, group="browser", description="Conversations retained in one member browser workspace")
+LMC_AI_BROWSER_DOCUMENT_MAX = _limit("LMC_AI_BROWSER_DOCUMENT_MAX", 20, minimum=1, maximum=20, group="browser", description="Editable documents retained in one member browser workspace")
 LOCAL_PRACTICE_CONTEXT_MAX_CHARS = _limit("LOCAL_PRACTICE_CONTEXT_MAX_CHARS", 6_000, minimum=1_000, maximum=6_000, group="ai", description="Transcript characters sent into one local-AI practice generation")
 LOCAL_PRACTICE_REPLY_MAX_CHARS = _limit("LOCAL_PRACTICE_REPLY_MAX_CHARS", 1_200, minimum=100, maximum=1_200, group="ai", description="Characters in one spoken local-AI practice reply")
 LOCAL_PRACTICE_FEEDBACK_MAX_CHARS = _limit("LOCAL_PRACTICE_FEEDBACK_MAX_CHARS", 12_000, minimum=1_000, maximum=12_000, group="ai", description="Characters in local-AI practice final text feedback")

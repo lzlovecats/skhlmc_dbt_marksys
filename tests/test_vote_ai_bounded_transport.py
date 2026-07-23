@@ -220,7 +220,7 @@ def test_vote_status_gate_requires_selected_online_fast_mode(monkeypatch):
                 "modes": [{
                     "id": "fast",
                     "available": False,
-                    "message": "目前選用的自家 AI 電腦未提供「快速回覆」模式。",
+                    "message": "目前選用的自家 AI 電腦未提供「快速回應」模式。",
                 }],
         }
 
@@ -235,7 +235,7 @@ def test_vote_status_gate_requires_selected_online_fast_mode(monkeypatch):
     with pytest.raises(vote_api.HTTPException) as exc_info:
         vote_api._require_vote_ai_available("local", "vote-db")
     assert exc_info.value.status_code == 503
-    assert "快速回覆" in str(exc_info.value.detail)
+    assert "快速回應" in str(exc_info.value.detail)
     vote_api._require_vote_ai_available("gemini", "vote-db")
 
 
