@@ -121,7 +121,7 @@ def validate_history_event(values):
         "event_date": event_date,
         "title": _text(values.get("title"), "事件標題", 500, required=True),
         "description": _text(values.get("description"), "事件內容", 5000),
-        "match_ids": _identifier_list(values.get("match_ids"), 20, 200, "比賽"),
+        "video_ids": _integer_list(values.get("video_ids"), 20, "影片", "條"),
         "photo_ids": _integer_list(values.get("photo_ids"), 30, "圖片"),
     }
 

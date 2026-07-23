@@ -18,7 +18,7 @@ def test_factory_tab_is_retained_as_one_static_admin_guide():
     assert PAGE.count('<section id="factory" class="admin-pane">') == 1
 
     for heading in (
-        "先分清 RAG 與 SFT",
+        "先了解 RAG 與 SFT 的分別",
         "RAG 資料製作流程",
         "SFT 資料製作流程",
         "發布前檢查",
@@ -30,19 +30,28 @@ def test_rag_guide_matches_the_workstation_documents_jsonl_contract():
     assert "documents.jsonl" in PAGE
     for field in ('"id"', '"title"', '"text"', '"source_url"'):
         assert field in PAGE
-    assert "一行一個 JSON object" in PAGE
+    assert "每行為一個 JSON 物件" in PAGE
     assert "HTTPS" in PAGE
-    assert "穩定而且唯一" in PAGE
-    assert "完整長文直接當成一段" in PAGE
+    assert "穩定且唯一" in PAGE
+    assert "完整長文直接視為一個段落" in PAGE
 
 
 def test_sft_guide_keeps_behaviour_training_separate_from_retrievable_knowledge():
     assert '"messages"' in PAGE
     for role in ('"system"', '"user"', '"assistant"'):
         assert role in PAGE
-    assert "只訓練 assistant 回覆" in PAGE
-    assert "事實、規則、案例同引用放入 RAG" in PAGE
-    assert "原始講稿或逐字稿唔係天然問答配對" in PAGE
+    assert "僅訓練 assistant 回覆" in PAGE
+    assert "事實、規則、案例及引用資料應存放於 RAG" in PAGE
+    assert "原始講稿或逐字稿並非天然的問答配對" in PAGE
+
+
+def test_factory_guide_uses_written_chinese_for_user_facing_copy():
+    guide = PAGE.split('<section id="factory" class="admin-pane">', 1)[1].split(
+        "</section>\n        </section>\n      </section>", 1
+    )[0]
+    for colloquial_term in ("呢個", "唔", "喺", "嘅", "嚟", "點樣", "講咗", "發生咩事"):
+        assert colloquial_term not in guide
+    assert "；" not in guide
 
 
 def test_retired_factory_has_no_browser_workflow_or_endpoint():

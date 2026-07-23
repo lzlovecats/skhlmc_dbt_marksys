@@ -185,6 +185,7 @@ AI provider abstraction 唔代表 call site 可以忽略 operation accounting。
 
 HTML/CSS/JS 原檔直接 serve。Shared asset 會被 cache，HTML 亦有 `stale-while-revalidate`。
 
+- 一般情況下，所有面向使用者的 caption、標題、按鈕、提示及說明文字必須使用書面語，並避免使用全形分號「；」。只有逐字引述、資料原文或使用者明確指定的產品文案才可例外。
 - 改 shared JS 後，每個 HTML consumer 都要用 `?v=APP_VERSION` 或 server replace 嘅 `__APP_VERSION__`。漏一頁會造成「部分人已修、部分人仲舊版」。
 - 唔好將 `__APP_VERSION__` 放入 server 無 replace 嘅 FileResponse；加 regression 確保 response 無 placeholder。
 - `node --check` 只驗 standalone `.js`；HTML inline script 要抽取／browser smoke／contract test。

@@ -448,26 +448,26 @@
             <section class="card">
               <h2>RAG / SFT 資料製作指引</h2>
               <p class="notice">
-                呢個分頁唔會生成、審核、儲存或發布資料。管理員要由已核對來源人手建立
-                JSONL，再按 Workstation 發布流程驗證、簽署同安裝。
+                本分頁不會生成、審核、儲存或發布任何資料。管理員須根據已核實的來源，以人手建立
+                JSONL 檔案，再按照 Workstation 的發布流程進行驗證、簽署及安裝。
               </p>
             </section>
 
             <section class="card">
-              <h3>先分清 RAG 與 SFT</h3>
+              <h3>先了解 RAG 與 SFT 的分別</h3>
               <ul>
                 <li>
-                  <strong>RAG</strong> 儲存需要檢索、引用、更新或撤回嘅知識。
-                  事實、規則、案例同引用放入 RAG，唔好靠模型參數記住。
+                  <strong>RAG</strong> 儲存需要檢索、引用、更新或撤回的知識。
+                  事實、規則、案例及引用資料應存放於 RAG，不應依靠模型參數記憶。
                 </li>
                 <li>
-                  <strong>SFT</strong> 教模型點樣回答，例如語氣、結構、分析步驟同拒答方式；
-                  唔應用嚟背誦會改變或需要引用嘅知識。
+                  <strong>SFT</strong> 教授模型如何作答，例如語氣、結構、分析步驟及拒答方式。
+                  不應用作背誦會改變或需要引用的知識。
                 </li>
               </ul>
               <p>
-                開始前先喺「LLM 文字審核」確認來源已接受、匿名化、具使用權，而且內容仍然有效。
-                保留來源擁有人、版本／日期、授權依據、內容 SHA-256 同撤回聯絡方法。
+                開始前，請先在「LLM 文字審核」確認來源已獲接納、完成匿名化、具備使用權，而且內容仍然有效。
+                請保留來源擁有人、版本／日期、授權依據、內容 SHA-256 及撤回聯絡方法。
               </p>
             </section>
 
@@ -475,28 +475,28 @@
               <h3>RAG 資料製作流程</h3>
               <ol>
                 <li>
-                  由規則、教練筆記、已授權案例或可靠參考資料建立 canonical 原文；唔好將
-                  AI 生成摘要當成事實來源。
+                  根據規則、教練筆記、已授權案例或可靠參考資料建立 canonical 原文。不得將
+                  AI 生成的摘要視為事實來源。
                 </li>
                 <li>
-                  按語意切段：每段只處理一個主題，並要離開原文件後仍可獨立理解。
-                  唔好將完整長文直接當成一段，亦唔好為增加數量而重複近似段落。
+                  按語義分段：每段只處理一個主題，並須在離開原文件後仍可獨立理解。
+                  不得將完整長文直接視為一個段落，亦不得為增加數量而重複近似段落。
                 </li>
                 <li>
-                  建立 <code>documents.jsonl</code>；一行一個 JSON object，而且只可包含
+                  建立 <code>documents.jsonl</code>。每行為一個 JSON 物件，而且只可包含
                   <code>"id"</code>、<code>"title"</code>、<code>"text"</code>、
                   <code>"source_url"</code>。
                 </li>
                 <li>
-                  <code>id</code> 必須穩定而且唯一；<code>title</code> 要交代主題及版本；
-                  <code>text</code> 要包含可直接引用嘅內容、適用範圍同必要限制。
-                  公開來源使用 HTTPS，純內部來源可將 <code>source_url</code> 留空。
+                  <code>id</code> 必須穩定且唯一。<code>title</code> 須列明主題及版本。
+                  <code>text</code> 須包含可直接引用的內容、適用範圍及必要限制。
+                  公開來源須使用 HTTPS。純內部來源可將 <code>source_url</code> 留空。
                 </li>
               </ol>
-              <pre class="json">{"id":"rules-judging-2026-001","title":"評判準則｜論證完整性｜2026","text":"來源：校隊規則第六節。評判應檢視主張、理由、機制及影響是否連貫。適用於正式比賽；資料不足時不可自行補作事實。","source_url":""}</pre>
+              <pre class="json">{"id":"rules-judging-2026-001","title":"評判準則｜論證完整性｜2026","text":"來源：校隊規則第六節。評判應檢視主張、理由、機制及影響是否連貫。適用於正式比賽。資料不足時不可自行補作事實。","source_url":""}</pre>
               <p>
-                完成後將 <code>documents.jsonl</code> 放喺 RAG bundle 根目錄，建立新版本同
-                manifest，核對檔案 hash，再按 Workstation runbook 離線簽署。舊版本唔可以原位改寫。
+                完成後，請將 <code>documents.jsonl</code> 放置於 RAG bundle 根目錄，建立新版本及
+                manifest，核對檔案雜湊值（hash），再按照 Workstation runbook 進行離線簽署。舊版本不得原址改寫。
               </p>
             </section>
 
@@ -504,34 +504,34 @@
               <h3>SFT 資料製作流程</h3>
               <ol>
                 <li>
-                  每一行係一個完整訓練例子，以 <code>"messages"</code> 保存
+                  每一行均為一個完整的訓練例子，以 <code>"messages"</code> 保存
                   <code>"system"</code>、<code>"user"</code>、<code>"assistant"</code>
-                  訊息；只訓練 assistant 回覆。
+                  訊息，並僅訓練 assistant 回覆。
                 </li>
                 <li>
-                  user 訊息要係真實、完整而可回答嘅任務；assistant 目標答案要由熟悉辯論訓練嘅人
-                  親自審核，示範期望語氣、推理步驟、引用方式同資料不足時嘅處理。
+                  user 訊息須為真實、完整且可回答的任務。assistant 目標答案須由熟悉辯論訓練的人員
+                  親自審核，以示範預期語氣、推理步驟、引用方式，以及資料不足時的處理方法。
                 </li>
                 <li>
-                  原始講稿或逐字稿唔係天然問答配對。要先人手界定問題、所需上下文同理想答案，
-                  唔可以將相鄰段落自動當成 user／assistant。
+                  原始講稿或逐字稿並非天然的問答配對。須先由人手界定問題、所需上下文及理想答案，
+                  不得將相鄰段落自動視為 user／assistant。
                 </li>
                 <li>
-                  同一來源、同一場比賽或同一份稿只可落入一個 split，避免內容同時出現喺
-                  train、validation 同獨立 eval。
+                  同一來源、同一場比賽或同一份稿件只可歸入一個 split，避免內容同時出現於
+                  train、validation 及獨立 eval。
                 </li>
               </ol>
-              <pre class="json">{"messages":[{"role":"system","content":"你係香港中學辯論教練；資料不足時要講明。"},{"role":"user","content":"請分析以下主張點解欠缺機制：……"},{"role":"assistant","content":"呢個主張講咗結果，但未交代由原因去到結果中間發生咩事。你可以先補充……"}]}</pre>
+              <pre class="json">{"messages":[{"role":"system","content":"你是香港中學辯論教練。資料不足時必須明確說明。"},{"role":"user","content":"請分析以下主張為何欠缺機制：……"},{"role":"assistant","content":"這項主張說明了結果，但未有交代由原因發展至結果期間所發生的事情。你可以先補充……"}]}</pre>
             </section>
 
             <section class="card">
               <h3>發布前檢查</h3>
               <ul>
-                <li>逐項核對授權、匿名化、來源、日期、適用範圍、事實準確度同撤回狀態。</li>
-                <li>移除 duplicate、相互矛盾而無版本標示嘅內容、私人資料同無法追溯來源嘅主張。</li>
-                <li>驗證每行 JSON 都可獨立 parse，ID 無重複，檔案 hash、版本同 manifest 一致。</li>
-                <li>預留完全未參與製作嘅 eval cases，測試檢索命中、引用準確、拒答同私隱。</li>
-                <li>只有 blind eval 通過，先簽署及安裝新 bundle；失敗就保留目前 active 版本。</li>
+                <li>逐項核對授權、匿名化、來源、日期、適用範圍、事實準確度及撤回狀態。</li>
+                <li>移除重複內容、互相矛盾但沒有版本標示的內容、個人資料及無法追溯來源的主張。</li>
+                <li>驗證每行 JSON 均可獨立解析，ID 沒有重複，檔案雜湊值、版本及 manifest 一致。</li>
+                <li>預留完全未參與製作的評估案例（eval cases），以測試檢索命中、引用準確度、拒答及私隱處理。</li>
+                <li>只有在 blind eval 通過後，方可簽署及安裝新 bundle。如未能通過，則保留現行 active 版本。</li>
               </ul>
             </section>
           </section>

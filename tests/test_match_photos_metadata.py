@@ -363,6 +363,21 @@ def test_photo_upload_batches_unbounded_selection_with_progress_and_single_fligh
     assert "location.reload()" not in upload
 
 
+def test_photo_upload_accumulates_separate_desktop_picker_selections():
+    html = (ROOT / "frontend" / "match_photos" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="selectedFiles"' in html
+    assert "let selectedUploadFiles = []" in html
+    assert '$("files").addEventListener("change"' in html
+    assert "selectedUploadFiles.push" in html
+    assert '$("files").value = ""' in html
+    assert "data-remove-upload-file" in html
+    assert "const files = [...selectedUploadFiles]" in html
+    assert 'const files = [...$("files").files]' not in html
+
+
 class _DeletePhotoDb:
     def __init__(self, row=None, *, changed=1, events=None):
         self.row = row
