@@ -926,6 +926,53 @@ LLM_TEXT_REVIEW_SYSTEM_PROMPT = (
 )
 
 
+# These browser-visible templates are the single source for the LMC AI quick
+# prompts.  They are inserted into the composer for the member to edit and are
+# never sent automatically.
+LMC_AI_PROMPT_TEMPLATES = (
+    {
+        "id": "analyse_motion",
+        "title": "拆解辯題",
+        "description": "整理定義、價值、主線同爭議",
+        "prompt": (
+            "幫我拆解下面條辯題，分別列出正反方點樣定義、重視咩價值、"
+            "有咩主要論點、對方可能點反駁，同埋三個最關鍵嘅爭議。\n\n"
+            "辯題："
+        ),
+    },
+    {
+        "id": "write_case",
+        "title": "撰寫立論",
+        "description": "預設約 4 分鐘，可直接改 Prompt",
+        "prompt": (
+            "幫我根據下面啲資料寫一篇大約 4 分鐘嘅立論稿。要包括定義、判準、"
+            "主要論點、論證機制、例子同結論，語氣要自然、清楚，適合直接講出嚟。\n\n"
+            "辯題：\n立場：\n重點："
+        ),
+    },
+    {
+        "id": "create_document",
+        "title": "建立文件",
+        "description": "先定結構，再整理成完整內容",
+        "prompt": (
+            "幫我根據下面啲資料整一份可以再編輯嘅文件。先幫我定好標題同章節，"
+            "再整理成完整內容；有資料未夠嘅地方請清楚標示。\n\n"
+            "文件用途：\n對象：\n資料："
+        ),
+    },
+    {
+        "id": "prepare_clash",
+        "title": "準備攻防",
+        "description": "設計追問、預判回應同跟進",
+        "prompt": (
+            "幫我根據下面條辯題同我方立場，設計五條由淺入深嘅追問，估下對方"
+            "可能點答，再畀我跟進問題同防守答案。\n\n"
+            "辯題：\n我方立場："
+        ),
+    },
+)
+
+
 def build_llm_text_review_prompt(data_type, side, title, topic_text, source_note, content_text):
     return f"""
 請審核以下 LLM 訓練文字資料是否適合放入 dataset。

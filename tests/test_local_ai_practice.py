@@ -281,7 +281,7 @@ def test_local_practice_ui_and_server_contracts_are_wired():
     assert "__LMC_AI_PRACTICE_LABEL__" in page
     assert "與自家AI練習" not in coach
     assert "與自家AI練習" not in page
-    assert "自家AI將會使用「快速回覆」模式。" in coach
+    assert "自家AI預設使用「快速回應」模式" in coach
     assert 'api("/api/ai-coach/local-practice/start"' in parity
     assert 'location.href = `/ai-coach/local-practice?session=' in parity
     assert "正方先開始" in page
@@ -303,7 +303,7 @@ def test_local_practice_api_uses_fast_local_ai_and_finishes_with_text_feedback(m
         return {
             "text": True, "asr": False, "local_tts": False,
             "azure_tts": True, "status": "online", "message": "ok",
-            "mode": "fast", "mode_label": "快速回覆",
+            "mode": "fast", "mode_label": "快速回應",
         }
 
     async def generate(_owner, _session, *, stage):
@@ -364,7 +364,7 @@ def test_con_api_generates_ai_opening_before_user_turn(monkeypatch):
         return {
             "text": True, "asr": False, "local_tts": False,
             "azure_tts": False, "status": "online", "message": "ok",
-            "mode": "fast", "mode_label": "快速回覆",
+            "mode": "fast", "mode_label": "快速回應",
         }
 
     async def opening(_owner, _session, *, stage):

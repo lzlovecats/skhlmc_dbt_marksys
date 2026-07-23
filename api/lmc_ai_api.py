@@ -35,6 +35,12 @@ from core.lmc_ai_runtime import (
     RUNTIME,
     backend_fingerprint,
 )
+from core.lmc_ai_documents import (
+    build_docx_export,
+    build_markdown_export,
+    build_pdf_export,
+    safe_export_stem,
+)
 from core.lmc_ai_store import (
     authenticate_node,
     create_node,
@@ -47,6 +53,8 @@ from core.lmc_ai_store import (
     update_node_hello,
 )
 from system_limits import (
+    LMC_AI_BROWSER_CONVERSATION_MAX,
+    LMC_AI_BROWSER_DOCUMENT_MAX,
     LMC_AI_BROWSER_HISTORY_MAX_CHARS,
     LMC_AI_BROWSER_HISTORY_MAX_MESSAGES,
     LMC_AI_CONTEXT_MAX_CHARS,
@@ -58,6 +66,8 @@ from system_limits import (
     WORKSTATION_R2_HEALTH_PROBE_BYTES,
     WORKSTATION_UPDATE_MANIFEST_MAX_BYTES,
 )
+from prompts import LMC_AI_PROMPT_TEMPLATES
+from api.resource_limits import bounded_download_response
 from workstation.remote_control import (
     REMOTE_CONTROL_MIN_WORKSTATION_VERSION,
     validate_remote_command,
@@ -93,8 +103,15 @@ class ChatRequest(BaseModel):
     )
     expected_fingerprint: str = Field(min_length=64, max_length=64)
     has_history: bool
-    # Cached pre-mode browsers omit this and receive the fixed daily default.
+    # Cached pre-mode browsers omit this and receive the server-owned default.
     mode: Literal["daily", "complex", "deep", "fast", "thinking"] | None = None
+
+
+class DocumentExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(max_length=LMC_AI_BROWSER_HISTORY_MAX_CHARS)
+    format: Literal["markdown", "pdf", "docx"]
 
 
 class NodeCreate(BaseModel):
@@ -483,13 +500,37 @@ async def lmc_ai_bootstrap(request: Request):
         "history_limits": {
             "messages": LMC_AI_BROWSER_HISTORY_MAX_MESSAGES,
             "characters": LMC_AI_BROWSER_HISTORY_MAX_CHARS,
+            "conversations": LMC_AI_BROWSER_CONVERSATION_MAX,
+            "documents": LMC_AI_BROWSER_DOCUMENT_MAX,
             "user_message_characters": LMC_AI_MESSAGE_MAX_CHARS,
             "context_characters": LMC_AI_CONTEXT_MAX_CHARS,
             "request_messages": LMC_AI_REQUEST_MESSAGES_MAX,
         },
         "backend_fingerprint": fingerprints.get(LMC_AI_DEFAULT_MODE),
         "backend_fingerprints": fingerprints,
+        "prompt_templates": [dict(item) for item in LMC_AI_PROMPT_TEMPLATES],
     }
+
+
+@router.post("/api/lmc-ai/documents/export")
+def lmc_ai_document_export(body: DocumentExportRequest, request: Request):
+    require_page_user_or_developer(request, "lmc_ai")
+    title = body.title.strip() or "自家AI文件"
+    stem = safe_export_stem(title)
+    if body.format == "markdown":
+        content = build_markdown_export(title, body.content)
+        return bounded_download_response(
+            f"{stem}.md", content, "text/markdown; charset=utf-8"
+        )
+    if body.format == "pdf":
+        content = build_pdf_export(title, body.content)
+        return bounded_download_response(f"{stem}.pdf", content, "application/pdf")
+    content = build_docx_export(title, body.content)
+    return bounded_download_response(
+        f"{stem}.docx",
+        content,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 async def _record_usage(job: ChatJob, success: bool, usage: dict, error: str) -> None:

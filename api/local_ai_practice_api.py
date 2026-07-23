@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ai_model_config import resolve_lmc_ai_mode_options
 from ai_name import LMC_AI_MODEL_LABEL
 from api.access import require_interactive_features_available, require_page_user
 from core.funds_logic import log_ai_usage
@@ -200,7 +201,7 @@ async def _capabilities(db) -> dict:
         "status": status.get("state") or "unavailable",
         "message": status.get("message") or "自家 AI 暫時未準備好。",
         "mode": "fast",
-        "mode_label": "快速回覆",
+        "mode_label": resolve_lmc_ai_mode_options()["fast"]["label"],
         "audio_max_bytes": LOCAL_PRACTICE_AUDIO_MAX_BYTES,
         "audio_max_seconds": LOCAL_PRACTICE_AUDIO_MAX_SECONDS,
     }

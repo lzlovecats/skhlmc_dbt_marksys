@@ -643,7 +643,7 @@
       ? ""
       : '<div class="notice warn">⚠️ 目前模型不支援Live，請使用Gemini模型。</div>';
     const localLiveWarning =
-      '<div class="notice warn">⚠️ 目前自家 AI 尚未支援 Free De／Mock；現階段請改選支援搜尋的 Gemini 模型。自家AI將會使用「快速回覆」模式。</div>';
+      '<div class="notice warn">⚠️ 目前自家 AI 尚未支援 Free De／Mock；現階段請改選支援搜尋的 Gemini 模型。自家AI將會使用「快速回應」模式。</div>';
     const liveResearchWarning = model.supports_web_search
       ? searchAvailabilityWarning
       : searchModel

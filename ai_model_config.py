@@ -5,18 +5,18 @@ from ai_name import LMC_AI_MODEL_LABEL
 
 # Local committee AI node defaults. Runtime code must never pull a model itself;
 # preflight advertises only models which passed the GPU/offload gate.
-LMC_AI_MODEL_PROFILE_VERSION = 5
-LMC_AI_DEFAULT_MODE = "daily"
+LMC_AI_MODEL_PROFILE_VERSION = 6
+LMC_AI_DEFAULT_MODE = "fast"
 
 # Keep each user-facing tier independently switchable even when two tiers use
 # the same model today. These are the only source of local Ollama model tags.
 LMC_AI_FAST_MODEL_TAG = "gemma4:e2b-it-qat"
-LMC_AI_DAILY_MODEL_TAG = "gemma4:e4b-it-qat"
-LMC_AI_DEEP_MODEL_TAG = "gemma4:e4b-it-qat"
+LMC_AI_DAILY_MODEL_TAG = "gemma4:12b-it-qat"
+LMC_AI_DEEP_MODEL_TAG = "gemma4:12b-it-qat"
 
 LMC_AI_MODE_OPTIONS = {
     "fast": {
-        "label": "快速回覆",
+        "label": "快速回應",
         "model": LMC_AI_FAST_MODEL_TAG,
         "thinking": False,
     },
@@ -35,9 +35,9 @@ LMC_AI_MODE_OPTIONS = {
 # Feature routing belongs here so Vote Page and AI Coach do not carry their
 # own copies of the local model policy.
 LMC_AI_FEATURE_MODES = {
-    "lmc_ai": "daily",
+    "lmc_ai": "fast",
     "vote": "fast",
-    "ai_coach": "daily",
+    "ai_coach": "fast",
 }
 
 def resolve_lmc_ai_mode_options() -> dict:
@@ -92,7 +92,7 @@ LMC_AI_INTERACTIVE_OPTION = {
     "web_search_price_per_call": 0,
     "pricing_note": "由唯一自家 AI Workstation 處理；內容不會自動轉交雲端模型。",
     "paid_rate_note": "沒有按 token 收費；電力及硬件成本另計。",
-    "selection_label": "日常預設",
+    "selection_label": "快速回應",
     "pricing_label": "自家",
     "is_premium": False,
 }

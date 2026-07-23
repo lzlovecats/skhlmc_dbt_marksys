@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import threading
 from types import SimpleNamespace
+from xml.etree import ElementTree
+from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -38,6 +41,11 @@ from core import (
     lmc_ai_runtime as lmc_runtime,
     schema_features,
 )
+from core.lmc_ai_documents import (
+    build_docx_export,
+    build_markdown_export,
+    build_pdf_export,
+)
 from core.db_migrations import browser_privilege_revokes, created_table_names
 from core.lmc_ai_runtime import (
     LocalAIRuntime,
@@ -49,6 +57,7 @@ from core.lmc_ai_runtime import (
 from core import lmc_ai_store
 from local_ai import lmc_ai_node
 from fastapi import HTTPException
+from prompts import LMC_AI_PROMPT_TEMPLATES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,14 +150,17 @@ def test_schema_migration_and_bootstrap_are_private_and_fail_safe():
 def test_limits_and_models_are_centralized_at_the_decided_values():
     assert LMC_AI_PRIMARY_MODEL == LMC_AI_FAST_MODEL_TAG
     assert LMC_AI_FALLBACK_MODEL == LMC_AI_DEEP_MODEL_TAG
-    assert LMC_AI_DEFAULT_MODE == "daily"
+    assert LMC_AI_DEFAULT_MODE == "fast"
+    assert LMC_AI_FAST_MODEL_TAG == "gemma4:e2b-it-qat"
+    assert LMC_AI_DAILY_MODEL_TAG == "gemma4:12b-it-qat"
+    assert LMC_AI_DEEP_MODEL_TAG == "gemma4:12b-it-qat"
     assert LMC_AI_MODE_OPTIONS == {
-        "fast": {"label": "快速回覆", "model": LMC_AI_FAST_MODEL_TAG, "thinking": False},
+        "fast": {"label": "快速回應", "model": LMC_AI_FAST_MODEL_TAG, "thinking": False},
         "daily": {"label": "日常預設", "model": LMC_AI_DAILY_MODEL_TAG, "thinking": False},
         "deep": {"label": "深入思考", "model": LMC_AI_DEEP_MODEL_TAG, "thinking": True},
     }
     assert LMC_AI_FEATURE_MODES == {
-        "lmc_ai": "daily", "vote": "fast", "ai_coach": "daily",
+        "lmc_ai": "fast", "vote": "fast", "ai_coach": "fast",
     }
     runbook = (ROOT / "docs/AI_WORKSTATION_RUNBOOK.md").read_text("utf-8")
     assert "lmc_ai_required_models" in runbook
@@ -170,6 +182,8 @@ def test_limits_and_models_are_centralized_at_the_decided_values():
     assert system_limits.LMC_AI_OUTPUT_MAX_BYTES == 256 * 1024
     assert system_limits.LMC_AI_BROWSER_HISTORY_MAX_MESSAGES == 100
     assert system_limits.LMC_AI_BROWSER_HISTORY_MAX_CHARS == 200_000
+    assert system_limits.LMC_AI_BROWSER_CONVERSATION_MAX == 20
+    assert system_limits.LMC_AI_BROWSER_DOCUMENT_MAX == 20
     assert "lmc_ai_chat" in funds_logic.AI_USAGE_FEATURES
     assert funds_logic.AI_FEATURE_LABELS["lmc_ai_chat"]
 
@@ -540,7 +554,7 @@ def test_runtime_records_usage_when_thinking_finishes_without_a_final_answer():
     asyncio.run(scenario())
 
 
-def test_runtime_routes_deep_mode_to_e4b_and_refuses_incomplete_model_profile():
+def test_runtime_routes_deep_mode_to_12b_and_refuses_incomplete_model_profile():
     async def scenario():
         runtime = LocalAIRuntime()
         socket = _FakeWebSocket()
@@ -1123,7 +1137,7 @@ def test_workstation_jobs_require_v2_and_voice_reservation_may_wait_for_text():
 
 
 def test_node_hello_requires_current_complete_model_profile():
-    assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 5
+    assert ai_model_config.LMC_AI_MODEL_PROFILE_VERSION == 6
     assert LocalAIRuntime.validate_hello(_hello())["ready"] is True
 
     missing_profile = _hello()
@@ -1270,7 +1284,7 @@ def test_chat_mode_is_allowlisted_and_legacy_requests_remain_distinguishable():
     assert ChatRequest(**request).mode is None
     assert ChatRequest(**request, mode="thinking").mode == "thinking"
     assert ChatRequest(**request, mode="fast").mode == "fast"
-    assert _resolve_chat_mode(None)[0] == "daily"
+    assert _resolve_chat_mode(None)[0] == "fast"
     assert _resolve_chat_mode("thinking") == ("deep", LMC_AI_MODE_OPTIONS["deep"])
     assert _resolve_chat_mode("complex") == ("daily", LMC_AI_MODE_OPTIONS["daily"])
     assert _resolve_chat_mode("fast") == ("fast", LMC_AI_MODE_OPTIONS["fast"])
@@ -1347,7 +1361,7 @@ def test_member_operation_status_exposes_one_workstation_without_private_id(monk
     assert "node_id" not in result
 
 
-def test_cached_pre_mode_bootstrap_uses_daily_fingerprint(monkeypatch):
+def test_cached_pre_mode_bootstrap_uses_server_default_fast_fingerprint(monkeypatch):
     monkeypatch.setattr(
         lmc_api,
         "require_page_user_or_developer",
@@ -1378,7 +1392,7 @@ def test_cached_pre_mode_bootstrap_uses_daily_fingerprint(monkeypatch):
     monkeypatch.setattr(lmc_api, "_public_workstation", public_workstation)
     result = asyncio.run(lmc_api.lmc_ai_bootstrap(object()))
 
-    assert result["backend_fingerprint"] == "t" * 64
+    assert result["backend_fingerprint"] == "f" * 64
     assert result["workstation"] == {"name": "AI 01", "state": "online"}
     assert result["backend_fingerprints"] == {
         "fast": "f" * 64,
@@ -1386,6 +1400,11 @@ def test_cached_pre_mode_bootstrap_uses_daily_fingerprint(monkeypatch):
         "deep": "d" * 64,
         "complex": "t" * 64,
         "thinking": "d" * 64,
+    }
+    assert result["history_limits"]["conversations"] == 20
+    assert result["history_limits"]["documents"] == 20
+    assert {item["id"] for item in result["prompt_templates"]} == {
+        "analyse_motion", "write_case", "create_document", "prepare_clash",
     }
 
 
@@ -1401,24 +1420,127 @@ def test_member_api_and_browser_contract_keep_node_metadata_and_thinking_trace_p
     assert "tool_calls" not in API_SOURCE
 
     assert "SafeMarkdown.render" in SCRIPT
-    assert "localStorage" in SCRIPT
+    assert "indexedDB.open" in SCRIPT
+    assert "localStorage" in SCRIPT  # one-time migration from the v1 conversation
     assert "identity.id" in SCRIPT
     assert "backendChanged" in SCRIPT
     assert "context.trimmed" in SCRIPT
-    assert "has_history: conversation.messages.length > 0" in SCRIPT
+    assert "has_history: baseMessages.length > 0" in SCRIPT
     assert "confirm(" in SCRIPT
     assert "較舊訊息" in SCRIPT
-    assert "RAG 同 Fine-tune 暫未啟用" in PAGE
+    assert "RAG 及 Fine-tune 暫未啟用" in PAGE
     assert "node_id" not in SCRIPT
     assert "runtime" not in SCRIPT
     assert "last_model" not in SCRIPT
     assert "effective_model" not in SCRIPT
 
 
+def test_quick_prompts_are_colloquial_editable_and_use_a_four_minute_case_default():
+    templates = {item["id"]: item for item in LMC_AI_PROMPT_TEMPLATES}
+    assert "大約 4 分鐘" in templates["write_case"]["prompt"]
+    assert "時間" not in templates["write_case"]["description"]
+    assert "我哋開始啦！" in SCRIPT
+    assert "揀上面嘅 Prompt，或者直接講低你想處理嘅內容。" in SCRIPT
+    assert 'placeholder="有咩要__LMC_AI_NAME__幫手？"' in PAGE
+    assert "幫我" in templates["analyse_motion"]["prompt"]
+    assert "下面啲資料" in templates["write_case"]["prompt"]
+    assert "點答" in templates["prepare_clash"]["prompt"]
+    assert 'button.onclick = () => insertPrompt(template.prompt)' in SCRIPT
+    prompt_render = SCRIPT.split("function renderPromptCards", 1)[1].split(
+        "function renderDocuments", 1,
+    )[0]
+    assert "sendMessage" not in prompt_render
+    assert 'id="promptDialog"' in PAGE
+    assert 'id="appendPrompt"' in PAGE
+    assert 'id="replacePrompt"' in PAGE
+    assert 'type="number"' not in PAGE
+
+
+def test_browser_workspace_keeps_twenty_chats_and_documents_without_auto_deletion():
+    assert 'const DB_NAME = "lmc-ai-workspace"' in SCRIPT
+    assert "EDITOR_LEASE_TTL_MS" in SCRIPT
+    assert "acquireOrRenewEditorLease" in SCRIPT
+    assert "releaseEditorLease" in SCRIPT
+    assert "workspaceEditable" in SCRIPT
+    assert 'id="workspaceReadOnlyBanner"' in PAGE
+    assert "workspace.conversations.length >= bootstrap.history_limits.conversations" in SCRIPT
+    assert "workspace.documents.length >= bootstrap.history_limits.documents" in SCRIPT
+    assert "舊對話不會被自動刪除" in SCRIPT
+    assert "舊文件不會被自動刪除" in SCRIPT
+    assert "workspace.conversations.shift" not in SCRIPT
+    assert "workspace.documents.shift" not in SCRIPT
+    assert 'data-mobile-target="chat"' in PAGE
+    assert 'data-mobile-target="documents"' in PAGE
+    assert 'data-mobile-target="recent"' in PAGE
+    assert 'id="documentEditor"' in PAGE
+    assert 'id="documentPreview"' in PAGE
+    assert '"/api/lmc-ai/documents/export"' in SCRIPT
+
+
+def test_document_exports_are_valid_bounded_formats_and_escape_docx_xml():
+    markdown = build_markdown_export("立論稿", "第一段")
+    assert markdown.startswith(b"\xef\xbb\xbf# ")
+    assert "立論稿" in markdown.decode("utf-8-sig")
+
+    pdf = build_pdf_export("立論稿", "第一段\n第二段")
+    assert pdf.startswith(b"%PDF")
+
+    docx = build_docx_export("立論稿", "A & B < C")
+    with ZipFile(BytesIO(docx)) as archive:
+        assert {
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "word/document.xml",
+            "word/styles.xml",
+            "word/_rels/document.xml.rels",
+        }.issubset(archive.namelist())
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "立論稿" in document_xml
+    assert "A &amp; B &lt; C" in document_xml
+
+
+def test_docx_export_removes_characters_forbidden_by_xml_1_0():
+    docx = build_docx_export("控制字元", "保留\tTab，移除\x00NUL及\x0bVT")
+    with ZipFile(BytesIO(docx)) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ElementTree.fromstring(document_xml)
+    rendered = "".join(root.itertext())
+    assert "保留\tTab，移除NUL及VT" in rendered
+
+
+def test_document_export_requires_page_access_and_is_stateless(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        lmc_api,
+        "require_page_user_or_developer",
+        lambda request, page: calls.append((request, page)) or "member-1",
+    )
+    monkeypatch.setattr(
+        lmc_api,
+        "bounded_download_response",
+        lambda filename, content, media_type: {
+            "filename": filename, "content": content, "media_type": media_type,
+        },
+    )
+    request = object()
+    result = lmc_api.lmc_ai_document_export(
+        lmc_api.DocumentExportRequest(
+            title="立論稿", content="內容", format="markdown",
+        ),
+        request,
+    )
+    assert calls == [(request, "lmc_ai")]
+    assert result["filename"] == "立論稿.md"
+    assert result["content"].startswith(b"\xef\xbb\xbf")
+    assert "_db()" not in API_SOURCE.split(
+        "def lmc_ai_document_export", 1,
+    )[1].split("async def _record_usage", 1)[0]
+
+
 def test_browser_offers_three_conversation_scoped_model_modes_and_node_status():
     assert 'id="thinkingMode"' in PAGE
-    assert '<select id="thinkingMode" aria-label="回答模式" disabled></select>' in PAGE
-    assert 'data-panel="operationsPanel"' in PAGE
+    assert 'aria-label="回答模式" disabled' in PAGE
+    assert 'id="statusDialog"' in PAGE
     assert 'id="nodeGrid"' in PAGE
     assert "backend_fingerprints" in API_SOURCE
     assert "_resolve_chat_mode" in API_SOURCE
@@ -1427,8 +1549,8 @@ def test_browser_offers_three_conversation_scoped_model_modes_and_node_status():
     assert "renderModeOptions" in SCRIPT
     assert "bootstrap?.service?.modes" in SCRIPT
     assert "switchConversationMode" in SCRIPT
-    assert "切換回答模式" in SCRIPT
-    assert "conversation.messages.length && !confirm(" in SCRIPT
+    assert "另開新對話" in SCRIPT
+    assert "createConversation(nextMode)" in SCRIPT
     assert "conversation.mode" in SCRIPT
 
 
@@ -1448,15 +1570,31 @@ def test_lmc_browser_requires_the_server_owned_default_mode():
     assert 'throw new Error("自家 AI 回答模式設定無效。")' in SCRIPT
 
 
-def test_browser_clear_invalidates_and_aborts_an_inflight_conversation():
+def test_browser_switches_are_generation_guarded_and_blocked_during_inflight_work():
     assert "let conversationGeneration = 0" in SCRIPT
     assert "const requestGeneration = conversationGeneration" in SCRIPT
     assert "requestGeneration !== conversationGeneration" in SCRIPT
-    clear_block = SCRIPT.split("function clearConversation", 1)[1].split(
-        '$("messageInput")', 1
+    select_block = SCRIPT.split("function selectConversation", 1)[1].split(
+        "function deleteConversation", 1,
     )[0]
-    assert "conversationGeneration += 1" in clear_block
-    assert "abortController?.abort()" in clear_block
+    assert "if (abortController)" in select_block
+    assert "conversationGeneration += 1" in select_block
+
+
+def test_regeneration_keeps_persisted_messages_until_the_replacement_completes():
+    regenerate_block = SCRIPT.split("function regenerateAnswer", 1)[1].split(
+        "function openPromptDialog", 1,
+    )[0]
+    send_block = SCRIPT.split("async function sendMessage", 1)[1].split(
+        "function createConversation", 1,
+    )[0]
+    complete_block = send_block.split('event === "complete"', 1)[1].split(
+        'event === "error"', 1,
+    )[0]
+    assert "conversation.messages =" not in regenerate_block
+    assert "persistWorkspace()" not in regenerate_block
+    assert "replacementFromIndex" in regenerate_block
+    assert "conversation.messages =" in complete_block
 
 
 def test_lmc_node_load_failure_does_not_masquerade_as_developer_logout():
@@ -1496,7 +1634,7 @@ def test_chat_page_serves_and_renders_the_versioned_assistant_avatar():
     assert avatar.stat().st_size < 100_000
     assert 'data-avatar-src="/lmc-ai/shiba-avatar.jpg?v=__APP_VERSION__"' in PAGE
     assert 'className = "assistant-avatar"' in SCRIPT
-    assert 'className = "message-row assistant"' in SCRIPT
+    assert 'className = `message-wrap ${item.role}`' in SCRIPT
     assert '@app.get("/lmc-ai/shiba-avatar.jpg")' in (
         ROOT / "deploy/proxy.py"
     ).read_text("utf-8")
