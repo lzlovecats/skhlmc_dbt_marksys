@@ -13,6 +13,7 @@ LMC_AI_DEFAULT_MODE = "fast"
 LMC_AI_FAST_MODEL_TAG = "gemma4:e2b-it-qat"
 LMC_AI_DAILY_MODEL_TAG = "gemma4:12b-it-qat"
 LMC_AI_DEEP_MODEL_TAG = "gemma4:12b-it-qat"
+LMC_AI_RAG_EMBEDDING_MODEL_TAG = "embeddinggemma:300m"
 
 LMC_AI_MODE_OPTIONS = {
     "fast": {
@@ -63,6 +64,14 @@ def lmc_ai_required_models() -> tuple[str, ...]:
         str(config["model"])
         for config in LMC_AI_MODE_OPTIONS.values()
     ))
+
+
+def lmc_ai_workstation_required_models() -> tuple[str, ...]:
+    """Return the complete signed Workstation inventory, including RAG."""
+    return tuple(dict.fromkeys((
+        *lmc_ai_required_models(),
+        LMC_AI_RAG_EMBEDDING_MODEL_TAG,
+    )))
 
 
 def lmc_ai_models_ready(models: object) -> bool:

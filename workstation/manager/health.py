@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import time
 
-from ai_model_config import lmc_ai_required_models
+from ai_model_config import lmc_ai_workstation_required_models
 from system_limits import (
     WORKSTATION_CACHE_QUOTA_BYTES,
     WORKSTATION_CHECKPOINT_QUOTA_BYTES,
@@ -116,7 +116,7 @@ class HealthRunner:
     def _ollama_health(self) -> dict:
         if not self.config.workloads.ollama.enabled:
             return {"ok": False, "code": "disabled"}
-        required = tuple(lmc_ai_required_models())
+        required = tuple(lmc_ai_workstation_required_models())
         status = self.ollama.health(required)
         if not status.get("ok"):
             return status
@@ -499,6 +499,8 @@ class HealthRunner:
         base = ("os", "gpu", "memory", "disk", "power")
         if self.config.workloads.ollama.enabled:
             base = (*base, "ollama")
+        if self.config.workloads.rag.enabled:
+            base = (*base, "rag")
         if full:
             probes = self._full_probes(
                 set_gpt_service=set_gpt_service,

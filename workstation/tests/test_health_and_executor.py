@@ -6,7 +6,10 @@ import time
 
 import pytest
 
-from ai_model_config import LMC_AI_FAST_MODEL_TAG, lmc_ai_required_models
+from ai_model_config import (
+    LMC_AI_FAST_MODEL_TAG,
+    lmc_ai_workstation_required_models,
+)
 from system_limits import WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS
 from workstation.config import parse_config
 from workstation.manager import health as health_module
@@ -320,7 +323,7 @@ def test_health_rejects_ollama_digest_drift_from_signed_receipt(
     tmp_path, monkeypatch,
 ):
     runner = HealthRunner(_config(tmp_path))
-    required = list(lmc_ai_required_models())
+    required = list(lmc_ai_workstation_required_models())
     expected = {
         name: {"digest": f"{index + 1:064x}", "bytes": 123}
         for index, name in enumerate(required)
@@ -346,6 +349,91 @@ def test_health_rejects_ollama_digest_drift_from_signed_receipt(
     assert health["ok"] is False
     assert health["code"] == "model_digest_mismatch"
     assert health["mismatched_models"] == [required[0]]
+
+
+def test_resume_stays_drained_when_required_rag_full_health_fails(
+    tmp_path, monkeypatch,
+):
+    config = parse_config({
+        "schema_version": 1,
+        "node": {
+            "name": "AI Workstation",
+            "server_url": "https://example.com",
+            "token_file": str(tmp_path / "token"),
+        },
+        "paths": {
+            "state": str(tmp_path / "state"),
+            "cache": str(tmp_path / "cache"),
+            "data": str(tmp_path / "data"),
+            "releases": str(tmp_path / "releases"),
+        },
+        "power": {},
+        "workloads": {
+            "rag": {
+                "enabled": True,
+                "embedding_model": "embeddinggemma:300m",
+            },
+        },
+        "gui": {},
+    })
+    arbiter = ModeArbiter(StateStore(tmp_path / "manager.json"))
+    arbiter.set_draining(True)
+    application = ManagerApplication(config, arbiter)
+    monkeypatch.setattr(application, "health", lambda **_kwargs: {
+        "healthy": False,
+        "required": ["rag", "rag_probe"],
+        "checks": {
+            "rag": {"ok": False, "code": "index_unavailable"},
+            "rag_probe": {"ok": False, "code": "rag_probe_empty"},
+        },
+    })
+
+    with pytest.raises(WorkloadError) as raised:
+        application.handle({"action": "resume"}, lambda *_args: None)
+
+    assert raised.value.code == "health_gate"
+    assert arbiter.snapshot()["draining"] is True
+
+
+def test_enabled_rag_is_required_even_by_shallow_readiness(
+    tmp_path, monkeypatch,
+):
+    config = parse_config({
+        "schema_version": 1,
+        "node": {
+            "name": "AI Workstation",
+            "server_url": "https://example.com",
+            "token_file": str(tmp_path / "token"),
+        },
+        "paths": {
+            "state": str(tmp_path / "state"),
+            "cache": str(tmp_path / "cache"),
+            "data": str(tmp_path / "data"),
+            "releases": str(tmp_path / "releases"),
+        },
+        "power": {},
+        "workloads": {
+            "ollama": {"enabled": False},
+            "rag": {
+                "enabled": True,
+                "embedding_model": "embeddinggemma:300m",
+            },
+        },
+        "gui": {},
+    })
+    runner = HealthRunner(config)
+    for name in ("_os", "_gpu", "_memory", "_disk", "_power_tools"):
+        monkeypatch.setattr(runner, name, lambda: {"ok": True})
+    monkeypatch.setattr(
+        runner.rag,
+        "health",
+        lambda: {"ok": False, "code": "index_unavailable"},
+    )
+
+    report = runner.run()
+
+    assert "rag" in report["required"]
+    assert report["healthy"] is False
 
 
 def test_manager_health_unexpected_exception_replaces_stale_success(

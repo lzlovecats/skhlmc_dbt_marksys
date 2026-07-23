@@ -9,7 +9,11 @@ import pytest
 from workstation.config import PowerConfig
 from workstation.manager.power import decide_power_action, read_power_override
 from workstation.node.protocol import advertised_capabilities, validate_server_job
-from workstation.node.client import WorkstationNodeClient, _websocket_authorization_argument
+from workstation.node.client import (
+    WorkstationNodeClient,
+    _generation_inventory,
+    _websocket_authorization_argument,
+)
 from workstation.privileged_helper.protocol import PrivilegedRequestError, validate_request
 
 
@@ -157,6 +161,32 @@ def test_capability_advertisement_is_health_derived_and_job_schema_is_closed():
             "type": "workstation.job.start",
             "payload": {"command": {"action": "shell", "value": "id"}},
         })
+
+
+def test_node_advertises_only_generation_models_not_the_rag_embedding_model():
+    digest = "a" * 64
+    models, digests = _generation_inventory({
+        "checks": {
+            "ollama": {
+                "models": [
+                    "embeddinggemma:300m",
+                    "gemma4:12b-it-qat",
+                    "gemma4:e2b-it-qat",
+                ],
+                "model_digests": {
+                    "embeddinggemma:300m": "b" * 64,
+                    "gemma4:12b-it-qat": digest,
+                    "gemma4:e2b-it-qat": digest,
+                },
+            },
+        },
+    })
+
+    assert models == ["gemma4:e2b-it-qat", "gemma4:12b-it-qat"]
+    assert digests == {
+        "gemma4:e2b-it-qat": digest,
+        "gemma4:12b-it-qat": digest,
+    }
 
 
 def test_websocket_bearer_header_supports_ubuntu_and_new_runtime_signatures():

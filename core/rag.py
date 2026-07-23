@@ -106,9 +106,7 @@ async def retrieve_rag_context(db, api_key: str, query: str, *, top_k: int = 6,
         rows = db.query("""SELECT c.chunk_id,c.content_text,d.document_id,d.title,d.data_type,d.topic_text,
             1-(c.embedding <=> CAST(:embedding AS vector)) AS similarity
           FROM rag_chunks c JOIN rag_documents d ON d.document_id=c.document_id
-          JOIN llm_training_submissions s ON s.id=d.submission_id
-          WHERE d.status='active' AND s.status='accepted' AND s.anonymized=TRUE
-            AND s.permission_confirmed=TRUE AND c.embedding IS NOT NULL
+          WHERE d.status='active' AND c.embedding IS NOT NULL
             AND c.embedding_model=:model AND c.embedding_version=:version
           ORDER BY c.embedding <=> CAST(:embedding AS vector) LIMIT :limit""",
           {"embedding": vector_text, "model": EMBEDDING_MODEL,

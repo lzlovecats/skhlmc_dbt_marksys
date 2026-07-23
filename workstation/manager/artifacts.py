@@ -11,7 +11,7 @@ import shutil
 import threading
 import time
 
-from ai_model_config import lmc_ai_required_models
+from ai_model_config import lmc_ai_workstation_required_models
 from system_limits import (
     WORKSTATION_MIN_FREE_DISK_BYTES,
     WORKSTATION_MODEL_BUNDLE_MANIFEST_MAX_BYTES,
@@ -131,7 +131,7 @@ class SignedArtifactManager:
                 raise WorkloadError("model_bundle_invalid", "Model inventory entry is invalid.")
             approved[name] = {"digest": digest, "bytes": size}
             total_bytes += size
-        required = set(lmc_ai_required_models())
+        required = set(lmc_ai_workstation_required_models())
         if set(approved) != required:
             raise WorkloadError("model_bundle_invalid", "Model inventory does not exactly match the required profile.")
         return approved, total_bytes
@@ -182,6 +182,7 @@ class SignedArtifactManager:
         return receipt
 
     def install_rag(self, *, cancel_event: threading.Event) -> dict:
+        self._require_approved_embedding_model()
         _manifest, component, url = self._catalog("rag_bundle")
         if component["bytes"] > WORKSTATION_RAG_BUNDLE_MAX_BYTES:
             raise WorkloadError("rag_bundle_too_large", "RAG bundle exceeds its safe limit.")
@@ -270,6 +271,40 @@ class SignedArtifactManager:
         except OSError:
             pass
         return receipt
+
+    def _require_approved_embedding_model(self) -> None:
+        model = self.config.workloads.rag.embedding_model
+        receipt_path = self.config.paths.data / "models" / "active-receipt.json"
+        try:
+            if (
+                receipt_path.is_symlink()
+                or not receipt_path.is_file()
+                or not 0 < receipt_path.stat().st_size <= 256 * 1024
+            ):
+                raise ValueError("model receipt is invalid")
+            receipt = json.loads(receipt_path.read_bytes())
+            approved = receipt.get("models") if isinstance(receipt, dict) else None
+            if (
+                not model
+                or not isinstance(approved, dict)
+                or set(approved) != set(lmc_ai_workstation_required_models())
+            ):
+                raise ValueError("embedding model is not approved")
+            details = approved.get(model)
+            if not isinstance(details, dict) or set(details) != {"digest", "bytes"}:
+                raise ValueError("embedding model approval is invalid")
+            digest = str(details.get("digest") or "").lower()
+            if (
+                not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or int(details.get("bytes") or 0) <= 0
+                or self.ollama.inventory().get(model) != digest
+            ):
+                raise ValueError("embedding model does not match approval")
+        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise WorkloadError(
+                "rag_embedding_model_unapproved",
+                "The approved RAG embedding model must be installed first.",
+            ) from exc
 
     def rollback_rag(self) -> dict:
         rag_root = self.config.paths.data / "rag"

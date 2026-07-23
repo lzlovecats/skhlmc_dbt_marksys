@@ -103,16 +103,6 @@
           ],
         ],
         [
-          "myLlm",
-          "my-llm",
-          [
-            ["類型", (r) => r.data_type],
-            ["標題", (r) => r.title || ""],
-            ["狀態", (r) => r.status],
-            ["時間", (r) => r.created_at],
-          ],
-        ],
-        [
           "lexiconTable",
           "lexicon",
           [
@@ -132,16 +122,6 @@
             ["時間", (r) => r.created_at],
           ],
         ],
-        [
-          "adminLlm",
-          "submissions",
-          [
-            ["提交者", (r) => r.submitted_by],
-            ["類型", (r) => r.data_type],
-            ["標題", (r) => r.title || ""],
-            ["狀態", (r) => r.status],
-          ],
-        ],
       ];
       specs.forEach(([id, kind, columns]) => {
         const target = document.getElementById(id);
@@ -153,11 +133,6 @@
         if (kind === "recordings")
           action = (r) =>
             `<audio controls preload="none" src="/api/ai-training/recordings/${r.id}/audio"></audio> ${r.status === "pending" ? `<button data-rec="${r.id}" data-status="accepted">接受</button> <button class="danger" data-rec="${r.id}" data-status="rejected">拒絕</button>` : ""}`;
-        if (kind === "submissions")
-          action = (r) =>
-            r.status === "pending"
-              ? `<button data-llm="${r.id}" data-status="accepted">接受</button> <button class="danger" data-llm="${r.id}" data-status="rejected">拒絕</button>`
-              : "";
         if (kind === "lexicon")
           action = (r) => `<button data-edit="${esc(r.id)}">編輯</button>`;
         VoteUI.serverPaged(

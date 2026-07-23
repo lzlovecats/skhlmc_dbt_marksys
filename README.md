@@ -48,7 +48,7 @@ Solo Gemini Live：Browser ──WebSocket（一次性ephemeral token）──> 
 - 多人Live Mode A的repo實作使用STUN-only WebRTC P2P audio；Render只處理低流量
   control／signaling／逐字稿。實際production版本及真機cutover狀態須另行核實。
 - `schema.py`：只供新、空database bootstrap；production baseline及後續schema演進由`migrations/`與`core/db_migrations.py`管理，runtime不再執行舊式retrofit清單。
-- 空database bootstrap會idempotently seed現行37句TTS基本句庫；dataset/model及RAG schema仍然fail-closed，不會因首次request自動建立。
+- 空database bootstrap會idempotently seed現行37句TTS基本句庫；雲端dataset/model及RAG schema仍然fail-closed，不會因首次request自動建立。AI Workstation本地RAG使用另一套已審核、簽署及版本化的`documents.jsonl` bundle，首次正式setup必須建立並啟用非空白RAG v1。
 - `system_limits.py`：request、RAM、upload、bandwidth、storage及retention限額唯一程式碼來源。
 
 Production schema 以 migration ledger 為準，現行 migration head 由 migration lint／status 輸出；
@@ -177,7 +177,7 @@ Production資料分為：
 - competition/scoring：registration、matches、rosters、drafts、scores及rankings；
 - topic governance：topic bank、proposals/removals、ballots及comments；
 - media：video metadata/activity及R2-backed photos；
-- AI/training：usage、consent、scripts、lexicon、R2-backed recordings、LLM submissions及private audit；RAG/model lifecycle仍未provision；
+- AI/training：usage、consent、scripts、lexicon、R2-backed recordings及private audit；RAG／SFT文字以受控Google文件收集，雲端RAG/model lifecycle仍未provision；Workstation本地RAG則經獨立signed bundle lifecycle；
 - finance/operations：AI fund、lateness fund、bug reports及resource accounting。
 
 Production exact baseline、drift、feature readiness、table activity、R2 metadata coverage、

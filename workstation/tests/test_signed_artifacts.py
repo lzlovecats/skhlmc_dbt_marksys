@@ -7,7 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_model_config import lmc_ai_required_models
+from ai_model_config import (
+    LMC_AI_RAG_EMBEDDING_MODEL_TAG,
+    lmc_ai_workstation_required_models,
+)
 from workstation.config import parse_config
 from workstation.manager.artifacts import SignedArtifactManager
 from workstation.workloads.errors import WorkloadError
@@ -29,7 +32,10 @@ def _config(tmp_path):
         },
         "power": {},
         "workloads": {
-            "rag": {"enabled": True, "embedding_model": "embed-v1"},
+            "rag": {
+                "enabled": True,
+                "embedding_model": LMC_AI_RAG_EMBEDDING_MODEL_TAG,
+            },
         },
         "gui": {},
     })
@@ -53,8 +59,29 @@ class _Ollama:
         return [[1.0, float(index + 1)] for index, _text in enumerate(texts)]
 
 
+def _rag_ready_ollama(tmp_path):
+    required = list(lmc_ai_workstation_required_models())
+    digests = {
+        name: f"{index + 1:064x}"
+        for index, name in enumerate(required)
+    }
+    receipt = tmp_path / "data/models/active-receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({
+        "id": "models-v1",
+        "sha256": "a" * 64,
+        "approved_epoch": 123,
+        "model_bytes": 123 * len(required),
+        "models": {
+            name: {"digest": digest, "bytes": 123}
+            for name, digest in digests.items()
+        },
+    }))
+    return _Ollama(digests)
+
+
 def test_model_approval_skips_installed_exact_digests(tmp_path, monkeypatch):
-    required = list(lmc_ai_required_models())
+    required = list(lmc_ai_workstation_required_models())
     digests = {name: f"{index + 1:064x}" for index, name in enumerate(required)}
     manager = SignedArtifactManager(_config(tmp_path), _Ollama(digests))
     component = {
@@ -89,7 +116,7 @@ def test_model_approval_skips_installed_exact_digests(tmp_path, monkeypatch):
 def test_explicit_model_approval_pulls_only_signed_required_models(
     tmp_path, monkeypatch,
 ):
-    required = list(lmc_ai_required_models())
+    required = list(lmc_ai_workstation_required_models())
     digests = {name: f"{index + 1:064x}" for index, name in enumerate(required)}
     ollama = _Ollama({})
     manager = SignedArtifactManager(_config(tmp_path), ollama)
@@ -123,7 +150,7 @@ def test_explicit_model_approval_pulls_only_signed_required_models(
 
 
 def test_failed_rag_build_keeps_previous_atomic_link(tmp_path, monkeypatch):
-    manager = SignedArtifactManager(_config(tmp_path), _Ollama({}))
+    manager = SignedArtifactManager(_config(tmp_path), _rag_ready_ollama(tmp_path))
     component = {
         "id": "rag-v2", "r2_key": "private/rag.tar.gz",
         "sha256": "b" * 64, "bytes": 1_000,
@@ -161,6 +188,25 @@ def test_failed_rag_build_keeps_previous_atomic_link(tmp_path, monkeypatch):
         manager.install_rag(cancel_event=threading.Event())
     assert (rag_root / "current").readlink() == Path("versions/rag-v1")
     assert not (rag_root / "versions/rag-v2").exists()
+
+
+def test_rag_install_requires_the_signed_embedding_model_first(
+    tmp_path, monkeypatch,
+):
+    manager = SignedArtifactManager(_config(tmp_path), _Ollama({}))
+    catalog_called = False
+
+    def catalog(_name):
+        nonlocal catalog_called
+        catalog_called = True
+        return {}, {}, ""
+
+    monkeypatch.setattr(manager, "_catalog", catalog)
+    with pytest.raises(WorkloadError) as raised:
+        manager.install_rag(cancel_event=threading.Event())
+
+    assert raised.value.code == "rag_embedding_model_unapproved"
+    assert catalog_called is False
 
 
 def test_rag_health_binds_active_receipts_and_streamed_index_digest(tmp_path):

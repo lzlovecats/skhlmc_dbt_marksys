@@ -11,7 +11,7 @@ from pathlib import Path
 import secrets
 from urllib.parse import urlparse
 
-from ai_model_config import lmc_ai_required_models
+from ai_model_config import lmc_ai_workstation_required_models
 from workstation.config import (
     DEFAULT_CONFIG_PATH,
     RELEASE_STATE_RELATIVE_PATH,
@@ -81,7 +81,7 @@ class GuiApplication:
             "manager": manager,
             "health": snapshot.get("health") or {},
             "models": {
-                "required": list(lmc_ai_required_models()),
+                "required": list(lmc_ai_workstation_required_models()),
                 "installed": list(ollama.get("models") or []),
                 "missing": list(ollama.get("missing_models") or []),
             },
