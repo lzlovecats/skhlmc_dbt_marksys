@@ -14,7 +14,11 @@ import time
 
 import websockets
 
-from ai_model_config import LMC_AI_MODEL_PROFILE_VERSION, resolve_lmc_ai_mode_options
+from ai_model_config import (
+    LMC_AI_MODEL_PROFILE_VERSION,
+    lmc_ai_all_models,
+    resolve_lmc_ai_mode_options,
+)
 from system_limits import (
     LMC_AI_HEARTBEAT_INTERVAL_SECONDS,
     LMC_AI_NODE_WS_FRAME_MAX_BYTES,
@@ -41,6 +45,27 @@ def _websocket_authorization_argument(token: str, connector=None) -> dict:
     if "extra_headers" in parameters:
         return {"extra_headers": headers}
     raise RuntimeError("unsupported websockets client runtime")
+
+
+def _generation_inventory(health: dict) -> tuple[list[str], dict[str, str]]:
+    """Keep the dedicated embedding model out of the chat protocol inventory."""
+    checks = health.get("checks") if isinstance(health, dict) else {}
+    ollama = checks.get("ollama") if isinstance(checks, dict) else {}
+    ollama = ollama if isinstance(ollama, dict) else {}
+    installed = {
+        str(item) for item in (ollama.get("models") or [])
+        if str(item)
+    }
+    raw_digests = ollama.get("model_digests")
+    raw_digests = raw_digests if isinstance(raw_digests, dict) else {}
+    models = [
+        model for model in lmc_ai_all_models()
+        if model in installed
+    ]
+    return models, {
+        model: str(raw_digests.get(model) or "")
+        for model in models
+    }
 
 
 class WorkstationNodeClient:
@@ -102,12 +127,13 @@ class WorkstationNodeClient:
             snapshot = await self._snapshot()
             health = snapshot.get("health") or {}
             manager = snapshot.get("manager") or {}
+            models, model_digests = _generation_inventory(health)
             capabilities = hello_frame(
                 name=self.config.node.name,
                 model_profile_version=LMC_AI_MODEL_PROFILE_VERSION,
                 model=resolve_lmc_ai_mode_options()["fast"]["model"],
-                models=list((health.get("checks", {}).get("ollama", {}) or {}).get("models") or []),
-                model_digests=dict((health.get("checks", {}).get("ollama", {}) or {}).get("model_digests") or {}),
+                models=models,
+                model_digests=model_digests,
                 health=health,
                 manager=manager,
                 control=snapshot.get("control") or {},
@@ -117,16 +143,16 @@ class WorkstationNodeClient:
                 "ready": bool(health.get("healthy")),
                 "draining": bool(manager.get("draining")),
                 "model": resolve_lmc_ai_mode_options()["fast"]["model"],
-                "models": list((health.get("checks", {}).get("ollama", {}) or {}).get("models") or []),
-                "model_digests": dict((health.get("checks", {}).get("ollama", {}) or {}).get("model_digests") or {}),
+                "models": models,
+                "model_digests": model_digests,
                 "capabilities": capabilities,
                 "manager": manager,
                 "health": hello_frame(
                     name=self.config.node.name,
                     model_profile_version=LMC_AI_MODEL_PROFILE_VERSION,
                     model=resolve_lmc_ai_mode_options()["fast"]["model"],
-                    models=list((health.get("checks", {}).get("ollama", {}) or {}).get("models") or []),
-                    model_digests=dict((health.get("checks", {}).get("ollama", {}) or {}).get("model_digests") or {}),
+                    models=models,
+                    model_digests=model_digests,
                     health=health,
                     manager=manager,
                     control=snapshot.get("control") or {},
@@ -336,8 +362,7 @@ class WorkstationNodeClient:
         )
         health = snapshot.get("health") or {}
         manager = snapshot.get("manager") or {}
-        ollama = (health.get("checks", {}).get("ollama", {}) or {})
-        models = list(ollama.get("models") or [])
+        models, model_digests = _generation_inventory(health)
         fast_model = resolve_lmc_ai_mode_options()["fast"]["model"]
         token = read_secret(self.config.node.token_file)
         async with websockets.connect(
@@ -353,7 +378,7 @@ class WorkstationNodeClient:
                 model_profile_version=LMC_AI_MODEL_PROFILE_VERSION,
                 model=fast_model,
                 models=models,
-                model_digests=dict(ollama.get("model_digests") or {}),
+                model_digests=model_digests,
                 health=health,
                 manager=manager,
                 control=snapshot.get("control") or {},

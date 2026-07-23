@@ -60,7 +60,6 @@ TABLE_TTS_VOICE_CONSENTS = "tts_voice_consents"
 TABLE_TTS_VOICE_RECORDINGS = "tts_voice_recordings"
 TABLE_TTS_SCRIPTS = "tts_scripts"
 TABLE_TTS_LEXICON = "tts_lexicon"
-TABLE_LLM_TRAINING_SUBMISSIONS = "llm_training_submissions"
 TABLE_AI_DATASET_SNAPSHOTS = "ai_dataset_snapshots"
 TABLE_AI_DATASET_SNAPSHOT_ITEMS = "ai_dataset_snapshot_items"
 TABLE_AI_MODEL_VERSIONS = "ai_model_versions"
@@ -1628,37 +1627,6 @@ CREATE TABLE IF NOT EXISTS {TABLE_TTS_LEXICON} (
 );
 """
 
-# Table: LLM_TRAINING_SUBMISSIONS
-# Text examples submitted by committee members for debate LLM / RAG training.
-CREATE_LLM_TRAINING_SUBMISSIONS = f"""
-CREATE TABLE IF NOT EXISTS {TABLE_LLM_TRAINING_SUBMISSIONS} (
-    id                    SERIAL      PRIMARY KEY,
-    submitted_by          TEXT,
-    data_type             TEXT        NOT NULL,
-    title                 TEXT,
-    topic_text            TEXT,
-    side                  TEXT,
-    content_text          TEXT        NOT NULL,
-    source_note           TEXT,
-    anonymized            BOOLEAN     DEFAULT FALSE,
-    permission_confirmed  BOOLEAN     DEFAULT FALSE,
-    ai_review_status      TEXT        CHECK (ai_review_status IN ('passed', 'failed', 'error')),
-    ai_review_json        TEXT,
-    status                TEXT        DEFAULT 'pending'
-        CHECK (status IN ('pending', 'accepted', 'rejected', 'withdrawn')),
-    review_note           TEXT,
-    reviewed_by           TEXT,
-    reviewed_at           TIMESTAMP,
-    created_at            TIMESTAMP   DEFAULT NOW(),
-    CONSTRAINT fk_llm_training_submissions_submitter
-        FOREIGN KEY (submitted_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE SET NULL,
-    CONSTRAINT fk_llm_training_submissions_reviewer
-        FOREIGN KEY (reviewed_by) REFERENCES {TABLE_ACCOUNTS}(user_id)
-        ON DELETE SET NULL
-);
-"""
-
 # Dataset/model, eval and RAG schemas are intentionally absent from the
 # bootstrap until their security/readiness gates and versioned migrations are complete.
 CREATE_AI_TRAINING_AUDIT = f"""
@@ -2207,10 +2175,6 @@ CREATE INDEX IF NOT EXISTS idx_login_records_logged_in_at
     ON {TABLE_LOGIN_RECORDS}(logged_in_at);
 CREATE INDEX IF NOT EXISTS idx_notification_reads_read_at
     ON {TABLE_NOTIFICATION_READS}(read_at);
-CREATE INDEX IF NOT EXISTS idx_llm_training_status_created
-    ON {TABLE_LLM_TRAINING_SUBMISSIONS}(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_llm_training_submitter_created
-    ON {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_monthly_resource_limits_updated
     ON {TABLE_MONTHLY_RESOURCE_LIMITS}(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
@@ -2218,7 +2182,7 @@ CREATE INDEX IF NOT EXISTS idx_tts_scripts_type_manuscript
 CREATE INDEX IF NOT EXISTS idx_ai_training_audit_created_at
     ON {TABLE_AI_TRAINING_AUDIT}(created_at)
     WHERE action NOT IN (
-        'consent_granted', 'consent_withdrawn', 'submission_withdrawn',
+        'consent_granted', 'consent_withdrawn',
         'factory_source_created', 'factory_source_withdrawn',
         'factory_item_reviewed', 'factory_item_withdrawn',
         'factory_item_invalidated',
@@ -2427,7 +2391,6 @@ ALL_SCHEMAS = [
     CREATE_TTS_VOICE_RECORDINGS,      # → accounts
     CREATE_TTS_SCRIPTS,               # → (standalone)
     CREATE_TTS_LEXICON,               # → (standalone)
-    CREATE_LLM_TRAINING_SUBMISSIONS,  # → accounts
     CREATE_AI_TRAINING_AUDIT,
     LOCK_AI_TRAINING_AUDIT_PRIVILEGES,
     CREATE_MATCH_ROSTER_LINKS,        # → matches

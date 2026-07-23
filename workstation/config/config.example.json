@@ -32,8 +32,8 @@
       "runtime_python": "/srv/lmc-ai/vendor/asr-runtime/bin/python"
     },
     "rag": {
-      "enabled": false,
-      "embedding_model": "",
+      "enabled": true,
+      "embedding_model": "embeddinggemma:300m",
       "active_link": "/srv/lmc-ai/rag/current"
     },
     "gpt_sovits": {

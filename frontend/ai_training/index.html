@@ -71,7 +71,7 @@
     <main>
       <a class="back" href="/">← 返回主頁</a>
       <h1>🎙️ 聖呂中辯 AI 訓練</h1>
-      <p class="caption">收集自家 TTS 聲線資料及辯論 LLM 文字資料</p>
+      <p class="caption">收集自家 TTS 聲線資料及 RAG／SFT 原始資料</p>
       <section id="loadFallback" class="card">
         <h2 id="loadFallbackTitle">正在載入 AI 訓練頁面…</h2>
         <p id="loadFallbackMessage">
@@ -98,7 +98,7 @@
         <nav class="tabs">
           <button class="active" data-pane="tts">🎙️ TTS 錄音提交</button
           ><button data-pane="lexicon-view">📖 讀音字典</button
-          ><button data-pane="llm">📝 LLM 文字資料提交</button
+          ><button data-pane="rag-sft-submit">📚 提交 RAG 及 SFT 資料</button
           ><button id="adminTab" data-pane="admin" class="hidden">
             🛠️ 管理員
           </button>
@@ -180,102 +180,43 @@
             <p class="caption">如發現 AI 讀錯字詞，可通知管理員補充至字典。</p>
           </section>
         </section>
-        <section id="llm" class="pane">
-          <div class="split">
-            <form id="llmForm" class="card">
-              <h2>LLM 文字資料提交</h2>
-              <p class="caption">
-                用作建立辯論 LLM
-                知識庫。可由不同委員提交，但請只提交有權使用、已匿名化、質素足夠，並以粵語口語撰寫的文字資料。
-              </p>
-              <details>
-                <summary>可以提交哪些資料？</summary>
-                <div class="sub">
-                  <p>
-                    適合提交：優秀發言稿、Free De／Mock
-                    逐字稿、具體評語、攻防問答、主線／策略及辯題資料。
-                  </p>
-                  <p>
-                    請盡量用粵語口語，並先移除真名、班別、電話及私人對話。不建議提交未經同意的同學資料、未整理低質原文或主要以書面中文撰寫的內容。
-                  </p>
-                </div>
-              </details>
-              <div class="split">
-                <label
-                  >資料類型<select id="dataType">
-                    <option>發言稿</option>
-                    <option>自由辯論逐字稿</option>
-                    <option>完整 Mock 逐字稿</option>
-                    <option>評語樣本</option>
-                    <option>攻防問答</option>
-                    <option>主線/策略</option>
-                    <option>辯題資料</option>
-                    <option>其他</option>
-                  </select></label
-                ><label
-                  >立場 / 角色<select id="llmSide">
-                    <option>不適用</option>
-                    <option>正方</option>
-                    <option>反方</option>
-                    <option>中立/評判</option>
-                  </select></label
-                >
-              </div>
-              <label
-                >標題<input
-                  id="llmTitle"
-                  placeholder="例如：基本法盃初賽反方二副反駁稿" /></label
-              ><label
-                >辯題 / 情境（如適用）<textarea
-                  id="llmTopic"
-                  rows="2"
-                ></textarea></label
-              ><label
-                >文字內容（請用粵語口語撰寫）<textarea
-                  id="llmContent"
-                  rows="10"
-                  required
-                  placeholder="例如：我方認為對方這個說法的最大問題是未有證明因果關係……"
-                ></textarea></label
-              ><label
-                >來源 / 備註<textarea id="llmSource" rows="3"></textarea></label
-              ><label class="check"
-                ><input
-                  id="anonymized"
-                  type="checkbox"
-                />我已移除真名、班別、電話、私人對話等敏感或可識別個人資料</label
-              ><label class="check"
-                ><input
-                  id="permission"
-                  type="checkbox"
-                />我確認有權提交此內容作聖呂中辯內部 AI 訓練 / RAG
-                測試用途</label
-              >
-              <div class="actions">
-                <button class="primary">提交 LLM 訓練資料</button
-                ><button id="clearLlm" type="button">清除</button>
-              </div>
-              <div id="manualLlm" class="notice warn hidden">
-                <label class="check"
-                  ><input
-                    id="manualLlmConfirm"
-                    type="checkbox"
-                  />我確認以上資料適合提交</label
-                ><button id="manualLlmSubmit" type="button">
-                  略過 AI 檢查並提交待人工審核
-                </button>
-              </div>
-            </form>
-            <section class="card">
-              <h2>我的 LLM 提交紀錄</h2>
-              <div id="myLlm"></div>
-            </section>
-          </div>
+        <section id="rag-sft-submit" class="pane">
+          <section class="card">
+            <h2>提交 RAG 及 SFT 資料</h2>
+            <p>
+              請在同一份 Google 文件內提交適合自家 AI 的 RAG 知識資料及
+              SFT 作答示範。管理員會按用途分開整理及審核。
+            </p>
+            <ul>
+              <li>只提交已取得使用權並已完成匿名化的內容。</li>
+              <li>
+                RAG 資料須列明來源、適用範圍及限制，每段只處理一個主題。
+              </li>
+              <li>
+                SFT 資料須提供真實任務及經人手審核的理想答案，並說明預期語氣或分析方法。
+              </li>
+              <li>
+                Google 文件只用作收集原始資料。管理員審核後，才會整理成
+                RAG 的 <code>documents.jsonl</code> 或建議命名為
+                <code>sft.jsonl</code> 的 SFT JSONL。
+              </li>
+            </ul>
+            <p id="ragSftSubmissionUnavailable" class="notice warn">
+              管理員尚未設定 RAG 及 SFT 資料提交連結。
+            </p>
+            <a
+              id="ragSftSubmissionLink"
+              class="button primary hidden"
+              target="_blank"
+              rel="noopener noreferrer"
+              >開啟 RAG 及 SFT 資料提交文件</a
+            >
+          </section>
         </section>
         <section id="admin" class="pane">
           <h2>管理員</h2>
           <p class="caption">
-            集中管理 TTS 錄音、完整稿、讀音字典及 LLM 文字資料的審核與匯出。
+            集中管理 TTS 錄音、完整稿、讀音字典及 RAG／SFT 提交連結。
           </p>
           <details open>
             <summary>📊 AI 訓練容量及匯出限制</summary>
@@ -302,13 +243,34 @@
             <h2>AI訓練 Readiness</h2>
             <div id="readinessSummary" class="caption">載入中…</div>
           </section>
+          <form id="ragSftSubmissionAdminForm" class="card hidden">
+            <h2>RAG 及 SFT 資料提交連結</h2>
+            <p class="caption">
+              此設定只供 AI 訓練管理員管理。請確保 Google
+              文件只授權指定的委員帳戶存取。
+            </p>
+            <label
+              >Google 文件連結<input
+                id="ragSftSubmissionUrl"
+                type="url"
+                inputmode="url"
+                autocomplete="off"
+                maxlength="2048"
+                placeholder="貼上 Google 文件共用連結"
+            /></label>
+            <div class="actions">
+              <button class="primary">儲存連結</button
+              ><button id="clearRagSftSubmissionUrl" type="button">
+                清除連結
+              </button>
+            </div>
+          </form>
           <nav class="tabs" id="adminTabs">
             <button class="active" data-admin="recordings">
               🎧 錄音審核 / Export</button
             ><button data-admin="scripts">🗂️ 句庫管理</button
             ><button data-admin="manuscripts">📄 完整稿管理</button
             ><button data-admin="lexicon">📖 讀音字典管理</button
-            ><button data-admin="llm-review">📝 LLM 資料審核 / Export</button
             ><button data-admin="factory">🏭 資料工廠</button>
           </nav>
           <section id="recordings" class="admin-pane active">
@@ -409,41 +371,6 @@
             </form>
             <section class="card"><div id="lexiconTable"></div></section>
           </section>
-          <section id="llm-review" class="admin-pane">
-            <section class="card">
-              <h2>LLM 資料狀態統計</h2>
-              <div id="llmStats"></div>
-              <div class="split">
-                <label
-                  >狀態<select id="llmFilter">
-                    <option value="all">全部</option>
-                    <option value="pending">待審核</option>
-                    <option value="accepted">已接受</option>
-                    <option value="rejected">已拒絕</option>
-                    <option value="withdrawn">已撤回</option>
-                  </select></label
-                ><label
-                  >提交者<select id="llmSubmitterFilter">
-                    <option value="">全部提交者</option>
-                  </select></label
-                >
-              </div>
-              <div id="adminLlm"></div>
-              <details>
-                <summary>LLM 審核準則（管理員必讀）</summary>
-                <p>
-                  只接受具辯論訓練價值、已匿名化、來源合理、質素足夠並主要以粵語口語撰寫的資料。請核對
-                  AI 預檢 JSON 及原文。
-                </p>
-              </details>
-              <a
-                id="llmExport"
-                class="button"
-                href="/api/ai-training/export/llm.jsonl"
-                >按提交者匯出 accepted LLM JSONL</a
-              >
-            </section>
-          </section>
           <section id="factory" class="admin-pane">
             <section class="card">
               <h2>RAG / SFT 資料製作指引</h2>
@@ -466,7 +393,7 @@
                 </li>
               </ul>
               <p>
-                開始前，請先在「LLM 文字審核」確認來源已獲接納、完成匿名化、具備使用權，而且內容仍然有效。
+                開始前，請先按 Google 文件內的提交紀錄確認來源已完成匿名化、具備使用權，而且內容仍然有效。
                 請保留來源擁有人、版本／日期、授權依據、內容 SHA-256 及撤回聯絡方法。
               </p>
             </section>
@@ -483,17 +410,31 @@
                   不得將完整長文直接視為一個段落，亦不得為增加數量而重複近似段落。
                 </li>
                 <li>
-                  建立 <code>documents.jsonl</code>。每行為一個 JSON 物件，而且只可包含
+                  建立 <code>documents.jsonl</code>。每行只可包含一個 JSON 物件，亦即
+                  每行為一個 JSON 物件，而且只可包含
                   <code>"id"</code>、<code>"title"</code>、<code>"text"</code>、
                   <code>"source_url"</code>。
                 </li>
                 <li>
-                  <code>id</code> 必須穩定且唯一。<code>title</code> 須列明主題及版本。
-                  <code>text</code> 須包含可直接引用的內容、適用範圍及必要限制。
-                  公開來源須使用 HTTPS。純內部來源可將 <code>source_url</code> 留空。
+                  <code>id</code>：必填字串，必須穩定且唯一，而且不得在整個檔案內重複，例如
+                  <code>fictional-library-hours-2099-001</code>。同一段資料更新時應建立新版本 ID，
+                  不得以行號作 ID。
+                </li>
+                <li>
+                  <code>title</code>：必填字串，須列明主題、資料類型及版本／年份，讓檢索結果
+                  離開原文件後仍可辨識。
+                </li>
+                <li>
+                  <code>text</code>：必填字串，保存可直接引用的完整段落，包括規則、適用範圍、
+                  例外及必要限制。不得只填關鍵字、網址或未經核對的 AI 摘要。
+                </li>
+                <li>
+                  <code>source_url</code>：必須存在的字串欄位。公開來源須填不含帳號、密碼或
+                  fragment 的 HTTPS 網址。純內部或非公開資料可填空字串 <code>""</code>，
+                  但來源擁有人及授權證據仍須保存在管理紀錄。
                 </li>
               </ol>
-              <pre class="json">{"id":"rules-judging-2026-001","title":"評判準則｜論證完整性｜2026","text":"來源：校隊規則第六節。評判應檢視主張、理由、機制及影響是否連貫。適用於正式比賽。資料不足時不可自行補作事實。","source_url":""}</pre>
+              <pre class="json">{"id":"fictional-library-hours-2099-001","title":"虛構示例｜星河中學圖書館延長開放時間｜2099","text":"本段為虛構示例。星河中學在 2099 年校內模擬辯論中，假設圖書館逢星期五延長開放一小時。此設定只供示範 JSONL 格式，並非真實校規。","source_url":""}</pre>
               <p>
                 完成後，請將 <code>documents.jsonl</code> 放置於 RAG bundle 根目錄，建立新版本及
                 manifest，核對檔案雜湊值（hash），再按照 Workstation runbook 進行離線簽署。舊版本不得原址改寫。
@@ -502,15 +443,34 @@
 
             <section class="card">
               <h3>SFT 資料製作流程</h3>
+              <p>
+                建議檔名為 <code>sft.jsonl</code>，方便人手辨識。現時未有
+                Workstation SFT 匯入器，因此這個名稱並非程式強制的 loader contract。
+              </p>
               <ol>
                 <li>
-                  每一行均為一個完整的訓練例子，以 <code>"messages"</code> 保存
-                  <code>"system"</code>、<code>"user"</code>、<code>"assistant"</code>
-                  訊息，並僅訓練 assistant 回覆。
+                  每行只可包含一個 JSON 物件。最外層只可包含 <code>messages</code>，
+                  其值必須為陣列。本項目目前每行固定依次放置一個 <code>system</code>、
+                  一個 <code>user</code> 及一個 <code>assistant</code> 訊息，並僅訓練 assistant 回覆。
                 </li>
                 <li>
-                  user 訊息須為真實、完整且可回答的任務。assistant 目標答案須由熟悉辯論訓練的人員
-                  親自審核，以示範預期語氣、推理步驟、引用方式，以及資料不足時的處理方法。
+                  每個訊息物件只可包含 <code>role</code> 及 <code>content</code>。
+                  <code>role</code> 必須是上述三個角色之一，<code>content</code> 必須為
+                  非空白字串。
+                </li>
+                <li>
+                  <code>system</code> 寫共同角色、語氣、處理資料不足及安全規則，不應放入
+                  會改變的賽規或個別個案事實。<code>user</code> 寫真實、完整且可回答的任務，
+                  並加入答案確實需要的上下文。
+                </li>
+                <li>
+                  <code>assistant</code> 寫經辯論訓練人員逐字審核的理想答案，以示範預期語氣、
+                  結構、分析步驟、引用方式及資料不足時的處理方法。不得加入未核實事實。
+                </li>
+                <li>
+                  Google 文件內的「提交者」、「標題」及「來源」只供授權、追溯及撤回管理，
+                  不應寫入 SFT JSONL。若任務本身需要來源內容，應把已核對且必要的上下文寫入
+                  <code>user.content</code>，而可更新知識仍應放入 RAG。
                 </li>
                 <li>
                   原始講稿或逐字稿並非天然的問答配對。須先由人手界定問題、所需上下文及理想答案，
@@ -521,7 +481,7 @@
                   train、validation 及獨立 eval。
                 </li>
               </ol>
-              <pre class="json">{"messages":[{"role":"system","content":"你是香港中學辯論教練。資料不足時必須明確說明。"},{"role":"user","content":"請分析以下主張為何欠缺機制：……"},{"role":"assistant","content":"這項主張說明了結果，但未有交代由原因發展至結果期間所發生的事情。你可以先補充……"}]}</pre>
+              <pre class="json">{"messages":[{"role":"system","content":"你是虛構校園的辯論練習助手。請以香港正體中文提供清晰、具體的分析，資料不足時須明確說明。"},{"role":"user","content":"以下是虛構辯題：星河中學應否在星期五延長圖書館開放時間？請示範如何比較正反雙方影響。"},{"role":"assistant","content":"這個虛構辯題可以從受益人數、影響程度、執行成本及替代方案四方面比較。正方須證明延長時間能實際改善學生溫習需要，反方則須交代人手及保安成本是否足以抵銷效益。最後應比較哪一方的影響較廣泛、較持久，而且更難由其他措施取代。"}]}</pre>
             </section>
 
             <section class="card">

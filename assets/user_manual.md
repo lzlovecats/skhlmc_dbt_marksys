@@ -395,8 +395,9 @@
 #### N. AI訓練資料
 - 獲Developer授權的錄音提交者可先閱讀並確認聲音複製、雲端處理及未成年安排，再按句庫錄音；錄音會直接上載private R2，不經database保存binary。
 - 提交者可播放自己的錄音、查看AI預檢及審核狀態，亦可撤回同意。撤回會在同一個資料庫transaction把現有錄音標示為withdrawn並寫入不可由browser讀取的audit；資料不再進入新dataset export／重訓。
-- AI管理員可管理句庫及讀音字典、試聽和審核錄音、審核LLM文字，以及查看coverage/readiness。「資料工廠」分頁現為純指引，不會生成、審核、儲存、發布或傳送資料到第三方provider。
-- RAG資料要由已核對、可追溯、可撤回的來源按語意切段，人手建立Workstation接受的`documents.jsonl`；每行只包含`id`、`title`、`text`及`source_url`。SFT資料則以`messages=[system,user,assistant]`等真實任務／目標答案配對整理，並只訓練assistant回覆。原始講稿或逐字稿不可自動當成問答配對。
+- AI管理員可管理句庫及讀音字典、試聽和審核錄音，以及查看coverage/readiness。「資料工廠」分頁現為純指引，不會生成、審核、儲存、發布或傳送資料到第三方provider。
+- 已登入委員可在「提交 RAG 及 SFT 資料」分頁開啟同一份指定 Google 文件提交原始資料。連結只會在登入後提供，並只可由 AI 訓練管理員更新或清除，設定位置在「管理員」分頁。Google 文件本身仍須限制至指定委員帳戶，提交內容不會自動成為 RAG bundle 或 SFT 訓練集。
+- RAG資料要由已核對、可追溯、可撤回的來源按語意切段，人手建立Workstation接受的`documents.jsonl`。每行只可有一個JSON物件，並必須填齊`id`（穩定及唯一）、`title`（主題及版本）、`text`（可獨立理解的完整內容）及`source_url`（公開來源用HTTPS，內部來源填空字串）。SFT資料以`sft.jsonl`整理，每行最外層只可有`messages`，並依次放一個只有`role`及`content`的`system`、`user`、`assistant`訊息，只訓練assistant回覆。Google文件內的提交者、標題及來源只供追溯，不應寫入SFT JSONL。原始講稿或逐字稿不可自動當成問答配對。目前未有 Workstation SFT 匯入器，所以檔名並非程式強制。
 - 雲端Dataset/model registry及RAG向量schema仍未正式啟用；Workstation RAG bundle必須按運維手冊驗證、簽署、安裝及保留上一個可rollback版本。SFT目前只供受控離線研究，不會由網站自動開始訓練。
 - AI預檢只供初篩，accepted仍需人手確認；上載、播放、export及AI分析都有大小、數量及費用上限。
 

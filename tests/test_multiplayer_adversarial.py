@@ -2287,6 +2287,6 @@ def test_changed_practice_shells_revalidate_room_contract(monkeypatch):
     assert kiosk.headers["cache-control"] == "no-cache"
 
 
-def test_training_and_coach_share_one_rag_embedding_semaphore():
-    assert ai_training_api.RAG_EMBED_SEMAPHORE is rag.RAG_EMBED_SEMAPHORE
+def test_retired_training_reindex_does_not_own_a_rag_embedding_semaphore():
+    assert not hasattr(ai_training_api, "RAG_EMBED_SEMAPHORE")
     assert system_limits.RAG_EMBED_CONCURRENCY == 3

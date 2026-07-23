@@ -28,3 +28,10 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+
+# Private local AI knowledge and supervised fine-tuning data.
+# Keep the dedicated directory ignored, and also reject the standard loader
+# filenames if they are accidentally copied elsewhere in the repository.
+private_ai_data/
+documents.jsonl
+sft.jsonl

@@ -9,31 +9,30 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
-from ai_model_config import (
-    RAG_EMBEDDING_MODEL, RAG_EMBEDDING_VERSION, get_feature_model,
-)
+from ai_model_config import get_feature_model
 from api.pagination import PAGE_SIZE, bounds, json_safe, payload, scalar_count
 from api.access import require_page_user_or_developer
 from core.roles import is_ai_manager
-from api.resource_limits import EXPORT_MAX_BYTES, EXPORT_MAX_ROWS, jsonl_response, require_row_limit
+from api.resource_limits import require_row_limit
 from core.ai_provider import post_json_bounded
+from core.config_store import get_config, set_configs_on_connection
 from core.media_probe import (
     MediaProbeError, SUPPORTED_AUDIO_MIMES, audio_extension, probe_audio,
 )
-from core.rag import RAG_EMBED_SEMAPHORE
 from core.schema_features import DISABLED, PARTIAL, READY, feature_bundle_state, table_bundle_state
 
 from schema import (
     TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS,
     TABLE_AI_MODEL_VERSIONS,
-    TABLE_AI_TRAINING_AUDIT, TABLE_RAG_CHUNKS, TABLE_RAG_DOCUMENTS,
-    TABLE_LLM_TRAINING_SUBMISSIONS, TABLE_R2_UPLOAD_INTENTS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
+    TABLE_AI_TRAINING_AUDIT,
+    TABLE_R2_UPLOAD_INTENTS, TABLE_TTS_LEXICON, TABLE_TTS_SCRIPTS,
     TABLE_TTS_VOICE_CONSENTS, TABLE_TTS_VOICE_RECORDINGS,
 )
 from prompts import (
@@ -45,13 +44,9 @@ from system_limits import (
     AI_TRAINING_ADMIN_PAGE_SIZE, AI_TRAINING_AUDIT_RETENTION_DAYS,
     AI_TRAINING_INVENTORY_LIMIT, AI_TRAINING_JSON_MAX_BYTES,
     AI_TRAINING_PROMPT_MAX_CHARS, AI_TRAINING_PROVIDER_TIMEOUT_SECONDS,
-    AI_TRAINING_READINESS_GROUP_LIMIT,
     DATASET_SNAPSHOT_MAX_COUNT,
-    DATASET_SNAPSHOT_MAX_ITEMS, LLM_CONTENT_MAX_CHARS,
-    LLM_REVIEW_CONCURRENCY, LLM_SUBMISSION_MAX_TOTAL,
+    DATASET_SNAPSHOT_MAX_ITEMS,
     MAINTENANCE_PRUNE_INTERVAL_SECONDS, MAX_AUDIO_BYTES,
-    RAG_DOCUMENT_MAX_TOTAL,
-    RAG_REINDEX_MAX_CHUNKS, RAG_REINDEX_MAX_DOCUMENTS,
     R2_BULK_LINK_TTL_SECONDS, R2_MEDIA_LINK_TTL_SECONDS,
     R2_OBJECT_CACHE_MAX_AGE_SECONDS, R2_UPLOAD_CLAIM_TTL_SECONDS,
     RECORDING_MANIFEST_MAX_ROWS, TTS_AI_ANALYSIS_SCRIPT_LIMIT,
@@ -63,11 +58,11 @@ router = APIRouter(prefix="/api/ai-training", tags=["ai-training"])
 CONSENT_VERSION = "tts_voice_v4_2026_07"
 CONSENT_TEXT = "我同意聖呂中辯收集本人錄音，用作內部廣東話 TTS、讀音檢查及建立可生成近似本人聲音的語音模型；資料可交由受控雲端 GPU／AI 服務處理，但不會公開原始錄音或 checkpoint。我可撤回未來使用；撤回後錄音不再納入新資料集，使用過該錄音的 checkpoint會被停止部署並安排排除資料重訓。"
 ALLOWED_KEY = "tts_recording_allowed_users"
+RAG_SFT_SUBMISSION_GOOGLE_DOC_CONFIG_KEY = "rag_sft_submission_google_doc_url"
 MANUSCRIPT_SEGMENT_MAX_LEN = 35
 ADMIN_RECORDING_PAGE_SIZE = AI_TRAINING_ADMIN_PAGE_SIZE
 MAX_AUDIO_MB = max(1, MAX_AUDIO_BYTES // (1024 * 1024))
 TTS_REVIEW_SEMAPHORE = asyncio.Semaphore(TTS_REVIEW_CONCURRENCY)
-LLM_REVIEW_SEMAPHORE = asyncio.Semaphore(LLM_REVIEW_CONCURRENCY)
 _AI_TRAINING_AUDIT_LAST_PRUNE = None
 _AI_TRAINING_AUDIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
@@ -111,18 +106,6 @@ class RecordingUploadIntentBody(BaseModel):
     mime_type: str = Field(default="audio/webm", max_length=80)
     byte_size: int = Field(gt=0, le=MAX_AUDIO_BYTES)
     sha256: str = Field(min_length=64, max_length=64)
-
-
-class LlmBody(BaseModel):
-    data_type: str = Field(max_length=80)
-    side: str = Field(default="不適用", max_length=40)
-    title: str = Field(default="", max_length=200)
-    topic_text: str = Field(default="", max_length=500)
-    content_text: str = Field(min_length=1, max_length=LLM_CONTENT_MAX_CHARS)
-    source_note: str = Field(default="", max_length=1000)
-    anonymized: bool = False
-    permission_confirmed: bool = False
-    manual_review: bool = False
 
 
 class LexiconBody(BaseModel):
@@ -182,9 +165,8 @@ class ModelRegisterBody(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
-class RagReindexBody(BaseModel):
-    embedding_model: str = Field(default=RAG_EMBEDDING_MODEL, max_length=80)
-    embedding_version: str = Field(default=RAG_EMBEDDING_VERSION, max_length=120)
+class RagSftSubmissionLinkBody(BaseModel):
+    url: str = Field(default="", max_length=2_048)
 
 
 def _admin(request):
@@ -192,6 +174,31 @@ def _admin(request):
     if not _is_admin(db, user):
         raise HTTPException(403, "只有管理員可執行此操作")
     return user, db
+
+
+def _validated_rag_sft_submission_google_doc_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(400, "Google 文件連結格式不正確") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "docs.google.com"
+        or parsed.username
+        or parsed.password
+        or port not in {None, 443}
+        or not re.fullmatch(
+            r"/document/d/[A-Za-z0-9_-]+(?:/[^?#]*)?", parsed.path
+        )
+    ):
+        raise HTTPException(
+            400, "只接受 docs.google.com 的 Google 文件 HTTPS 連結"
+        )
+    return raw
 
 
 def _segments(text_value, max_len=MANUSCRIPT_SEGMENT_MAX_LEN):
@@ -372,7 +379,7 @@ def _prune_audit(db):
                 f"""DELETE FROM {TABLE_AI_TRAINING_AUDIT}
                     WHERE created_at < NOW() - make_interval(days => :days)
                       AND action NOT IN (
-                        'consent_granted','consent_withdrawn','submission_withdrawn',
+                        'consent_granted','consent_withdrawn',
                         'factory_source_created','factory_source_withdrawn',
                         'factory_item_reviewed','factory_item_invalidated',
                         'factory_item_withdrawn','factory_topic_tag_approved',
@@ -402,32 +409,6 @@ def _bounded_json_param(value, label="JSON") -> str:
 def _split_name(group_key: str) -> str:
     bucket = int(hashlib.sha256(group_key.encode("utf-8")).hexdigest()[:8], 16) % 10
     return "test" if bucket == 0 else "validation" if bucket == 1 else "train"
-
-
-def _rag_chunks(value: str, size: int = 700, overlap: int = 100) -> list[str]:
-    value = re.sub(r"\r\n?", "\n", str(value or "")).strip()
-    if not value:
-        return []
-    chunks, start = [], 0
-    while start < len(value):
-        end = min(len(value), start + size)
-        if end < len(value):
-            boundary = max(value.rfind(mark, start + size // 2, end) for mark in "。！？\n；")
-            if boundary >= start + size // 2:
-                end = boundary + 1
-        chunks.append(value[start:end].strip())
-        if end >= len(value):
-            break
-        start = max(start + 1, end - overlap)
-    return [chunk for chunk in chunks if chunk]
-
-
-def _require_rag_vector_schema(db):
-    """Fail closed until pgvector is provisioned by a versioned migration."""
-    from core.rag import rag_schema_ready
-
-    if not rag_schema_ready(db, force=True):
-        raise HTTPException(503, "RAG向量schema尚未由正式migration啟用")
 
 
 def _audio_ext(mime):
@@ -483,21 +464,47 @@ def data(request: Request):
     lexicon = []
     # Recorder selection only needs one status per script; full history is paged below.
     mine = _rows(db.query(f"SELECT DISTINCT ON (script_id) id,script_id,status,created_at FROM {TABLE_TTS_VOICE_RECORDINGS} WHERE speaker_user_id=:user ORDER BY script_id,created_at DESC LIMIT :inventory_limit", {"user":user,"inventory_limit":AI_TRAINING_INVENTORY_LIMIT}))
-    llm = []
     from core import r2_storage
     from deploy.proxy import bandwidth_budget_status
-    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "my_llm":llm, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
+    try:
+        rag_sft_submission_url = _validated_rag_sft_submission_google_doc_url(
+            get_config(db, RAG_SFT_SUBMISSION_GOOGLE_DOC_CONFIG_KEY, "")
+        )
+    except HTTPException:
+        logger.error("Configured RAG and SFT submission Google Doc URL is invalid")
+        rag_sft_submission_url = ""
+    result = {"user_id": user, "is_allowed": allowed, "is_admin": admin, "consented": consented, "consent_text": CONSENT_TEXT, "scripts": scripts, "lexicon":lexicon, "my_recordings":mine, "rag_sft_submission_google_doc_url":rag_sft_submission_url, "recording_storage":"r2", "recording_storage_ready":r2_storage.configured(), "bandwidth_budget":bandwidth_budget_status(notify=True), "storage_budget":r2_storage.storage_budget_status(db, refresh=True) if r2_storage.configured() else None}
     result["limits"] = {
         "max_audio_bytes": MAX_AUDIO_BYTES,
         "max_duration_seconds": TTS_MAX_DURATION_SECONDS,
         "r2_object_cache_max_age_seconds": R2_OBJECT_CACHE_MAX_AGE_SECONDS,
     }
     if admin:
-        result["recordings"] = []; result["submissions"] = []
+        result["recordings"] = []
     # PostgreSQL nullable columns can become pandas NaN/NaT/NA values on
     # Render. Starlette rejects those values while serialising JSON, which
     # previously turned an otherwise successful bootstrap into an opaque 500.
     return json_safe(result)
+
+
+@router.post("/rag-sft-submission-link")
+def save_rag_sft_submission_link(body: RagSftSubmissionLinkBody, request: Request):
+    user, db = _admin(request)
+    url = _validated_rag_sft_submission_google_doc_url(body.url)
+    with db.transaction() as conn:
+        set_configs_on_connection(
+            conn, {RAG_SFT_SUBMISSION_GOOGLE_DOC_CONFIG_KEY: url}
+        )
+        _audit(
+            db,
+            user,
+            "rag_sft_submission_link_updated",
+            "rag_sft_submission_link",
+            details={"configured": bool(url)},
+            conn=conn,
+        )
+    _prune_audit(db)
+    return {"ok": True, "url": url}
 
 
 @router.get("/collection/{kind}")
@@ -505,13 +512,11 @@ def collection(kind: str, request: Request, page: int = 1):
     user, db = _ctx(request); admin = _is_admin(db, user); page, _, offset = bounds(page)
     specs = {
         "my-recordings": (TABLE_TTS_VOICE_RECORDINGS, "speaker_user_id=:user", {"user": user}, "id,script_id,prompt_text,status,ai_review_status,ai_transcript,created_at,review_note"),
-        "my-llm": (TABLE_LLM_TRAINING_SUBMISSIONS, "submitted_by=:user", {"user": user}, "id,data_type,side,title,topic_text,content_text,source_note,status,ai_review_status,review_note,created_at"),
         "recordings": (TABLE_TTS_VOICE_RECORDINGS, "1=1", {}, "id,speaker_user_id,script_id,prompt_text,mime_type,status,ai_review_status,ai_transcript,review_note,created_at"),
-        "submissions": (TABLE_LLM_TRAINING_SUBMISSIONS, "1=1", {}, "id,submitted_by,data_type,side,title,topic_text,content_text,source_note,status,ai_review_status,ai_review_json,review_note,created_at"),
         "lexicon": (TABLE_TTS_LEXICON, "1=1", {}, "lexicon_id AS id,term,reading,jyutping,example,note,category,is_active"),
     }
     if kind not in specs: raise HTTPException(404, "資料集不存在")
-    if kind in {"recordings", "submissions"} and not admin: raise HTTPException(403, "只有管理員可查看審核資料")
+    if kind == "recordings" and not admin: raise HTTPException(403, "只有管理員可查看審核資料")
     table, where, params, cols = specs[kind]; params = dict(params)
     total = scalar_count(db, f"SELECT COUNT(*) total FROM {table} WHERE {where}", params)
     params.update(limit=PAGE_SIZE, offset=offset)
@@ -534,35 +539,11 @@ def admin_recordings(request: Request, page: int = 1, status: str = "all", speak
             "total": total, "total_pages": max(1, (total + ADMIN_RECORDING_PAGE_SIZE - 1) // ADMIN_RECORDING_PAGE_SIZE)}
 
 
-@router.get("/admin/submissions")
-def admin_submissions(request: Request, page: int = 1, status: str = "all", submitter: str = ""):
-    _user, db = _admin(request)
-    page = max(1, int(page or 1)); offset = (page - 1) * AI_TRAINING_ADMIN_PAGE_SIZE
-    clauses, params = ["1=1"], {}
-    if status != "all": clauses.append("status=:status"); params["status"] = status
-    if submitter.strip(): clauses.append("submitted_by=:submitter"); params["submitter"] = submitter.strip()
-    where = " AND ".join(clauses)
-    total = scalar_count(db, f"SELECT COUNT(*) total FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE {where}", params)
-    params.update(limit=AI_TRAINING_ADMIN_PAGE_SIZE, offset=offset)
-    rows = _rows(db.query(f"""SELECT id,submitted_by,data_type,side,title,topic_text,
-        content_text,source_note,status,ai_review_status,ai_review_json,review_note,created_at
-        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE {where}
-        ORDER BY created_at DESC LIMIT :limit OFFSET :offset""", params))
-    return {"items": json_safe(rows), "page": page, "page_size": AI_TRAINING_ADMIN_PAGE_SIZE,
-            "total": total, "total_pages": max(1, (total + AI_TRAINING_ADMIN_PAGE_SIZE - 1) // AI_TRAINING_ADMIN_PAGE_SIZE)}
-
-
 @router.get("/admin/stats")
 def admin_stats(request: Request):
     _user, db = _admin(request)
     recordings = _rows(db.query(f"SELECT status,COUNT(*) AS count FROM {TABLE_TTS_VOICE_RECORDINGS} GROUP BY status"))
-    llm_rows = _rows(db.query(f"SELECT status,COUNT(*) AS count FROM {TABLE_LLM_TRAINING_SUBMISSIONS} GROUP BY status"))
-    llm_submitters = _rows(db.query(f"""SELECT DISTINCT submitted_by
-        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE submitted_by IS NOT NULL
-        ORDER BY submitted_by LIMIT :group_limit""",
-        {"group_limit": AI_TRAINING_READINESS_GROUP_LIMIT}))
-    return {"recordings": recordings, "llm": llm_rows,
-            "llm_submitters": llm_submitters, "allowed_users": _users(db, ALLOWED_KEY)}
+    return {"recordings": recordings, "allowed_users": _users(db, ALLOWED_KEY)}
 
 
 @router.get("/recordings/{record_id}/audio")
@@ -957,117 +938,6 @@ async def recording_quality_check(body: RecordingBody, request: Request):
             "message": review.get("note") or ("AI 音質檢查通過。" if passed else "AI 音質檢查未通過。")}
 
 
-@router.post("/llm")
-async def llm(body: LlmBody, request: Request):
-    user, db = _ctx(request)
-    if not body.content_text.strip(): raise HTTPException(400,"請填寫文字內容")
-    if not body.anonymized or not body.permission_confirmed: raise HTTPException(400,"提交前必須確認已匿名化及有權提交")
-    normalized = json.dumps({"data_type":body.data_type,"side":body.side,"title":body.title.strip(),"topic":body.topic_text.strip(),"content":body.content_text.strip(),"source":body.source_note.strip()},ensure_ascii=False,sort_keys=True)
-    fingerprint = hashlib.sha256(normalized.encode()).hexdigest()
-    duplicate = db.query(f"SELECT id FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE submitted_by=:user AND md5(COALESCE(data_type,'')||'|'||COALESCE(side,'')||'|'||COALESCE(title,'')||'|'||COALESCE(topic_text,'')||'|'||COALESCE(content_text,'')||'|'||COALESCE(source_note,''))=md5(:raw) AND status!='withdrawn'", {"user":user,"raw":"|".join([body.data_type,body.side,body.title.strip(),body.topic_text.strip(),body.content_text.strip(),body.source_note.strip()])})
-    if not duplicate.empty: raise HTTPException(409,"此資料已提交，請勿重複提交")
-    total = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_LLM_TRAINING_SUBMISSIONS}")
-    if not total.empty and int(total.iloc[0]["n"] or 0) >= LLM_SUBMISSION_MAX_TOTAL:
-        raise HTTPException(409, "LLM訓練資料已達保護上限，請先封存或清理舊提交。")
-    review = {"fingerprint": fingerprint, "manual_confirmed": body.manual_review}
-    review_status = "error" if body.manual_review else "passed"
-    if not body.manual_review:
-        from deploy.proxy import _get_proxy_secret
-        key = _get_proxy_secret("GEMINI_API_KEY").strip()
-        if not key:
-            _log_ai(user, db, "llm_review", False, error="GEMINI_API_KEY missing")
-            raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查")
-        prompt = "審核以下香港粵語辯論訓練文字，只回覆 JSON，含 passed(boolean), reason, relevance, quality, anonymization, permission_risk。\n" + normalized
-        try:
-            url=_gemini_generation_url("llm_review")
-            async with LLM_REVIEW_SEMAPHORE:
-                async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-                    response_data = await _post_gemini_json(client, url, key, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0}})
-            review=json.loads(response_data["candidates"][0]["content"]["parts"][0]["text"]); review["fingerprint"]=fingerprint
-            _log_ai(user, db, "llm_review", True, response_data=response_data)
-        except Exception as exc:
-            _log_ai(user, db, "llm_review", False, error=AI_TRAINING_PROVIDER_PUBLIC_ERROR)
-            raise HTTPException(503,"AI 預檢暫時未能完成；可確認後選擇略過 AI 檢查") from exc
-        if not bool(review.get("passed")): return {"ok":False,"status":"failed","message":review.get("reason") or "AI 預檢未通過", "review":review}
-    params = {"user":user,"type":body.data_type,"title":body.title.strip() or None,
-              "topic":body.topic_text.strip() or None,"side":body.side,
-              "content":body.content_text.strip(),"source":body.source_note.strip() or None,
-              "ai_status":review_status,"review":_bounded_json_param(review, "LLM AI預檢結果"),
-              "raw":"|".join([body.data_type,body.side,body.title.strip(),body.topic_text.strip(),
-                                body.content_text.strip(),body.source_note.strip()]),
-              "now":datetime.now()}
-    with db.transaction() as conn:
-        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-                     {"key": f"llm_submission:{user}"})
-        final_total = int(conn.execute(text(f"SELECT COUNT(*) FROM {TABLE_LLM_TRAINING_SUBMISSIONS}")).scalar() or 0)
-        final_duplicate = conn.execute(text(f"""SELECT 1 FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
-            WHERE submitted_by=:user
-              AND md5(COALESCE(data_type,'')||'|'||COALESCE(side,'')||'|'||COALESCE(title,'')||'|'||COALESCE(topic_text,'')||'|'||COALESCE(content_text,'')||'|'||COALESCE(source_note,''))=md5(:raw)
-              AND status!='withdrawn' LIMIT 1"""), params).fetchone()
-        if final_duplicate:
-            raise HTTPException(409, "此資料已提交，請勿重複提交")
-        if final_total >= LLM_SUBMISSION_MAX_TOTAL:
-            raise HTTPException(409, "LLM訓練資料已達保護上限，請先封存或清理舊提交。")
-        conn.execute(text(f"""INSERT INTO {TABLE_LLM_TRAINING_SUBMISSIONS}(submitted_by,data_type,title,topic_text,side,content_text,source_note,anonymized,permission_confirmed,ai_review_status,ai_review_json,status,created_at)
-            VALUES(:user,:type,:title,:topic,:side,:content,:source,TRUE,TRUE,:ai_status,:review,'pending',:now)"""), params)
-    return {"ok":True,"message":"資料已提交，等待人工審核。"}
-
-
-@router.delete("/llm/{submission_id}")
-def withdraw_llm(submission_id: int, request: Request):
-    user, db = _ctx(request)
-    now = datetime.now()
-    changed = False
-    with db.transaction() as conn:
-        current = conn.execute(text(f"""SELECT status
-            FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
-            WHERE id=:id AND submitted_by=:user FOR UPDATE"""),
-            {"id": submission_id, "user": user}).mappings().first()
-        if current is None:
-            raise HTTPException(404, "找不到提交")
-        if current["status"] != "withdrawn":
-            conn.execute(text(f"""UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS}
-                SET status='withdrawn' WHERE id=:id AND submitted_by=:user"""),
-                {"id":submission_id,"user":user})
-            changed = True
-            _audit(db, user, "submission_withdrawn", "llm_submission", submission_id,
-                   conn=conn)
-    if changed:
-        _prune_audit(db)
-    cleanup_params = {
-        "id": submission_id,
-        "source_table": TABLE_LLM_TRAINING_SUBMISSIONS,
-        "source_id": str(submission_id),
-        "now": now,
-    }
-    _run_optional_cleanup(
-        db, (TABLE_RAG_DOCUMENTS,),
-        f"DELETE FROM {TABLE_RAG_DOCUMENTS} WHERE submission_id=:id",
-        cleanup_params, "delete withdrawn RAG document",
-    )
-    _run_optional_cleanup(
-        db, (TABLE_AI_DATASET_SNAPSHOTS, TABLE_AI_DATASET_SNAPSHOT_ITEMS),
-        f"""UPDATE {TABLE_AI_DATASET_SNAPSHOTS} SET status='withdrawn'
-            WHERE dataset_kind='llm' AND status IN ('draft','ready')
-              AND snapshot_id IN (
-                SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOT_ITEMS}
-                WHERE source_table=:source_table AND source_id=:source_id
-              )""",
-        cleanup_params, "withdraw LLM snapshots",
-    )
-    _run_optional_cleanup(
-        db, (TABLE_AI_DATASET_SNAPSHOT_ITEMS, TABLE_AI_MODEL_VERSIONS),
-        f"""UPDATE {TABLE_AI_MODEL_VERSIONS}
-            SET status='blocked',updated_at=:now
-            WHERE status!='retired' AND dataset_snapshot_id IN (
-                SELECT snapshot_id FROM {TABLE_AI_DATASET_SNAPSHOT_ITEMS}
-                WHERE source_table=:source_table AND source_id=:source_id
-            )""",
-        cleanup_params, "block withdrawn LLM models",
-    )
-    return {"ok":True, "changed": changed}
-
-
 @router.post("/lexicon")
 def lexicon(body: LexiconBody, request: Request):
     user, db = _ctx(request)
@@ -1338,38 +1208,6 @@ def export_recording_manifest(request: Request, response: Response, speaker: str
     })
 
 
-@router.get("/export/llm.jsonl")
-def export_llm(request: Request, after_id: int = 0, before_id: int = 0,
-               submitter: str = ""):
-    _user, db = _admin(request)
-    after_id, before_id = max(0, after_id), max(0, before_id)
-    where = "status='accepted' AND id>:after_id"
-    params = {"after_id": after_id}
-    if before_id:
-        where += " AND id<=:before_id"
-        params["before_id"] = before_id
-    if submitter.strip():
-        where += " AND submitted_by=:submitter"
-        params["submitter"] = submitter.strip()
-    # Check the database-side byte total first.  Loading 5,000 maximum-sized
-    # submissions and only then rejecting JSONL could temporarily use >100MB.
-    size = _rows(db.query(f"""SELECT COUNT(*) AS row_count,
-        COALESCE(SUM(octet_length(COALESCE(content_text,''))
-          +octet_length(COALESCE(title,''))+octet_length(COALESCE(topic_text,''))
-          +octet_length(COALESCE(source_note,''))),0) AS payload_bytes
-        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE {where}""", params))
-    row_count = int(size[0].get("row_count") or 0) if size else 0
-    payload_bytes = int(size[0].get("payload_bytes") or 0) if size else 0
-    if row_count > EXPORT_MAX_ROWS or payload_bytes > EXPORT_MAX_BYTES:
-        raise HTTPException(413, "LLM訓練資料超過單次匯出保護上限，請用 after_id／before_id 分批下載。")
-    rows = _rows(db.query(f"""SELECT id,submitted_by,data_type,title,topic_text,side,
-        content_text,source_note,created_at FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
-        WHERE {where} ORDER BY id LIMIT :export_limit""",
-        {**params, "export_limit": EXPORT_MAX_ROWS + 1}))
-    require_row_limit(rows, label="LLM訓練資料匯出")
-    return jsonl_response("llm-accepted.jsonl", rows)
-
-
 @router.post("/recordings/{record_id}/review")
 def review_recording(record_id:int, body:ReviewBody, request:Request):
     user,db=_ctx(request)
@@ -1398,30 +1236,6 @@ def review_recording(record_id:int, body:ReviewBody, request:Request):
     return {"ok":True}
 
 
-@router.post("/llm/{submission_id}/review")
-def review_llm(submission_id:int, body:ReviewBody, request:Request):
-    user,db=_ctx(request)
-    if not _is_admin(db,user): raise HTTPException(403,"只有管理員可審核")
-    if body.status not in ('accepted','rejected'): raise HTTPException(400,"狀態不正確")
-    with db.transaction() as conn:
-        current = conn.execute(text(f"""SELECT status
-            FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE id=:id FOR UPDATE"""),
-            {"id": submission_id}).mappings().first()
-        if current is None:
-            raise HTTPException(404, "找不到提交")
-        if current["status"] != "pending":
-            raise HTTPException(409, "只有待審核資料可以更新")
-        conn.execute(text(f"""UPDATE {TABLE_LLM_TRAINING_SUBMISSIONS}
-            SET status=:status,review_note=:note,reviewed_by=:user,reviewed_at=:now
-            WHERE id=:id"""),
-            {"status":body.status,"note":body.note,"user":user,
-             "now":datetime.now(),"id":submission_id})
-        _audit(db, user, "submission_reviewed", "llm_submission", submission_id,
-               {"status": body.status}, conn=conn)
-    _prune_audit(db)
-    return {"ok":True}
-
-
 @router.get("/readiness")
 def readiness(request: Request):
     _user, db = _admin(request)
@@ -1444,80 +1258,57 @@ def readiness(request: Request):
       {"version": CONSENT_VERSION, "consent_text": CONSENT_TEXT,
        "inventory_limit": AI_TRAINING_INVENTORY_LIMIT}))
     lexicon = db.query(f"SELECT COUNT(*) n FROM {TABLE_TTS_LEXICON} WHERE is_active=TRUE")
-    llm = _rows(db.query(f"""SELECT data_type,COUNT(*) docs,COALESCE(SUM(LENGTH(content_text)),0) chars
-        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
-        AND anonymized=TRUE AND permission_confirmed=TRUE GROUP BY data_type ORDER BY docs DESC
-        LIMIT :group_limit""", {"group_limit": AI_TRAINING_READINESS_GROUP_LIMIT}))
     active_lexicon = int(lexicon.iloc[0]["n"] or 0) if not lexicon.empty else 0
     return json_safe({"consent_version": CONSENT_VERSION, "speakers": speakers,
-        "active_lexicon": active_lexicon, "llm_by_type": llm,
+        "active_lexicon": active_lexicon,
         "gates": {"tts_min_train_minutes": 30, "tts_target_collected_minutes": 40,
-                  "tts_min_lexicon": 50,
-                  "llm_min_instruction_pairs_for_lora": 500}})
+                  "tts_min_lexicon": 50}})
 
 
 @router.post("/datasets/snapshots")
 def create_snapshot(body: SnapshotBody, request: Request):
     user, db = _admin(request)
     _require_feature_schema(db, "dataset_model")
-    if body.dataset_kind not in ("tts", "llm"):
-        raise HTTPException(400, "dataset_kind只可為tts或llm")
+    if body.dataset_kind != "tts":
+        raise HTTPException(400, "dataset_kind只可為tts")
     items = []
     total_seconds = 0.0
-    if body.dataset_kind == "tts":
-        speaker = body.speaker_user_id.strip()
-        if not speaker:
-            raise HTTPException(400, "TTS snapshot必須指定單一speaker")
-        rows = _rows(db.query(f"""SELECT r.id,r.script_id,r.prompt_text,r.r2_key,r.audio_sha256,
-                COALESCE(r.measured_duration_seconds,r.duration_seconds,0) duration_seconds,
-                s.manuscript_id,s.category,c.consent_version
-            FROM {TABLE_TTS_VOICE_RECORDINGS} r
-            JOIN {TABLE_TTS_SCRIPTS} s ON s.script_id=r.script_id
-            JOIN {TABLE_TTS_VOICE_CONSENTS} c ON c.user_id=r.speaker_user_id
-              AND c.consent_version=:version AND c.withdrawn_at IS NULL
-              AND c.voice_cloning_confirmed=TRUE AND c.cloud_processing_confirmed=TRUE
-              AND (c.is_minor=FALSE OR c.guardian_confirmed=TRUE)
-            WHERE r.status='accepted' AND r.speaker_user_id=:speaker ORDER BY r.id
-            LIMIT :item_limit""",
-            {"speaker": speaker, "version": CONSENT_VERSION,
-             "item_limit": DATASET_SNAPSHOT_MAX_ITEMS + 1}))
-        require_row_limit(rows, limit=DATASET_SNAPSHOT_MAX_ITEMS, label="TTS dataset snapshot")
-        for row in rows:
-            sha = str(row.get("audio_sha256") or "")
-            if not sha or not str(row.get("r2_key") or ""):
-                raise HTTPException(409, f"錄音 {row['id']} 尚未完成R2遷移或缺少SHA256")
-            group = str(row.get("manuscript_id") or row["script_id"])
-            seconds = float(row.get("duration_seconds") or 0)
-            total_seconds += seconds
-            items.append({"source_table": TABLE_TTS_VOICE_RECORDINGS, "source_id": str(row["id"]),
-                "source_sha256": sha, "consent_version": CONSENT_VERSION,
-                "split_name": _split_name(group), "metadata": {"script_id": row["script_id"],
-                "prompt_text": row["prompt_text"], "manuscript_id": row.get("manuscript_id"),
-                "category": row.get("category"), "duration_seconds": seconds,
-                "r2_key": row.get("r2_key")}})
-    else:
-        speaker = ""
-        rows = _rows(db.query(f"""SELECT id,data_type,title,topic_text,side,content_text,source_note
-            FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status='accepted'
-            AND anonymized=TRUE AND permission_confirmed=TRUE ORDER BY id
-            LIMIT :item_limit""", {"item_limit": DATASET_SNAPSHOT_MAX_ITEMS + 1}))
-        require_row_limit(rows, limit=DATASET_SNAPSHOT_MAX_ITEMS, label="LLM dataset snapshot")
-        for row in rows:
-            sha = hashlib.sha256(str(row["content_text"]).encode("utf-8")).hexdigest()
-            group = str(row.get("topic_text") or row["id"])
-            # The immutable source row already owns content_text.  Repeating it
-            # in both manifest_json and snapshot_items doubled Supabase storage
-            # on every snapshot without improving reproducibility.
-            metadata = {key: row.get(key) for key in ("data_type", "side")}
-            items.append({"source_table": TABLE_LLM_TRAINING_SUBMISSIONS, "source_id": str(row["id"]),
-                "source_sha256": sha, "consent_version": None, "split_name": _split_name(group),
-                "metadata": metadata})
+    speaker = body.speaker_user_id.strip()
+    if not speaker:
+        raise HTTPException(400, "TTS snapshot必須指定單一speaker")
+    rows = _rows(db.query(f"""SELECT r.id,r.script_id,r.prompt_text,r.r2_key,r.audio_sha256,
+            COALESCE(r.measured_duration_seconds,r.duration_seconds,0) duration_seconds,
+            s.manuscript_id,s.category,c.consent_version
+        FROM {TABLE_TTS_VOICE_RECORDINGS} r
+        JOIN {TABLE_TTS_SCRIPTS} s ON s.script_id=r.script_id
+        JOIN {TABLE_TTS_VOICE_CONSENTS} c ON c.user_id=r.speaker_user_id
+          AND c.consent_version=:version AND c.withdrawn_at IS NULL
+          AND c.voice_cloning_confirmed=TRUE AND c.cloud_processing_confirmed=TRUE
+          AND (c.is_minor=FALSE OR c.guardian_confirmed=TRUE)
+        WHERE r.status='accepted' AND r.speaker_user_id=:speaker ORDER BY r.id
+        LIMIT :item_limit""",
+        {"speaker": speaker, "version": CONSENT_VERSION,
+         "item_limit": DATASET_SNAPSHOT_MAX_ITEMS + 1}))
+    require_row_limit(rows, limit=DATASET_SNAPSHOT_MAX_ITEMS, label="TTS dataset snapshot")
+    for row in rows:
+        sha = str(row.get("audio_sha256") or "")
+        if not sha or not str(row.get("r2_key") or ""):
+            raise HTTPException(409, f"錄音 {row['id']} 尚未完成R2遷移或缺少SHA256")
+        group = str(row.get("manuscript_id") or row["script_id"])
+        seconds = float(row.get("duration_seconds") or 0)
+        total_seconds += seconds
+        items.append({"source_table": TABLE_TTS_VOICE_RECORDINGS, "source_id": str(row["id"]),
+            "source_sha256": sha, "consent_version": CONSENT_VERSION,
+            "split_name": _split_name(group), "metadata": {"script_id": row["script_id"],
+            "prompt_text": row["prompt_text"], "manuscript_id": row.get("manuscript_id"),
+            "category": row.get("category"), "duration_seconds": seconds,
+            "r2_key": row.get("r2_key")}})
     if not items:
         raise HTTPException(400, "沒有符合授權及審核條件的資料")
     # The manifest is the immutable identity list. Rich metadata lives once in
     # snapshot_items; duplicating it here multiplied storage on every version.
     manifest = {"dataset_kind": body.dataset_kind, "speaker_user_id": speaker,
-                "consent_version": CONSENT_VERSION if body.dataset_kind == "tts" else None,
+                "consent_version": CONSENT_VERSION,
                 "items": [{key: item[key] for key in
                            ("source_table", "source_id", "source_sha256",
                             "consent_version", "split_name")} for item in items]}
@@ -1539,7 +1330,7 @@ def create_snapshot(body: SnapshotBody, request: Request):
              manifest_sha256,manifest_json,status,created_by)
             VALUES(:id,:kind,:speaker,:consent,:count,:seconds,:sha,CAST(:manifest AS jsonb),'ready',:user)"""),
             {"id":snapshot_id,"kind":body.dataset_kind,"speaker":speaker or None,
-             "consent":CONSENT_VERSION if body.dataset_kind == "tts" else None,"count":len(items),
+             "consent":CONSENT_VERSION,"count":len(items),
              "seconds":total_seconds,"sha":digest,"manifest":manifest_json,"user":user})
         conn.execute(text(f"""INSERT INTO {TABLE_AI_DATASET_SNAPSHOT_ITEMS}
             (snapshot_id,source_table,source_id,source_sha256,consent_version,split_name,metadata_json)
@@ -1606,102 +1397,3 @@ def model_metrics(model_id: str, body: ModelMetricsBody, request: Request):
                {"metrics":_bounded_json_param(body.metrics, "模型指標"),"status":status,"now":datetime.now(),"id":model_id})
     _audit(db, user, "model_metrics_updated", "model", model_id, {"status": status})
     return {"ok":True,"status":status}
-
-
-@router.post("/rag/reindex")
-async def rag_reindex(body: RagReindexBody, request: Request):
-    user, db = _admin(request)
-    if body.embedding_model != RAG_EMBEDDING_MODEL or body.embedding_version != RAG_EMBEDDING_VERSION:
-        raise HTTPException(400, "embedding model/version 必須使用目前鎖定版本，避免重複建立索引空間")
-    _require_rag_vector_schema(db)
-    from deploy.proxy import _get_proxy_secret
-    api_key = _get_proxy_secret("GEMINI_API_KEY").strip()
-    if not api_key: raise HTTPException(503, "未設定GEMINI_API_KEY")
-    submissions = _rows(db.query(f"""SELECT s.id,s.data_type,s.title,s.topic_text,s.side,
-            s.content_text,s.source_note,d.document_id AS existing_document_id
-        FROM {TABLE_LLM_TRAINING_SUBMISSIONS} s
-        LEFT JOIN {TABLE_RAG_DOCUMENTS} d ON d.submission_id=s.id
-        WHERE s.status='accepted' AND s.anonymized=TRUE AND s.permission_confirmed=TRUE
-          AND (d.document_id IS NULL OR d.status!='active'
-            OR d.embedding_model IS DISTINCT FROM :model
-            OR d.embedding_version IS DISTINCT FROM :version
-            OR NOT EXISTS (SELECT 1 FROM {TABLE_RAG_CHUNKS} c WHERE c.document_id=d.document_id))
-        ORDER BY (d.document_id IS NULL),s.id LIMIT :document_limit""",
-        {"model": body.embedding_model, "version": body.embedding_version,
-         "document_limit": RAG_REINDEX_MAX_DOCUMENTS + 1}))
-    has_more = len(submissions) > RAG_REINDEX_MAX_DOCUMENTS
-    submissions = submissions[:RAG_REINDEX_MAX_DOCUMENTS]
-    db.execute(f"""UPDATE {TABLE_RAG_DOCUMENTS} SET status='withdrawn'
-        WHERE submission_id IN
-        (SELECT id FROM {TABLE_LLM_TRAINING_SUBMISSIONS} WHERE status!='accepted')""")
-    active_count_frame = db.query(f"SELECT COUNT(*) AS n FROM {TABLE_RAG_DOCUMENTS} WHERE status='active'")
-    active_document_count = int(active_count_frame.iloc[0]["n"] or 0) if not active_count_frame.empty else 0
-    indexed = 0; documents_indexed = 0
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{body.embedding_model}:embedContent"
-    async with httpx.AsyncClient(timeout=AI_TRAINING_PROVIDER_TIMEOUT_SECONDS) as client:
-        for submission in submissions:
-            existing_document_id = submission.get("existing_document_id")
-            is_new_document = (existing_document_id is None or
-                               str(existing_document_id).strip().lower() in {"", "nan", "none"})
-            if is_new_document and active_document_count >= RAG_DOCUMENT_MAX_TOTAL:
-                has_more = True
-                continue
-            document_id = f"llm-{submission['id']}"
-            content_sha = hashlib.sha256(str(submission["content_text"]).encode("utf-8")).hexdigest()
-            chunks = _rag_chunks(submission["content_text"])
-            if indexed and indexed + len(chunks) > RAG_REINDEX_MAX_CHUNKS:
-                has_more = True
-                break
-            if len(chunks) > RAG_REINDEX_MAX_CHUNKS:
-                raise HTTPException(413, "單一文件分段數超過RAG保護上限，請先拆分文字再提交。")
-
-            async def embed_chunk(chunk):
-                async with RAG_EMBED_SEMAPHORE:
-                    response_data = await _post_gemini_json(client, endpoint, api_key,
-                        json={
-                        "content":{"parts":[{"text":chunk}]}, "outputDimensionality":768})
-                    values = ((response_data.get("embedding") or {}).get("values") or [])
-                    if len(values) != 768:
-                        raise HTTPException(502, "Embedding API回傳維度不正確")
-                    return values
-
-            vectors = await asyncio.gather(*(embed_chunk(chunk) for chunk in chunks))
-            now = datetime.now()
-            chunk_params = []
-            for index, (chunk, values) in enumerate(zip(chunks, vectors)):
-                chunk_id = f"{document_id}-{index:04d}-{hashlib.sha256(chunk.encode()).hexdigest()[:10]}"
-                vector_text = "[" + ",".join(f"{float(x):.9g}" for x in values) + "]"
-                chunk_params.append({"id":chunk_id,"doc":document_id,"idx":index,"content":chunk,
-                    "tokens":max(1,len(chunk)//2),"model":body.embedding_model,
-                    "version":body.embedding_version,"vector":vector_text,
-                    "metadata":_json_param({"data_type":submission.get("data_type"),
-                                               "topic_text":submission.get("topic_text"),
-                                               "side":submission.get("side")})})
-
-            with db.transaction() as conn:
-                conn.execute(text(f"""INSERT INTO {TABLE_RAG_DOCUMENTS}
-                (document_id,submission_id,title,data_type,topic_text,side,source_note,content_sha256,
-                 status,embedding_model,embedding_version,indexed_at)
-                VALUES(:doc,:submission,:title,:type,:topic,:side,:source,:sha,'active',:model,:version,:now)
-                ON CONFLICT(document_id) DO UPDATE SET title=EXCLUDED.title,data_type=EXCLUDED.data_type,
-                 topic_text=EXCLUDED.topic_text,side=EXCLUDED.side,source_note=EXCLUDED.source_note,
-                 content_sha256=EXCLUDED.content_sha256,status='active',embedding_model=EXCLUDED.embedding_model,
-                 embedding_version=EXCLUDED.embedding_version,indexed_at=EXCLUDED.indexed_at"""),
-                {"doc":document_id,"submission":submission["id"],"title":submission.get("title"),
-                 "type":submission.get("data_type"),"topic":submission.get("topic_text"),
-                 "side":submission.get("side"),"source":submission.get("source_note"),"sha":content_sha,
-                 "model":body.embedding_model,"version":body.embedding_version,"now":now})
-                conn.execute(text(f"DELETE FROM {TABLE_RAG_CHUNKS} WHERE document_id=:doc"), {"doc": document_id})
-                if chunk_params:
-                    conn.execute(text(f"""INSERT INTO {TABLE_RAG_CHUNKS}
-                    (chunk_id,document_id,chunk_index,content_text,token_estimate,embedding_model,
-                     embedding_version,embedding,metadata_json)
-                    VALUES(:id,:doc,:idx,:content,:tokens,:model,:version,
-                     CAST(:vector AS vector),CAST(:metadata AS jsonb))"""), chunk_params)
-            indexed += len(chunks); documents_indexed += 1
-            if is_new_document:
-                active_document_count += 1
-    _audit(db, user, "rag_reindexed", "rag_index", body.embedding_version,
-           {"documents": documents_indexed, "chunks": indexed, "has_more": has_more})
-    return {"ok":True,"documents":documents_indexed,"chunks":indexed,"has_more":has_more,
-            "embedding_model":body.embedding_model,"embedding_version":body.embedding_version}

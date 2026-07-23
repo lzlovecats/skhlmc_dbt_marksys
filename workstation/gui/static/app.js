@@ -186,7 +186,7 @@
       const response = await action({ action: "artifact_inspect" });
       inspectedArtifactCatalog = response.result?.components || null;
       $("artifactCatalog").textContent = JSON.stringify(inspectedArtifactCatalog || {}, null, 2);
-      show("已核對簽章；請細閱模型名稱、bytes 同 digest，確認後先安裝。");
+      show("已核對簽章。請細閱模型及 RAG bundle 的 ID、bytes、digest 與 SHA-256，確認後才安裝。");
     } catch (error) { show(error.message, true); }
   });
   for (const [id, requestedAction, label] of [
@@ -204,6 +204,15 @@
           }
           const gib = (Number(modelBundle.model_bytes || 0) / (1024 ** 3)).toFixed(2);
           if (!confirm(`確認只安裝上述 ${modelBundle.models.length} 個已簽署模型（合計約 ${gib} GiB）？`)) return;
+        } else if (requestedAction === "rag_install") {
+          const ragBundle = inspectedArtifactCatalog?.rag_bundle;
+          if (!ragBundle?.id || !ragBundle?.sha256 || !ragBundle?.bytes) {
+            show("請先按『查看已簽署模型大小／雜湊』並核對 RAG bundle。", true);
+            return;
+          }
+          if (!confirm(
+            `確認安裝 RAG bundle ID ${ragBundle.id}（${ragBundle.bytes} bytes，SHA-256 ${ragBundle.sha256}）？`
+          )) return;
         }
         const response = await action({ action: requestedAction });
         show(`${label}已開始：${response.result?.operation_id || ""}`);

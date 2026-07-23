@@ -21,7 +21,6 @@
     recordedSeconds = 0,
     pendingAudio,
     pendingUpload,
-    pendingLlm,
     suggestions = [],
     scriptPage = 1,
     recordStopTimer = null,
@@ -77,22 +76,6 @@
           `<audio controls preload="none" src="/api/ai-training/recordings/${r.id}/audio"></audio>`,
       ),
     );
-    paged("myLlm", "/api/ai-training/collection/my-llm", (rows) =>
-      table(
-        rows,
-        [
-          ["類型", (r) => r.data_type],
-          ["標題", (r) => r.title || ""],
-          ["AI 預檢", (r) => r.ai_review_status],
-          ["狀態", (r) => r.status],
-          ["時間", (r) => r.created_at],
-        ],
-        (r) =>
-          ["pending", "accepted"].includes(r.status)
-            ? `<button data-withdraw-llm="${r.id}" class="danger">撤回</button>`
-            : "",
-      ),
-    );
     paged("publicLexicon", "/api/ai-training/collection/lexicon", (rows) =>
       table(rows, [
         ["詞語", (r) => r.term],
@@ -105,7 +88,6 @@
     );
     if (data.is_admin) {
       loadRecordings();
-      loadLlmSubmissions();
       paged("lexiconTable", "/api/ai-training/collection/lexicon", (rows) => {
         window.lexPage = Object.fromEntries(rows.map((x) => [x.id, x]));
         return table(
@@ -155,49 +137,13 @@
       !resetPage,
     );
   }
-  function loadLlmSubmissions(resetPage = false) {
-    const status = $("llmFilter").value,
-      submitter = $("llmSubmitterFilter").value;
-    paged(
-      "adminLlm",
-      `/api/ai-training/admin/submissions?status=${encodeURIComponent(status)}&submitter=${encodeURIComponent(submitter)}`,
-      (rows) =>
-        table(
-          rows,
-          [
-            ["提交者", (r) => r.submitted_by],
-            ["類型", (r) => r.data_type],
-            ["標題", (r) => r.title || ""],
-            ["AI 預檢", (r) => r.ai_review_status || "未檢查"],
-            ["狀態", (r) => r.status],
-            [
-              "內容",
-              (r) =>
-                `<details><summary>原文 / 預檢</summary><p><b>立場／角色：</b>${esc(r.side || "不適用")}</p><p><b>辯題／情境：</b>${esc(r.topic_text || "不適用")}</p><p><b>來源／備註：</b>${esc(r.source_note || "沒有提供")}</p><p><b>原文：</b></p><p>${esc(r.content_text)}</p><p><b>AI 預檢：</b></p><pre class="json">${esc(r.ai_review_json || "沒有 AI 預檢 JSON")}</pre></details>`,
-              true,
-            ],
-          ],
-          (r) =>
-            r.status === "pending"
-              ? `<textarea class="review-note" data-note="llm-${r.id}" placeholder="審核備註"></textarea><button data-review="llm" data-id="${r.id}" data-status="accepted">接受</button><button data-review="llm" data-id="${r.id}" data-status="rejected" class="danger">拒絕</button>`
-              : "",
-        ),
-      !resetPage,
-    );
-  }
   function syncRecordingExport() {
     const speaker = $("speakerFilter").value.trim();
     $("recordExport").href =
       "/api/ai-training/export/recordings.json" +
       (speaker ? "?speaker=" + encodeURIComponent(speaker) : "");
   }
-  function syncLlmExport() {
-    const submitter = $("llmSubmitterFilter").value.trim();
-    $("llmExport").href =
-      "/api/ai-training/export/llm.jsonl" +
-      (submitter ? "?submitter=" + encodeURIComponent(submitter) : "");
-  }
-   function chooseScript() {
+  function chooseScript() {
     const mode = $("scriptType").value,
       all = data.scripts.filter((s) => s.script_type === mode),
       done = new Set(
@@ -228,6 +174,37 @@
     $("skipBtn").disabled = !current;
     $("resetSkipped").classList.toggle("hidden", !skipped.size);
   }
+  function safeGoogleDocUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const url = new URL(raw);
+      if (
+        url.protocol !== "https:" ||
+        url.hostname !== "docs.google.com" ||
+        url.username ||
+        url.password ||
+        !["", "443"].includes(url.port) ||
+        !/^\/document\/d\/[A-Za-z0-9_-]+(?:\/.*)?$/.test(url.pathname)
+      )
+        return "";
+      return url.href;
+    } catch (_error) {
+      return "";
+    }
+  }
+  function renderRagSftSubmissionLink() {
+    const url = safeGoogleDocUrl(data.rag_sft_submission_google_doc_url),
+      link = $("ragSftSubmissionLink"),
+      unavailable = $("ragSftSubmissionUnavailable");
+    link.classList.toggle("hidden", !url);
+    unavailable.classList.toggle("hidden", Boolean(url));
+    if (url) link.href = url;
+    else link.removeAttribute("href");
+    $("ragSftSubmissionAdminForm").classList.toggle("hidden", !data.is_admin);
+    $("ragSftSubmissionUrl").value = url;
+    $("clearRagSftSubmissionUrl").disabled = !url;
+  }
   async function load() {
     const fallback = $("loadFallback");
     fallback?.classList.remove("hidden");
@@ -244,8 +221,8 @@
       $("consentText").textContent = data.consent_text;
       $("ttsBlocked").classList.toggle("hidden", data.is_allowed);
       $("ttsBlocked").textContent = data.is_admin
-        ? "你並非 TTS 錄音收集名單成員；你仍可使用管理員分頁。"
-        : "你暫時未獲加入 TTS 錄音收集名單；仍可於「LLM 文字資料提交」分頁提交辯論文字資料。";
+        ? "你並非 TTS 錄音收集名單成員，但你仍可使用管理員分頁。"
+        : "你暫時未獲加入 TTS 錄音收集名單。";
       $("consent").classList.toggle(
         "hidden",
         !data.is_allowed || data.consented,
@@ -255,6 +232,7 @@
         !data.is_allowed || !data.consented,
       );
       $("adminTab").classList.toggle("hidden", !data.is_admin);
+      renderRagSftSubmissionLink();
       const budget = data.bandwidth_budget || {},
         storage = data.storage_budget || {},
         budgetEl = $("trainingBandwidthUsage"),
@@ -339,9 +317,6 @@
     $("recordStats").textContent =
       stats.recordings.map((x) => `${x.status}: ${x.count}`).join(" ｜ ") ||
       "暫無錄音";
-    $("llmStats").textContent =
-      stats.llm.map((x) => `${x.status}: ${x.count}`).join(" ｜ ") ||
-      "暫無資料";
     const speakerStatus = (ready.speakers || [])
       .map(
         (speaker) =>
@@ -363,24 +338,6 @@
       ? selectedSpeaker
       : "";
     syncRecordingExport();
-    const llmSubmitterFilter = $("llmSubmitterFilter"),
-      selectedSubmitter = llmSubmitterFilter.value,
-      submitters = (stats.llm_submitters || []).map((row) =>
-        String(row.submitted_by || "").trim(),
-      ),
-      submitterOptions = submitters
-        .filter(Boolean)
-        .map(
-          (submitter) =>
-            `<option value="${esc(submitter)}">${esc(submitter)}</option>`,
-        )
-        .join("");
-    llmSubmitterFilter.innerHTML =
-      '<option value="">全部提交者</option>' + submitterOptions;
-    llmSubmitterFilter.value = submitters.includes(selectedSubmitter)
-      ? selectedSubmitter
-      : "";
-    syncLlmExport();
     $("readinessSummary").innerHTML =
       `<p>Consent：${esc(ready.consent_version)}｜生效讀音字典：${ready.active_lexicon} / ${ready.gates.tts_min_lexicon}</p>${speakerStatus || "<p>暫無聲線資料。</p>"}`;
     window.inventory = inv;
@@ -635,54 +592,49 @@
       load();
     }
   };
-  const llmPayload = (manual) => ({
-    data_type: $("dataType").value,
-    side: $("llmSide").value,
-    title: $("llmTitle").value,
-    topic_text: $("llmTopic").value,
-    content_text: $("llmContent").value,
-    source_note: $("llmSource").value,
-    anonymized: $("anonymized").checked,
-    permission_confirmed: $("permission").checked,
-    manual_review: manual,
-  });
-  async function submitLlm(manual = false) {
+  $("ragSftSubmissionAdminForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const url = safeGoogleDocUrl($("ragSftSubmissionUrl").value);
+    if (!url)
+      return toast("⚠️ 請輸入有效的 Google 文件連結。");
     busy(true);
     try {
-      const result = await api("/api/ai-training/llm", {
+      const result = await api("/api/ai-training/rag-sft-submission-link", {
         method: "POST",
-        body: JSON.stringify(llmPayload(manual)),
+        body: JSON.stringify({ url }),
       });
-      if (result.ok === false) {
-        toast("⚠️ " + result.message);
-        return;
-      }
-      toast("✅ " + result.message);
-      $("llmForm").reset();
-      $("manualLlm").classList.add("hidden");
-      loadCollections();
-    } catch (e) {
-      if (e.status === 503) {
-        pendingLlm = true;
-        $("manualLlm").classList.remove("hidden");
-      }
-      toast("⚠️ " + e.message);
+      data.rag_sft_submission_google_doc_url = result.url;
+      renderRagSftSubmissionLink();
+      toast("✅ RAG 及 SFT 資料提交連結已更新。");
+    } catch (error) {
+      toast("⚠️ " + error.message);
     } finally {
       busy(false);
     }
-  }
-  $("llmForm").onsubmit = (e) => {
-    e.preventDefault();
-    submitLlm(false);
   };
-  $("clearLlm").onclick = () => {
-    $("llmForm").reset();
-    $("manualLlm").classList.add("hidden");
+  $("clearRagSftSubmissionUrl").onclick = async () => {
+    if (
+      !(await confirmAsk(
+        "清除 RAG 及 SFT 資料提交連結",
+        "清除後，委員將暫時無法開啟提交文件。確定繼續？",
+      ))
+    )
+      return;
+    busy(true);
+    try {
+      const result = await api("/api/ai-training/rag-sft-submission-link", {
+        method: "POST",
+        body: JSON.stringify({ url: "" }),
+      });
+      data.rag_sft_submission_google_doc_url = result.url;
+      renderRagSftSubmissionLink();
+      toast("✅ RAG 及 SFT 資料提交連結已清除。");
+    } catch (error) {
+      toast("⚠️ " + error.message);
+    } finally {
+      busy(false);
+    }
   };
-  $("manualLlmSubmit").onclick = () =>
-    $("manualLlmConfirm").checked
-      ? submitLlm(true)
-      : toast("⚠️ 請先確認資料適合提交。");
   $("recordFilter").onchange = () => loadRecordings(true);
   $("speakerFilter").onchange = () => {
     syncRecordingExport();
@@ -692,16 +644,6 @@
     const url = new URL($("recordExport").href, location.origin);
     url.searchParams.set("_fresh", String(Date.now()));
     $("recordExport").href = url.pathname + url.search;
-  };
-  $("llmFilter").onchange = () => loadLlmSubmissions(true);
-  $("llmSubmitterFilter").onchange = () => {
-    syncLlmExport();
-    loadLlmSubmissions(true);
-  };
-  $("llmExport").onclick = () => {
-    const url = new URL($("llmExport").href, location.origin);
-    url.searchParams.set("_fresh", String(Date.now()));
-    $("llmExport").href = url.pathname + url.search;
   };
   $("lexiconForm").onsubmit = (e) =>
     saveForm(e, "/api/ai-training/lexicon", {
@@ -877,18 +819,6 @@
       });
       toast("✅ 已更新審核結果。");
       loadCollections();
-    } else if (b.dataset.withdrawLlm) {
-      if (
-        await confirmAsk(
-          "撤回提交",
-          "確定撤回這份文字資料？撤回後將不再出現在 accepted 匯出，相關 RAG、dataset 或 model（如日後啟用）亦會失效。",
-        )
-      ) {
-        await api(`/api/ai-training/llm/${b.dataset.withdrawLlm}`, {
-          method: "DELETE",
-        });
-        loadCollections();
-      }
     } else if (b.dataset.activeType) {
       await api(
         `/api/ai-training/${b.dataset.activeType}/${encodeURIComponent(b.dataset.activeId)}/active`,

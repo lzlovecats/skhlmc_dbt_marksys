@@ -211,6 +211,18 @@ class ManagerApplication:
         event.set()
         return True
 
+    def _resume_after_full_health(self) -> dict:
+        if self.config.workloads.rag.enabled:
+            health = self.health(force=True, full=True)
+            if not health.get("healthy"):
+                self.arbiter.set_draining(True)
+                raise WorkloadError(
+                    "health_gate",
+                    "Resume requires a healthy active RAG bundle and full health check.",
+                )
+        self.arbiter.set_draining(False)
+        return self.arbiter.snapshot()
+
     def handle(self, request: dict, emit) -> None:
         action = str(request.get("action") or "")
         if action == "snapshot":
@@ -231,8 +243,7 @@ class ManagerApplication:
             emit("result", self.arbiter.snapshot())
             return
         if action == "resume":
-            self.arbiter.set_draining(False)
-            emit("result", self.arbiter.snapshot())
+            emit("result", self._resume_after_full_health())
             return
         if action == "ack_reconcile":
             self.arbiter.acknowledge_reconcile()
@@ -326,8 +337,7 @@ class ManagerApplication:
                 self.arbiter.set_draining(True)
                 result = {"manager": self.arbiter.snapshot()}
             elif action == "resume":
-                self.arbiter.set_draining(False)
-                result = {"manager": self.arbiter.snapshot()}
+                result = {"manager": self._resume_after_full_health()}
             elif action == "ack_reconcile":
                 self.arbiter.acknowledge_reconcile()
                 result = {"manager": self.arbiter.snapshot()}
