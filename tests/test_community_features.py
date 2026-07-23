@@ -30,18 +30,28 @@ def test_academic_year_is_september_to_august_and_exit_type_controls_ghost_statu
             "event_date": "2026-08-31",
             "title": "畢業",
             "description": "",
-            "match_ids": [],
+            "video_ids": [],
             "photo_ids": [],
         }
     )
     assert event["academic_year_start"] == 2025
+    linked = community_logic.validate_history_event(
+        {
+            "academic_year_start": 2025,
+            "event_date": "",
+            "title": "多影片事件",
+            "video_ids": [73, 73, 74],
+            "photo_ids": [],
+        }
+    )
+    assert linked["video_ids"] == [73, 74]
     with pytest.raises(ValueError, match="9 月至翌年 8 月"):
         community_logic.validate_history_event(
             {
                 "academic_year_start": 2025,
                 "event_date": "2026-09-01",
                 "title": "錯誤學年",
-                "match_ids": [],
+                "video_ids": [],
                 "photo_ids": [],
             }
         )
@@ -350,8 +360,7 @@ def test_linked_community_resources_open_their_actual_video_or_photo():
     )
 
     assert "mediaHref(`/video-replay?video_id=${encodeURIComponent(row.id)}`" in ghost
-    assert "mediaHref(`/video-replay?video_id=${encodeURIComponent(row.video_id)}`" in history
-    assert "未有公開影片" in history
+    assert "mediaHref(`/video-replay?video_id=${encodeURIComponent(row.id)}`" in history
     for page in (ghost, history):
         assert 'href="/team-history?match_id=${encodeURIComponent(row.match_id)}"' not in page
         assert "mediaHref(`/match-photos?photo_id=${encodeURIComponent(row.id)}`" in page
@@ -634,7 +643,7 @@ def test_senior_management_controls_are_on_separate_hidden_tabs():
 
 @pytest.mark.parametrize(
     ("kind", "table_name", "id_key"),
-    (("matches", "matches", "match_id"), ("photos", "match_photos", "id")),
+    (("videos", "match_videos", "id"), ("photos", "match_photos", "id")),
 )
 def test_history_resource_picker_is_server_paginated_at_twenty_items(
     monkeypatch, kind, table_name, id_key,
@@ -647,9 +656,9 @@ def test_history_resource_picker_is_server_paginated_at_twenty_items(
             self.calls.append((sql, dict(params)))
             if "COUNT(*)" in sql:
                 return pd.DataFrame([{"total": 41}])
-            if kind == "matches":
+            if kind == "videos":
                 return pd.DataFrame(
-                    [{"match_id": f"m{index}"} for index in range(20)]
+                    [{"id": index + 1, "video_title": f"影片 {index + 1}"} for index in range(20)]
                 )
             return pd.DataFrame([{"id": index + 1} for index in range(20)])
 
@@ -672,6 +681,91 @@ def test_history_resource_picker_is_server_paginated_at_twenty_items(
     assert f"FROM {table_name}" in db.calls[0][0]
     assert db.calls[1][1]["limit"] == 20
     assert db.calls[1][1]["offset"] == 20
+
+
+def test_team_history_preserves_multiple_exact_videos_from_the_same_match():
+    calls = []
+
+    class ResourceDb:
+        def query(self, sql, params):
+            calls.append(sql)
+            if "history_event_videos" in sql:
+                return pd.DataFrame(
+                    [
+                        {
+                            "owner_id": 4,
+                            "id": 73,
+                            "match_id": "M1",
+                            "video_title": "第一條片",
+                            "match_display": "同一場比賽",
+                            "topic_text": "測試辯題",
+                            "pro_team": "甲隊",
+                            "con_team": "乙隊",
+                        },
+                        {
+                            "owner_id": 4,
+                            "id": 74,
+                            "match_id": "M1",
+                            "video_title": "第二條片",
+                            "match_display": "同一場比賽",
+                            "topic_text": "測試辯題",
+                            "pro_team": "甲隊",
+                            "con_team": "乙隊",
+                        },
+                    ]
+                )
+            return pd.DataFrame()
+
+    links = community_api._history_resource_links(ResourceDb(), [4])
+
+    assert [row["id"] for row in links[4]["videos"]] == [73, 74]
+    assert links[4]["photos"] == []
+    video_sql = calls[0]
+    assert "JOIN match_videos v ON v.id=l.video_id" in video_sql
+    assert "COALESCE(v.is_visible,TRUE)=TRUE" in video_sql
+    assert "LIMIT 1" not in video_sql
+
+
+def test_team_history_replaces_every_selected_exact_video_link():
+    calls = []
+
+    class Connection:
+        def execute(self, statement, params):
+            calls.append((str(statement), dict(params)))
+
+    community_api._replace_history_links(Connection(), 4, [73, 74], [5])
+
+    assert "DELETE FROM history_event_videos" in calls[0][0]
+    assert "DELETE FROM history_event_photos" in calls[1][0]
+    video_inserts = [
+        params for sql, params in calls if "INSERT INTO history_event_videos" in sql
+    ]
+    assert video_inserts == [
+        {"owner": 4, "video": 73},
+        {"owner": 4, "video": 74},
+    ]
+    assert any(
+        "INSERT INTO history_event_photos" in sql
+        and params == {"owner": 4, "photo": 5}
+        for sql, params in calls
+    )
+
+
+def test_team_history_and_forum_frontends_keep_multiple_exact_video_ids():
+    history = (ROOT / "frontend" / "team_history" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    forum = (ROOT / "frontend" / "ghost_forum" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (history, forum):
+        assert "selectedVideos=newMap()" in source.replace(" ", "")
+        assert "video_ids:[...selectedVideos.keys()].map(Number)" in source.replace(" ", "")
+        assert "data-add-video" in source
+        assert "data-remove-video" in source
+    assert "data-add-match" not in history
+    assert "match_ids:" not in history
 
 
 def test_history_resource_picker_rejects_unknown_resource_kind(monkeypatch):
@@ -816,7 +910,7 @@ def test_history_event_deep_link_resolves_the_target_page(monkeypatch):
         community_api,
         "_history_resource_links",
         lambda _db, owner_ids: {
-            int(owner): {"matches": [], "photos": []} for owner in owner_ids
+            int(owner): {"videos": [], "photos": []} for owner in owner_ids
         },
     )
 
@@ -868,4 +962,23 @@ def test_forum_video_link_migration_selects_first_visible_video_and_retires_matc
     assert "DROP TABLE public.ghost_forum_thread_matches" in up
     assert "CREATE TABLE public.ghost_forum_thread_history_events" in up
     assert "WHERE video.match_id IS NULL" in down
+    assert "RAISE EXCEPTION" in down
+
+
+def test_team_history_video_link_migration_is_exact_private_and_fail_closed():
+    up = (
+        ROOT / "migrations" / "20260723_0002_team_history_video_links.up.sql"
+    ).read_text(encoding="utf-8")
+    down = (
+        ROOT / "migrations" / "20260723_0002_team_history_video_links.down.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE TABLE public.history_event_videos" in up
+    assert "JOIN LATERAL" in up
+    assert "COALESCE(video.is_visible, TRUE)=TRUE" in up
+    assert "LIMIT 1" in up
+    assert "DROP TABLE public.history_event_matches" in up
+    assert "REVOKE ALL PRIVILEGES ON TABLE public.history_event_videos FROM PUBLIC" in up
+    assert "WHERE video.match_id IS NULL" in down
+    assert "HAVING COUNT(*) > 1" in down
     assert "RAISE EXCEPTION" in down

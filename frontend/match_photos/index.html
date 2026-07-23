@@ -288,6 +288,25 @@
         margin: 0;
         text-align: center;
       }
+      .selected-files {
+        display: grid;
+        gap: 0.45rem;
+        margin: 0.65rem 0;
+      }
+      .selected-file {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.65rem;
+        padding: 0.55rem 0.7rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+      .selected-file button {
+        width: auto;
+        flex: 0 0 auto;
+      }
       .login {
         max-width: 36rem;
       }
@@ -384,7 +403,11 @@
               type="file"
               accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
+              aria-describedby="photoUploadCaption selectedFiles"
             />
+            <div id="selectedFiles" class="selected-files" aria-live="polite">
+              <p class="caption">尚未選擇圖片。</p>
+            </div>
             <p id="photoUploadCaption" class="caption">
               登入後顯示實際上載限額。
             </p>
@@ -465,6 +488,7 @@
         const $ = (id) => document.getElementById(id);
         let state = null;
         let uploadInFlight = false;
+        let selectedUploadFiles = [];
         const esc = (v) =>
           String(v ?? "").replace(
             /[&<>"']/g,
@@ -479,6 +503,46 @@
           $("toast").textContent = t;
           $("toast").classList.remove("hidden");
           setTimeout(() => $("toast").classList.add("hidden"), 2800);
+        }
+        function uploadFileKey(file) {
+          return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
+        }
+        function renderSelectedUploadFiles() {
+          if (!selectedUploadFiles.length) {
+            $("selectedFiles").innerHTML =
+              '<p class="caption">尚未選擇圖片。可重複按「選擇圖片」逐次加入。</p>';
+            return;
+          }
+          $("selectedFiles").innerHTML =
+            `<p class="caption">已選擇 ${selectedUploadFiles.length} 張圖片。</p>` +
+            selectedUploadFiles
+              .map(
+                (file, index) =>
+                  `<div class="selected-file"><span>${esc(file.name)}（${(file.size / 1024 / 1024).toFixed(2)}MB）</span><button type="button" data-remove-upload-file="${index}" aria-label="移除 ${esc(file.name)}">移除</button></div>`,
+              )
+              .join("");
+        }
+        function addSelectedUploadFiles(files) {
+          const existing = new Set(selectedUploadFiles.map(uploadFileKey));
+          let skipped = 0;
+          for (const file of files) {
+            const key = uploadFileKey(file);
+            if (existing.has(key)) {
+              skipped += 1;
+              continue;
+            }
+            existing.add(key);
+            selectedUploadFiles.push(file);
+          }
+          $("files").value = "";
+          renderSelectedUploadFiles();
+          if (skipped) {
+            notice(
+              "uploadMessage",
+              "warn",
+              `已略過 ${skipped} 張重複選擇的圖片。`,
+            );
+          }
         }
         function render() {
           $("loading").classList.add("hidden");
@@ -500,7 +564,7 @@
           $("photoSizeSummary").textContent =
             `每張原圖最多 ${fmtLimit(maxMb)}MB、最長邊 ${limits.photo_max_dimension}px；縮圖最多 ${fmtLimit(thumbKb)}KB、最長邊 ${limits.thumbnail_max_dimension}px。圖片會由瀏覽器直接上載至 Cloudflare R2。`;
           $("photoUploadCaption").textContent =
-            `可一次選擇多張；系統會每 ${limits.batch_max_items} 張分批上載並顯示進度。每張原圖最多 ${fmtLimit(maxMb)}MB，縮圖不超過 ${fmtLimit(thumbKb)}KB。`;
+            `可重複按「選擇圖片」逐次加入，亦可在電腦檔案選擇器中一次選取多張。系統會每 ${limits.batch_max_items} 張分批上載並顯示進度。每張原圖最多 ${fmtLimit(maxMb)}MB，縮圖不超過 ${fmtLimit(thumbKb)}KB。`;
           $("album").innerHTML = state.albums
             .map(
               (a) =>
@@ -733,6 +797,17 @@
           };
         }
         $("retryLogin").addEventListener("click", load);
+        $("files").addEventListener("change", (event) => {
+          addSelectedUploadFiles([...event.currentTarget.files]);
+        });
+        $("selectedFiles").addEventListener("click", (event) => {
+          const button = event.target.closest("[data-remove-upload-file]");
+          if (!button || uploadInFlight) return;
+          const index = Number(button.dataset.removeUploadFile);
+          if (!Number.isInteger(index) || index < 0) return;
+          selectedUploadFiles.splice(index, 1);
+          renderSelectedUploadFiles();
+        });
         $("loginForm").addEventListener("submit", async (e) => {
           e.preventDefault();
           try {
@@ -755,7 +830,7 @@
         $("uploadForm").addEventListener("submit", async (e) => {
           e.preventDefault();
           if (uploadInFlight) return;
-          const files = [...$("files").files];
+          const files = [...selectedUploadFiles];
           if (!files.length) {
             notice("uploadMessage", "warn", "請先選擇圖片。");
             return;
@@ -792,18 +867,23 @@
                 ),
             );
             form.reset();
+            selectedUploadFiles = [];
+            renderSelectedUploadFiles();
             notice("uploadMessage", "ok", "☑️ " + result.message);
             toast("☑️ " + result.message);
             await load();
             window.dispatchEvent(new Event("match-photos:uploaded"));
           } catch (error) {
             const completed = Number(error.completedItems || 0);
-            if (completed > 0) $("files").value = "";
+            if (completed > 0) {
+              selectedUploadFiles = selectedUploadFiles.slice(completed);
+              renderSelectedUploadFiles();
+            }
             notice(
               "uploadMessage",
               "err",
               completed > 0
-                ? `已完成 ${completed}/${files.length} 張；為免重複上載，請重新選擇餘下圖片。${error.message}`
+                ? `已完成 ${completed}/${files.length} 張；餘下圖片已保留，可修正問題後再按上載。${error.message}`
                 : error.message,
             );
           } finally {
@@ -814,6 +894,7 @@
             uploadInFlight = false;
           }
         });
+        renderSelectedUploadFiles();
         load();
       })();
     </script>

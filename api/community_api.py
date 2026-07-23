@@ -38,7 +38,7 @@ from schema import (
     TABLE_GHOST_FORUM_THREAD_USER_STATE,
     TABLE_GHOST_FORUM_THREADS,
     TABLE_GHOST_FORUM_USER_PROFILES,
-    TABLE_HISTORY_EVENT_MATCHES,
+    TABLE_HISTORY_EVENT_VIDEOS,
     TABLE_HISTORY_EVENT_PHOTOS,
     TABLE_HISTORY_EVENTS,
     TABLE_MATCHES,
@@ -98,7 +98,7 @@ class HistoryEventBody(BaseModel):
     event_date: str = Field(default="", max_length=10)
     title: str = Field(max_length=500)
     description: str = Field(default="", max_length=5000)
-    match_ids: list[str] = Field(default_factory=list, max_length=20)
+    video_ids: list[int] = Field(default_factory=list, max_length=20)
     photo_ids: list[int] = Field(default_factory=list, max_length=30)
 
 
@@ -212,17 +212,18 @@ def _connection_rows(connection, sql, params=None):
     return [dict(row) for row in result.mappings().all()]
 
 
-def _check_history_links(connection, match_ids, photo_ids):
-    if match_ids:
+def _check_history_links(connection, video_ids, photo_ids):
+    if video_ids:
         found = connection.execute(
             text(
-                f"SELECT COUNT(*) FROM {TABLE_MATCHES} "
-                "WHERE match_id=ANY(CAST(:ids AS text[]))"
+                f"SELECT COUNT(*) FROM {TABLE_MATCH_VIDEOS} "
+                "WHERE id=ANY(CAST(:ids AS integer[])) "
+                "AND COALESCE(is_visible,TRUE)=TRUE"
             ),
-            {"ids": match_ids},
+            {"ids": video_ids},
         ).scalar()
-        if int(found or 0) != len(match_ids):
-            raise HTTPException(400, "其中一個比賽連結已不存在。")
+        if int(found or 0) != len(video_ids):
+            raise HTTPException(400, "其中一條影片連結已不存在或不可見。")
     if photo_ids:
         found = connection.execute(
             text(
@@ -284,22 +285,22 @@ def _check_membership_account(connection, user_id):
         raise HTTPException(400, "任期只可連結未停用的內部委員帳戶。")
 
 
-def _replace_history_links(connection, owner_id, match_ids, photo_ids):
+def _replace_history_links(connection, owner_id, video_ids, photo_ids):
     connection.execute(
-        text(f"DELETE FROM {TABLE_HISTORY_EVENT_MATCHES} WHERE event_id=:owner"),
+        text(f"DELETE FROM {TABLE_HISTORY_EVENT_VIDEOS} WHERE event_id=:owner"),
         {"owner": owner_id},
     )
     connection.execute(
         text(f"DELETE FROM {TABLE_HISTORY_EVENT_PHOTOS} WHERE event_id=:owner"),
         {"owner": owner_id},
     )
-    for match_id in match_ids:
+    for video_id in video_ids:
         connection.execute(
             text(
-                f"INSERT INTO {TABLE_HISTORY_EVENT_MATCHES}(event_id,match_id) "
-                "VALUES(:owner,:match)"
+                f"INSERT INTO {TABLE_HISTORY_EVENT_VIDEOS}(event_id,video_id) "
+                "VALUES(:owner,:video)"
             ),
-            {"owner": owner_id, "match": match_id},
+            {"owner": owner_id, "video": video_id},
         )
     for photo_id in photo_ids:
         connection.execute(
@@ -348,27 +349,28 @@ def _replace_forum_links(connection, owner_id, video_ids, photo_ids, history_eve
 
 
 def _history_resource_links(db, owner_ids):
-    links = {int(owner): {"matches": [], "photos": []} for owner in owner_ids}
+    links = {int(owner): {"videos": [], "photos": []} for owner in owner_ids}
     if not links:
         return links
     params = {"ids": list(links)}
-    matches = db.query(
-        f"""SELECT l.event_id owner_id,m.match_id,m.match_date,m.match_time,
-                   m.topic_text,m.pro_team,m.con_team,m.debate_format,
-                   selected_video.video_id
-            FROM {TABLE_HISTORY_EVENT_MATCHES} l
-            JOIN {TABLE_MATCHES} m ON m.match_id=l.match_id
-            LEFT JOIN LATERAL (
-                SELECT video.id AS video_id
-                FROM {TABLE_MATCH_VIDEOS} AS video
-                WHERE video.match_id=m.match_id
-                  AND COALESCE(video.is_visible,TRUE)=TRUE
-                ORDER BY video.display_order ASC NULLS LAST,
-                         video.created_at DESC,video.id DESC
-                LIMIT 1
-            ) AS selected_video ON TRUE
+    videos = db.query(
+        f"""SELECT l.event_id owner_id,v.id,v.match_id,v.video_title,
+                   COALESCE(NULLIF(v.match_label,''),NULLIF(v.match_id,''),v.video_title)
+                       match_display,
+                   COALESCE(NULLIF(m.topic_text,''),NULLIF(v.standalone_topic_text,''),'')
+                       topic_text,
+                   COALESCE(NULLIF(m.pro_team,''),NULLIF(v.standalone_pro_team,''),'')
+                       pro_team,
+                   COALESCE(NULLIF(m.con_team,''),NULLIF(v.standalone_con_team,''),'')
+                       con_team,
+                   m.match_date
+            FROM {TABLE_HISTORY_EVENT_VIDEOS} l
+            JOIN {TABLE_MATCH_VIDEOS} v ON v.id=l.video_id
+            LEFT JOIN {TABLE_MATCHES} m ON m.match_id=v.match_id
             WHERE l.event_id=ANY(CAST(:ids AS bigint[]))
-            ORDER BY m.match_date DESC NULLS LAST,m.match_id""",
+              AND COALESCE(v.is_visible,TRUE)=TRUE
+            ORDER BY v.display_order ASC NULLS LAST,
+                     v.created_at DESC NULLS LAST,v.id DESC""",
         params,
     )
     photos = db.query(
@@ -380,8 +382,8 @@ def _history_resource_links(db, owner_ids):
             ORDER BY p.photo_date DESC NULLS LAST,p.id DESC""",
         params,
     )
-    for row in _records(matches):
-        links[int(row.pop("owner_id"))]["matches"].append(row)
+    for row in _records(videos):
+        links[int(row.pop("owner_id"))]["videos"].append(row)
     for row in _records(photos):
         links[int(row.pop("owner_id"))]["photos"].append(row)
     return links
@@ -829,7 +831,7 @@ def create_history_event(body: HistoryEventBody, request: Request):
         count = connection.execute(text(f"SELECT COUNT(*) FROM {TABLE_HISTORY_EVENTS}")).scalar()
         if int(count or 0) >= HISTORY_EVENT_INVENTORY_LIMIT:
             raise HTTPException(409, "歷史事件已達系統上限。")
-        _check_history_links(connection, values["match_ids"], values["photo_ids"])
+        _check_history_links(connection, values["video_ids"], values["photo_ids"])
         row = connection.execute(
             text(
                 f"""INSERT INTO {TABLE_HISTORY_EVENTS}
@@ -842,7 +844,7 @@ def create_history_event(body: HistoryEventBody, request: Request):
         ).mappings().one()
         event_id = int(row["id"])
         _replace_history_links(
-            connection, event_id, values["match_ids"], values["photo_ids"],
+            connection, event_id, values["video_ids"], values["photo_ids"],
         )
     return {"ok": True, "id": event_id, "revision": int(row["revision"])}
 
@@ -853,7 +855,7 @@ def update_history_event(event_id: int, body: HistoryEventUpdateBody, request: R
     values = _validation(validate_history_event, body.model_dump())
     now = _now()
     with db.transaction() as connection:
-        _check_history_links(connection, values["match_ids"], values["photo_ids"])
+        _check_history_links(connection, values["video_ids"], values["photo_ids"])
         row = connection.execute(
             text(
                 f"""UPDATE {TABLE_HISTORY_EVENTS} SET
@@ -870,7 +872,7 @@ def update_history_event(event_id: int, body: HistoryEventUpdateBody, request: R
             ).scalar()
             raise HTTPException(409 if exists else 404, "資料已更新或不存在，請重新載入。")
         _replace_history_links(
-            connection, event_id, values["match_ids"], values["photo_ids"],
+            connection, event_id, values["video_ids"], values["photo_ids"],
         )
     return {"ok": True, "revision": int(row["revision"])}
 
@@ -983,34 +985,54 @@ def resource_options(request: Request, search: str = "", kind: str = "all", page
     query = str(search or "").strip().lower()[:100]
     pattern = f"%{query}%"
     resource_kind = str(kind or "all").strip().lower()
-    if resource_kind not in {"all", "matches", "photos"}:
+    if resource_kind not in {"all", "videos", "photos"}:
         raise HTTPException(400, "資源類型無效。")
     page, _, offset = bounds(page)
     common = {"empty": not bool(query), "search": pattern}
 
-    match_where = (
-        ":empty OR LOWER(COALESCE(match_id,'')||' '||COALESCE(topic_text,'')||' '"
-        "||COALESCE(pro_team,'')||' '||COALESCE(con_team,'')) LIKE :search"
+    video_where = """COALESCE(v.is_visible,TRUE)=TRUE AND (
+        :empty OR LOWER(
+            COALESCE(v.video_title,'')||' '||COALESCE(v.match_label,'')||' '||
+            COALESCE(v.match_id,'')||' '||COALESCE(v.standalone_topic_text,'')||' '||
+            COALESCE(v.standalone_pro_team,'')||' '||
+            COALESCE(v.standalone_con_team,'')||' '||COALESCE(m.topic_text,'')||' '||
+            COALESCE(m.pro_team,'')||' '||COALESCE(m.con_team,'')
+        ) LIKE :search
+    )"""
+    video_source = (
+        f"FROM {TABLE_MATCH_VIDEOS} v "
+        f"LEFT JOIN {TABLE_MATCHES} m ON m.match_id=v.match_id"
     )
     photo_where = (
         ":empty OR LOWER(COALESCE(album_label,'')||' '"
         "||COALESCE(photo_title,'')||' '||COALESCE(caption,'')) LIKE :search"
     )
 
-    if resource_kind == "matches":
+    if resource_kind == "videos":
         total = scalar_count(
             db,
-            f"SELECT COUNT(*) total FROM {TABLE_MATCHES} WHERE {match_where}",
+            f"SELECT COUNT(*) total {video_source} WHERE {video_where}",
             common,
         )
-        matches = db.query(
-            f"""SELECT match_id,match_date,match_time,topic_text,pro_team,con_team,debate_format
-                FROM {TABLE_MATCHES} WHERE {match_where}
-                ORDER BY match_date DESC NULLS LAST,match_id
+        videos = db.query(
+            f"""SELECT v.id,v.match_id,v.video_title,
+                       COALESCE(NULLIF(v.match_label,''),NULLIF(v.match_id,''),
+                                v.video_title) match_display,
+                       COALESCE(NULLIF(m.topic_text,''),
+                                NULLIF(v.standalone_topic_text,''),'') topic_text,
+                       COALESCE(NULLIF(m.pro_team,''),
+                                NULLIF(v.standalone_pro_team,''),'') pro_team,
+                       COALESCE(NULLIF(m.con_team,''),
+                                NULLIF(v.standalone_con_team,''),'') con_team,
+                       m.match_date
+                {video_source} WHERE {video_where}
+                ORDER BY m.match_date DESC NULLS LAST,
+                         v.display_order ASC NULLS LAST,
+                         v.created_at DESC NULLS LAST,v.id DESC
                 LIMIT :limit OFFSET :offset""",
             {**common, "limit": PAGE_SIZE, "offset": offset},
         )
-        return {"kind": resource_kind, **payload(_records(matches), page, total)}
+        return {"kind": resource_kind, **payload(_records(videos), page, total)}
 
     if resource_kind == "photos":
         total = scalar_count(
@@ -1027,14 +1049,23 @@ def resource_options(request: Request, search: str = "", kind: str = "all", page
         )
         return {"kind": resource_kind, **payload(_records(photos), page, total)}
 
-    # Backward-compatible bounded response for the ghost forum picker and
-    # direct linked-match lookup.  The team-history manager uses the paginated
-    # kind-specific branches above.
-    matches = db.query(
-        f"""SELECT match_id,match_date,match_time,topic_text,pro_team,con_team,debate_format
-            FROM {TABLE_MATCHES}
-            WHERE {match_where}
-            ORDER BY match_date DESC NULLS LAST,match_id LIMIT :limit""",
+    # Backward-compatible bounded response for direct linked-video lookup.
+    # The team-history manager uses the paginated kind-specific branches above.
+    videos = db.query(
+        f"""SELECT v.id,v.match_id,v.video_title,
+                   COALESCE(NULLIF(v.match_label,''),NULLIF(v.match_id,''),
+                            v.video_title) match_display,
+                   COALESCE(NULLIF(m.topic_text,''),
+                            NULLIF(v.standalone_topic_text,''),'') topic_text,
+                   COALESCE(NULLIF(m.pro_team,''),
+                            NULLIF(v.standalone_pro_team,''),'') pro_team,
+                   COALESCE(NULLIF(m.con_team,''),
+                            NULLIF(v.standalone_con_team,''),'') con_team,
+                   m.match_date
+            {video_source} WHERE {video_where}
+            ORDER BY m.match_date DESC NULLS LAST,
+                     v.display_order ASC NULLS LAST,
+                     v.created_at DESC NULLS LAST,v.id DESC LIMIT :limit""",
         {**common, "limit": PAGE_SIZE},
     )
     photos = db.query(
@@ -1044,7 +1075,7 @@ def resource_options(request: Request, search: str = "", kind: str = "all", page
             ORDER BY photo_date DESC NULLS LAST,id DESC LIMIT :limit""",
         {**common, "limit": PAGE_SIZE},
     )
-    return {"matches": _records(matches), "photos": _records(photos)}
+    return {"videos": _records(videos), "photos": _records(photos)}
 
 
 @router.get("/forum/resources")
