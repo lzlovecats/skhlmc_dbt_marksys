@@ -70,18 +70,34 @@ def test_ai_training_versions_shared_vote_ui_without_placeholder():
     assert "__APP_VERSION__" not in html
 
 
-def test_lmc_ai_versions_the_assistant_avatar_without_placeholder(monkeypatch):
+def test_home_renders_the_runtime_assistant_area_name_without_placeholder():
+    response = asyncio.run(proxy.home_page())
+    html = response.body.decode("utf-8")
+    label = f"{proxy.LMC_AI_EMOJI} 搵{proxy.LMC_AI_NAME}"
+
+    assert label in html
+    assert "自家AI專區" not in html
+    assert "__LMC_AI_NAME__" not in html
+    assert "__LMC_AI_EMOJI__" not in html
+
+
+def test_lmc_ai_versions_avatar_and_renders_runtime_area_name(monkeypatch):
     monkeypatch.setattr(
         proxy, "interactive_features_suspension", lambda _request: {"active": False}
     )
     response = asyncio.run(proxy.lmc_ai_page(_request("/lmc-ai")))
     html = response.body.decode("utf-8")
+    label = f"{proxy.LMC_AI_EMOJI} 搵{proxy.LMC_AI_NAME}"
 
     assert (
         f'data-avatar-src="/lmc-ai/shiba-avatar.jpg?v={proxy.APP_VERSION}"'
         in html
     )
+    assert html.count(label) == 2
+    assert "自家AI專區" not in html
     assert "__APP_VERSION__" not in html
+    assert "__LMC_AI_NAME__" not in html
+    assert "__LMC_AI_EMOJI__" not in html
 
 
 def test_developer_settings_revalidates_during_inline_api_contract_transition():
