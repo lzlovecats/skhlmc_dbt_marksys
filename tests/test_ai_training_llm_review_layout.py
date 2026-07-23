@@ -99,7 +99,8 @@ def test_submitter_can_withdraw_pending_or_accepted_but_not_terminal_submissions
     assert '["pending", "accepted"].includes(r.status)' in collection
     assert 'data-withdraw-llm="${r.id}"' in collection
     assert 'r.status === "pending"' not in collection
-    assert "如已用於資料工廠，相關內容會一併失效" in script
+    assert "將不再出現在 accepted 匯出" in script
+    assert "相關 RAG、dataset 或 model" in script
 
 
 def test_admin_submission_filters_are_parameterized_and_bounded(monkeypatch):
