@@ -110,6 +110,48 @@ def test_timer_start_unlocks_mobile_audio_inside_the_user_gesture():
     )
 
 
+def test_mobile_pwa_uses_playback_audio_session_before_creating_context():
+    session_source = "function configureBellAudioSession" + _between(
+        INLINE_SCRIPT,
+        "function configureBellAudioSession",
+        "async function unlockBellAudio",
+    )
+    unlock_source = "async function unlockBellAudio" + _between(
+        INLINE_SCRIPT,
+        "async function unlockBellAudio",
+        "async function bell",
+    )
+    script = f"""
+      Object.defineProperty(globalThis, "navigator", {{
+        configurable: true,
+        value: {{ audioSession: {{ type: "auto" }} }},
+      }});
+      globalThis.window = {{
+        AudioContext: class {{
+          constructor() {{
+            if (navigator.audioSession.type !== "playback") process.exit(2);
+            this.state = "running";
+          }}
+        }},
+      }};
+      let audio = null;
+      const toast = () => {{}};
+      {session_source}
+      {unlock_source}
+      unlockBellAudio().then((ok) => {{
+        if (!ok || navigator.audioSession.type !== "playback") process.exit(3);
+      }});
+    """
+    completed = subprocess.run(
+        [shutil.which("node"), "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_closing_panel_displays_the_official_submission_count():
     assert 'id="closingStatus"' in HTML
     assert "現時已有 " in INLINE_SCRIPT
