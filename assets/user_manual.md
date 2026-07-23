@@ -391,9 +391,9 @@
 #### N. AI訓練資料
 - 獲Developer授權的錄音提交者可先閱讀並確認聲音複製、雲端處理及未成年安排，再按句庫錄音；錄音會直接上載private R2，不經database保存binary。
 - 提交者可播放自己的錄音、查看AI預檢及審核狀態，亦可撤回同意。撤回會在同一個資料庫transaction把現有錄音標示為withdrawn並寫入不可由browser讀取的audit；資料不再進入新dataset export／重訓。
-- AI管理員可管理句庫及讀音字典、試聽和審核錄音、審核LLM文字，以及查看coverage/readiness。「資料工廠」有五個產品：四種產品可從短分頁來源選擇器揀選已接受LLM文字或管理員貼上的來源，再交由所選模型產生候選資料；「完整逐字稿結構拆分」則把有權儲存的完整比賽逐字稿分視窗處理，再逐段核對辯位、立場及環節。每次傳送第三方 AI 前必須預覽完整prompt、確認使用權／匿名化／第三方傳送警告；逐字稿工作中斷後可由原建立者繼續處理，人工審核時原文起止位置鎖定，只可修改分類資料，批准後才會建立一般來源快照。
-- 資料工廠的「已批准資料」就是人工整理的 curated library；AI管理員手動勾選後可分開發布RAG或SFT JSONL版本。撤回來源、完整逐字稿或已批准項目時必須填寫原因；系統會保留原文、lineage及決定作內部audit，但所有相關工作、審核段落、衍生來源及發布版本會即時失效，撤回後亦不再經API顯示完整逐字稿原文。已送到第三方provider的進行中請求無法取消，完成後只會結算用量並丟棄回覆。
-- V0只建立可審核及版本化的RAG資料，尚未建立vector database或embedding index；Dataset/model registry及線上RAG retrieval仍未正式啟用。
+- AI管理員可管理句庫及讀音字典、試聽和審核錄音、審核LLM文字，以及查看coverage/readiness。「資料工廠」分頁現為純指引，不會生成、審核、儲存、發布或傳送資料到第三方provider。
+- RAG資料要由已核對、可追溯、可撤回的來源按語意切段，人手建立Workstation接受的`documents.jsonl`；每行只包含`id`、`title`、`text`及`source_url`。SFT資料則以`messages=[system,user,assistant]`等真實任務／目標答案配對整理，並只訓練assistant回覆。原始講稿或逐字稿不可自動當成問答配對。
+- 雲端Dataset/model registry及RAG向量schema仍未正式啟用；Workstation RAG bundle必須按運維手冊驗證、簽署、安裝及保留上一個可rollback版本。SFT目前只供受控離線研究，不會由網站自動開始訓練。
 - AI預檢只供初篩，accepted仍需人手確認；上載、播放、export及AI分析都有大小、數量及費用上限。
 
 #### O. 比賽相片及Bug回報

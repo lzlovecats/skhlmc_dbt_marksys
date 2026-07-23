@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_release_schema_contract_tracks_repository_head():
     migrations = sorted((ROOT / "migrations").glob("*.up.sql"))
-    assert APP_VERSION == "4.12.1"
+    assert APP_VERSION == "4.13.0"
     assert migrations[-1].name.startswith(REQUIRED_SCHEMA_MIGRATION)
     assert "eval" not in FEATURE_MIGRATION_VERSIONS
 
@@ -71,7 +71,7 @@ def test_optional_feature_catalog_owns_each_table_once():
             assert table not in table_owners, (table, feature, table_owners.get(table))
             table_owners[table] = feature
     assert set(FEATURE_CATALOG) == {
-        "data_factory", "lmc_ai", "dataset_model", "rag",
+        "lmc_ai", "dataset_model", "rag",
     }
 
 

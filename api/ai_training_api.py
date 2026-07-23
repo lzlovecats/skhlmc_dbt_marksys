@@ -1018,13 +1018,6 @@ def withdraw_llm(submission_id: int, request: Request):
     user, db = _ctx(request)
     now = datetime.now()
     changed = False
-    try:
-        factory_state = feature_bundle_state(db, "data_factory")
-    except Exception as exc:
-        raise HTTPException(503, "資料工廠狀態暫時無法驗證，未有撤回任何資料") from exc
-    if factory_state == PARTIAL:
-        raise HTTPException(503, "資料工廠 migration 不完整，未有撤回任何資料")
-    factory_ready = factory_state == READY
     with db.transaction() as conn:
         current = conn.execute(text(f"""SELECT status
             FROM {TABLE_LLM_TRAINING_SUBMISSIONS}
@@ -1039,15 +1032,6 @@ def withdraw_llm(submission_id: int, request: Request):
             changed = True
             _audit(db, user, "submission_withdrawn", "llm_submission", submission_id,
                    conn=conn)
-        if factory_ready:
-            from core.ai_factory_store import withdraw_submission_sources_in_transaction
-
-            withdraw_submission_sources_in_transaction(
-                conn,
-                user,
-                submission_id,
-                "原始 LLM 投稿由提交者撤回",
-            )
     if changed:
         _prune_audit(db)
     cleanup_params = {

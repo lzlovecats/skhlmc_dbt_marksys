@@ -203,38 +203,6 @@ AI_COACH_MATCH_LIMIT = _limit("AI_COACH_MATCH_LIMIT", 500, minimum=50, maximum=5
 LLM_CONTENT_MAX_CHARS = _limit("LLM_CONTENT_MAX_CHARS", 20_000, minimum=1_000, maximum=20_000, group="ai", description="Characters per LLM training submission")
 LLM_SUBMISSION_MAX_TOTAL = _limit("LLM_SUBMISSION_MAX_TOTAL", 5_000, minimum=100, maximum=5_000, group="ai", description="LLM submissions retained")
 LLM_REVIEW_CONCURRENCY = _limit("LLM_REVIEW_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent LLM reviews")
-AI_FACTORY_SOURCE_MAX_CHARS = _limit("AI_FACTORY_SOURCE_MAX_CHARS", 20_000, minimum=1_000, maximum=20_000, group="ai", description="Characters in one immutable data-factory source snapshot")
-AI_FACTORY_SOURCE_NOTE_MAX_CHARS = _limit("AI_FACTORY_SOURCE_NOTE_MAX_CHARS", 1_000, minimum=100, maximum=1_000, group="ai", description="Rights and provenance note characters on one data-factory source")
-AI_FACTORY_INSTRUCTION_MAX_CHARS = _limit("AI_FACTORY_INSTRUCTION_MAX_CHARS", 500, minimum=0, maximum=500, group="ai", description="Manager instruction characters per data-factory job")
-AI_FACTORY_CANDIDATE_DEFAULT = _limit("AI_FACTORY_CANDIDATE_DEFAULT", 3, minimum=1, maximum=5, group="ai", description="Default generated candidates per data-factory job")
-AI_FACTORY_CANDIDATE_MAX = _limit("AI_FACTORY_CANDIDATE_MAX", 5, minimum=1, maximum=5, group="ai", description="Maximum generated candidates per data-factory job")
-AI_FACTORY_RAG_CONTENT_MAX_CHARS = _limit("AI_FACTORY_RAG_CONTENT_MAX_CHARS", 3_000, minimum=500, maximum=3_000, group="ai", description="Characters in one reviewed RAG card")
-AI_FACTORY_RAG_CLAIM_MAX = _limit("AI_FACTORY_RAG_CLAIM_MAX", 8, minimum=1, maximum=8, group="ai", description="Claims in one argument-decomposition RAG card")
-AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE = _limit("AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE", 10_000, minimum=10_000, maximum=10_000, group="ai", description="Confirmed provider output-token budget per standard data-factory candidate")
-AI_FACTORY_SFT_USER_MAX_CHARS = _limit("AI_FACTORY_SFT_USER_MAX_CHARS", 4_000, minimum=500, maximum=4_000, group="ai", description="User-message characters in one SFT item")
-AI_FACTORY_SFT_ASSISTANT_MAX_CHARS = _limit("AI_FACTORY_SFT_ASSISTANT_MAX_CHARS", 6_000, minimum=500, maximum=6_000, group="ai", description="Assistant-message characters in one SFT item")
-AI_FACTORY_PREVIEW_TTL_SECONDS = _limit("AI_FACTORY_PREVIEW_TTL_SECONDS", 900, minimum=60, maximum=900, group="ai", description="Lifetime of an exact provider-bound data-factory preview")
-AI_FACTORY_ATTEMPT_MAX = _limit("AI_FACTORY_ATTEMPT_MAX", 3, minimum=1, maximum=3, group="ai", description="Manual provider attempts allowed per data-factory job")
-AI_FACTORY_CONCURRENCY = _limit("AI_FACTORY_CONCURRENCY", 2, minimum=1, maximum=2, group="ai", description="Concurrent data-factory provider calls")
-AI_FACTORY_MANAGER_CONCURRENCY = _limit("AI_FACTORY_MANAGER_CONCURRENCY", 1, minimum=1, maximum=1, group="ai", description="Concurrent data-factory provider calls per manager")
-AI_FACTORY_TOPIC_TAG_MAX = _limit("AI_FACTORY_TOPIC_TAG_MAX", 5, minimum=1, maximum=5, group="ai", description="Approved custom topic tags attached to one factory item")
-AI_FACTORY_TOPIC_TAG_MAX_CHARS = _limit("AI_FACTORY_TOPIC_TAG_MAX_CHARS", 40, minimum=1, maximum=40, group="ai", description="Characters in one custom data-factory topic tag")
-AI_FACTORY_RELEASE_MAX_ITEMS = _limit("AI_FACTORY_RELEASE_MAX_ITEMS", 500, minimum=1, maximum=500, group="ai", description="Items in one immutable RAG or SFT release")
-AI_FACTORY_RELEASE_MAX_BYTES = _limit("AI_FACTORY_RELEASE_MAX_BYTES", 5 * MIB, minimum=KIB, maximum=5 * MIB, group="ai", description="Bytes in one immutable data-factory JSONL release")
-AI_FACTORY_SOURCE_MAX_TOTAL = _limit("AI_FACTORY_SOURCE_MAX_TOTAL", 2_000, minimum=100, maximum=2_000, group="database", description="Data-factory source snapshots retained for admin workflows")
-AI_FACTORY_JOB_MAX_TOTAL = _limit("AI_FACTORY_JOB_MAX_TOTAL", 10_000, minimum=100, maximum=10_000, group="database", description="Data-factory jobs retained for admin workflows")
-AI_FACTORY_ITEM_MAX_TOTAL = _limit("AI_FACTORY_ITEM_MAX_TOTAL", 50_000, minimum=500, maximum=50_000, group="database", description="Generated data-factory items retained for review and release")
-AI_FACTORY_TOPIC_TAG_MAX_TOTAL = _limit("AI_FACTORY_TOPIC_TAG_MAX_TOTAL", 500, minimum=10, maximum=500, group="database", description="Custom data-factory topic tags retained")
-AI_FACTORY_RELEASE_MAX_TOTAL = _limit("AI_FACTORY_RELEASE_MAX_TOTAL", 200, minimum=10, maximum=200, group="database", description="Immutable data-factory releases retained")
-AI_FACTORY_TRANSCRIPT_MAX_CHARS = _limit("AI_FACTORY_TRANSCRIPT_MAX_CHARS", 200_000, minimum=20_000, maximum=200_000, group="ai", description="Characters in one immutable full-match transcript")
-AI_FACTORY_TRANSCRIPT_CORE_CHARS = _limit("AI_FACTORY_TRANSCRIPT_CORE_CHARS", 11_000, minimum=5_000, maximum=15_000, group="ai", description="Non-overlapping transcript characters owned by one structure window")
-AI_FACTORY_TRANSCRIPT_OVERLAP_CHARS = _limit("AI_FACTORY_TRANSCRIPT_OVERLAP_CHARS", 2_000, minimum=500, maximum=4_000, group="ai", description="Context characters supplied on each side of a transcript structure window")
-AI_FACTORY_TRANSCRIPT_BOUNDARY_MAX = _limit("AI_FACTORY_TRANSCRIPT_BOUNDARY_MAX", 80, minimum=10, maximum=80, group="ai", description="Speaker boundaries returned by one transcript structure window")
-AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS = _limit("AI_FACTORY_TRANSCRIPT_OUTPUT_MAX_TOKENS", 10_000, minimum=10_000, maximum=10_000, group="ai", description="Provider output tokens for one transcript structure window")
-AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS = _limit("AI_FACTORY_TRANSCRIPT_REVIEW_CONTEXT_CHARS", 4_000, minimum=500, maximum=4_000, group="api", description="Transcript context characters returned on each side of a reviewed segment")
-AI_FACTORY_TRANSCRIPT_MAX_TOTAL = _limit("AI_FACTORY_TRANSCRIPT_MAX_TOTAL", 500, minimum=10, maximum=500, group="database", description="Full-match transcripts retained by the data factory")
-AI_FACTORY_TRANSCRIPT_RUN_MAX_TOTAL = _limit("AI_FACTORY_TRANSCRIPT_RUN_MAX_TOTAL", 2_000, minimum=10, maximum=2_000, group="database", description="Transcript structure runs retained by the data factory")
-AI_FACTORY_TRANSCRIPT_SEGMENT_MAX_TOTAL = _limit("AI_FACTORY_TRANSCRIPT_SEGMENT_MAX_TOTAL", 100_000, minimum=500, maximum=100_000, group="database", description="Transcript segments retained for review")
 DATASET_SNAPSHOT_MAX_ITEMS = _limit("DATASET_SNAPSHOT_MAX_ITEMS", 500, minimum=1, maximum=500, group="ai", description="Items per dataset snapshot")
 DATASET_SNAPSHOT_MAX_COUNT = _limit("DATASET_SNAPSHOT_MAX_COUNT", 200, minimum=10, maximum=200, group="ai", description="Dataset snapshots retained")
 RECORDING_MANIFEST_MAX_ROWS = _limit("RECORDING_MANIFEST_MAX_ROWS", 2_000, minimum=1, maximum=2_000, group="ai", description="Rows in recording manifests")
@@ -409,14 +377,6 @@ SCHEDULE_MAX_TEAM_NAME_CHARS = _limit("SCHEDULE_MAX_TEAM_NAME_CHARS", 100, minim
 
 
 def _validate_relationships() -> None:
-    if AI_FACTORY_CANDIDATE_DEFAULT > AI_FACTORY_CANDIDATE_MAX:
-        raise RuntimeError(
-            "AI_FACTORY_CANDIDATE_DEFAULT cannot exceed AI_FACTORY_CANDIDATE_MAX"
-        )
-    if AI_FACTORY_MANAGER_CONCURRENCY > AI_FACTORY_CONCURRENCY:
-        raise RuntimeError(
-            "AI_FACTORY_MANAGER_CONCURRENCY cannot exceed AI_FACTORY_CONCURRENCY"
-        )
     if not (
         LOGIN_RATE_MAX_PER_CLIENT_ACCOUNT
         <= LOGIN_RATE_MAX_PER_CLIENT
@@ -471,15 +431,6 @@ def _validate_relationships() -> None:
         raise RuntimeError(
             "OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS must be at least "
             "OPENROUTER_WEB_SEARCH_MAX_RESULTS"
-        )
-    if (
-        AI_FACTORY_OUTPUT_TOKENS_PER_CANDIDATE
-        * AI_FACTORY_CANDIDATE_MAX
-        > AI_PROVIDER_OUTPUT_MAX_TOKENS
-    ):
-        raise RuntimeError(
-            "AI_PROVIDER_OUTPUT_MAX_TOKENS must cover the largest RAG "
-            "standard data-factory batch"
         )
     if LIVE_TOKEN_RESPONSE_CACHE_TTL_SECONDS >= LIVE_TOKEN_NEW_SESSION_WINDOW_SECONDS:
         raise RuntimeError(

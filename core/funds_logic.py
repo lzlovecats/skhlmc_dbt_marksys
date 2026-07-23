@@ -59,7 +59,6 @@ AI_FEATURE_LABELS = {
     "vote_analysis": "辯題庫 / 往績分析", "vote_discussion": "委員討論回應",
     "tts_review": "AI訓練·錄音檢查", "tts_script_analysis": "AI訓練·句庫分析",
     "llm_review": "AI訓練·文字審查", "tts": "粵語語音合成",
-    "data_factory_generation": "辯論LLM資料工廠·生成",
     "kiosk_match_review": "AI評判易（Kiosk）",
     "kiosk_match_review_tts": "AI評判易·粵語讀出",
     "official_ai_judge": "正式 AI 第三評判",
@@ -73,7 +72,6 @@ AI_USAGE_FEATURES = (
     "free_debate_live", "full_mock_live", "vote_review",
     "vote_analysis", "vote_discussion", "tts_review",
     "tts_script_analysis", "llm_review",
-    "data_factory_generation",
     "kiosk_match_review", "tts", "kiosk_match_review_tts", "official_ai_judge",
     "lmc_ai_chat", "local_ai_practice",
 )

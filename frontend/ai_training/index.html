@@ -60,181 +60,9 @@
         height: 100%;
         background: var(--accent);
       }
-      .factory-subpane {
-        display: none;
-      }
-      .factory-subpane.active {
-        display: block;
-      }
-      .factory-grid,
-      .factory-review-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 1rem;
-      }
-      .factory-source-list,
-      .factory-list {
-        display: grid;
-        gap: 0.75rem;
-        margin: 0.75rem 0;
-      }
-      .factory-source-card,
-      .factory-item-card {
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        background: var(--surface);
-        padding: 0.85rem;
-      }
-      .factory-source-card.selected {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 1px var(--accent);
-      }
-      .factory-source-card label {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.65rem;
-      }
-      .factory-source-card input,
-      .factory-release-choice input,
-      .factory-tag-choice input {
-        width: auto;
-        flex: 0 0 auto;
-      }
-      .factory-source-card p {
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 4;
-        overflow: hidden;
-        margin-bottom: 0;
-      }
-      .factory-product-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.75rem;
-      }
-      .factory-product-card {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.65rem;
-        min-height: 7rem;
-        padding: 0.9rem;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        background: var(--surface);
-        cursor: pointer;
-      }
-      .factory-product-card.selected {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 1px var(--accent);
-      }
-      .factory-product-card input {
-        width: auto;
-        flex: 0 0 auto;
-      }
-      .factory-product-card strong,
-      .factory-product-card span {
-        display: block;
-      }
-      .factory-product-card span {
-        margin-top: 0.35rem;
-        color: var(--muted);
-      }
-      .factory-review-kind {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        margin-bottom: 1rem;
-      }
-      .factory-review-kind button.active {
-        border-color: var(--accent);
-        background: var(--accent);
-        color: white;
-      }
-      .factory-char-count {
-        text-align: right;
-      }
-      .factory-source-chooser > summary {
-        min-height: 2.75rem;
-        display: flex;
-        align-items: center;
-        cursor: pointer;
-      }
-      .factory-meta {
-        color: var(--muted);
-        font-size: 0.86rem;
-        overflow-wrap: anywhere;
-      }
-      .factory-preview,
-      .factory-json-editor {
-        width: 100%;
-        min-height: 18rem;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
-      .factory-preview {
-        max-height: 22rem;
-        overflow: auto;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        background: var(--surface);
-        padding: 0.85rem;
-      }
-      .factory-transcript-review-fields {
-        display: grid;
-        gap: 0.75rem;
-      }
-      .factory-transcript-review-fields.hidden {
-        display: none;
-      }
-      .factory-transcript-review-fields .factory-preview {
-        min-height: 8rem;
-        max-height: 18rem;
-      }
-      .factory-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        margin: 0.6rem 0;
-      }
-      .factory-tag-choice,
-      .factory-release-choice {
-        display: flex;
-        gap: 0.45rem;
-        align-items: flex-start;
-      }
-      #factoryPreviewDialog {
-        width: min(70rem, calc(100vw - 2rem));
-        max-height: calc(100vh - 2rem);
-      }
-      #factoryPreviewDialog .dialog-scroll {
-        max-height: calc(100vh - 8rem);
-        overflow: auto;
-      }
       @media (max-width: 760px) {
-        .split,
-        .factory-grid,
-        .factory-review-grid,
-        .factory-product-grid {
+        .split {
           grid-template-columns: minmax(0, 1fr);
-        }
-        .factory-product-card {
-          min-height: 0;
-        }
-        .factory-review-nav {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .factory-review-nav .caption {
-          grid-column: 1 / -1;
-          grid-row: 1;
-        }
-        .factory-review-nav button {
-          width: 100%;
-          min-height: 2.75rem;
-        }
-        #factoryPreviewDialog {
-          width: calc(100vw - 1rem);
-          margin: 0.5rem;
         }
       }
     </style>
@@ -618,282 +446,93 @@
           </section>
           <section id="factory" class="admin-pane">
             <section class="card">
-              <h2>辯論 LLM 資料工廠</h2>
-              <p class="caption">
-                將已批准文字或管理員貼上的資料，轉成可人工審核、版本化及下載的 RAG / SFT 資料。
-                每次傳給第三方 AI 前，都會先完整預覽文字。
+              <h2>RAG / SFT 資料製作指引</h2>
+              <p class="notice">
+                呢個分頁唔會生成、審核、儲存或發布資料。管理員要由已核對來源人手建立
+                JSONL，再按 Workstation 發布流程驗證、簽署同安裝。
               </p>
-              <div id="factoryReadiness" class="notice">載入資料工廠設定中…</div>
-            </section>
-            <nav class="tabs" id="factoryTabs">
-              <button class="active" data-factory-pane="factory-create">建立工作</button
-              ><button data-factory-pane="factory-review">待審核</button
-              ><button data-factory-pane="factory-approved">已批准資料</button>
-            </nav>
-
-            <section id="factory-create" class="factory-subpane active">
-              <section class="card">
-                <h3>1. 選擇產品</h3>
-                <p class="caption">先選擇要建立的資料類型，系統會顯示相應的來源及處理方式。</p>
-                <div id="factoryProducts" class="factory-product-grid" role="radiogroup" aria-label="資料產品"></div>
-                <select id="factoryRecipe" class="hidden" aria-hidden="true"></select>
-              </section>
-
-              <div id="factoryStandardWorkflow" class="factory-grid">
-                <section class="card">
-                  <h3>2. 選擇一份來源</h3>
-                  <details id="factorySourceChooser" class="factory-source-chooser" open>
-                    <summary>搜尋及選擇來源</summary>
-                  <div class="split">
-                    <label>來源類型
-                      <select id="factorySourceKind">
-                        <option value="all">全部</option>
-                        <option value="submission">已批准提交</option>
-                        <option value="paste">管理員貼上資料</option>
-                      </select>
-                    </label>
-                    <label>搜尋
-                      <input id="factorySourceSearch" placeholder="標題、辯題或來源" />
-                    </label>
-                  </div>
-                  <div class="actions">
-                    <button id="factorySourceSearchBtn" type="button">搜尋</button>
-                    <button id="factorySourcePrev" type="button">上一頁</button>
-                    <span id="factorySourcePage" class="caption"></span>
-                    <button id="factorySourceNext" type="button">下一頁</button>
-                  </div>
-                  <div id="factorySources" class="factory-source-list"></div>
-                  <details>
-                    <summary>新增一份貼上資料</summary>
-                    <form id="factoryPasteForm">
-                      <label>標題<input id="factoryPasteTitle" maxlength="200" required /></label>
-                      <label>辯題／主題<input id="factoryPasteTopic" maxlength="500" /></label>
-                      <label>立場
-                        <select id="factoryPasteSide">
-                          <option value="not_applicable" selected>不適用</option>
-                          <option value="pro">正方</option>
-                          <option value="con">反方</option>
-                          <option value="neutral">中立</option>
-                        </select>
-                      </label>
-                      <label>來源說明<textarea id="factoryPasteSourceNote" maxlength="1000" required></textarea></label>
-                      <label>來源語言
-                        <select id="factoryPasteLanguage" required>
-                          <option value="yue-Hant-HK" selected>香港粵語繁體中文</option>
-                          <option value="zh-Hant">繁體中文</option>
-                          <option value="en">英文</option>
-                          <option value="mixed">混合語言</option>
-                          <option value="other">其他</option>
-                        </select>
-                      </label>
-                      <label>權利依據
-                        <select id="factoryPasteRightsBasis" required>
-                          <option value="own_work">自撰</option>
-                          <option value="permission">已取得權利人許可</option>
-                          <option value="open_license">開放授權</option>
-                          <option value="public_domain">公有領域</option>
-                          <option value="other">其他（請在來源說明交代）</option>
-                        </select>
-                      </label>
-                      <label>文字內容<textarea id="factoryPasteContent" rows="12" required></textarea></label>
-                      <p class="caption">生成輸出語言固定為香港粵語繁體中文（yue-Hant-HK）。</p>
-                      <button id="factoryPasteSubmit" class="primary">儲存來源</button>
-                    </form>
-                  </details>
-                  </details>
-                </section>
-
-                <form id="factoryJobForm" class="card">
-                  <h3>3. 選擇模型及生成設定</h3>
-                  <p id="factorySelectedSource" class="notice">尚未選擇來源。</p>
-                  <button id="factoryCancelRetry" class="hidden" type="button">取消重試，建立新工作</button>
-                  <p class="caption">攻防演練只可使用已標示正方或反方的來源。</p>
-                  <label>AI 模型<select id="factoryModel" required></select></label>
-                  <p class="caption">
-                    Free Provider 不扣 AI Fund，但可用模型、速度、輸出質素及限額可能會變，候選資料仍須人工審核。
-                  </p>
-                  <label>生成數量
-                    <input id="factoryCount" type="number" min="1" max="5" value="3" required />
-                  </label>
-                  <label>管理員補充指示（可選）
-                    <textarea id="factoryManagerInstruction" maxlength="500" rows="4"></textarea>
-                  </label>
-                  <fieldset>
-                    <legend>已批准主題標籤（可選）</legend>
-                    <div id="factoryTopicTags" class="factory-tags"></div>
-                  </fieldset>
-                  <p class="caption">
-                    系統不會自動重試、轉用其他模型或另外呼叫評論模型。
-                  </p>
-                  <button id="factoryPreviewBtn" class="primary" disabled>預覽傳送內容</button>
-                </form>
-              </div>
-
-              <form id="factoryTranscriptForm" class="card hidden">
-                <h3>2. 貼上完整逐字稿及設定模型</h3>
-                <p class="caption">逐字稿會按約 11,000 字的核心範圍分批處理，每批另加前後文協助判斷。AI 只標示發言起點，完整段落由伺服器按原文位置逐字建立。</p>
-                <div class="split">
-                  <label>標題<input id="factoryTranscriptTitle" maxlength="200" required /></label>
-                  <label>辯題／主題<input id="factoryTranscriptTopic" maxlength="500" /></label>
-                </div>
-                <label>來源說明<textarea id="factoryTranscriptSourceNote" maxlength="1000" required></textarea></label>
-                <div class="split">
-                  <label>來源語言
-                    <select id="factoryTranscriptLanguage" required>
-                      <option value="yue-Hant-HK" selected>香港粵語繁體中文</option>
-                      <option value="zh-Hant">繁體中文</option>
-                      <option value="en">英文</option>
-                      <option value="mixed">混合語言</option>
-                      <option value="other">其他</option>
-                    </select>
-                  </label>
-                  <label>權利依據
-                    <select id="factoryTranscriptRightsBasis" required>
-                      <option value="own_work">自撰</option>
-                      <option value="permission">已取得權利人許可</option>
-                      <option value="open_license">開放授權</option>
-                      <option value="public_domain">公有領域</option>
-                      <option value="other">其他</option>
-                    </select>
-                  </label>
-                </div>
-                <label>完整逐字稿<textarea id="factoryTranscriptContent" rows="16" required></textarea></label>
-                <p id="factoryTranscriptCharCount" class="caption factory-char-count">0 / 200,000 字</p>
-                <label>AI 模型<select id="factoryTranscriptModel" required></select></label>
-                <label>管理員補充指示（可選）
-                  <textarea id="factoryTranscriptInstruction" maxlength="500" rows="4"></textarea>
-                </label>
-                <label class="check">
-                  <input id="factoryTranscriptStorageRights" type="checkbox" required />
-                  我確認有權將這份逐字稿儲存於內部資料庫並作資料處理。
-                </label>
-                <button id="factoryTranscriptPreviewBtn" class="primary">預覽所有分批傳送內容</button>
-              </form>
-
-              <section class="card">
-                <h3>工作紀錄</h3>
-                <p class="caption">失敗工作不會自動重試；如要再做，請重新預覽及確認。</p>
-                <div id="factoryJobs" class="factory-list"></div>
-                <div id="factoryTranscriptRuns" class="factory-list hidden"></div>
-                <div class="actions">
-                  <button id="factoryJobsPrev" type="button">上一頁</button>
-                  <span id="factoryJobsPage" class="caption"></span>
-                  <button id="factoryJobsNext" type="button">下一頁</button>
-                </div>
-              </section>
             </section>
 
-            <section id="factory-review" class="factory-subpane">
-              <section class="card">
-                <h3>待審核</h3>
-                <p id="factoryReviewHelp" class="caption">每次只審核一項。你可以修正結構化 JSON；系統仍會保留 AI 原稿。</p>
-                <div id="factoryReviewKinds" class="factory-review-kind">
-                  <button class="active" type="button" data-factory-review-kind="standard">一般候選資料</button>
-                  <button type="button" data-factory-review-kind="transcript">逐字稿段落</button>
-                </div>
-                <div id="factoryReviewEmpty" class="notice hidden">現時沒有待審核資料。</div>
-                <div id="factoryReviewWorkspace" class="hidden">
-                  <div class="factory-review-grid">
-                    <div>
-                      <h4>來源原文</h4>
-                      <div id="factoryReviewSourceMeta" class="factory-meta"></div>
-                      <pre id="factoryReviewSource" class="factory-preview"></pre>
-                    </div>
-                    <div>
-                      <h4>候選資料（可修正）</h4>
-                      <div id="factoryReviewCandidateMeta" class="factory-meta"></div>
-                      <div id="factoryTranscriptReviewFields" class="factory-transcript-review-fields hidden">
-                        <div class="split">
-                          <label>發言次序<input id="factoryTranscriptSequence" readonly /></label>
-                          <label>判斷信心<input id="factoryTranscriptConfidence" type="number" min="0" max="100" required /></label>
-                        </div>
-                        <div class="split">
-                          <label>原文起點（鎖定）<input id="factoryTranscriptStart" type="number" min="0" readonly required /></label>
-                          <label>原文終點（鎖定）<input id="factoryTranscriptEnd" type="number" min="1" readonly required /></label>
-                        </div>
-                        <label>辯位<input id="factoryTranscriptSpeaker" maxlength="100" required /></label>
-                        <div class="split">
-                          <label>立場
-                            <select id="factoryTranscriptSide" required>
-                              <option value="pro">正方</option>
-                              <option value="con">反方</option>
-                              <option value="neutral">中立</option>
-                              <option value="unknown">未能確定</option>
-                            </select>
-                          </label>
-                          <label>環節
-                            <select id="factoryTranscriptStage" required>
-                              <option value="opening">開場或立論</option>
-                              <option value="questioning">質詢或盤問</option>
-                              <option value="free_debate">自由辯論</option>
-                              <option value="summary">總結</option>
-                              <option value="adjudication">評判講評</option>
-                              <option value="general">一般環節</option>
-                              <option value="unknown">未能確定</option>
-                            </select>
-                          </label>
-                        </div>
-                        <label>需人工確認項目，每行一項<textarea id="factoryTranscriptReviewItems" rows="4" maxlength="2407"></textarea></label>
-                        <div>
-                          <strong>按原文位置抽取的完整發言</strong>
-                          <pre id="factoryTranscriptQuote" class="factory-preview"></pre>
-                        </div>
-                      </div>
-                      <label id="factoryReviewPayloadLabel">結構化 JSON
-                        <textarea id="factoryReviewPayload" class="factory-json-editor" spellcheck="false"></textarea>
-                      </label>
-                    </div>
-                  </div>
-                  <label>審核備註<textarea id="factoryReviewNote" maxlength="2000"></textarea></label>
-                  <div class="actions">
-                    <button id="factoryReviewReject" class="danger" type="button">拒絕</button>
-                    <button id="factoryReviewApprove" class="primary" type="button">批准</button>
-                  </div>
-                </div>
-                <div class="actions factory-review-nav">
-                  <button id="factoryReviewPrevItem" type="button">上一項</button>
-                  <span id="factoryReviewPosition" class="caption"></span>
-                  <button id="factoryReviewNextItem" type="button">下一項</button>
-                  <button id="factoryReviewPrevPage" type="button">上一頁</button>
-                  <button id="factoryReviewNextPage" type="button">下一頁</button>
-                </div>
-              </section>
+            <section class="card">
+              <h3>先分清 RAG 與 SFT</h3>
+              <ul>
+                <li>
+                  <strong>RAG</strong> 儲存需要檢索、引用、更新或撤回嘅知識。
+                  事實、規則、案例同引用放入 RAG，唔好靠模型參數記住。
+                </li>
+                <li>
+                  <strong>SFT</strong> 教模型點樣回答，例如語氣、結構、分析步驟同拒答方式；
+                  唔應用嚟背誦會改變或需要引用嘅知識。
+                </li>
+              </ul>
+              <p>
+                開始前先喺「LLM 文字審核」確認來源已接受、匿名化、具使用權，而且內容仍然有效。
+                保留來源擁有人、版本／日期、授權依據、內容 SHA-256 同撤回聯絡方法。
+              </p>
             </section>
 
-            <section id="factory-approved" class="factory-subpane">
-              <div class="factory-grid">
-                <section class="card">
-                  <h3>已批准資料</h3>
-                  <p class="caption">手動勾選要放入新版本的資料；RAG 與 SFT 不可混合發佈。</p>
-                  <div id="factoryApprovedItems" class="factory-list"></div>
-                  <div class="actions">
-                    <button id="factoryApprovedPrev" type="button">上一頁</button>
-                    <span id="factoryApprovedPage" class="caption"></span>
-                    <button id="factoryApprovedNext" type="button">下一頁</button>
-                  </div>
-                </section>
-                <form id="factoryReleaseForm" class="card">
-                  <h3>發佈不可改寫版本</h3>
-                  <label>版本類型
-                    <select id="factoryReleaseKind">
-                      <option value="rag">RAG</option>
-                      <option value="sft">SFT</option>
-                    </select>
-                  </label>
-                  <label>版本備註<textarea id="factoryReleaseNote" maxlength="2000"></textarea></label>
-                  <p id="factoryReleaseSelection" class="notice">尚未選擇資料。</p>
-                  <button id="factoryReleaseSubmit" class="primary" disabled>發佈新版本</button>
-                </form>
-              </div>
-              <section class="card">
-                <h3>版本紀錄及下載</h3>
-                <div id="factoryReleases" class="factory-list"></div>
-                <div class="actions">
-                  <button id="factoryReleasesPrev" type="button">上一頁</button>
-                  <span id="factoryReleasesPage" class="caption"></span>
-                  <button id="factoryReleasesNext" type="button">下一頁</button>
-                </div>
-              </section>
+            <section class="card">
+              <h3>RAG 資料製作流程</h3>
+              <ol>
+                <li>
+                  由規則、教練筆記、已授權案例或可靠參考資料建立 canonical 原文；唔好將
+                  AI 生成摘要當成事實來源。
+                </li>
+                <li>
+                  按語意切段：每段只處理一個主題，並要離開原文件後仍可獨立理解。
+                  唔好將完整長文直接當成一段，亦唔好為增加數量而重複近似段落。
+                </li>
+                <li>
+                  建立 <code>documents.jsonl</code>；一行一個 JSON object，而且只可包含
+                  <code>"id"</code>、<code>"title"</code>、<code>"text"</code>、
+                  <code>"source_url"</code>。
+                </li>
+                <li>
+                  <code>id</code> 必須穩定而且唯一；<code>title</code> 要交代主題及版本；
+                  <code>text</code> 要包含可直接引用嘅內容、適用範圍同必要限制。
+                  公開來源使用 HTTPS，純內部來源可將 <code>source_url</code> 留空。
+                </li>
+              </ol>
+              <pre class="json">{"id":"rules-judging-2026-001","title":"評判準則｜論證完整性｜2026","text":"來源：校隊規則第六節。評判應檢視主張、理由、機制及影響是否連貫。適用於正式比賽；資料不足時不可自行補作事實。","source_url":""}</pre>
+              <p>
+                完成後將 <code>documents.jsonl</code> 放喺 RAG bundle 根目錄，建立新版本同
+                manifest，核對檔案 hash，再按 Workstation runbook 離線簽署。舊版本唔可以原位改寫。
+              </p>
+            </section>
+
+            <section class="card">
+              <h3>SFT 資料製作流程</h3>
+              <ol>
+                <li>
+                  每一行係一個完整訓練例子，以 <code>"messages"</code> 保存
+                  <code>"system"</code>、<code>"user"</code>、<code>"assistant"</code>
+                  訊息；只訓練 assistant 回覆。
+                </li>
+                <li>
+                  user 訊息要係真實、完整而可回答嘅任務；assistant 目標答案要由熟悉辯論訓練嘅人
+                  親自審核，示範期望語氣、推理步驟、引用方式同資料不足時嘅處理。
+                </li>
+                <li>
+                  原始講稿或逐字稿唔係天然問答配對。要先人手界定問題、所需上下文同理想答案，
+                  唔可以將相鄰段落自動當成 user／assistant。
+                </li>
+                <li>
+                  同一來源、同一場比賽或同一份稿只可落入一個 split，避免內容同時出現喺
+                  train、validation 同獨立 eval。
+                </li>
+              </ol>
+              <pre class="json">{"messages":[{"role":"system","content":"你係香港中學辯論教練；資料不足時要講明。"},{"role":"user","content":"請分析以下主張點解欠缺機制：……"},{"role":"assistant","content":"呢個主張講咗結果，但未交代由原因去到結果中間發生咩事。你可以先補充……"}]}</pre>
+            </section>
+
+            <section class="card">
+              <h3>發布前檢查</h3>
+              <ul>
+                <li>逐項核對授權、匿名化、來源、日期、適用範圍、事實準確度同撤回狀態。</li>
+                <li>移除 duplicate、相互矛盾而無版本標示嘅內容、私人資料同無法追溯來源嘅主張。</li>
+                <li>驗證每行 JSON 都可獨立 parse，ID 無重複，檔案 hash、版本同 manifest 一致。</li>
+                <li>預留完全未參與製作嘅 eval cases，測試檢索命中、引用準確、拒答同私隱。</li>
+                <li>只有 blind eval 通過，先簽署及安裝新 bundle；失敗就保留目前 active 版本。</li>
+              </ul>
             </section>
           </section>
         </section>
@@ -903,40 +542,6 @@
     <div id="busy" class="busy">
       <div class="busy-pill"><i class="spinner"></i>處理中…</div>
     </div>
-    <dialog id="factoryPreviewDialog">
-      <div class="card dialog-scroll">
-        <h2>確認傳給第三方 AI 的內容</h2>
-        <div id="factoryPreviewMeta" class="notice"></div>
-        <div id="factoryPiiWarning" class="notice warn hidden">
-          <strong>可能包含個人資料</strong>
-          <ul id="factoryPiiWarnings"></ul>
-          <label>覆寫理由
-            <textarea id="factoryPiiOverrideReason" maxlength="1000"></textarea>
-          </label>
-        </div>
-        <h3>System prompt</h3>
-        <pre id="factorySystemPrompt" class="factory-preview"></pre>
-        <h3>User prompt</h3>
-        <pre id="factoryUserPrompt" class="factory-preview"></pre>
-        <label class="check">
-          <input id="factoryRightsConfirmed" type="checkbox" />
-          我確認有權將上述文字用作內部 RAG／SFT 資料。
-        </label>
-        <label class="check">
-          <input id="factoryAnonymizedConfirmed" type="checkbox" />
-          我已核對內容已匿名化。
-        </label>
-        <label class="check">
-          <input id="factoryThirdPartyConfirmed" type="checkbox" />
-          <span id="factoryThirdPartyWarningText">我明白以上完整文字會傳給所選第三方 AI provider。</span>
-        </label>
-        <p id="factoryGenerateStatus" class="notice hidden" role="status" aria-live="polite"></p>
-        <div class="actions">
-          <button id="factoryPreviewCancel" type="button">取消</button>
-          <button id="factoryGenerateBtn" class="primary" type="button">確認並生成</button>
-        </div>
-      </div>
-    </dialog>
     <dialog id="confirmDialog">
       <form method="dialog" class="card">
         <h2 id="confirmTitle">確認操作</h2>
