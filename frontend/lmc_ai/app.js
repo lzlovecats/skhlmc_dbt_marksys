@@ -1329,6 +1329,12 @@
     $("characterCount").textContent = `${$("messageInput").value.length} / ${maximum}`;
   }
 
+  function setComposerExpanded(expanded) {
+    $("composerBox").classList.toggle("expanded", expanded);
+    $("expandComposer").disabled = expanded;
+    $("collapseComposer").disabled = !expanded;
+  }
+
   function openStatus() {
     if (typeof $("statusDialog").showModal === "function") $("statusDialog").showModal();
   }
@@ -1342,6 +1348,8 @@
   });
   $("sendButton").onclick = () => sendMessage();
   $("stopButton").onclick = () => abortController?.abort();
+  $("expandComposer").onclick = () => setComposerExpanded(true);
+  $("collapseComposer").onclick = () => setComposerExpanded(false);
   $("thinkingMode").onchange = switchConversationMode;
   $("newChat").onclick = () => createConversation();
   $("conversationSearch").oninput = () => workspace && renderConversationList();

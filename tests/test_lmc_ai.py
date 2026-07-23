@@ -1456,6 +1456,26 @@ def test_quick_prompts_are_colloquial_editable_and_use_a_four_minute_case_defaul
     assert 'type="number"' not in PAGE
 
 
+def test_workspace_stays_viewport_locked_and_mobile_navigation_can_return_home():
+    assert "body { margin:0; padding:0; overflow:hidden;" in PAGE
+    mobile_css = PAGE.split("@media (max-width:850px)", 1)[1].split(
+        "@media (prefers-color-scheme:dark)", 1,
+    )[0]
+    assert "body { overflow:hidden; }" in mobile_css
+    assert "grid-template-columns:repeat(4,1fr)" in mobile_css
+    assert '<a class="mobile-home-link" href="/" aria-label="返回主頁">' in PAGE
+
+
+def test_composer_has_accessible_expand_and_collapse_controls():
+    assert 'id="expandComposer"' in PAGE
+    assert 'aria-label="放大輸入框"' in PAGE
+    assert 'id="collapseComposer"' in PAGE
+    assert 'aria-label="縮小輸入框"' in PAGE
+    assert ".composer-box.expanded textarea" in PAGE
+    assert "function setComposerExpanded(expanded)" in SCRIPT
+    assert 'classList.toggle("expanded", expanded)' in SCRIPT
+
+
 def test_browser_workspace_keeps_twenty_chats_and_documents_without_auto_deletion():
     assert 'const DB_NAME = "lmc-ai-workspace"' in SCRIPT
     assert "EDITOR_LEASE_TTL_MS" in SCRIPT

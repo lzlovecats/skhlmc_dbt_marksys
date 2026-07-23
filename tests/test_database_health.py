@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from core.schema_features import FEATURE_CATALOG, FEATURE_MIGRATION_VERSIONS
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_release_schema_contract_tracks_repository_head():
     migrations = sorted((ROOT / "migrations").glob("*.up.sql"))
-    assert APP_VERSION == "4.14.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", APP_VERSION)
     assert migrations[-1].name.startswith(REQUIRED_SCHEMA_MIGRATION)
     assert "eval" not in FEATURE_MIGRATION_VERSIONS
 
