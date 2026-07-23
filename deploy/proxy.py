@@ -2164,7 +2164,9 @@ async def home_page():
         encoding="utf-8"
     )
     return Response(
-        html.replace("__LMC_AI_EMOJI__", xml_escape(LMC_AI_EMOJI)),
+        html.replace("__LMC_AI_NAME__", xml_escape(LMC_AI_NAME)).replace(
+            "__LMC_AI_EMOJI__", xml_escape(LMC_AI_EMOJI)
+        ),
         media_type="text/html",
         headers=_cache_headers(CACHE_HTML),
     )
