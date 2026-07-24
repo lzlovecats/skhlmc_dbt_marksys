@@ -15,6 +15,7 @@ import time
 import re
 import secrets
 
+from ai_model_config import LMC_AI_CONTEXT_LENGTH
 from system_limits import (
     LMC_AI_NODE_WS_FRAME_MAX_BYTES,
     WORKSTATION_TTS_TRAINING_MAX_SECONDS,
@@ -427,6 +428,16 @@ class ManagerApplication:
         messages = request.get("messages")
         if not isinstance(messages, list):
             raise WorkloadError("invalid_messages", "Chat messages are invalid.")
+        context_length = request.get("context_length")
+        if (
+            isinstance(context_length, bool)
+            or not isinstance(context_length, int)
+            or context_length != LMC_AI_CONTEXT_LENGTH
+        ):
+            raise WorkloadError(
+                "context_length_mismatch",
+                "Chat context length does not match the approved model profile.",
+            )
         cancel = self._cancel_event(operation_id)
         try:
             text, usage = self.executor.run_chat(
@@ -434,6 +445,7 @@ class ManagerApplication:
                 model=str(request.get("model") or ""),
                 messages=messages,
                 think=request.get("think") is True,
+                context_length=context_length,
                 deadline_epoch=int(request.get("deadline_epoch") or 0),
                 cancel_event=cancel,
                 on_started=lambda: emit("started", {}),
@@ -592,7 +604,9 @@ class ManagerApplication:
                     if action == "model.approve":
                         self.artifacts.approve_models(cancel_event=cancel)
                     elif action == "rag.install":
-                        self.executor._prepare_ollama_gpu()
+                        self.executor._prepare_ollama_gpu(
+                            self.config.workloads.rag.embedding_model
+                        )
                         self.artifacts.install_rag(cancel_event=cancel)
                     else:
                         self.artifacts.rollback_rag()

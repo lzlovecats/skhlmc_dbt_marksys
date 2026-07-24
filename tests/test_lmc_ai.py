@@ -105,12 +105,12 @@ def test_identity_and_persona_have_one_runtime_source():
 
 def test_persona_enforces_hong_kong_traditional_cantonese_register():
     assert "所有自然語言內容必須使用香港正體中文" in SYSTEM_PROMPT
+    assert "自然、貼地而不造作嘅香港粵語口語" in SYSTEM_PROMPT
     assert "絕對唔可以混入簡體字" in SYSTEM_PROMPT
     assert "書面普通話句式" in SYSTEM_PROMPT
-    assert "標題、項目符號、表格同例子" in SYSTEM_PROMPT
+    assert "英文技術名稱、網址、程式碼、專有名詞" in SYSTEM_PROMPT
+    assert "其餘仍須遵守香港正體粵語要求" in SYSTEM_PROMPT
     assert "輸出前要靜默自查" in SYSTEM_PROMPT
-    assert "我哋、佢哋、係咪、冇、睇落、點樣、好多時、離題、評判" in SYSTEM_PROMPT
-    assert "我們、他們、是不是、沒有、看起來、如何、很多時候、跑題、法官" in SYSTEM_PROMPT
 
 
 def test_backend_fingerprint_is_opaque_and_tracks_node_model_and_persona():

@@ -7,6 +7,7 @@ import time
 import pytest
 
 from ai_model_config import (
+    LMC_AI_CONTEXT_LENGTH,
     LMC_AI_FAST_MODEL_TAG,
     lmc_ai_workstation_required_models,
 )
@@ -58,8 +59,10 @@ def test_text_attempt_starts_only_when_ollama_stream_is_open(tmp_path, monkeypat
     arbiter = ModeArbiter(StateStore(tmp_path / "manager.json"))
     executor = JobExecutor(config, arbiter, _Inhibitor())
     events = []
+    prepared_models = []
 
     def chat(**kwargs):
+        assert kwargs["context_length"] == LMC_AI_CONTEXT_LENGTH
         kwargs["on_started"]()
         kwargs["on_delta"]("答案")
         return "答案", {
@@ -71,11 +74,13 @@ def test_text_attempt_starts_only_when_ollama_stream_is_open(tmp_path, monkeypat
         }
 
     monkeypatch.setattr(executor.ollama, "chat", chat)
+    monkeypatch.setattr(executor.ollama, "unload_except", prepared_models.append)
     text, _usage = executor.run_chat(
         operation_id="text-1",
         model=LMC_AI_FAST_MODEL_TAG,
         messages=[{"role": "user", "content": "測試"}],
         think=False,
+        context_length=LMC_AI_CONTEXT_LENGTH,
         deadline_epoch=2_000_000_000,
         cancel_event=threading.Event(),
         on_started=lambda: events.append("started"),
@@ -83,6 +88,7 @@ def test_text_attempt_starts_only_when_ollama_stream_is_open(tmp_path, monkeypat
     )
     assert text == "答案"
     assert events == ["started", "答案"]
+    assert prepared_models == [LMC_AI_FAST_MODEL_TAG]
     operation = next(
         item for item in arbiter.snapshot()["recent_operations"]
         if item["operation_id"] == "text-1"
