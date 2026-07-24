@@ -15,6 +15,7 @@ import time
 import websockets
 
 from ai_model_config import (
+    LMC_AI_CONTEXT_LENGTH,
     LMC_AI_MODEL_PROFILE_VERSION,
     lmc_ai_all_models,
     resolve_lmc_ai_mode_options,
@@ -166,12 +167,23 @@ class WorkstationNodeClient:
         self.active_operation_id = operation_id
         terminal = False
         try:
+            context_length = payload.get("context_length")
+            if (
+                isinstance(context_length, bool)
+                or not isinstance(context_length, int)
+                or context_length != LMC_AI_CONTEXT_LENGTH
+            ):
+                raise WorkloadError(
+                    "context_length_mismatch",
+                    "Server context length does not match the approved model profile.",
+                )
             request = {
                 "action": "chat.run",
                 "operation_id": operation_id,
                 "model": str(payload.get("model") or ""),
                 "messages": payload.get("messages") or [],
                 "think": payload.get("think") is True,
+                "context_length": LMC_AI_CONTEXT_LENGTH,
                 "deadline_epoch": int(time.time()) + WORKSTATION_JOB_TIMEOUT_SECONDS,
             }
             async for event in self.manager.stream(request):

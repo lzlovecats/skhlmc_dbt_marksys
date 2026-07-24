@@ -133,19 +133,28 @@ class OllamaAdapter:
             for item in items if isinstance(item, dict) and (item.get("name") or item.get("model"))
         ))
 
+    def unload(self, model: str) -> None:
+        try:
+            response = httpx.post(
+                f"{self.config.url}/api/generate",
+                json={"model": str(model), "keep_alive": 0},
+                timeout=30,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise WorkloadError(
+                "gpu_release_failed", "Ollama could not release a resident GPU model."
+            ) from exc
+
+    def unload_except(self, model: str) -> None:
+        target = str(model)
+        for resident in self.resident_models():
+            if resident != target:
+                self.unload(resident)
+
     def unload_all(self) -> None:
         for model in self.resident_models():
-            try:
-                response = httpx.post(
-                    f"{self.config.url}/api/generate",
-                    json={"model": model, "keep_alive": 0},
-                    timeout=30,
-                )
-                response.raise_for_status()
-            except httpx.HTTPError as exc:
-                raise WorkloadError(
-                    "gpu_release_failed", "Ollama could not release a resident GPU model."
-                ) from exc
+            self.unload(model)
 
     def chat(
         self,
@@ -154,6 +163,7 @@ class OllamaAdapter:
         messages: list[dict],
         think: bool,
         keep_alive: str,
+        context_length: int,
         timeout_seconds: int,
         on_started=None,
         on_delta=None,
@@ -171,6 +181,7 @@ class OllamaAdapter:
                     "stream": True,
                     "think": bool(think),
                     "keep_alive": keep_alive,
+                    "options": {"num_ctx": int(context_length)},
                 }) as response:
                     response.raise_for_status()
                     if on_started:
@@ -229,13 +240,25 @@ class OllamaAdapter:
             "model": model,
         }
 
-    def embed(self, model: str, texts: list[str], *, timeout_seconds: int = 60) -> list[list[float]]:
+    def embed(
+        self,
+        model: str,
+        texts: list[str],
+        *,
+        timeout_seconds: int = 60,
+        keep_alive: str = "0",
+    ) -> list[list[float]]:
         if not texts or len(texts) > 32:
             raise WorkloadError("invalid_embedding_batch", "Local embedding batch is invalid.")
         try:
             response = httpx.post(
                 f"{self.config.url}/api/embed",
-                json={"model": model, "input": texts, "truncate": True, "keep_alive": "0"},
+                json={
+                    "model": model,
+                    "input": texts,
+                    "truncate": False,
+                    "keep_alive": keep_alive,
+                },
                 timeout=httpx.Timeout(timeout_seconds, connect=10),
             )
             response.raise_for_status()

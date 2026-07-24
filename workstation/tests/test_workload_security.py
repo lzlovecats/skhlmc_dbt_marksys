@@ -6,6 +6,7 @@ import threading
 
 import pytest
 
+from ai_model_config import LMC_AI_CONTEXT_LENGTH
 from system_limits import LMC_AI_OUTPUT_MAX_BYTES
 from workstation.config import AsrConfig, GptSoVitsConfig, OllamaConfig
 from workstation.workloads.asr import Qwen3AsrAdapter
@@ -63,6 +64,7 @@ def test_ollama_chat_preserves_bounded_stage_durations(monkeypatch):
         messages=[{"role": "user", "content": "測試"}],
         think=False,
         keep_alive="0",
+        context_length=LMC_AI_CONTEXT_LENGTH,
         timeout_seconds=30,
     )
     assert text == "答案"
@@ -109,6 +111,7 @@ def test_ollama_chat_rejects_output_above_protocol_limit(monkeypatch):
             messages=[{"role": "user", "content": "測試"}],
             think=False,
             keep_alive="0",
+            context_length=LMC_AI_CONTEXT_LENGTH,
             timeout_seconds=30,
         )
     assert raised.value.code == "output_too_large"

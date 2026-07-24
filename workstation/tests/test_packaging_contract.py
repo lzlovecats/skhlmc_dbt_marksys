@@ -98,6 +98,7 @@ def test_ollama_is_loopback_only_and_uses_managed_model_storage():
     build = (ROOT / "workstation/scripts/build_deb.sh").read_text()
     assert "OLLAMA_HOST=127.0.0.1:11434" in drop_in
     assert "OLLAMA_MODELS=/srv/lmc-ai/models/ollama" in drop_in
+    assert "OLLAMA_MAX_LOADED_MODELS=1" in drop_in
     assert "SupplementaryGroups=lmc-ai" in drop_in
     assert "ollama.service.d" in build
 

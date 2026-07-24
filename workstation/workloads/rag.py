@@ -25,6 +25,7 @@ from workstation.workloads.ollama import OllamaAdapter
 
 INDEX_FILE = "index.jsonl"
 INDEX_META_FILE = "index-meta.json"
+RAG_BUILD_KEEP_ALIVE = "5m"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -189,10 +190,26 @@ class LocalRagIndex:
         if not documents:
             raise WorkloadError("empty_rag_bundle", "RAG bundle contains no documents.")
         vectors = []
-        for offset in range(0, len(documents), 16):
-            if cancel_event is not None and cancel_event.is_set():
-                raise WorkloadError("cancelled", "RAG indexing was cancelled.")
-            vectors.extend(self.ollama.embed(self.config.embedding_model, [item["text"] for item in documents[offset:offset + 16]]))
+        embedding_error = None
+        self.ollama.unload_except(self.config.embedding_model)
+        try:
+            for offset in range(0, len(documents), 16):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise WorkloadError("cancelled", "RAG indexing was cancelled.")
+                vectors.extend(self.ollama.embed(
+                    self.config.embedding_model,
+                    [item["text"] for item in documents[offset:offset + 16]],
+                    keep_alive=RAG_BUILD_KEEP_ALIVE,
+                ))
+        except BaseException as exc:
+            embedding_error = exc
+            raise
+        finally:
+            try:
+                self.ollama.unload(self.config.embedding_model)
+            except WorkloadError:
+                if embedding_error is None:
+                    raise
         if (
             len(vectors) != len(documents)
             or not vectors
@@ -248,6 +265,7 @@ class LocalRagIndex:
         clean_query = str(query or "").strip()
         if not clean_query or len(clean_query) > WORKSTATION_RAG_DOCUMENT_MAX_CHARS:
             raise WorkloadError("invalid_rag_query", "Local RAG query is invalid.")
+        self.ollama.unload_except(self.config.embedding_model)
         query_vector = self.ollama.embed(self.config.embedding_model, [clean_query])[0]
         if (
             len(query_vector) != int(status["dimensions"])

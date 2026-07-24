@@ -115,10 +115,11 @@ class JobExecutor:
             self._set_gpt_sovits_service("stop")
         self.ollama.unload_all()
 
-    def _prepare_ollama_gpu(self) -> None:
+    def _prepare_ollama_gpu(self, model: str) -> None:
         self.asr.unload()
         if self.config.workloads.gpt_sovits.enabled:
             self._set_gpt_sovits_service("stop")
+        self.ollama.unload_except(model)
 
     def _require_storage_quota(self, path: Path, quota: int, code: str) -> int:
         usage = directory_bytes(path)
@@ -354,6 +355,7 @@ class JobExecutor:
         model: str,
         messages: list[dict],
         think: bool,
+        context_length: int,
         deadline_epoch: int,
         cancel_event: threading.Event,
         on_started=None,
@@ -362,12 +364,22 @@ class JobExecutor:
         self.arbiter.start_operation(operation_id, "text", deadline_epoch=deadline_epoch, stage="generating")
         self._sync_inhibitor()
         try:
-            self._prepare_ollama_gpu()
+            if (
+                isinstance(context_length, bool)
+                or not isinstance(context_length, int)
+                or context_length != LMC_AI_CONTEXT_LENGTH
+            ):
+                raise WorkloadError(
+                    "context_length_mismatch",
+                    "Chat context length does not match the approved model profile.",
+                )
+            self._prepare_ollama_gpu(model)
             result = self.ollama.chat(
                 model=model,
                 messages=messages,
                 think=think,
                 keep_alive=self.config.workloads.ollama.text_keep_alive,
+                context_length=context_length,
                 timeout_seconds=self._remaining(deadline_epoch),
                 on_started=on_started,
                 on_delta=on_delta,
@@ -549,7 +561,7 @@ class JobExecutor:
         on_stage=None,
     ) -> dict:
         query = str(payload.get("query") or "")
-        self._prepare_ollama_gpu()
+        self._prepare_ollama_gpu(self.config.workloads.rag.embedding_model)
         self._raise_if_cancelled(cancel_event)
         if on_stage:
             on_stage("rag_retrieval")
@@ -574,14 +586,15 @@ class JobExecutor:
         messages = payload.get("messages")
         if not isinstance(messages, list) or not messages:
             raise WorkloadError("invalid_messages", "Voice Coach messages are invalid.")
-        self._prepare_ollama_gpu()
         mode = resolve_lmc_ai_mode_options()["fast"]
+        self._prepare_ollama_gpu(str(mode["model"]))
         started = time.monotonic()
         text, usage = self.ollama.chat(
             model=str(mode["model"]),
             messages=messages,
             think=False,
             keep_alive=self.config.workloads.ollama.voice_keep_alive,
+            context_length=LMC_AI_CONTEXT_LENGTH,
             timeout_seconds=self._remaining(deadline_epoch),
             cancel_event=cancel_event,
             on_started=on_provider_started,

@@ -55,7 +55,13 @@ class _Ollama:
         if self.apply_pull:
             self._inventory[name] = expected_digest
 
-    def embed(self, _model, texts):
+    def unload_except(self, _model):
+        return None
+
+    def unload(self, _model):
+        return None
+
+    def embed(self, _model, texts, *, keep_alive="0"):
         return [[1.0, float(index + 1)] for index, _text in enumerate(texts)]
 
 
