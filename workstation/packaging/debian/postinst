@@ -43,9 +43,9 @@ chmod 0640 "$config_dir/config.json"
 
 systemctl daemon-reload
 systemctl try-restart ollama.service >/dev/null 2>&1 || true
-systemctl enable --now lmc-ai-privileged.service lmc-ai-manager.service lmc-ai-gui.service
+systemctl enable --now lmc-ai-privileged.service lmc-ai-manager.service
 systemctl enable --now lmc-ai-health.timer lmc-ai-full-health.timer \
-  lmc-ai-power.timer lmc-ai-reboot.timer lmc-ai-update.timer
+  lmc-ai-power.timer lmc-ai-reboot.timer
 if [[ -s "$config_dir/credentials/node-token" ]]; then
   systemctl enable --now lmc-ai-node.service
 else

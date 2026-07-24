@@ -14,7 +14,6 @@ _PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 _TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 REMOTE_RESTART_SERVICES = frozenset({
     "lmc-ai-node.service",
-    "lmc-ai-gui.service",
     "ollama.service",
     "lmc-ai-gpt-sovits.service",
 })

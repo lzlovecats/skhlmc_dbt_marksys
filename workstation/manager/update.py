@@ -32,6 +32,7 @@ from workstation.manager.release_manifest import (
 )
 from workstation.version import WORKSTATION_VERSION
 from workstation.workloads.errors import WorkloadError
+from workstation.workloads.r2_transfer import download_to_path
 
 
 def _bounded_get_json(url: str, *, token: str) -> dict:
@@ -99,37 +100,45 @@ def _r2_health_json_request(method: str, url: str, **kwargs) -> dict:
     return value
 
 
+# Signed-archive wrapper over the shared bounded downloader: exact signed
+# size, no pre-existing file, durable write, release_* error codes.
+_RELEASE_DOWNLOAD_CODES = {
+    "media_too_large": "release_too_large",
+    "size_mismatch": "release_size_mismatch",
+    "hash_mismatch": "release_hash_mismatch",
+}
+
+
 def _download(url: str, destination: Path, *, expected_size: int, expected_sha256: str) -> None:
-    if expected_size > WORKSTATION_RELEASE_ARCHIVE_MAX_BYTES:
+    if expected_size <= 0 or expected_size > WORKSTATION_RELEASE_ARCHIVE_MAX_BYTES:
         raise WorkloadError("release_too_large", "Release archive exceeds its safe limit.")
-    digest = hashlib.sha256()
-    total = 0
+    if destination.exists():
+        raise WorkloadError("release_download_failed", "Release archive download failed.")
     try:
-        with httpx.stream(
-            "GET", url, timeout=httpx.Timeout(120, connect=10), follow_redirects=False,
-        ) as response:
-            response.raise_for_status()
-            declared = int(response.headers.get("content-length") or 0)
-            if declared and declared != expected_size:
-                raise WorkloadError("release_size_mismatch", "Release archive size does not match its signed manifest.")
-            with destination.open("xb") as stream:
-                for chunk in response.iter_bytes():
-                    total += len(chunk)
-                    if total > expected_size or total > WORKSTATION_RELEASE_ARCHIVE_MAX_BYTES:
-                        raise WorkloadError("release_too_large", "Release archive exceeds its signed size.")
-                    digest.update(chunk)
-                    stream.write(chunk)
-                stream.flush()
-                os.fsync(stream.fileno())
-    except WorkloadError:
+        download_to_path(
+            url,
+            destination,
+            max_bytes=expected_size,
+            expected_bytes=expected_size,
+            expected_sha256=expected_sha256,
+            timeout_seconds=120,
+        )
+        with destination.open("rb") as stream:
+            os.fsync(stream.fileno())
+    except WorkloadError as exc:
         destination.unlink(missing_ok=True)
-        raise
-    except (OSError, httpx.HTTPError, ValueError) as exc:
+        code = _RELEASE_DOWNLOAD_CODES.get(exc.code, "release_download_failed")
+        message = (
+            "Release archive does not match its signed manifest."
+            if code in {"release_size_mismatch", "release_hash_mismatch"}
+            else "Release archive download failed."
+            if code == "release_download_failed"
+            else "Release archive exceeds its signed size."
+        )
+        raise WorkloadError(code, message) from exc
+    except OSError as exc:
         destination.unlink(missing_ok=True)
         raise WorkloadError("release_download_failed", "Release archive download failed.") from exc
-    if total != expected_size or digest.hexdigest() != expected_sha256:
-        destination.unlink(missing_ok=True)
-        raise WorkloadError("release_hash_mismatch", "Release archive hash does not match its signed manifest.")
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:
@@ -422,7 +431,6 @@ class UpdateStager:
         version = manifest["release_version"]
         if _application_version(version) <= _application_version(WORKSTATION_VERSION):
             return {"update_available": False, "version": version}
-        self.r2_health_probe()
         self.staging_root.mkdir(parents=True, exist_ok=True, mode=0o750)
         target = self.staging_root / version
         if target.parent.resolve() != self.staging_root.resolve():

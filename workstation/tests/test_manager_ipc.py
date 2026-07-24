@@ -23,7 +23,7 @@ def _config(tmp_path):
         "schema_version": 1,
         "node": {"name": "AI Workstation", "server_url": "https://example.com", "token_file": str(tmp_path / "token")},
         "paths": {"state": str(tmp_path / "state"), "cache": str(tmp_path / "cache"), "data": str(tmp_path), "releases": str(tmp_path / "releases")},
-        "power": {}, "workloads": {}, "gui": {},
+        "power": {}, "workloads": {},
     })
 
 

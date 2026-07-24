@@ -7,9 +7,11 @@ import argparse
 import asyncio
 from contextlib import contextmanager
 import fcntl
+import getpass
 import json
 import os
 from pathlib import Path
+import sys
 import time
 
 from workstation.config import (
@@ -93,7 +95,7 @@ def reboot_check(args) -> int:
 
 def _restart_release_services(args) -> None:
     for service in (
-        "lmc-ai-manager.service", "lmc-ai-node.service", "lmc-ai-gui.service",
+        "lmc-ai-manager.service", "lmc-ai-node.service",
     ):
         deadline = time.monotonic() + 20
         while True:
@@ -332,6 +334,99 @@ def rollback_previous(args) -> int:
         return 1
 
 
+_ARTIFACT_ACTIONS = {
+    "artifact-inspect": "artifacts.inspect",
+    "model-approve": "model.approve",
+    "rag-install": "rag.install",
+    "rag-rollback": "rag.rollback",
+}
+
+
+def artifact_action(args) -> int:
+    result = _request(
+        args.manager_socket, {"action": _ARTIFACT_ACTIONS[args.command]},
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def dataset_prepare(args) -> int:
+    result = _request(args.manager_socket, {
+        "action": "dataset.prepare",
+        "dataset_id": args.dataset_id,
+        "speaker": args.speaker,
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def training_start(args) -> int:
+    result = _request(args.manager_socket, {
+        "action": "training.start",
+        "dataset_id": args.dataset_id,
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cancel_operation(args) -> int:
+    result = _request(args.manager_socket, {
+        "action": "cancel",
+        "operation_id": args.operation_id,
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def pair(args) -> int:
+    # The one-time token must never appear in argv or shell history.
+    if sys.stdin.isatty():
+        token = getpass.getpass("Node token (input hidden): ")
+    else:
+        token = sys.stdin.readline().strip()
+    if not token:
+        print(json.dumps({"ok": False, "error": "empty_token"}))
+        return 1
+    result = request_privileged({
+        "action": "pair_node",
+        "name": args.name,
+        "server_url": args.server_url,
+        "token": token,
+    }, args.privileged_socket)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def r2_probe(args) -> int:
+    """On-demand direct-R2 round-trip diagnostic (upload, download, delete)."""
+    config = load_config(args.config)
+    try:
+        result = UpdateStager(config).r2_health_probe()
+    except WorkloadError as exc:
+        print(json.dumps({"ok": False, "error": exc.code}))
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def set_update_channel(args) -> int:
+    result = request_privileged({
+        "action": "set_update_channel",
+        "channel": args.channel,
+    }, args.privileged_socket)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def power_override(args) -> int:
+    result = request_privileged({
+        "action": "set_power_override",
+        "until_epoch": args.until_epoch,
+    }, args.privileged_socket)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="LMC AI Workstation control")
     value.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -349,6 +444,29 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("reboot-check").set_defaults(handler=reboot_check)
     commands.add_parser("update-check").set_defaults(handler=update_check)
     commands.add_parser("rollback-previous").set_defaults(handler=rollback_previous)
+    for name in _ARTIFACT_ACTIONS:
+        commands.add_parser(name).set_defaults(handler=artifact_action)
+    prepare = commands.add_parser("dataset-prepare")
+    prepare.add_argument("--dataset-id", required=True)
+    prepare.add_argument("--speaker", required=True)
+    prepare.set_defaults(handler=dataset_prepare)
+    training = commands.add_parser("training-start")
+    training.add_argument("--dataset-id", required=True)
+    training.set_defaults(handler=training_start)
+    cancel = commands.add_parser("cancel-operation")
+    cancel.add_argument("--operation-id", required=True)
+    cancel.set_defaults(handler=cancel_operation)
+    pairing = commands.add_parser("pair")
+    pairing.add_argument("--name", required=True)
+    pairing.add_argument("--server-url", required=True)
+    pairing.set_defaults(handler=pair)
+    commands.add_parser("r2-probe").set_defaults(handler=r2_probe)
+    channel = commands.add_parser("set-update-channel")
+    channel.add_argument("--channel", required=True, choices=["stable", "candidate"])
+    channel.set_defaults(handler=set_update_channel)
+    override = commands.add_parser("power-override")
+    override.add_argument("--until-epoch", required=True, type=int)
+    override.set_defaults(handler=power_override)
     return value
 
 

@@ -45,8 +45,6 @@ cp -a "$repo_root/workstation/packaging/debian/." "$package_root/DEBIAN/"
 sed -i "s/^Version:.*/Version: $version/" "$package_root/DEBIAN/control"
 install -m 0644 "$repo_root/workstation/systemd/"*.service \
   "$repo_root/workstation/systemd/"*.timer "$package_root/lib/systemd/system/"
-install -m 0644 "$repo_root/workstation/packaging/lmc-ai-workstation.desktop" \
-  "$package_root/usr/share/applications/"
 install -m 0644 "$repo_root/workstation/config/config.example.json" \
   "$package_root/usr/share/lmc-ai-workstation/"
 install -m 0644 "$signing_public_key" \

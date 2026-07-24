@@ -27,18 +27,13 @@ def _config(tmp_path: Path) -> dict:
         },
         "power": {"enabled": True, "timezone": "Asia/Hong_Kong", "suspend_at": "00:00", "wake_at": "08:00"},
         "workloads": {},
-        "gui": {"host": "127.0.0.1", "port": 8765},
     }
 
 
-def test_typed_config_keeps_secrets_as_references_and_gui_local(tmp_path):
+def test_typed_config_keeps_secrets_as_references(tmp_path):
     config = parse_config(_config(tmp_path))
     assert config.node.server_url == "wss://example.com/api/lmc-ai/nodes/connect"
     assert "token_file" not in config.public_dict()["node"]
-    unsafe = _config(tmp_path)
-    unsafe["gui"]["host"] = "0.0.0.0"
-    with pytest.raises(ConfigError, match="GUI"):
-        parse_config(unsafe)
 
 
 def test_config_state_and_secrets_reject_symlinks_or_oversize_files(tmp_path):

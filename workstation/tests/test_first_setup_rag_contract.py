@@ -15,7 +15,9 @@ WORKSTATION_RUNBOOK = (
 ).read_text("utf-8")
 TRAINING_RUNBOOK = (ROOT / "docs/AI_TRAINING_RUNBOOK.md").read_text("utf-8")
 TRAINING_PAGE = (ROOT / "frontend/ai_training/index.html").read_text("utf-8")
-GUI_SCRIPT = (ROOT / "workstation/gui/static/app.js").read_text("utf-8")
+CTL_SCRIPT = (
+    ROOT / "workstation/scripts/workstationctl.py"
+).read_text("utf-8")
 GITIGNORE = (ROOT / ".gitignore").read_text("utf-8")
 
 
@@ -54,10 +56,10 @@ def test_first_setup_runbook_blocks_go_live_until_signed_nonempty_rag_v1():
     assert "lmc_ai_workstation_required_models" in WORKSTATION_RUNBOOK
 
 
-def test_gui_requires_inspection_and_confirmation_before_rag_install():
-    assert "inspectedArtifactCatalog?.rag_bundle" in GUI_SCRIPT
-    assert "RAG bundle ID" in GUI_SCRIPT
-    assert "SHA-256" in GUI_SCRIPT
+def test_ctl_exposes_inspection_as_a_separate_step_before_rag_install():
+    assert '"artifact-inspect": "artifacts.inspect"' in CTL_SCRIPT
+    assert '"rag-install": "rag.install"' in CTL_SCRIPT
+    assert '"rag-rollback": "rag.rollback"' in CTL_SCRIPT
 
 
 def test_rag_and_sft_guides_define_every_jsonl_line_field():

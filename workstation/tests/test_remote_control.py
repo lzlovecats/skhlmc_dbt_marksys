@@ -32,7 +32,6 @@ def _config(tmp_path):
         },
         "power": {},
         "workloads": {},
-        "gui": {},
     })
 
 

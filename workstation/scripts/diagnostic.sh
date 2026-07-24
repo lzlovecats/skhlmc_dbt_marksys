@@ -8,7 +8,7 @@ echo "Kernel: $(uname -r)"
 nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used,temperature.gpu \
   --format=csv,noheader || true
 systemctl is-active lmc-ai-privileged.service lmc-ai-manager.service \
-  lmc-ai-node.service lmc-ai-gui.service ollama.service \
+  lmc-ai-node.service ollama.service \
   skhlmc-lmc-ai-node.service || true
 systemctl list-timers --no-pager 'lmc-ai-*' || true
 tailscale status --json 2>/dev/null | python3 -c \

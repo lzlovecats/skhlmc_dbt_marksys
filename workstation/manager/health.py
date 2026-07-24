@@ -21,7 +21,6 @@ from system_limits import (
     WORKSTATION_MIN_AVAILABLE_RAM_BYTES,
     WORKSTATION_MIN_GPU_VRAM_MIB,
     WORKSTATION_MIN_RAM_BYTES,
-    WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS,
 )
 from workstation.config import WorkstationConfig
 from workstation.workloads.asr import Qwen3AsrAdapter
@@ -218,36 +217,9 @@ class HealthRunner:
             return {"ok": False, "code": "receipt_unavailable"}
 
     def _full_probes(
-        self, *, set_gpt_service, prepare_non_ollama, probe_r2=None,
+        self, *, set_gpt_service, prepare_non_ollama,
     ) -> dict:
         results = {}
-        needs_r2 = bool(
-            self.config.update.enabled or self.config.workloads.gpt_sovits.enabled
-        )
-        if needs_r2:
-            try:
-                if probe_r2 is None:
-                    raise WorkloadError(
-                        "r2_probe_unavailable", "Direct-R2 probe is unavailable."
-                    )
-                probe = probe_r2()
-                if not isinstance(probe, dict) or probe.get("ok") is not True:
-                    raise WorkloadError("r2_probe_failed", "Direct-R2 probe failed.")
-                results["r2_probe"] = probe
-            except Exception as exc:
-                try:
-                    (self.config.paths.state / "r2-health.json").unlink(
-                        missing_ok=True
-                    )
-                except OSError:
-                    pass
-                results["r2_probe"] = {
-                    "ok": False,
-                    "code": (
-                        exc.code if isinstance(exc, WorkloadError)
-                        else "r2_probe_failed"
-                    ),
-                }
         if self.config.workloads.asr.enabled:
             sample = self.config.paths.data / "health" / "asr-cantonese.wav"
             expected_file = self.config.paths.data / "health" / "asr-cantonese.txt"
@@ -473,7 +445,6 @@ class HealthRunner:
         full: bool = False,
         set_gpt_service=None,
         prepare_non_ollama=None,
-        probe_r2=None,
     ) -> dict:
         inventory = self._inventory()
         checks = {
@@ -489,12 +460,6 @@ class HealthRunner:
             "gpt_sovits_training": self.gpt_sovits.training_health(),
             "quota": {"ok": inventory["quota_status"] == "ok"},
             "wss": self._connection_receipt("website.json", maximum_age_seconds=120),
-            "r2": self._connection_receipt(
-                "r2-health.json",
-                maximum_age_seconds=(
-                    WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS
-                ),
-            ),
         }
         base = ("os", "gpu", "memory", "disk", "power")
         if self.config.workloads.ollama.enabled:
@@ -505,14 +470,10 @@ class HealthRunner:
             probes = self._full_probes(
                 set_gpt_service=set_gpt_service,
                 prepare_non_ollama=prepare_non_ollama,
-                probe_r2=probe_r2,
             )
             checks.update(probes)
             checks["asr"] = self._asr_shallow()
             checks["gpt_sovits"] = self._tts_shallow()
-            checks["r2"] = dict(probes.get("r2_probe") or {
-                "ok": False, "code": "r2_probe_failed",
-            })
             enabled = ["quota", "wss"]
             if self.config.workloads.asr.enabled:
                 enabled.extend(("asr", "asr_probe"))
@@ -522,8 +483,6 @@ class HealthRunner:
                 enabled.extend((
                     "gpt_sovits", "gpt_sovits_training", "gpt_sovits_probe",
                 ))
-            if self.config.update.enabled or self.config.workloads.gpt_sovits.enabled:
-                enabled.extend(("r2", "r2_probe"))
             required_capabilities = tuple(dict.fromkeys((
                 *required_capabilities, *enabled,
             )))

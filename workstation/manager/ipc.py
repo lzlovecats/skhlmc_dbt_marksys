@@ -30,7 +30,6 @@ from workstation.manager.health import HealthRunner
 from workstation.manager.inhibitor import SleepInhibitor
 from workstation.workloads.errors import WorkloadError
 from workstation.manager.artifacts import SignedArtifactManager
-from workstation.manager.update import UpdateStager
 from workstation.remote_control import installed_profiles, validate_remote_command
 from workstation.privileged_helper.client import PrivilegedActionError
 from workstation.node.protocol import public_health_summary
@@ -153,13 +152,6 @@ class ManagerApplication:
                     full=full,
                     set_gpt_service=self.executor._set_gpt_sovits_service,
                     prepare_non_ollama=self.executor._prepare_non_ollama_gpu,
-                    probe_r2=(
-                        UpdateStager(self.config).r2_health_probe
-                        if (
-                            self.config.update.enabled
-                            or self.config.workloads.gpt_sovits.enabled
-                        ) else None
-                    ),
                 )
                 if operation_id:
                     self.arbiter.finish_operation(

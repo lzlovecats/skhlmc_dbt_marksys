@@ -216,7 +216,6 @@ def test_manager_rejects_non_integer_chat_context(
         },
         "power": {},
         "workloads": {},
-        "gui": {},
     })
     application = ManagerApplication(
         config,

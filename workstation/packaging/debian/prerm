@@ -3,9 +3,9 @@ set -euo pipefail
 
 if [[ "${1:-}" == "remove" || "${1:-}" == "deconfigure" ]]; then
   systemctl stop lmc-ai-update.service lmc-ai-rollback.service >/dev/null 2>&1 || true
-  systemctl disable --now lmc-ai-node.service lmc-ai-gui.service lmc-ai-manager.service \
+  systemctl disable --now lmc-ai-node.service lmc-ai-manager.service \
     lmc-ai-privileged.service lmc-ai-health.timer lmc-ai-power.timer \
-    lmc-ai-full-health.timer lmc-ai-reboot.timer lmc-ai-update.timer \
+    lmc-ai-full-health.timer lmc-ai-reboot.timer \
     >/dev/null 2>&1 || true
 fi
 

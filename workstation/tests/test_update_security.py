@@ -251,7 +251,6 @@ def test_pairing_waits_for_fresh_website_acceptance_receipt(
         },
         "power": {},
         "workloads": {},
-        "gui": {},
     }), encoding="utf-8")
     helper = PrivilegedHelper(
         config_path=config_path,
@@ -478,7 +477,7 @@ def test_failed_full_health_rolls_back_before_reporting_failure(
         if item["action"] == "rollback_release"
     )
     assert actions[rollback_index + 1:] == [
-        "restart_service", "restart_service", "restart_service",
+        "restart_service", "restart_service",
         "confirm_release",
     ]
     assert manager_actions == ["drain", "resume"]
@@ -571,7 +570,7 @@ def test_manual_rollback_drains_restarts_health_checks_then_resumes(
         "action": "rollback_release", "version": "1.2.3",
     }
     assert [item["action"] for item in privileged_actions[1:]] == [
-        "restart_service", "restart_service", "restart_service",
+        "restart_service", "restart_service",
         "confirm_release",
     ]
     assert privileged_actions[-1]["version"] == "1.2.3"

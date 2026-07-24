@@ -74,10 +74,8 @@ def test_periodic_full_health_is_separate_and_never_skips_manager_arbitration():
 
 def test_manual_rollback_is_a_separate_drained_health_gated_service():
     unit = (ROOT / "workstation/systemd/lmc-ai-rollback.service").read_text()
-    gui = (ROOT / "workstation/gui/server.py").read_text()
     cli = (ROOT / "workstation/scripts/workstationctl.py").read_text()
     assert "rollback-previous" in unit
-    assert "trigger_rollback" in gui
     assert "_wait_for_idle(args)" in cli
     assert "_wait_for_full_health(args)" in cli
     assert "release-operation.lock" in cli

@@ -37,7 +37,6 @@ def _config(tmp_path):
                 "embedding_model": LMC_AI_RAG_EMBEDDING_MODEL_TAG,
             },
         },
-        "gui": {},
     })
 
 
@@ -162,10 +161,6 @@ def test_failed_rag_build_keeps_previous_atomic_link(tmp_path, monkeypatch):
         "sha256": "b" * 64, "bytes": 1_000,
     }
     monkeypatch.setattr(manager, "_catalog", lambda _name: ({}, component, "https://r2.example/rag"))
-    monkeypatch.setattr(
-        "workstation.manager.artifacts.UpdateStager.r2_health_probe",
-        lambda _self: {"ok": True},
-    )
     monkeypatch.setattr(
         "workstation.manager.artifacts.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=100_000_000_000),

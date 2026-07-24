@@ -11,7 +11,6 @@ from workstation.remote_control import validate_remote_command
 ALLOWED_SERVICES = frozenset({
     "lmc-ai-manager.service",
     "lmc-ai-node.service",
-    "lmc-ai-gui.service",
     "ollama.service",
     "lmc-ai-gpt-sovits.service",
 })

@@ -42,7 +42,6 @@ REQUIRED_ACTIVE_SERVICES = (
     "lmc-ai-privileged.service",
     "lmc-ai-manager.service",
     "lmc-ai-node.service",
-    "lmc-ai-gui.service",
     "ollama.service",
 )
 REQUIRED_ACTIVE_TIMERS = (
@@ -50,7 +49,6 @@ REQUIRED_ACTIVE_TIMERS = (
     "lmc-ai-full-health.timer",
     "lmc-ai-power.timer",
     "lmc-ai-reboot.timer",
-    "lmc-ai-update.timer",
 )
 MANUAL_GATES = (
     "mac_rdp_new_session_and_tailscale_ssh",

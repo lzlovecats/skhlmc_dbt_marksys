@@ -11,7 +11,6 @@ from ai_model_config import (
     LMC_AI_FAST_MODEL_TAG,
     lmc_ai_workstation_required_models,
 )
-from system_limits import WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS
 from workstation.config import parse_config
 from workstation.manager import health as health_module
 from workstation.manager.arbiter import ModeArbiter
@@ -39,7 +38,7 @@ def _config(tmp_path, *, update_enabled=False):
         "schema_version": 1,
         "node": {"name": "AI Workstation", "server_url": "https://example.com", "token_file": str(tmp_path / "token")},
         "paths": {"state": str(tmp_path / "state"), "cache": str(tmp_path / "cache"), "data": str(tmp_path / "data"), "releases": str(tmp_path / "releases")},
-        "power": {}, "workloads": {}, "gui": {},
+        "power": {}, "workloads": {},
         "update": {"enabled": update_enabled},
     })
 
@@ -151,7 +150,6 @@ def test_tts_owns_gpu_service_only_for_inference(tmp_path, monkeypatch):
         "paths": {"state": str(tmp_path / "state"), "cache": str(tmp_path / "cache"), "data": str(tmp_path / "data"), "releases": str(tmp_path / "releases")},
         "power": {},
         "workloads": {"gpt_sovits": {"enabled": True, "model_version": "voice-v1"}},
-        "gui": {},
     }
     calls = []
     arbiter = ModeArbiter(StateStore(tmp_path / "manager.json"))
@@ -204,35 +202,19 @@ def test_tts_owns_gpu_service_only_for_inference(tmp_path, monkeypatch):
     ]
 
 
-def test_full_health_executes_direct_r2_probe_instead_of_trusting_old_receipt(
+def test_full_health_never_requires_the_on_demand_r2_probe(
     tmp_path, monkeypatch,
 ):
     runner = HealthRunner(_config(tmp_path, update_enabled=True))
-    calls = []
-
-    def full_probes(**kwargs):
-        probe = kwargs["probe_r2"]()
-        calls.append(probe)
-        return {
-            "r2_probe": probe,
-            "asr_probe": {"ok": True},
-            "rag_probe": {"ok": True},
-            "gpt_sovits_probe": {"ok": True},
-        }
-
-    monkeypatch.setattr(runner, "_full_probes", full_probes)
+    monkeypatch.setattr(runner, "_full_probes", lambda **_kwargs: {})
     report = runner.run(
         full=True,
         set_gpt_service=lambda _state: None,
         prepare_non_ollama=lambda: None,
-        probe_r2=lambda: {"ok": True, "checked_epoch": 123},
     )
-    assert calls == [{"ok": True, "checked_epoch": 123}]
-    assert "r2_probe" in report["required"]
-    assert report["checks"]["r2_probe"]["ok"] is True
-    assert report["checks"]["r2"] == {
-        "ok": True, "checked_epoch": 123,
-    }
+    assert "r2" not in report["checks"]
+    assert "r2_probe" not in report["checks"]
+    assert not {"r2", "r2_probe"}.intersection(report["required"])
 
 
 def test_full_health_skips_disabled_future_capability_probes(tmp_path):
@@ -244,7 +226,6 @@ def test_full_health_skips_disabled_future_capability_probes(tmp_path):
     probes = runner._full_probes(
         set_gpt_service=unexpected,
         prepare_non_ollama=unexpected,
-        probe_r2=unexpected,
     )
 
     assert probes == {}
@@ -265,7 +246,6 @@ def test_full_health_requires_only_enabled_capabilities(tmp_path, monkeypatch):
         full=True,
         set_gpt_service=lambda _state: None,
         prepare_non_ollama=lambda: None,
-        probe_r2=None,
     )
 
     assert report["healthy"] is True
@@ -292,37 +272,6 @@ def test_connection_receipt_rejects_non_object_and_future_timestamp(tmp_path):
     assert runner._connection_receipt(
         "website.json", maximum_age_seconds=120,
     )["code"] == "receipt_unavailable"
-
-
-def test_r2_receipt_spans_full_health_interval_and_failure_invalidates_it(
-    tmp_path, monkeypatch,
-):
-    runner = HealthRunner(_config(tmp_path, update_enabled=True))
-    state = tmp_path / "state"
-    state.mkdir()
-    now = 2_000_000_000
-    receipt = state / "r2-health.json"
-    receipt.write_text(json.dumps({
-        "checked_epoch": now - (6 * 60 * 60 + 30 * 60),
-    }))
-    monkeypatch.setattr(health_module.time, "time", lambda: now)
-    assert runner._connection_receipt(
-        "r2-health.json",
-        maximum_age_seconds=WORKSTATION_R2_HEALTH_RECEIPT_MAX_AGE_SECONDS,
-    )["ok"] is True
-
-    def failed_probe():
-        raise RuntimeError("provider unavailable")
-
-    probes = runner._full_probes(
-        set_gpt_service=lambda _state: None,
-        prepare_non_ollama=lambda: None,
-        probe_r2=failed_probe,
-    )
-    assert probes["r2_probe"] == {
-        "ok": False, "code": "r2_probe_failed",
-    }
-    assert not receipt.exists()
 
 
 def test_health_rejects_ollama_digest_drift_from_signed_receipt(
@@ -380,7 +329,6 @@ def test_resume_stays_drained_when_required_rag_full_health_fails(
                 "embedding_model": "embeddinggemma:300m",
             },
         },
-        "gui": {},
     })
     arbiter = ModeArbiter(StateStore(tmp_path / "manager.json"))
     arbiter.set_draining(True)
@@ -425,7 +373,6 @@ def test_enabled_rag_is_required_even_by_shallow_readiness(
                 "embedding_model": "embeddinggemma:300m",
             },
         },
-        "gui": {},
     })
     runner = HealthRunner(config)
     for name in ("_os", "_gpu", "_memory", "_disk", "_power_tools"):

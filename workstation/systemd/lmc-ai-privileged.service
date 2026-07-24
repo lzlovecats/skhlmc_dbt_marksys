@@ -1,7 +1,7 @@
 [Unit]
 Description=LMC AI Workstation privileged allowlist helper
 After=local-fs.target
-Before=lmc-ai-manager.service lmc-ai-node.service lmc-ai-gui.service lmc-ai-update.service lmc-ai-rollback.service lmc-ai-full-health.service
+Before=lmc-ai-manager.service lmc-ai-node.service lmc-ai-update.service lmc-ai-rollback.service lmc-ai-full-health.service
 
 [Service]
 Type=simple

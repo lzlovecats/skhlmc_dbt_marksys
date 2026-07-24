@@ -23,7 +23,6 @@ from workstation.manager.release_manifest import (
     verify_signed_manifest,
 )
 from workstation.manager.update import (
-    UpdateStager,
     _bounded_get_json,
     _download,
     _https_endpoint,
@@ -191,7 +190,6 @@ class SignedArtifactManager:
             raise WorkloadError("artifact_id_invalid", "RAG bundle identifier is invalid.")
         if cancel_event.is_set():
             raise WorkloadError("cancelled", "RAG installation was cancelled.")
-        UpdateStager(self.config).r2_health_probe()
         try:
             if shutil.disk_usage(self.config.paths.data).free < WORKSTATION_MIN_FREE_DISK_BYTES:
                 raise WorkloadError("disk_gate", "RAG installation requires at least 20 GB free disk space.")

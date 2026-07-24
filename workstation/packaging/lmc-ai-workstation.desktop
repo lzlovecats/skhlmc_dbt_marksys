@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=AI Workstation Manager
-Comment=Open the localhost AI Workstation control panel
-Exec=xdg-open http://127.0.0.1:8765/
-Icon=utilities-system-monitor
-Terminal=false
-Categories=System;Utility;

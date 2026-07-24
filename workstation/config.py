@@ -1,7 +1,7 @@
 """Strict non-secret Workstation configuration.
 
 Secrets are references to root-managed files and are never copied into the
-parsed public configuration or GUI responses.
+parsed public configuration.
 """
 
 from __future__ import annotations
@@ -158,12 +158,6 @@ class WorkloadConfig:
 
 
 @dataclass(frozen=True)
-class GuiConfig:
-    host: str = "127.0.0.1"
-    port: int = 8765
-
-
-@dataclass(frozen=True)
 class UpdateConfig:
     enabled: bool = False
     channel: str = "stable"
@@ -181,7 +175,6 @@ class WorkstationConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     power: PowerConfig = field(default_factory=PowerConfig)
     workloads: WorkloadConfig = field(default_factory=WorkloadConfig)
-    gui: GuiConfig = field(default_factory=GuiConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     def public_dict(self) -> dict:
@@ -207,7 +200,6 @@ class WorkstationConfig:
                 "rag": {"enabled": self.workloads.rag.enabled, "embedding_model": self.workloads.rag.embedding_model},
                 "gpt_sovits": {"enabled": self.workloads.gpt_sovits.enabled, "model_version": self.workloads.gpt_sovits.model_version},
             },
-            "gui": {"host": self.gui.host, "port": self.gui.port},
             "update": {
                 "enabled": self.update.enabled,
                 "channel": self.update.channel,
@@ -310,13 +302,6 @@ def parse_config(raw: object) -> WorkstationConfig:
     )
     if gpt_sovits.enabled and not gpt_sovits.model_version:
         raise ConfigError("enabled GPT-SoVITS requires an approved model_version")
-    gui_raw = _object(root.get("gui", {}), "gui")
-    host = str(gui_raw.get("host") or "127.0.0.1")
-    if host != "127.0.0.1":
-        raise ConfigError("GUI must bind 127.0.0.1")
-    port = int(gui_raw.get("port") or 8765)
-    if port < 1_024 or port > 65_535:
-        raise ConfigError("GUI port is out of range")
     update_raw = _object(root.get("update", {}), "update")
     channel = str(update_raw.get("channel") or "stable")
     if channel not in {"stable", "candidate"}:
@@ -361,7 +346,6 @@ def parse_config(raw: object) -> WorkstationConfig:
         paths=paths,
         power=power,
         workloads=WorkloadConfig(ollama, asr, rag, gpt_sovits),
-        gui=GuiConfig(host, port),
         update=update,
     )
 
